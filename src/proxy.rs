@@ -37,7 +37,7 @@ macro_rules! define_grpc_passthrough {
             Self: 'async_trait,
         {
             Box::pin(async {
-                ::zingolib::grpc_connector::GrpcConnector::new($self.lightwalletd_uri.clone())
+                ::zingo_netutils::GrpcConnector::new($self.lightwalletd_uri.clone())
                     .get_client()
                     .await
                     .expect("Proxy server failed to create client")
