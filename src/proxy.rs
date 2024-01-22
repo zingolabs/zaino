@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     sync::{atomic::AtomicBool, Arc},
 };
@@ -51,8 +50,6 @@ macro_rules! define_grpc_passthrough {
 pub struct ProxyServer {
     pub lightwalletd_uri: http::Uri,
     pub online: Arc<AtomicBool>,
-    #[allow(clippy::type_complexity)]
-    pub conditional_operations: HashMap<&'static str, Box<dyn Fn(&Arc<AtomicBool>) + Send + Sync>>,
 }
 
 impl ProxyServer {
@@ -76,7 +73,6 @@ impl ProxyServer {
         Self {
             lightwalletd_uri,
             online: Arc::new(AtomicBool::new(true)),
-            conditional_operations: HashMap::new(),
         }
     }
 }
