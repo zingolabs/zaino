@@ -3,6 +3,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
+use http::Uri;
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
@@ -243,4 +244,23 @@ impl CompactTxStreamer for ProxyServer {
 
     #[doc = " Server streaming response type for the GetSubtreeRoots method."]
     type GetSubtreeRootsStream = tonic::Streaming<SubtreeRoot>;
+}
+
+pub async fn spawn_server(
+    proxy_port: u16,
+    lwd_port: u16,
+) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+    let uri = Uri::builder()
+        .scheme("https")
+        .authority(format!("localhost:{lwd_port}"))
+        .path_and_query("/")
+        .build()
+        .unwrap();
+    let server = ProxyServer::new(uri);
+    server.serve(proxy_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 }
