@@ -8,7 +8,7 @@ use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
         compact_tx_streamer_server::{CompactTxStreamer, CompactTxStreamerServer},
-        Address, AddressList, Balance, BlockId, BlockRange, ChainSpec, Duration, Empty, Exclude,
+        Address, AddressList, Balance, BlockId, BlockRange, ChainSpec, Empty, Exclude,
         GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg,
         LightdInfo, PingResponse, RawTransaction, SendResponse, SubtreeRoot,
         TransparentAddressBlockFilter, TreeState, TxFilter,
@@ -36,6 +36,7 @@ macro_rules! define_grpc_passthrough {
             'life0: 'async_trait,
             Self: 'async_trait,
         {
+            println!("received call of {}", stringify!($name));
             Box::pin(async {
                 ::zingo_netutils::GrpcConnector::new($self.lightwalletd_uri.clone())
                     .get_client()
@@ -58,14 +59,14 @@ impl ProxyServer {
         self,
         port: impl Into<u16> + Send + Sync + 'static,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+        println!("Starting server task");
         tokio::task::spawn(async move {
             let svc = CompactTxStreamerServer::new(self);
+            let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
+            println!("Proxy listening on {sockaddr}");
             tonic::transport::Server::builder()
                 .add_service(svc)
-                .serve(SocketAddr::new(
-                    std::net::IpAddr::V4(Ipv4Addr::LOCALHOST),
-                    port.into(),
-                ))
+                .serve(sockaddr)
                 .await
         })
     }
@@ -208,7 +209,7 @@ impl CompactTxStreamer for ProxyServer {
     define_grpc_passthrough!(
         fn ping(
             &self,
-            request: tonic::Request<Duration>,
+            request: tonic::Request<zcash_client_backend::proto::service::Duration>,
         ) -> PingResponse
     );
 
@@ -262,5 +263,36 @@ pub async fn spawn_server(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use portpicker::pick_unused_port;
+    use tokio::time::sleep;
+
     use super::*;
+
+    #[tokio::test]
+    async fn server_attempts_to_talk_to_lwd() {
+        let server_port = pick_unused_port().unwrap();
+        let server_handle = spawn_server(
+            server_port,
+            // Not actually connecting to a LWD yet, just pick a random port
+            pick_unused_port().unwrap(),
+        )
+        .await;
+        sleep(Duration::from_secs(3)).await;
+        let proxy_uri = Uri::builder()
+            .scheme("http")
+            .authority(format!("localhost:{server_port}"))
+            .path_and_query("")
+            .build()
+            .unwrap();
+        println!("{}", proxy_uri);
+        let lightd_info = zingo_netutils::GrpcConnector::new(proxy_uri)
+            .get_client()
+            .await
+            .unwrap()
+            .get_lightd_info(Empty {})
+            .await
+            .unwrap();
+    }
 }
