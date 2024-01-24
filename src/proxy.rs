@@ -51,6 +51,7 @@ macro_rules! define_grpc_passthrough {
 
 pub struct ProxyServer {
     pub lightwalletd_uri: http::Uri,
+    pub zebrad_uri: http::Uri,
     pub online: Arc<AtomicBool>,
 }
 
@@ -71,21 +72,41 @@ impl ProxyServer {
         })
     }
 
-    pub fn new(lightwalletd_uri: http::Uri) -> Self {
+    pub fn new(lightwalletd_uri: http::Uri, zebrad_uri: http::Uri) -> Self {
         Self {
             lightwalletd_uri,
+            zebrad_uri,
             online: Arc::new(AtomicBool::new(true)),
         }
     }
 }
 
 impl CompactTxStreamer for ProxyServer {
-    define_grpc_passthrough!(
-        fn get_latest_block(
-            &self,
-            request: tonic::Request<ChainSpec>,
-        ) -> BlockId
-    );
+    fn get_latest_block<'life0, 'async_trait>(
+        &'life0 self,
+        request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<
+                        tonic::Response<zcash_client_backend::proto::service::BlockId>,
+                        tonic::Status,
+                    >,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async {
+            let zebrad_info = ::zingo_netutils::GrpcConnector::new(self.zebrad_uri.clone())
+                .get_client()
+                .await;
+            todo!()
+        })
+    }
 
     define_grpc_passthrough!(
         fn get_block(
@@ -250,14 +271,21 @@ impl CompactTxStreamer for ProxyServer {
 pub async fn spawn_server(
     proxy_port: u16,
     lwd_port: u16,
+    zebrad_port: u16,
 ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
-    let uri = Uri::builder()
+    let lwd_uri = Uri::builder()
         .scheme("http")
         .authority(format!("localhost:{lwd_port}"))
         .path_and_query("/")
         .build()
         .unwrap();
-    let server = ProxyServer::new(uri);
+    let zebra_uri = Uri::builder()
+        .scheme("http")
+        .authority(format!("localhost:{zebrad_port}"))
+        .path_and_query("/")
+        .build()
+        .unwrap();
+    let server = ProxyServer::new(lwd_uri, zebra_uri);
     server.serve(proxy_port)
 }
 
@@ -274,7 +302,7 @@ mod tests {
     /// Note: This test currently requires a manual boot of zcashd + lightwalletd to run
     async fn server_talks_to_to_lwd() {
         let server_port = pick_unused_port().unwrap();
-        let server_handle = spawn_server(server_port, 9067).await;
+        let server_handle = spawn_server(server_port, 9067, 18232).await;
         sleep(Duration::from_secs(3)).await;
         let proxy_uri = Uri::builder()
             .scheme("http")
