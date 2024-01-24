@@ -252,7 +252,7 @@ pub async fn spawn_server(
     lwd_port: u16,
 ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
     let uri = Uri::builder()
-        .scheme("https")
+        .scheme("http")
         .authority(format!("localhost:{lwd_port}"))
         .path_and_query("/")
         .build()
@@ -271,14 +271,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn server_attempts_to_talk_to_lwd() {
+    /// Note: This test currently requires a manual boot of zcashd + lightwalletd to run
+    async fn server_talks_to_to_lwd() {
         let server_port = pick_unused_port().unwrap();
-        let server_handle = spawn_server(
-            server_port,
-            // Not actually connecting to a LWD yet, just pick a random port
-            pick_unused_port().unwrap(),
-        )
-        .await;
+        let server_handle = spawn_server(server_port, 9067).await;
         sleep(Duration::from_secs(3)).await;
         let proxy_uri = Uri::builder()
             .scheme("http")
@@ -294,5 +290,6 @@ mod tests {
             .get_lightd_info(Empty {})
             .await
             .unwrap();
+        println!("{:#?}", lightd_info.into_inner());
     }
 }
