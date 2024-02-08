@@ -1,3 +1,7 @@
+// zproxy.rs
+// use: zingo-proxy - receives serialized Grpc calls over nym mixnet, passes Grpc calls to lightwalletd/zebrad, returns serialised Grpc response over nym mixnet.
+//
+
 use http::Uri;
 use std::thread;
 use std::time::Duration;
