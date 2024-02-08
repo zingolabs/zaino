@@ -1,3 +1,7 @@
+// nproxy.rs
+// use: nym-proxy - recieves Grpc calls, serializes and sends calls over nym mixnet, returns Grpc response to zingolib
+//
+
 use http::Uri;
 use std::thread;
 use std::time::Duration;
