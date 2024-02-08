@@ -82,31 +82,39 @@ impl ProxyServer {
 }
 
 impl CompactTxStreamer for ProxyServer {
-    fn get_latest_block<'life0, 'async_trait>(
-        &'life0 self,
-        request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,
-    ) -> core::pin::Pin<
-        Box<
-            dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::BlockId>,
-                        tonic::Status,
-                    >,
-                > + core::marker::Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async {
-            let zebrad_info = ::zingo_netutils::GrpcConnector::new(self.zebrad_uri.clone())
-                .get_client()
-                .await;
-            todo!()
-        })
-    }
+    // fn get_latest_block<'life0, 'async_trait>(
+    //     &'life0 self,
+    //     request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,
+    // ) -> core::pin::Pin<
+    //     Box<
+    //         dyn core::future::Future<
+    //                 Output = std::result::Result<
+    //                     tonic::Response<zcash_client_backend::proto::service::BlockId>,
+    //                     tonic::Status,
+    //                 >,
+    //             > + core::marker::Send
+    //             + 'async_trait,
+    //     >,
+    // >
+    // where
+    //     'life0: 'async_trait,
+    //     Self: 'async_trait,
+    // {
+    //     println!("received call of get_latest_block");
+    //     Box::pin(async {
+    //         let zebrad_info = ::zingo_netutils::GrpcConnector::new(self.zebrad_uri.clone())
+    //             .get_client()
+    //             .await;
+    //         todo!("get_latest_block not yet implemented")
+    //     })
+    // }
+
+    define_grpc_passthrough!(
+        fn get_latest_block(
+            &self,
+            request: tonic::Request<ChainSpec>,
+        ) -> BlockId
+    );
 
     define_grpc_passthrough!(
         fn get_block(
