@@ -7,7 +7,9 @@ edition = "2021"
 name = "zproxy"
 path = "bin/zproxy.rs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "nproxy"
+path = "bin/nproxy.rs"
 
 [dependencies]
 http = "0.2.4"
