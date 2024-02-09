@@ -1,11 +1,11 @@
-// zproxy.rs
-// use: zingo-proxy - recieves Grpc calls, passes Grpc calls to lightwalletd/zebrad, returns Grpc response.
+// nserver.rs
+// use: nym-server - receives serialized Grpc calls over nym mixnet, passes Grpc calls to lightwalletd/zebrad [currently zproxy], returns serialised Grpc response over nym mixnet.
 //
 
 use http::Uri;
 use std::thread;
 use std::time::Duration;
-use zingo_proxy::zproxy_utils::{spawn_server, ProxyServer};
+use zingo_proxy::nserver_utils::{spawn_server, ProxyServer};
 
 #[tokio::main]
 async fn main() {

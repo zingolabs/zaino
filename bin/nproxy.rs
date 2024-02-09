@@ -5,7 +5,7 @@
 use http::Uri;
 use std::thread;
 use std::time::Duration;
-use zingo_proxy::proxy::{spawn_server, ProxyServer};
+use zingo_proxy::nproxy_utils::{spawn_server, ProxyServer};
 
 #[tokio::main]
 async fn main() {
