@@ -7,7 +7,14 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
+//use async_trait::async_trait;
 use http::Uri;
+use prost::Message;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
+use tonic::{async_trait, Request, Response, Status};
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
@@ -18,6 +25,7 @@ use zcash_client_backend::proto::{
         TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
+//tonic::include_proto!("cash.z.wallet.sdk.rpc");
 
 macro_rules! define_grpc_passthrough {
     (fn
@@ -85,6 +93,7 @@ impl ProxyServer {
     }
 }
 
+#[async_trait]
 impl CompactTxStreamer for ProxyServer {
     define_grpc_passthrough!(
         fn get_latest_block(
@@ -117,12 +126,60 @@ impl CompactTxStreamer for ProxyServer {
         ) -> RawTransaction
     );
 
-    define_grpc_passthrough!(
-        fn send_transaction(
-            &self,
-            request: tonic::Request<RawTransaction>,
-        ) -> SendResponse
-    );
+    // define_grpc_passthrough!(
+    //     fn send_transaction(
+    //         &self,
+    //         request: tonic::Request<RawTransaction>,
+    //     ) -> SendResponse
+    // );
+
+    async fn send_transaction(
+        &self,
+        request: Request<RawTransaction>,
+    ) -> Result<Response<SendResponse>, Status> {
+        println!("Received call to send_transaction");
+
+        // testing serialisation:
+        // let mut rwtx = Vec::new();
+        // let raw_request = request.into_inner();
+        // prost::Message::encode(&raw_request, &mut rwtx);
+
+        // Serialize the RawTransaction request
+        let serialized_request = match serialize_request(&request.into_inner()).await {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to serialize request: {}",
+                    e
+                )))
+            }
+        };
+
+        // Forward the serialized data over TCP
+        let addr = "127.0.0.1:9090";
+        let response_data = match forward_over_tcp(addr, &serialized_request).await {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to forward transaction over TCP: {}",
+                    e
+                )))
+            }
+        };
+
+        // deserialize SendResponse
+        let response: SendResponse = match deserialize_response(response_data.as_slice()).await {
+            Ok(res) => res,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to decode response: {}",
+                    e
+                )))
+            }
+        };
+
+        Ok(Response::new(response))
+    }
 
     #[doc = "Server streaming response type for the GetTaddressTxids method."]
     type GetTaddressTxidsStream = tonic::Streaming<RawTransaction>;
@@ -272,4 +329,30 @@ pub async fn spawn_server(
         .unwrap();
     let server = ProxyServer::new(lwd_uri, zebra_uri);
     server.serve(proxy_port)
+}
+
+pub async fn serialize_request<T: prost::Message>(
+    request: &T,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut buf = Vec::new();
+    request.encode(&mut buf)?;
+    Ok(buf)
+}
+
+pub async fn forward_over_tcp(
+    addr: &str,
+    data: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut stream = TcpStream::connect(addr).await?;
+    stream.write_all(data).await?;
+    stream.flush().await?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await?;
+    Ok(response)
+}
+
+pub async fn deserialize_response<T: prost::Message + Default>(
+    data: &[u8],
+) -> Result<T, Box<dyn std::error::Error>> {
+    T::decode(data).map_err(Into::into)
 }

@@ -11,11 +11,17 @@ path = "bin/zproxy.rs"
 name = "nproxy"
 path = "bin/nproxy.rs"
 
+[[bin]]
+name = "nserver"
+path = "bin/nserver.rs"
+
 [dependencies]
 http = "0.2.4"
-portpicker = "0.1.1"
-tokio = { version = "1.35.1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["full"] }
 tonic = "0.10.2"
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zingo_rc.2.1", features = ["lightwalletd-tonic"] }
-zingo-netutils = { git = "https://github.com/aloearev/zingolib.git", branch = "cratify_netutils" }
-
+# zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zingo_rc.2.1", features = ["lightwalletd-tonic"] }
+zcash_client_backend = { git = "https://github.com/idky137/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
+# zingo-netutils = { git = "https://github.com/aloearev/zingolib.git", branch = "cratify_netutils" }
+zingo-netutils = { git = "https://github.com/idky137/zingolib.git", branch = "nym_integration" }
+prost = "0.12"
+bytes = "1.1"
