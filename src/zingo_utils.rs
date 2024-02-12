@@ -1,3 +1,3 @@
-// utils.rs
+// zingo_utils.rs [lib]
 // use: zingo-proxy utils
 //

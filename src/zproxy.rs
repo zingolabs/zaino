@@ -1,4 +1,4 @@
-// proxy.rs
+// zproxy.rs [lib]
 // use: zproxy lib
 //
 
@@ -303,18 +303,15 @@ pub async fn spawn_server(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use portpicker::pick_unused_port;
-    use tokio::time::sleep;
-
     use super::*;
+    use std::time::Duration;
+    use tokio::time::sleep;
 
     #[tokio::test]
     /// Note: This test currently requires a manual boot of zcashd + lightwalletd to run
-    async fn server_talks_to_to_lwd() {
-        let server_port = pick_unused_port().unwrap();
-        let server_handle = spawn_server(server_port, 9067, 18232).await;
+    async fn connect_to_lwd_get_info() {
+        let server_port = 8080;
+        let _server_handle = spawn_server(server_port, 9067, 18232).await;
         sleep(Duration::from_secs(3)).await;
         let proxy_uri = Uri::builder()
             .scheme("http")
