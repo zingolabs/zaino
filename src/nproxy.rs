@@ -318,9 +318,15 @@ pub async fn spawn_server(
     lwd_port: u16,
     zebrad_port: u16,
 ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
-    let lwd_uri = Uri::builder()
+    let lwd_uri_test = Uri::builder()
         .scheme("http")
         .authority(format!("localhost:{lwd_port}"))
+        .path_and_query("/")
+        .build()
+        .unwrap();
+    let lwd_uri_main = Uri::builder()
+        .scheme("https")
+        .authority("eu.lightwalletd.com:443")
         .path_and_query("/")
         .build()
         .unwrap();
@@ -330,6 +336,7 @@ pub async fn spawn_server(
         .path_and_query("/")
         .build()
         .unwrap();
-    let server = ProxyServer::new(lwd_uri, zebra_uri);
+    // replace lwd_uri_test with lwd_uri_main to connect to mainnet:
+    let server = ProxyServer::new(lwd_uri_test, zebra_uri);
     server.serve(proxy_port)
 }

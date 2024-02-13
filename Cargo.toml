@@ -31,4 +31,5 @@ nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "mast
 nym-validator-client = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
+ctrlc = "3.2.1"
 
