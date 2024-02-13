@@ -10,10 +10,11 @@ We seek to have at least the minimal functionality nessisary for zingo to connec
 and continue to implement any useful caching/preprocessing we can add...but full backwards compatibilty with all preexisting lightwalletd RPCs is not likely.
 
 # Dependencies
-- zebrad
-- lightwalletd
-- zingolib [if running zingo-cli]
+1) zebrad
+2) lightwalletd
+3) zingolib [if running zingo-cli]
 
+# zproxy
 - To run tests:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
@@ -22,9 +23,10 @@ and continue to implement any useful caching/preprocessing we can add...but full
 - To run zingo-cli through zingo-proxy:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
+3) Run `$ cargo run --bin zproxy`
 3) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8080" --data-dir ~/wallets/test2`
 
-# Nym-Proxy/Server
+# nproxy/nserver
 A nym powered proxy between zingolib and lightwalletd.
 
 - To run zingo-cli through nym-proxy/server, connecting to lightwalletd/zebrad locally:
