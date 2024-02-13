@@ -3,7 +3,7 @@
 //
 
 use crate::nym_utils::{
-    deserialize_response, forward_over_tcp, nym_close, nym_forward, nym_spawn, serialize_request,
+    deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request,
 };
 use http::Uri;
 use std::{
@@ -145,15 +145,16 @@ impl CompactTxStreamer for ProxyServer {
 
         // --- forward request over tcp
         // let addr = "127.0.0.1:9090";
-        // let response_data = match forward_over_tcp(addr, &serialized_request).await {
-        //     Ok(data) => data,
-        //     Err(e) => {
-        //         return Err(Status::internal(format!(
-        //             "Failed to forward transaction over TCP: {}",
-        //             e
-        //         )))
-        //     }
-        // };
+        // let response_data =
+        //     match crate::nym_utils::forward_over_tcp(addr, &serialized_request).await {
+        //         Ok(data) => data,
+        //         Err(e) => {
+        //             return Err(Status::internal(format!(
+        //                 "Failed to forward transaction over TCP: {}",
+        //                 e
+        //             )))
+        //         }
+        //     };
 
         // -- forward request over nym
         let args: Vec<String> = env::args().collect();
@@ -324,7 +325,7 @@ pub async fn spawn_server(
         .path_and_query("/")
         .build()
         .unwrap();
-    let lwd_uri_main = Uri::builder()
+    let _lwd_uri_main = Uri::builder()
         .scheme("https")
         .authority("eu.lightwalletd.com:443")
         .path_and_query("/")

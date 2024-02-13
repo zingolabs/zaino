@@ -2,11 +2,9 @@
 // use: nym-server - receives serialized Grpc calls over nym mixnet, passes Grpc calls to lightwalletd/zebrad [currently zproxy], returns serialised Grpc response over nym mixnet.
 //
 
-use http::Uri;
-use std::time::Duration;
-use std::{process, thread};
-use zingo_proxy::nserver::{nym_serve, tcp_listener};
-use zingo_proxy::nym_utils::{nym_close, nym_spawn};
+use std::process;
+use zingo_proxy::nserver::nym_serve;
+use zingo_proxy::nym_utils::nym_spawn;
 extern crate ctrlc;
 
 #[tokio::main]

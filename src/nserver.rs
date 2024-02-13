@@ -5,25 +5,13 @@
 use std::sync::Arc;
 
 use http::Uri;
-use nym_sdk::mixnet::{
-    MixnetClient, MixnetClientBuilder, MixnetMessageSender, Recipient, ReconstructedMessage,
-    StoragePaths,
-};
+use nym_sdk::mixnet::{MixnetClient, MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tonic::{Request, Response};
-use zcash_client_backend::proto::{
-    compact_formats::{CompactBlock, CompactTx},
-    service::{
-        compact_tx_streamer_server::{CompactTxStreamer, CompactTxStreamerServer},
-        Address, AddressList, Balance, BlockId, BlockRange, ChainSpec, Empty, Exclude,
-        GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg,
-        LightdInfo, PingResponse, RawTransaction, SendResponse, SubtreeRoot,
-        TransparentAddressBlockFilter, TreeState, TxFilter,
-    },
-};
+use tonic::Request;
+use zcash_client_backend::proto::service::{RawTransaction, SendResponse};
 use zingo_netutils::GrpcConnector;
 
 pub async fn tcp_listener(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -75,7 +63,7 @@ pub async fn process_request(
         .path_and_query("/")
         .build()
         .unwrap();
-    let lwd_uri_main = Uri::builder()
+    let _lwd_uri_main = Uri::builder()
         .scheme("https")
         .authority("eu.lightwalletd.com:443")
         .path_and_query("/")
