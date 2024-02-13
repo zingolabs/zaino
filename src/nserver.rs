@@ -68,13 +68,20 @@ pub async fn handle_connection(mut socket: TcpStream) -> Result<(), Box<dyn std:
 pub async fn process_request(
     request: &RawTransaction,
 ) -> Result<SendResponse, Box<dyn std::error::Error>> {
-    let zproxy_port = 8080;
+    let zproxy_port = 9067;
     let zproxy_uri = Uri::builder()
         .scheme("http")
         .authority(format!("localhost:{zproxy_port}"))
         .path_and_query("/")
         .build()
         .unwrap();
+    let lwd_uri_main = Uri::builder()
+        .scheme("https")
+        .authority("eu.lightwalletd.com:443")
+        .path_and_query("/")
+        .build()
+        .unwrap();
+    // replace zproxy_uri with lwd_uri_main to connect to mainnet:
     let client = Arc::new(GrpcConnector::new(zproxy_uri));
 
     let mut cmp_client = client

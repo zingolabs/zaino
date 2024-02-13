@@ -3,13 +3,19 @@
 //
 
 use http::Uri;
-use std::thread;
 use std::time::Duration;
+use std::{process, thread};
 use zingo_proxy::nserver::{nym_serve, tcp_listener};
-use zingo_proxy::nym_utils::nym_spawn;
+use zingo_proxy::nym_utils::{nym_close, nym_spawn};
+extern crate ctrlc;
 
 #[tokio::main]
 async fn main() {
+    ctrlc::set_handler(move || {
+        println!("Received Ctrl+C, exiting.");
+        process::exit(0);
+    })
+    .expect("Error setting Ctrl-C handler");
     let path = "/tmp/nym_server";
     let mut server = nym_spawn(path).await;
     let our_address = server.nym_address();
