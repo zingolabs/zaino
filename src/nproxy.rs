@@ -2,9 +2,12 @@
 // use: nproxy lib
 //
 
-use crate::nym_utils::{deserialize_response, forward_over_tcp, serialize_request};
+use crate::nym_utils::{
+    deserialize_response, forward_over_tcp, nym_close, nym_forward, nym_spawn, serialize_request,
+};
 use http::Uri;
 use std::{
+    env,
     net::{Ipv4Addr, SocketAddr},
     sync::{atomic::AtomicBool, Arc},
 };
@@ -125,7 +128,7 @@ impl CompactTxStreamer for ProxyServer {
     ) -> Result<Response<SendResponse>, Status> {
         println!("Received call to send_transaction");
 
-        // Serialize the RawTransaction request
+        //serialize RawTransaction
         let serialized_request = match serialize_request(&request.into_inner()).await {
             Ok(data) => data,
             Err(e) => {
@@ -137,22 +140,37 @@ impl CompactTxStreamer for ProxyServer {
         };
 
         //print request for testing:
-        println!("Requests being sent: {:?}", serialized_request);
+        println!("request sent: {:?}", serialized_request);
         println!("request length: {}", serialized_request.len());
 
-        // Forward the serialized data over TCP
-        let addr = "127.0.0.1:9090";
-        let response_data = match forward_over_tcp(addr, &serialized_request).await {
-            Ok(data) => data,
-            Err(e) => {
-                return Err(Status::internal(format!(
-                    "Failed to forward transaction over TCP: {}",
-                    e
-                )))
-            }
-        };
+        // --- forward request over tcp
+        // let addr = "127.0.0.1:9090";
+        // let response_data = match forward_over_tcp(addr, &serialized_request).await {
+        //     Ok(data) => data,
+        //     Err(e) => {
+        //         return Err(Status::internal(format!(
+        //             "Failed to forward transaction over TCP: {}",
+        //             e
+        //         )))
+        //     }
+        // };
 
-        // deserialize SendResponse
+        // -- forward request over nym
+        let args: Vec<String> = env::args().collect();
+        let recipient_address: String = args[1].clone();
+        let nym_conf_path = "/tmp/nym_client";
+        let mut client = nym_spawn(nym_conf_path).await;
+        let response_data =
+            nym_forward(&mut client, recipient_address.as_str(), serialized_request)
+                .await
+                .unwrap();
+        nym_close(client).await;
+
+        //print response for testing
+        println!("response received: {:?}", response_data);
+        println!("response length: {}", response_data.len());
+
+        //deserialize SendResponse
         let response: SendResponse = match deserialize_response(response_data.as_slice()).await {
             Ok(res) => res,
             Err(e) => {

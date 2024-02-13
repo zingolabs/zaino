@@ -8,6 +8,7 @@ use zingo_proxy::nproxy::spawn_server;
 
 #[tokio::main]
 async fn main() {
+    nym_bin_common::logging::setup_logging();
     let server_port = 7070;
     spawn_server(server_port, 8080, 8080).await;
     loop {

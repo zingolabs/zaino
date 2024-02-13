@@ -25,3 +25,10 @@ zcash_client_backend = { git = "https://github.com/idky137/librustzcash.git", br
 zingo-netutils = { git = "https://github.com/idky137/zingolib.git", branch = "nym_integration" }
 prost = "0.12"
 bytes = "1.1"
+tokio-socks = "0.5"
+nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-validator-client = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
+
