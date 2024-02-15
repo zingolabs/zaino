@@ -13,8 +13,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - id: prepare
-        uses: ./.github/actions/prepare
       - name: Run tests
         run: >
           cargo test
@@ -37,8 +35,6 @@ jobs:
         os: [ubuntu-latest, windows-latest, macOS-latest]
     steps:
       - uses: actions/checkout@v4
-      - id: prepare
-        uses: ./.github/actions/prepare
       - uses: dtolnay/rust-toolchain@stable
         id: toolchain
       - run: rustup override set ${{steps.toolchain.outputs.name}}
@@ -69,8 +65,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - id: prepare
-        uses: ./.github/actions/prepare
       - name: Run clippy
         uses: actions-rs/clippy-check@v1
         with:
@@ -88,8 +82,6 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - id: prepare
-        uses: ./.github/actions/prepare
       - uses: dtolnay/rust-toolchain@beta
         id: toolchain
       - run: rustup override set ${{steps.toolchain.outputs.name}}
@@ -128,8 +120,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - id: prepare
-        uses: ./.github/actions/prepare
       - run: cargo fetch
       # Requires #![deny(rustdoc::broken_intra_doc_links)] in crates.
       - name: Check intra-doc links
