@@ -1,3 +1,7 @@
+// zproxy.rs [lib]
+// use: zproxy lib
+//
+
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::{atomic::AtomicBool, Arc},
@@ -82,31 +86,39 @@ impl ProxyServer {
 }
 
 impl CompactTxStreamer for ProxyServer {
-    fn get_latest_block<'life0, 'async_trait>(
-        &'life0 self,
-        request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,
-    ) -> core::pin::Pin<
-        Box<
-            dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::BlockId>,
-                        tonic::Status,
-                    >,
-                > + core::marker::Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async {
-            let zebrad_info = ::zingo_netutils::GrpcConnector::new(self.zebrad_uri.clone())
-                .get_client()
-                .await;
-            todo!()
-        })
-    }
+    // fn get_latest_block<'life0, 'async_trait>(
+    //     &'life0 self,
+    //     request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,
+    // ) -> core::pin::Pin<
+    //     Box<
+    //         dyn core::future::Future<
+    //                 Output = std::result::Result<
+    //                     tonic::Response<zcash_client_backend::proto::service::BlockId>,
+    //                     tonic::Status,
+    //                 >,
+    //             > + core::marker::Send
+    //             + 'async_trait,
+    //     >,
+    // >
+    // where
+    //     'life0: 'async_trait,
+    //     Self: 'async_trait,
+    // {
+    //     println!("received call of get_latest_block");
+    //     Box::pin(async {
+    //         let zebrad_info = ::zingo_netutils::GrpcConnector::new(self.zebrad_uri.clone())
+    //             .get_client()
+    //             .await;
+    //         todo!("get_latest_block not yet implemented")
+    //     })
+    // }
+
+    define_grpc_passthrough!(
+        fn get_latest_block(
+            &self,
+            request: tonic::Request<ChainSpec>,
+        ) -> BlockId
+    );
 
     define_grpc_passthrough!(
         fn get_block(
@@ -291,18 +303,15 @@ pub async fn spawn_server(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use portpicker::pick_unused_port;
-    use tokio::time::sleep;
-
     use super::*;
+    use std::time::Duration;
+    use tokio::time::sleep;
 
     #[tokio::test]
     /// Note: This test currently requires a manual boot of zcashd + lightwalletd to run
-    async fn server_talks_to_to_lwd() {
-        let server_port = pick_unused_port().unwrap();
-        let server_handle = spawn_server(server_port, 9067, 18232).await;
+    async fn connect_to_lwd_get_info() {
+        let server_port = 8080;
+        let _server_handle = spawn_server(server_port, 9067, 18232).await;
         sleep(Duration::from_secs(3)).await;
         let proxy_uri = Uri::builder()
             .scheme("http")
