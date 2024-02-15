@@ -1,0 +1,139 @@
+name: CI checks
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    name: >
+      Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: >
+          cargo test
+          --release
+          --workspace
+      - name: Run slow tests
+        run: >
+          cargo test
+          --release
+          --workspace
+          -- --ignored
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
+  build-latest:
+    name: Latest build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        id: toolchain
+      - run: rustup override set ${{steps.toolchain.outputs.name}}
+      - name: Remove lockfile to build with latest dependencies
+        run: rm Cargo.lock
+      - name: Build crates
+        run: >
+          cargo build
+          --workspace
+          --all-targets
+          --verbose
+      - name: Verify working directory is clean (excluding lockfile)
+        run: git diff --exit-code ':!Cargo.lock'
+
+
+  bitrot:
+    name: Bitrot check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build benchmarks to prevent bitrot
+      - name: Build benchmarks
+        run: cargo build --all --benches
+
+  clippy:
+    name: Clippy (MSRV)
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run clippy
+        uses: actions-rs/clippy-check@v1
+        with:
+          name: Clippy (MSRV)
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: >
+            --all-targets
+            --
+            -D warnings
+
+  clippy-beta:
+    name: Clippy (beta)
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@beta
+        id: toolchain
+      - run: rustup override set ${{steps.toolchain.outputs.name}}
+      - name: Run Clippy (beta)
+        uses: actions-rs/clippy-check@v1
+        continue-on-error: true
+        with:
+          name: Clippy (beta)
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: >
+            --all-targets
+            --
+            -W clippy::all
+
+  codecov:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate coverage report
+        run: >
+          cargo tarpaulin
+          --engine llvm
+          --release
+          --timeout 600
+          --out xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3.1.5
+
+  doc-links:
+    name: Intra-doc links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fetch
+      # Requires #![deny(rustdoc::broken_intra_doc_links)] in crates.
+      - name: Check intra-doc links
+        run: >
+          cargo doc
+          --all
+          --document-private-items
+
+  fmt:
+    name: Rustfmt
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
