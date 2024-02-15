@@ -1,0 +1,267 @@
+name: CI checks
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    name: >
+      Test on ${{ matrix.os }}${{
+      matrix.extra_flags != 'NOT_A_PUZZLE' && format(' with --features {0}', matrix.extra_flags) || ''
+      }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+        extra_flags:
+          - NOT_A_PUZZLE
+          - orchard
+          - unstable-nu6
+          - zfuture
+        include:
+          - extra_flags: orchard
+            rustflags: '--cfg zcash_unstable="orchard"'
+        exclude:
+          - os: macOS-latest
+            extra_flags: unstable-nu6
+          - os: macOS-latest
+            extra_flags: zfuture
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      RUSTDOCFLAGS: ${{ matrix.rustflags }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - id: prepare
+        uses: ./.github/actions/prepare
+        with:
+          extra-features: ${{ matrix.extra_flags != 'NOT_A_PUZZLE' && matrix.extra_flags || '' }}
+      - name: Run tests
+        run: >
+          cargo test
+          --release
+          --workspace
+          ${{ steps.prepare.outputs.feature-flags }}
+      - name: Run slow tests
+        run: >
+          cargo test
+          --release
+          --workspace
+          ${{ steps.prepare.outputs.feature-flags }}
+          -- --ignored
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
+  build-latest:
+    name: Latest build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - id: prepare
+        uses: ./.github/actions/prepare
+      - uses: dtolnay/rust-toolchain@stable
+        id: toolchain
+      - run: rustup override set ${{steps.toolchain.outputs.name}}
+      - name: Remove lockfile to build with latest dependencies
+        run: rm Cargo.lock
+      - name: Build crates
+        run: >
+          cargo build
+          --workspace
+          --all-targets
+          ${{ steps.prepare.outputs.feature-flags }}
+          --verbose
+      - name: Verify working directory is clean (excluding lockfile)
+        run: git diff --exit-code ':!Cargo.lock'
+
+  build-nodefault:
+    name: Build target ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - wasm32-wasi
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: crates
+      # We use a synthetic crate to ensure no dev-dependencies are enabled, which can
+      # be incompatible with some of these targets.
+      - name: Create synthetic crate for testing
+        run: cargo init --lib ci-build
+      - name: Copy Rust version into synthetic crate
+        run: cp crates/rust-toolchain.toml ci-build/
+      - name: Copy patch directives into synthetic crate
+        run: |
+          echo "[patch.crates-io]" >> ./ci-build/Cargo.toml
+          cat ./crates/Cargo.toml | sed "0,/.\+\(patch.crates.\+\)/d" >> ./ci-build/Cargo.toml
+      - name: Add zcash_proofs as a dependency of the synthetic crate
+        working-directory: ./ci-build
+        run: cargo add --no-default-features --path ../crates/zcash_proofs
+      - name: Add zcash_client_backend as a dependency of the synthetic crate
+        working-directory: ./ci-build
+        run: cargo add --no-default-features --path ../crates/zcash_client_backend
+      - name: Copy pinned dependencies into synthetic crate
+        run: cp crates/Cargo.lock ci-build/
+      - name: Add target
+        working-directory: ./ci-build
+        run: rustup target add ${{ matrix.target }}
+      - name: Build for target
+        working-directory: ./ci-build
+        run: cargo build --verbose --target ${{ matrix.target }}
+
+  bitrot:
+    name: Bitrot check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build benchmarks to prevent bitrot
+      - name: Build benchmarks
+        run: cargo build --all --benches
+
+  clippy:
+    name: Clippy (MSRV)
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: prepare
+        uses: ./.github/actions/prepare
+      - name: Run clippy
+        uses: actions-rs/clippy-check@v1
+        with:
+          name: Clippy (MSRV)
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: >
+            ${{ steps.prepare.outputs.feature-flags }}
+            --all-targets
+            --
+            -D warnings
+
+  clippy-beta:
+    name: Clippy (beta)
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - id: prepare
+        uses: ./.github/actions/prepare
+      - uses: dtolnay/rust-toolchain@beta
+        id: toolchain
+      - run: rustup override set ${{steps.toolchain.outputs.name}}
+      - name: Run Clippy (beta)
+        uses: actions-rs/clippy-check@v1
+        continue-on-error: true
+        with:
+          name: Clippy (beta)
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: >
+            ${{ steps.prepare.outputs.feature-flags }}
+            --all-targets
+            --
+            -W clippy::all
+
+  codecov:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+
+    steps:
+      - uses: actions/checkout@v4
+      - id: prepare
+        uses: ./.github/actions/prepare
+      - name: Generate coverage report
+        run: >
+          cargo tarpaulin
+          --engine llvm
+          ${{ steps.prepare.outputs.feature-flags }}
+          --release
+          --timeout 600
+          --out xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3.1.5
+
+  doc-links:
+    name: Intra-doc links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: prepare
+        uses: ./.github/actions/prepare
+      - run: cargo fetch
+      # Requires #![deny(rustdoc::broken_intra_doc_links)] in crates.
+      - name: Check intra-doc links
+        run: >
+          cargo doc
+          --all
+          ${{ steps.prepare.outputs.feature-flags }}
+          --document-private-items
+
+  fmt:
+    name: Rustfmt
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  protobuf:
+    name: protobuf consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: prepare
+        uses: ./.github/actions/prepare
+      - name: Install protoc
+        uses: supplypike/setup-bin@v3
+        with:
+          uri: 'https://github.com/protocolbuffers/protobuf/releases/download/v25.1/protoc-25.1-linux-x86_64.zip'
+          name: 'protoc'
+          version: '25.1'
+          subPath: 'bin'
+      - name: Trigger protobuf regeneration
+        run: >
+          cargo check
+          --workspace
+          ${{ steps.prepare.outputs.feature-flags }}
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
+  uuid:
+    name: UUID validity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract UUIDs
+        id: extract
+        run: |
+          {
+            echo 'UUIDS<<EOF'
+            git grep -h "Uuid::from_u128" zcash_client_sqlite/ |
+              sed -e "s,.*Uuid::from_u128(0x,," -e "s,_,-,g" -e "s,);,,"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+      - name: Check UUID validity
+        env:
+          UUIDS: ${{ steps.extract.outputs.UUIDS }}
+        run: uuidparse -n -o type $UUIDS | xargs -L 1 test "invalid" !=
+      - name: Check UUID type
+        env:
+          UUIDS: ${{ steps.extract.outputs.UUIDS }}
+        run: uuidparse -n -o type $UUIDS | xargs -L 1 test "random" =
+      - name: Check UUID uniqueness
+        env:
+          UUIDS: ${{ steps.extract.outputs.UUIDS }}
+        run: >
+          test $(
+            uuidparse -n -o uuid $U4 | wc -l
+          ) -eq $(
+            uuidparse -n -o uuid $U4 | sort | uniq | wc -l
+          )
