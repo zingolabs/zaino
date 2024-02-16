@@ -20,9 +20,9 @@ http = "0.2.4"
 tokio = { version = "1", features = ["full"] }
 tonic = "0.10.2"
 # zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zingo_rc.2.1", features = ["lightwalletd-tonic"] }
-zcash_client_backend = { git = "https://github.com/idky137/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
+zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
 # zingo-netutils = { git = "https://github.com/aloearev/zingolib.git", branch = "cratify_netutils" }
-zingo-netutils = { git = "https://github.com/idky137/zingolib.git", branch = "nym_integration" }
+zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
 prost = "0.12"
 bytes = "1.1"
 tokio-socks = "0.5"
