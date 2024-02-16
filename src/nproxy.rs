@@ -1,9 +1,17 @@
+// nproxy.rs [lib]
+// use: nproxy lib
+//
+
+use crate::nym_utils::{
+    deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request,
+};
+use http::Uri;
 use std::{
+    env,
     net::{Ipv4Addr, SocketAddr},
     sync::{atomic::AtomicBool, Arc},
 };
-
-use http::Uri;
+use tonic::{async_trait, Request, Response, Status};
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
@@ -81,32 +89,14 @@ impl ProxyServer {
     }
 }
 
+#[async_trait]
 impl CompactTxStreamer for ProxyServer {
-    fn get_latest_block<'life0, 'async_trait>(
-        &'life0 self,
-        request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,
-    ) -> core::pin::Pin<
-        Box<
-            dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::BlockId>,
-                        tonic::Status,
-                    >,
-                > + core::marker::Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async {
-            let zebrad_info = ::zingo_netutils::GrpcConnector::new(self.zebrad_uri.clone())
-                .get_client()
-                .await;
-            todo!()
-        })
-    }
+    define_grpc_passthrough!(
+        fn get_latest_block(
+            &self,
+            request: tonic::Request<ChainSpec>,
+        ) -> BlockId
+    );
 
     define_grpc_passthrough!(
         fn get_block(
@@ -132,12 +122,68 @@ impl CompactTxStreamer for ProxyServer {
         ) -> RawTransaction
     );
 
-    define_grpc_passthrough!(
-        fn send_transaction(
-            &self,
-            request: tonic::Request<RawTransaction>,
-        ) -> SendResponse
-    );
+    async fn send_transaction(
+        &self,
+        request: Request<RawTransaction>,
+    ) -> Result<Response<SendResponse>, Status> {
+        println!("Received call to send_transaction");
+
+        //serialize RawTransaction
+        let serialized_request = match serialize_request(&request.into_inner()).await {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to serialize request: {}",
+                    e
+                )))
+            }
+        };
+
+        //print request for testing:
+        println!("request sent: {:?}", serialized_request);
+        println!("request length: {}", serialized_request.len());
+
+        // --- forward request over tcp
+        // let addr = "127.0.0.1:9090";
+        // let response_data =
+        //     match crate::nym_utils::forward_over_tcp(addr, &serialized_request).await {
+        //         Ok(data) => data,
+        //         Err(e) => {
+        //             return Err(Status::internal(format!(
+        //                 "Failed to forward transaction over TCP: {}",
+        //                 e
+        //             )))
+        //         }
+        //     };
+
+        // -- forward request over nym
+        let args: Vec<String> = env::args().collect();
+        let recipient_address: String = args[1].clone();
+        let nym_conf_path = "/tmp/nym_client";
+        let mut client = nym_spawn(nym_conf_path).await;
+        let response_data =
+            nym_forward(&mut client, recipient_address.as_str(), serialized_request)
+                .await
+                .unwrap();
+        nym_close(client).await;
+
+        //print response for testing
+        println!("response received: {:?}", response_data);
+        println!("response length: {}", response_data.len());
+
+        //deserialize SendResponse
+        let response: SendResponse = match deserialize_response(response_data.as_slice()).await {
+            Ok(res) => res,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to decode response: {}",
+                    e
+                )))
+            }
+        };
+
+        Ok(Response::new(response))
+    }
 
     #[doc = "Server streaming response type for the GetTaddressTxids method."]
     type GetTaddressTxidsStream = tonic::Streaming<RawTransaction>;
@@ -273,9 +319,15 @@ pub async fn spawn_server(
     lwd_port: u16,
     zebrad_port: u16,
 ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
-    let lwd_uri = Uri::builder()
+    let lwd_uri_test = Uri::builder()
         .scheme("http")
         .authority(format!("localhost:{lwd_port}"))
+        .path_and_query("/")
+        .build()
+        .unwrap();
+    let _lwd_uri_main = Uri::builder()
+        .scheme("https")
+        .authority("eu.lightwalletd.com:443")
         .path_and_query("/")
         .build()
         .unwrap();
@@ -285,39 +337,7 @@ pub async fn spawn_server(
         .path_and_query("/")
         .build()
         .unwrap();
-    let server = ProxyServer::new(lwd_uri, zebra_uri);
+    // replace lwd_uri_test with lwd_uri_main to connect to mainnet:
+    let server = ProxyServer::new(lwd_uri_test, zebra_uri);
     server.serve(proxy_port)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use portpicker::pick_unused_port;
-    use tokio::time::sleep;
-
-    use super::*;
-
-    #[tokio::test]
-    /// Note: This test currently requires a manual boot of zcashd + lightwalletd to run
-    async fn server_talks_to_to_lwd() {
-        let server_port = pick_unused_port().unwrap();
-        let server_handle = spawn_server(server_port, 9067, 18232).await;
-        sleep(Duration::from_secs(3)).await;
-        let proxy_uri = Uri::builder()
-            .scheme("http")
-            .authority(format!("localhost:{server_port}"))
-            .path_and_query("")
-            .build()
-            .unwrap();
-        println!("{}", proxy_uri);
-        let lightd_info = zingo_netutils::GrpcConnector::new(proxy_uri)
-            .get_client()
-            .await
-            .unwrap()
-            .get_lightd_info(Empty {})
-            .await
-            .unwrap();
-        println!("{:#?}", lightd_info.into_inner());
-    }
 }
