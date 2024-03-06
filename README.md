@@ -26,9 +26,16 @@ and continue to implement any useful caching/preprocessing we can add...but full
 3) Run `$ cargo run --bin zproxy`
 3) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8080" --data-dir ~/wallets/test_wallet`
 
-# nproxy/nserver
-A nym powered proxy between zingolib and lightwalletd.
+# Nym-Proxy / Nym-Server
+A nym powered proxy between zcash wallets and lightwalletd, currently capable of sending transactions.
 
+This is the POC and initial work on enabling zcash infrastructure to use the nym mixnet.
+
+[Nym_POC](./docs/nym_poc.pdf) shows the current state of this work ands our vision for the future. 
+
+Our plan is to first enable wallets to send and recieve transactions via a nym powered proxy between wallets and a lightwalletd before looking at the wider zcash ecosystem.
+
+# nproxy/nserver
 - To run zingo-cli through nym-proxy/server, connecting to lightwalletd/zebrad locally:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
