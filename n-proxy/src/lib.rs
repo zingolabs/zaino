@@ -4,4 +4,4 @@
 
 pub mod nproxy;
 pub mod nserver;
-mod utils;
+pub mod utils;

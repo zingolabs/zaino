@@ -4,7 +4,8 @@
 
 use std::thread;
 use std::time::Duration;
-use zingo_proxy::zproxy::spawn_server;
+
+use z_proxy_lib::zproxy::spawn_server;
 
 #[tokio::main]
 async fn main() {

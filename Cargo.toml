@@ -4,3 +4,6 @@ members = [
     "z-proxy",
     "zingo-rpc",
 ]
+
+# Use the edition 2021 dependency resolver in the workspace, to match the crates
+resolver = "2"

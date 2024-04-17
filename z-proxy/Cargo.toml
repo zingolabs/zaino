@@ -5,7 +5,7 @@ edition = "2021"
 
 [[bin]]
 name = "zproxy"
-path = "bin/zproxy.rs"
+path = "src/bin/zproxy.rs"
 
 [lib]
 name = "z_proxy_lib"

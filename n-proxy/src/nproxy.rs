@@ -2,9 +2,6 @@
 // use: nproxy lib
 //
 
-use crate::nym_utils::{
-    deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request,
-};
 use http::Uri;
 use std::{
     env,
@@ -22,6 +19,8 @@ use zcash_client_backend::proto::{
         TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
+
+use crate::utils::{deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request};
 
 macro_rules! define_grpc_passthrough {
     (fn

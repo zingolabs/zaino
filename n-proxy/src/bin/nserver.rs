@@ -3,8 +3,8 @@
 //
 
 use std::process;
-use zingo_proxy::nserver::nym_serve;
-use zingo_proxy::nym_utils::nym_spawn;
+
+use n_proxy_lib::{nserver::nym_serve, utils::nym_spawn};
 extern crate ctrlc;
 
 #[tokio::main]

@@ -5,11 +5,11 @@ edition = "2021"
 
 [[bin]]
 name = "nproxy"
-path = "bin/nproxy.rs"
+path = "src/bin/nproxy.rs"
 
 [[bin]]
 name = "nserver"
-path = "bin/nserver.rs"
+path = "src/bin/nserver.rs"
 
 [lib]
 name = "n_proxy_lib"

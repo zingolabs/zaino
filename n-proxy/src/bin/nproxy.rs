@@ -4,7 +4,8 @@
 
 use std::time::Duration;
 use std::{process, thread};
-use zingo_proxy::nproxy::spawn_server;
+
+use n_proxy_lib::nproxy::spawn_server;
 extern crate ctrlc;
 
 #[tokio::main]
