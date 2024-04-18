@@ -54,13 +54,18 @@ macro_rules! define_grpc_passthrough {
     };
 }
 
+/// Configuration data for gRPC server.
 pub struct ProxyServer {
+    /// Lightwalletd uri.
     pub lightwalletd_uri: http::Uri,
+    /// Used by grpc_passthrough to pass on unimplemented RPCs.
     pub zebrad_uri: http::Uri,
+    /// Represents the Online status of the gRPC server.
     pub online: Arc<AtomicBool>,
 }
 
 impl ProxyServer {
+    /// Starts gRPC service.
     pub fn serve(
         self,
         port: impl Into<u16> + Send + Sync + 'static,
@@ -77,6 +82,7 @@ impl ProxyServer {
         })
     }
 
+    /// Creates configuration data for gRPC server.
     pub fn new(lightwalletd_uri: http::Uri, zebrad_uri: http::Uri) -> Self {
         Self {
             lightwalletd_uri,
@@ -311,6 +317,8 @@ impl CompactTxStreamer for ProxyServer {
     type GetSubtreeRootsStream = tonic::Streaming<SubtreeRoot>;
 }
 
+/// Spawns a gRPC service that forwards gRPCs requests recieved to a lightwalletd.
+/// Implemented RPCs are sent over the mixnet to be revieved by a nym based gRPC server (nymserverd).
 pub async fn spawn_server(
     proxy_port: u16,
     lwd_port: u16,

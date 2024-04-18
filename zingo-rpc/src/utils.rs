@@ -1,5 +1,6 @@
-//! Utility functions for Zingo-RPC
+//! Utility functions for Zingo-RPC.
 
+/// Passes unimplemented RPCs on to Lightwalletd.
 #[macro_export]
 macro_rules! define_grpc_passthrough {
     (fn

@@ -12,6 +12,7 @@ use tonic::Request;
 use zcash_client_backend::proto::service::{RawTransaction, SendResponse};
 use zingo_netutils::GrpcConnector;
 
+/// Spawns a TPC listener that recieves encoded gRPC requests.
 pub async fn tcp_listener(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     println!("Server listening on {}", addr);
@@ -26,6 +27,7 @@ pub async fn tcp_listener(addr: &str) -> Result<(), Box<dyn std::error::Error>> 
     }
 }
 
+///  Receives and decodes encoded gRPC messages sent over TCP, processes them, encodes the response and sends it back to the sender.
 pub async fn handle_connection(mut socket: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u8; 16384]; // Adjust buffer size as needed
     let bytes_read = socket.read(&mut buf).await?;
@@ -51,6 +53,8 @@ pub async fn handle_connection(mut socket: TcpStream) -> Result<(), Box<dyn std:
     Ok(())
 }
 
+/// Forwards the recieved gRPC request on to a Lightwalletd and returns the response.
+/// NOTE: Currently only send_transaction has been implemented.
 pub async fn process_request(
     request: &RawTransaction,
 ) -> Result<SendResponse, Box<dyn std::error::Error>> {
@@ -83,6 +87,8 @@ pub async fn process_request(
     Ok(response.into_inner())
 }
 
+///  Receives and decodes encoded gRPC messages sent over the nym mixnet, processes them, encodes the response.
+/// The encoded response is sent back to the sender using a surb (single use reply block).
 pub async fn nym_serve(client: &mut MixnetClient) {
     let mut request_in: Vec<ReconstructedMessage> = Vec::new();
     loop {
