@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "zproxy"
+name = "zingoproxyd"
 path = "src/bin/zproxy.rs"
 
 [lib]
-name = "z_proxy_lib"
+name = "zingoproxylib"
 path = "src/lib.rs"
 
 [dependencies]
@@ -21,8 +21,3 @@ tonic = "0.10.2"
 zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
 # zingo-netutils = { git = "https://github.com/aloearev/zingolib.git", branch = "cratify_netutils" }
 zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
-prost = "0.12"
-bytes = "1.1"
-tokio-socks = "0.5"
-ctrlc = "3.2.1"
-

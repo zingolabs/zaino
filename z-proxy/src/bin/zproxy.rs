@@ -1,11 +1,9 @@
-// zproxy.rs [bin]
-// use: zingo-proxy - recieves Grpc calls, passes Grpc calls to lightwalletd/zebrad, returns Grpc response.
-//
+//! Zingo-Proxy daemon
 
 use std::thread;
 use std::time::Duration;
 
-use z_proxy_lib::zproxy::spawn_server;
+use zingoproxylib::server::spawn_server;
 
 #[tokio::main]
 async fn main() {

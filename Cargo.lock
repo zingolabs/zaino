@@ -6377,12 +6377,8 @@ dependencies = [
 name = "z-proxy"
 version = "0.1.0"
 dependencies = [
- "bytes",
- "ctrlc",
  "http",
- "prost",
  "tokio",
- "tokio-socks",
  "tonic",
  "zcash_client_backend",
  "zingo-netutils",
@@ -6549,3 +6545,12 @@ dependencies = [
 [[package]]
 name = "zingo-rpc"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http",
+ "prost",
+ "tokio",
+ "tonic",
+ "zcash_client_backend",
+ "zingo-netutils",
+]

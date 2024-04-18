@@ -1,6 +1,3 @@
-// zingo-proxy
-// lib.rs
-//
+//! Zingo-Proxy gRPC Server
 
-mod utils;
-pub mod zproxy;
+pub mod server;
