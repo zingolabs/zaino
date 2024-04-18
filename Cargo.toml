@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "n-proxy",
-    "z-proxy",
+    "zingo-proxyd",
     "zingo-rpc",
 ]
 
