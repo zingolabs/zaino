@@ -1,6 +1,4 @@
-// nym_utils.rs [lib]
-// use: nym-proxy utils
-//
+//! Utility functions for Nym-Proxy
 
 use nym_sdk::mixnet::{
     MixnetClient, MixnetClientBuilder, MixnetMessageSender, Recipient, ReconstructedMessage,

@@ -1,6 +1,4 @@
-// nproxy.rs [lib]
-// use: nproxy lib
-//
+//! Client-side service RPC nym wrapper implementations.
 
 use http::Uri;
 use std::{

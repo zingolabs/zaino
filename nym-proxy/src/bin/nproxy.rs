@@ -1,6 +1,4 @@
-// nproxy.rs [bin]
-// use: nym-proxy - recieves Grpc calls, serializes and sends calls over nym mixnet, returns Grpc response to zingolib
-//
+//! nym-proxy daemon
 
 use std::time::Duration;
 use std::{process, thread};

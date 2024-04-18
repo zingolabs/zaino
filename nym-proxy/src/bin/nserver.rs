@@ -1,6 +1,4 @@
-// nserver.rs [bin]
-// use: nym-server - receives serialized Grpc calls over nym mixnet, passes Grpc calls to lightwalletd/zebrad [currently zproxy], returns serialised Grpc response over nym mixnet.
-//
+//! nym-server daemon
 
 use std::process;
 

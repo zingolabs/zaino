@@ -1,4 +1,4 @@
-//! Zcash's lightwallet service RPC implementations.
+//! Lightwallet service RPC implementations.
 
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},

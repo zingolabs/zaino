@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "nproxy"
+name = "nymproxyd"
 path = "src/bin/nproxy.rs"
 
 [[bin]]
-name = "nserver"
+name = "nymserverd"
 path = "src/bin/nserver.rs"
 
 [lib]

@@ -1,6 +1,4 @@
-// nserver.rs [lib]
-// use: nserver lib
-//
+//! Server-side service RPC nym wrapper implementations.
 
 use std::sync::Arc;
 
