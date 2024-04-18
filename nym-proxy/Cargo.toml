@@ -12,7 +12,7 @@ name = "nserver"
 path = "src/bin/nserver.rs"
 
 [lib]
-name = "n_proxy_lib"
+name = "nymproxylib"
 path = "src/lib.rs"
 
 [dependencies]

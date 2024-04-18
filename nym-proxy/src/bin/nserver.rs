@@ -4,7 +4,7 @@
 
 use std::process;
 
-use n_proxy_lib::{nserver::nym_serve, utils::nym_spawn};
+use nymproxylib::{server::nym_serve, utils::nym_spawn};
 extern crate ctrlc;
 
 #[tokio::main]

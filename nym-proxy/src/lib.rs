@@ -2,6 +2,6 @@
 // lib.rs
 //
 
-pub mod nproxy;
-pub mod nserver;
+pub mod proxy;
+pub mod server;
 pub mod utils;
