@@ -1,14 +1,14 @@
 [package]
-name = "zingo-nymd"
+name = "zingo-nymserverd"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "zingonymd"
-path = "src/bin/zingonymd.rs"
+name = "zingonymserverd"
+path = "src/bin/nymserverd.rs"
 
 [lib]
-name = "nymproxylib"
+name = "nymserverlib"
 path = "src/lib.rs"
 
 [features]

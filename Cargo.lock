@@ -6510,7 +6510,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "zingo-nymd"
+name = "zingo-nymserverd"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ctrlc",
+ "http",
+ "nym-bin-common",
+ "nym-sdk",
+ "nym-sphinx-addressing",
+ "nym-sphinx-anonymous-replies",
+ "nym-validator-client",
+ "prost",
+ "tokio",
+ "tokio-socks",
+ "tonic",
+ "zcash_client_backend",
+ "zingo-netutils",
+ "zingo-rpc",
+]
+
+[[package]]
+name = "zingo-nymwalletd"
 version = "0.1.0"
 dependencies = [
  "bytes",
