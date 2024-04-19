@@ -1,99 +1,25 @@
 //! Client-side service RPC nym wrapper implementations.
 
-use http::Uri;
-use std::{
-    env,
-    net::{Ipv4Addr, SocketAddr},
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::env;
 use tonic::{async_trait, Request, Response, Status};
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
-        compact_tx_streamer_server::{CompactTxStreamer, CompactTxStreamerServer},
-        Address, AddressList, Balance, BlockId, BlockRange, ChainSpec, Empty, Exclude,
-        GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg,
-        LightdInfo, PingResponse, RawTransaction, SendResponse, SubtreeRoot,
-        TransparentAddressBlockFilter, TreeState, TxFilter,
+        compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
+        BlockRange, ChainSpec, Empty, Exclude, GetAddressUtxosArg, GetAddressUtxosReply,
+        GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
+        SendResponse, SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
 
-use crate::utils::{deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request};
-
-macro_rules! define_grpc_passthrough {
-    (fn
-        $name:ident(
-            &$self:ident$(,$($arg:ident: $argty:ty,)*)?
-        ) -> $ret:ty
-    ) => {
-        #[must_use]
-        #[allow(clippy::type_complexity, clippy::type_repetition_in_bounds)]
-        fn $name<'life0, 'async_trait>(&'life0 $self$($(, $arg: $argty)*)?) ->
-           ::core::pin::Pin<Box<
-                dyn ::core::future::Future<
-                    Output = ::core::result::Result<
-                        ::tonic::Response<$ret>,
-                        ::tonic::Status
-                >
-            > + ::core::marker::Send + 'async_trait
-        >>
-        where
-            'life0: 'async_trait,
-            Self: 'async_trait,
-        {
-            println!("received call of {}", stringify!($name));
-            Box::pin(async {
-                ::zingo_netutils::GrpcConnector::new($self.lightwalletd_uri.clone())
-                    .get_client()
-                    .await
-                    .expect("Proxy server failed to create client")
-                    .$name($($($arg),*)?)
-                    .await
-            })
-        }
-    };
-}
-
-/// Configuration data for gRPC server.
-pub struct ProxyServer {
-    /// Lightwalletd uri.
-    pub lightwalletd_uri: http::Uri,
-    /// Used by grpc_passthrough to pass on unimplemented RPCs.
-    pub zebrad_uri: http::Uri,
-    /// Represents the Online status of the gRPC server.
-    pub online: Arc<AtomicBool>,
-}
-
-impl ProxyServer {
-    /// Starts gRPC service.
-    pub fn serve(
-        self,
-        port: impl Into<u16> + Send + Sync + 'static,
-    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
-        println!("Starting server task");
-        tokio::task::spawn(async move {
-            let svc = CompactTxStreamerServer::new(self);
-            let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
-            println!("Proxy listening on {sockaddr}");
-            tonic::transport::Server::builder()
-                .add_service(svc)
-                .serve(sockaddr)
-                .await
-        })
-    }
-
-    /// Creates configuration data for gRPC server.
-    pub fn new(lightwalletd_uri: http::Uri, zebrad_uri: http::Uri) -> Self {
-        Self {
-            lightwalletd_uri,
-            zebrad_uri,
-            online: Arc::new(AtomicBool::new(true)),
-        }
-    }
-}
+use crate::{
+    define_grpc_passthrough,
+    nym::utils::{deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request},
+    primitives::ProxyConfig,
+};
 
 #[async_trait]
-impl CompactTxStreamer for ProxyServer {
+impl CompactTxStreamer for ProxyConfig {
     define_grpc_passthrough!(
         fn get_latest_block(
             &self,
@@ -315,34 +241,4 @@ impl CompactTxStreamer for ProxyServer {
 
     #[doc = " Server streaming response type for the GetSubtreeRoots method."]
     type GetSubtreeRootsStream = tonic::Streaming<SubtreeRoot>;
-}
-
-/// Spawns a gRPC service that forwards gRPCs requests recieved to a lightwalletd.
-/// Implemented RPCs are sent over the mixnet to be revieved by a nym based gRPC server (nymserverd).
-pub async fn spawn_server(
-    proxy_port: u16,
-    lwd_port: u16,
-    zebrad_port: u16,
-) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
-    let lwd_uri_test = Uri::builder()
-        .scheme("http")
-        .authority(format!("localhost:{lwd_port}"))
-        .path_and_query("/")
-        .build()
-        .unwrap();
-    let _lwd_uri_main = Uri::builder()
-        .scheme("https")
-        .authority("eu.lightwalletd.com:443")
-        .path_and_query("/")
-        .build()
-        .unwrap();
-    let zebra_uri = Uri::builder()
-        .scheme("http")
-        .authority(format!("localhost:{zebrad_port}"))
-        .path_and_query("/")
-        .build()
-        .unwrap();
-    // replace lwd_uri_test with lwd_uri_main to connect to mainnet:
-    let server = ProxyServer::new(lwd_uri_test, zebra_uri);
-    server.serve(proxy_port)
 }

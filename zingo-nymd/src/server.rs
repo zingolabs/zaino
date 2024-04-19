@@ -1,4 +1,4 @@
-//! Server-side service RPC nym wrapper implementations.
+//! Server-side gRPC server implementation.
 
 use std::sync::Arc;
 

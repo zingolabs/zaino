@@ -1,19 +1,18 @@
 [package]
-name = "nym-proxy"
+name = "zingo-nymd"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "nymproxyd"
-path = "src/bin/nproxy.rs"
-
-[[bin]]
-name = "nymserverd"
-path = "src/bin/nserver.rs"
+name = "zingonymd"
+path = "src/bin/zingonymd.rs"
 
 [lib]
 name = "nymproxylib"
 path = "src/lib.rs"
+
+[features]
+nym_wallet = []
 
 [dependencies]
 zingo-rpc = { path = "../zingo-rpc" }

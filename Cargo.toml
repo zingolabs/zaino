@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "nym-proxy",
+    "zingo-nymd",
     "zingo-proxyd",
     "zingo-rpc",
 ]

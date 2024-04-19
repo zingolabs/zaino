@@ -1,6 +1,10 @@
 //! Lightwattet RPC implementations.
 
+#[cfg(not(feature = "nym_wallet"))]
 pub mod service;
-// pub mod darkside;
-// pub mod nym_service_wallet;
+
+#[cfg(feature = "nym_wallet")]
+pub mod nymwalletservice;
 // pub mod nym_service_server;
+
+// pub mod darkside;

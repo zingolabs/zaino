@@ -3276,27 +3276,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nym-proxy"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "ctrlc",
- "http",
- "nym-bin-common",
- "nym-sdk",
- "nym-sphinx-addressing",
- "nym-sphinx-anonymous-replies",
- "nym-validator-client",
- "prost",
- "tokio",
- "tokio-socks",
- "tonic",
- "zcash_client_backend",
- "zingo-netutils",
- "zingo-rpc",
-]
-
-[[package]]
 name = "nym-sdk"
 version = "0.1.0"
 source = "git+https://github.com/nymtech/nym?branch=master#00d47958a7181d0c2ddb0ccb01340bbe216e3b5e"
@@ -6531,6 +6510,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zingo-nymd"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ctrlc",
+ "http",
+ "nym-bin-common",
+ "nym-sdk",
+ "nym-sphinx-addressing",
+ "nym-sphinx-anonymous-replies",
+ "nym-validator-client",
+ "prost",
+ "tokio",
+ "tokio-socks",
+ "tonic",
+ "zcash_client_backend",
+ "zingo-netutils",
+ "zingo-rpc",
+]
+
+[[package]]
 name = "zingo-proxyd"
 version = "0.1.0"
 dependencies = [
@@ -6548,6 +6548,11 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "http",
+ "nym-bin-common",
+ "nym-sdk",
+ "nym-sphinx-addressing",
+ "nym-sphinx-anonymous-replies",
+ "nym-validator-client",
  "prost",
  "tokio",
  "tonic",

@@ -3,6 +3,8 @@ name = "zingo-rpc"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+nym_wallet = []
 
 [dependencies]
 http = "0.2.4"
@@ -15,3 +17,9 @@ bytes = "1.1"
 zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
 # zingo-netutils = { git = "https://github.com/aloearev/zingolib.git", branch = "cratify_netutils" }
 zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+
+nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-validator-client = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
+nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }

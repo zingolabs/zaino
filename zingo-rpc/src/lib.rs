@@ -6,4 +6,5 @@
 pub mod primitives;
 pub mod rpc;
 // pub mod proto;
-mod utils;
+pub mod nym;
+pub mod utils;
