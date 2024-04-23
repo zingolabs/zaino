@@ -1,6 +1,7 @@
 [package]
 name = "zingo-rpc"
 version = "0.1.0"
+authors = ["zingo@zingolabs.org"]
 edition = "2021"
 
 [features]

@@ -6510,65 +6510,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "zingo-nymserverd"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "ctrlc",
- "http",
- "nym-bin-common",
- "nym-sdk",
- "nym-sphinx-addressing",
- "nym-sphinx-anonymous-replies",
- "nym-validator-client",
- "prost",
- "tokio",
- "tokio-socks",
- "tonic",
- "zcash_client_backend",
- "zingo-netutils",
- "zingo-rpc",
-]
-
-[[package]]
-name = "zingo-nymwalletd"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "ctrlc",
- "http",
- "nym-bin-common",
- "nym-sdk",
- "nym-sphinx-addressing",
- "nym-sphinx-anonymous-replies",
- "nym-validator-client",
- "prost",
- "tokio",
- "tokio-socks",
- "tonic",
- "zcash_client_backend",
- "zingo-netutils",
- "zingo-rpc",
-]
-
-[[package]]
 name = "zingo-proxyd"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "ctrlc",
  "http",
+ "http-body",
+ "hyper",
+ "hyper-rustls 0.23.2",
  "nym-bin-common",
  "nym-sdk",
  "nym-sphinx-addressing",
  "nym-sphinx-anonymous-replies",
  "nym-validator-client",
  "prost",
+ "rustls-pemfile",
  "tokio",
+ "tokio-rustls 0.23.4",
  "tokio-socks",
  "tonic",
+ "tower",
+ "webpki-roots 0.21.1",
  "zcash_client_backend",
- "zingo-netutils",
  "zingo-rpc",
 ]
 
