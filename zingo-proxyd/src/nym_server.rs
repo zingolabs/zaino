@@ -1,4 +1,4 @@
-//! Server-side gRPC server implementation.
+//! Nym-gRPC server implementation.
 
 use std::sync::Arc;
 

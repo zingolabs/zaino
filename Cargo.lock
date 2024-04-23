@@ -6555,8 +6555,17 @@ dependencies = [
 name = "zingo-proxyd"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "ctrlc",
  "http",
+ "nym-bin-common",
+ "nym-sdk",
+ "nym-sphinx-addressing",
+ "nym-sphinx-anonymous-replies",
+ "nym-validator-client",
+ "prost",
  "tokio",
+ "tokio-socks",
  "tonic",
  "zcash_client_backend",
  "zingo-netutils",

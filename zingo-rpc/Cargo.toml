@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 nym_wallet = []
+nym_server = []
 
 [dependencies]
 http = "0.2.4"

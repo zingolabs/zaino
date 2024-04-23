@@ -10,10 +10,7 @@ use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxS
 use zingo_rpc::primitives::ProxyConfig;
 
 /// Configuration data for gRPC server.
-pub struct ProxyServer {
-    /// Uses zingo-rpc::primitives::ProxyConfig for consistancy across crates.
-    pub proxy_config: ProxyConfig,
-}
+pub struct ProxyServer(pub ProxyConfig);
 
 impl ProxyServer {
     /// Starts gRPC service.
@@ -23,7 +20,7 @@ impl ProxyServer {
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         println!("Starting server task");
         tokio::task::spawn(async move {
-            let svc = CompactTxStreamerServer::new(self.proxy_config);
+            let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
             println!("Proxy listening on {sockaddr}");
             tonic::transport::Server::builder()
@@ -35,22 +32,22 @@ impl ProxyServer {
 
     /// Creates configuration data for gRPC server.
     pub fn new(lightwalletd_uri: http::Uri, zebrad_uri: http::Uri) -> Self {
-        Self {
-            proxy_config: ProxyConfig {
-                lightwalletd_uri,
-                zebrad_uri,
-                online: Arc::new(AtomicBool::new(true)),
-            },
-        }
+        ProxyServer(ProxyConfig {
+            lightwalletd_uri,
+            zebrad_uri,
+            online: Arc::new(AtomicBool::new(true)),
+        })
     }
 }
 
 /// Spawns a gRPC server.
+
 pub async fn spawn_server(
     proxy_port: u16,
     lwd_port: u16,
     zebrad_port: u16,
 ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+    // NOTE: To connect to mainnet replace "localhost:{lwd_port}" with "eu.lightwalletd.com:443" or any official LightWalletD uri.
     let lwd_uri = Uri::builder()
         .scheme("http")
         .authority(format!("localhost:{lwd_port}"))
