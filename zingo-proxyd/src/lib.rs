@@ -4,6 +4,5 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-pub mod grpc;
 pub mod nym_server;
 pub mod server;
