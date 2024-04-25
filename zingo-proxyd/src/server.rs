@@ -66,6 +66,8 @@ pub async fn spawn_server(
 
 #[cfg(test)]
 mod tests {
+    use crate::grpc::GrpcConnector;
+
     use super::*;
     use std::time::Duration;
     use tokio::time::sleep;
@@ -84,7 +86,7 @@ mod tests {
             .build()
             .unwrap();
         println!("{}", proxy_uri);
-        let lightd_info = zingo_netutils::GrpcConnector::new(proxy_uri)
+        let lightd_info = GrpcConnector::new(proxy_uri)
             .get_client()
             .await
             .unwrap()
