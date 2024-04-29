@@ -1,6 +1,4 @@
-// nym_utils.rs [lib]
-// use: nym-proxy utils
-//
+//! Utility functions for Nym-Proxy
 
 use nym_sdk::mixnet::{
     MixnetClient, MixnetClientBuilder, MixnetMessageSender, Recipient, ReconstructedMessage,
@@ -12,6 +10,7 @@ use tokio::{
     net::TcpStream,
 };
 
+/// Serialises gRPC request to a buffer.
 pub async fn serialize_request<T: prost::Message>(
     request: &T,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -20,12 +19,14 @@ pub async fn serialize_request<T: prost::Message>(
     Ok(buf)
 }
 
+/// Decodes gRPC request from a buffer
 pub async fn deserialize_response<T: prost::Message + Default>(
     data: &[u8],
 ) -> Result<T, Box<dyn std::error::Error>> {
     T::decode(data).map_err(Into::into)
 }
 
+/// Forwards an encoded gRPC request over TPC to the address given.
 pub async fn forward_over_tcp(
     addr: &str,
     data: &[u8],
@@ -38,6 +39,7 @@ pub async fn forward_over_tcp(
     Ok(response)
 }
 
+/// Spawns a nym client and connects to the mixnet.
 pub async fn nym_spawn(str_path: &str) -> MixnetClient {
     //nym_bin_common::logging::setup_logging();
     MixnetClientBuilder::new_with_default_storage(
@@ -52,10 +54,12 @@ pub async fn nym_spawn(str_path: &str) -> MixnetClient {
     .unwrap()
 }
 
+/// Closes the nym client.
 pub async fn nym_close(client: MixnetClient) {
     client.disconnect().await;
 }
 
+/// Forwards an encoded gRPC request over the nym mixnet to the nym address specified and waits for the response.
 pub async fn nym_forward(
     client: &mut MixnetClient,
     recipient_address: &str,
