@@ -6533,6 +6533,7 @@ dependencies = [
  "tower",
  "webpki-roots 0.21.1",
  "zcash_client_backend",
+ "zingo-netutils",
  "zingo-rpc",
 ]
 

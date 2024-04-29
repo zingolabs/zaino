@@ -10,8 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tonic::Request;
 use zcash_client_backend::proto::service::{RawTransaction, SendResponse};
-
-use crate::grpc::GrpcConnector;
+use zingo_netutils::GrpcConnector;
 
 /// Spawns a TPC listener that recieves encoded gRPC requests.
 pub async fn tcp_listener(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
