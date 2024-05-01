@@ -42,7 +42,7 @@ pub async fn forward_over_tcp(
 /// Spawns a nym client and connects to the mixnet.
 pub async fn nym_spawn(str_path: &str) -> MixnetClient {
     //nym_bin_common::logging::setup_logging();
-    MixnetClientBuilder::new_with_default_storage(
+    let client = MixnetClientBuilder::new_with_default_storage(
         StoragePaths::new_from_dir(PathBuf::from(str_path)).unwrap(),
     )
     .await
@@ -51,7 +51,12 @@ pub async fn nym_spawn(str_path: &str) -> MixnetClient {
     .unwrap()
     .connect_to_mixnet()
     .await
-    .unwrap()
+    .unwrap();
+
+    let nym_addr = client.nym_address().to_string();
+    println!("Nym server listening on: {nym_addr}");
+
+    client
 }
 
 /// Closes the nym client.

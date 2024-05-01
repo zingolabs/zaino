@@ -13,8 +13,8 @@ name = "zingoproxylib"
 path = "src/lib.rs"
 
 [features]
-nym_wallet = []
-nym_server = []
+nym = []
+nym_poc = []
 
 [dependencies]
 zingo-rpc = { path = "../zingo-rpc" }

@@ -5,4 +5,5 @@
 #![forbid(unsafe_code)]
 
 pub mod nym_server;
+pub mod proxy;
 pub mod server;

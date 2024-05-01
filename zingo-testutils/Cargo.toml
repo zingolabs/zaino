@@ -5,9 +5,8 @@ authors = ["zingo@zingolabs.org"]
 edition = "2021"
 
 [features]
-nym_wallet = []
-nym_server = []
-nym_test = ["nym_wallet", "nym_server"]
+nym = []
+nym_poc = []
 
 [dependencies]
 zingo-rpc = { path = "../zingo-rpc" }

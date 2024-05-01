@@ -1,10 +1,7 @@
 //! Lightwallet RPC implementations.
 
-#[cfg(not(feature = "nym_wallet"))]
+#[cfg(not(feature = "nym_poc"))]
 pub mod service;
 
-#[cfg(feature = "nym_wallet")]
+#[cfg(feature = "nym_poc")]
 pub mod nymwalletservice;
-// pub mod nym_service_server;
-
-// pub mod darkside;

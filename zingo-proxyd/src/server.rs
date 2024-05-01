@@ -22,7 +22,7 @@ impl ProxyServer {
         tokio::task::spawn(async move {
             let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
-            println!("Proxy listening on {sockaddr}");
+            println!("gRPC server listening on: {sockaddr}");
             tonic::transport::Server::builder()
                 .add_service(svc)
                 .serve(sockaddr)

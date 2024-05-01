@@ -5,8 +5,7 @@ authors = ["zingo@zingolabs.org"]
 edition = "2021"
 
 [features]
-nym_wallet = []
-nym_server = []
+nym_poc = []
 
 [dependencies]
 zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }

@@ -15,7 +15,6 @@ use zcash_client_backend::proto::service::{
 };
 
 use bytes::Bytes;
-use std::env;
 use std::error::Error as StdError;
 use tonic::{self, codec::CompressionEncoding, Status};
 use tonic::{service::interceptor::InterceptedService, transport::Endpoint};
