@@ -1,4 +1,6 @@
 //! Client-side service RPC nym wrapper implementations.
+//!
+//! NOTE: DEPRICATED.
 
 use std::env;
 use tonic::{async_trait, Request, Response, Status};

@@ -15,9 +15,14 @@ use zcash_client_backend::proto::service::{
 };
 
 use bytes::Bytes;
+use std::env;
 use std::error::Error as StdError;
 use tonic::{self, codec::CompressionEncoding, Status};
 use tonic::{service::interceptor::InterceptedService, transport::Endpoint};
+
+use crate::nym::utils::{
+    deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request,
+};
 
 /// Wrapper struct for the Nym enabled CompactTxStreamerClient.
 #[derive(Debug, Clone)]
@@ -197,27 +202,61 @@ where
     }
 
     /// Submit the given transaction to the Zcash network.
-    #[cfg(not(feature = "nym"))]
-    pub async fn send_transaction(
-        &mut self,
-        request: impl tonic::IntoRequest<RawTransaction>,
-    ) -> std::result::Result<tonic::Response<SendResponse>, Status> {
-        // self.compact_tx_streamer_client
-        //     .send_transaction(request.into_request())
-        //     .await
-        CompactTxStreamerClient::send_transaction(&mut self.compact_tx_streamer_client, request)
-            .await
-    }
-    /// Submit the given transaction to the Zcash network.
     ///
-    /// Sends encoded transaction to given nym address.
-    #[cfg(feature = "nym")]
+    /// If nym_addr is provided, the transaction is encoded and sent over the Nym mixnet.
     pub async fn send_transaction(
         &mut self,
         request: impl tonic::IntoRequest<RawTransaction>,
-        nym_address: &Recipient,
+        nym_addr: Option<&str>,
     ) -> std::result::Result<tonic::Response<SendResponse>, Status> {
-        //TODO!
+        match nym_addr {
+            Some(addr) => {
+                match nym_sphinx_addressing::clients::Recipient::try_from_base58_string(addr) {
+                    Ok(_recipient) => {
+                        let serialized_request =
+                            match serialize_request(&request.into_request().into_inner()).await {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    return Err(Status::internal(format!(
+                                        "Failed to serialize request: {}",
+                                        e
+                                    )))
+                                }
+                            };
+                        let nym_conf_path = "/tmp/nym_client";
+                        let mut client = nym_spawn(nym_conf_path).await;
+                        let response_data = nym_forward(&mut client, addr, serialized_request)
+                            .await
+                            .unwrap();
+                        nym_close(client).await;
+                        let response: SendResponse =
+                            match deserialize_response(response_data.as_slice()).await {
+                                Ok(res) => res,
+                                Err(e) => {
+                                    return Err(Status::internal(format!(
+                                        "Failed to decode response: {}",
+                                        e
+                                    )))
+                                }
+                            };
+                        Ok(tonic::Response::new(response))
+                    }
+                    Err(e) => {
+                        return Err(Status::invalid_argument(format!(
+                            "Failed to parse nym address: {}",
+                            e
+                        )));
+                    }
+                }
+            }
+            None => {
+                CompactTxStreamerClient::send_transaction(
+                    &mut self.compact_tx_streamer_client,
+                    request,
+                )
+                .await
+            }
+        }
     }
 
     /// Return the txids corresponding to the given t-address within the given block range.

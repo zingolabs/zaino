@@ -10,15 +10,14 @@ use zingo_rpc::nym::utils::{nym_close, nym_spawn};
 use zingoproxylib::{nym_server::nym_serve, server::spawn_server};
 
 /// Launches test Zingo_Proxy server.
-async fn spawn_proxys(
+async fn spawn_proxy(
     proxy_port: &'static u16,
     lwd_port: &'static u16,
     zebrad_port: &'static u16,
-    nym_addr: Option<&'static Recipient>,
 ) -> (Vec<JoinHandle<()>>, Arc<Notify>) {
     let notify = Arc::new(Notify::new());
     let mut handles = vec![];
-    let nym_addr = Arc::new(Mutex::new(None));
+    let nym_addr = Arc::new(Mutex::new(None::<Recipient>));
 
     #[cfg(feature = "nym_test")]
     {
