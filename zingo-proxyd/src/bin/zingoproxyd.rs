@@ -24,7 +24,7 @@ async fn main() {
     #[cfg(any(not(feature = "nym_server"), feature = "nym_wallet"))]
     {
         let server_port = 8080;
-        spawn_server(server_port, 9067, 18232).await;
+        spawn_server(&server_port, &9067, &18232).await;
         loop {
             thread::sleep(Duration::from_secs(10));
         }

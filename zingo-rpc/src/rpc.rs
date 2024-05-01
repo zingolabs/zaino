@@ -1,4 +1,4 @@
-//! Lightwattet RPC implementations.
+//! Lightwallet RPC implementations.
 
 #[cfg(not(feature = "nym_wallet"))]
 pub mod service;

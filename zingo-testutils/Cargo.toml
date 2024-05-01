@@ -1,0 +1,24 @@
+[package]
+name = "zingo-testutils"
+version = "0.1.0"
+authors = ["zingo@zingolabs.org"]
+edition = "2021"
+
+[features]
+nym_wallet = []
+nym_server = []
+nym_test = ["nym_wallet", "nym_server"]
+
+[dependencies]
+zingo-rpc = { path = "../zingo-rpc" }
+zingo-proxyd = { path = "../zingo-proxyd" }
+
+zcash_client_backend = { workspace = true }
+
+nym-sdk = { workspace = true }
+
+tokio = { workspace = true }
+http = { workspace = true }
+
+zingo-testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }

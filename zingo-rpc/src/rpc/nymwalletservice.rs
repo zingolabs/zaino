@@ -54,6 +54,7 @@ impl CompactTxStreamer for ProxyConfig {
     async fn send_transaction(
         &self,
         request: Request<RawTransaction>,
+        nym_address: &Recipient,
     ) -> Result<Response<SendResponse>, Status> {
         println!("Received call to send_transaction");
 

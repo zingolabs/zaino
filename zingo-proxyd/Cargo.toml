@@ -1,6 +1,7 @@
 [package]
 name = "zingo-proxyd"
 version = "0.1.0"
+authors = ["zingo@zingolabs.org"]
 edition = "2021"
 
 [[bin]]
@@ -14,33 +15,33 @@ path = "src/lib.rs"
 [features]
 nym_wallet = []
 nym_server = []
-test-features = []
 
 [dependencies]
 zingo-rpc = { path = "../zingo-rpc" }
 
-http = "0.2.4"
-tokio = { version = "1", features = ["full"] }
-tonic = "0.10.2"
-# zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zingo_rc.2.1", features = ["lightwalletd-tonic"] }
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
-# zingo-netutils = { git = "https://github.com/aloearev/zingolib.git", branch = "cratify_netutils" }
-zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
-prost = "0.12"
-bytes = "1.1"
-tokio-socks = "0.5"
-nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
-nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
-nym-validator-client = { git = "https://github.com/nymtech/nym", branch = "master" }
-nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
-nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
-ctrlc = "3.2.1"
+zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
+zingo-netutils = { workspace = true }
 
+nym-sdk = { workspace = true }
+nym-sphinx-addressing = { workspace = true }
+nym-validator-client = { workspace = true }
+nym-bin-common = { workspace = true }
+nym-sphinx-anonymous-replies = { workspace = true }
+
+http = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
+http-body = { workspace = true }
+
+
+tokio-socks = "0.5"
+ctrlc = "3.2.1"
 tower = { version = "0.4" }
 hyper-rustls = { version = "0.23", features = ["http2"] }
 tokio-rustls = "0.23"
 hyper = { version = "0.14", features = ["full"] }
-http-body = "0.4.4"
 webpki-roots = "0.21.0"
 rustls-pemfile = "1.0.0"
 
