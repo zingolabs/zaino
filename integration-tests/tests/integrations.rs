@@ -22,15 +22,20 @@ mod proxy {
         let proxy_uri = get_proxy_uri(proxy_port);
         println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);
 
-        let lightd_info = GrpcConnector::new(proxy_uri)
+        // TODO: Add GrpcConnector that uses zingo-rpc's NymTxStreamerClient.
+        let mut client = GrpcConnector::new(proxy_uri)
             .get_client()
             .await
-            .unwrap()
+            .expect("Failed to create GRPC client");
+
+        let lightd_info = client
             .get_lightd_info(zcash_client_backend::proto::service::Empty {})
             .await
-            .unwrap();
+            .expect("Failed to retrieve lightd info from GRPC server");
+
         println!("{:#?}", lightd_info.into_inner());
 
+        // TODO: Flush TempDir in drop_test_manager
         drop_test_manager(regtest_handles, online).await
     }
 }

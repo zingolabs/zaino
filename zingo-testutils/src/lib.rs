@@ -70,6 +70,11 @@ pub async fn launch_test_manager(
     let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
     let proxy_port = portpicker::pick_unused_port().expect("No ports free");
 
+    print!(
+        "proxy port, lwd port, zcashd port: {}, {}, {}\n",
+        proxy_port, lwd_port, zcashd_port
+    );
+
     let temp_conf_dir = create_temp_conf_files(lwd_port, zcashd_port).unwrap();
 
     let regtest_manager = zingo_testutils::regtest::RegtestManager::new(std::path::PathBuf::from(
