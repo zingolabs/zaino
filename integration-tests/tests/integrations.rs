@@ -17,8 +17,10 @@ mod proxy {
         let (_regtest_manager, regtest_handles, _handles, proxy_port, _nym_addr) =
             launch_test_manager(online.clone()).await;
 
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
         let proxy_uri = get_proxy_uri(proxy_port);
-        println!("{}", proxy_uri);
+        println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);
 
         let lightd_info = GrpcConnector::new(proxy_uri)
             .get_client()

@@ -20,6 +20,7 @@ impl ProxyServer {
         online: Arc<AtomicBool>,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         tokio::task::spawn(async move {
+            // TODO: Use online to control active status.
             // while proxy_online.load(Ordering::SeqCst) {
             let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
