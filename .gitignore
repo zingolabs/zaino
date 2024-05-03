@@ -1,3 +1,4 @@
 /target
 /db
 /zingo-testutils/regtest
+/zingo-testutils/test_binaries/bins/

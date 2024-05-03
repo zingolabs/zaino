@@ -1,80 +1,44 @@
 //! Zingo-Proxy server implementation.
 
-use crate::{nym_server::nym_serve, server::spawn_server};
+use crate::{nym_server::NymServer, server::spawn_server};
+use zingo_rpc::primitives::NymClient;
+
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
-use zingo_rpc::nym::utils::nym_spawn;
+
+use tonic::transport::Error as TonicError;
 
 /// Launches test Zingo_Proxy server.
 pub async fn spawn_proxy(
-    proxy_port: &'static u16,
-    lwd_port: &'static u16,
-    zebrad_port: &'static u16,
-) -> (Vec<JoinHandle<()>>, Arc<Notify>, Option<String>) {
-    let notify = Arc::new(Notify::new());
+    proxy_port: &u16,
+    lwd_port: &u16,
+    zebrad_port: &u16,
+    online: Arc<AtomicBool>,
+) -> (Vec<JoinHandle<Result<(), TonicError>>>, Option<String>) {
     let mut handles = vec![];
-    let nym_addr = Arc::new(Mutex::new(None::<String>));
     let nym_addr_out: Option<String>;
 
     #[cfg(feature = "nym")]
     {
-        let nym_notify_clone = notify.clone();
-        let nym_addr_clone = nym_addr.clone();
+        let path = "/tmp/nym_server";
+        let nym_server: NymServer = NymServer(NymClient::nym_spawn(path).await);
+        nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
 
-        let nym_proxy_handle = tokio::spawn(async move {
-            let path = "/tmp/nym_server";
-            let mut server = nym_spawn(path).await;
-            let address = server.nym_address().to_string();
-
-            let mut addr_lock = nym_addr_clone.lock().await;
-            *addr_lock = Some(address.clone());
-
-            nym_serve(&mut server).await;
-        });
-        tokio::select! {
-            _ = nym_notify_clone.notified() => {
-                println!("Zingo-Proxy(Nym) is shutting down.");
-                nym_proxy_handle.abort();
-            }
-        }
-
+        let nym_proxy_handle = nym_server.serve(online.clone()).await;
         handles.push(nym_proxy_handle);
     }
-
-    let notify_clone = notify.clone();
-
-    let proxy_handle = tokio::spawn(async move {
-        spawn_server(proxy_port, lwd_port, zebrad_port).await;
-    });
-    tokio::select! {
-        _ = notify_clone.notified() => {
-            println!("Zingo-Proxy is shutting down.");
-            proxy_handle.abort();
-        }
-    }
+    let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online).await;
     handles.push(proxy_handle);
 
-    #[cfg(feature = "nym")]
-    {
-        let nym_addr_proxy_clone = nym_addr.clone();
-        nym_addr_out = {
-            let addr_lock = nym_addr_proxy_clone.lock().await;
-            addr_lock.clone()
-        };
-    }
     #[cfg(not(feature = "nym"))]
     {
         nym_addr_out = None;
     }
-
-    (handles, notify, nym_addr_out)
+    (handles, nym_addr_out)
 }
 
 /// Closes test Zingo-Proxy servers currently active.
-pub async fn close_proxy(handles: Vec<JoinHandle<()>>, notify: Arc<Notify>) {
-    notify.notify_waiters();
-    for handle in handles {
-        let _ = handle.await;
-    }
+pub async fn close_proxy(online: Arc<AtomicBool>) {
+    online.store(false, Ordering::SeqCst);
 }

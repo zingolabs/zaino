@@ -10,9 +10,9 @@ use zcash_client_backend::proto::{
     },
 };
 
-use crate::{define_grpc_passthrough, primitives::ProxyConfig};
+use crate::{define_grpc_passthrough, primitives::ProxyClient};
 
-impl CompactTxStreamer for ProxyConfig {
+impl CompactTxStreamer for ProxyClient {
     // fn get_latest_block<'life0, 'async_trait>(
     //     &'life0 self,
     //     request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,

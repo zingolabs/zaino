@@ -6,6 +6,7 @@ edition = "2021"
 
 [features]
 nym = []
+# NOTE: Depricated
 nym_poc = []
 
 [dependencies]
@@ -18,6 +19,11 @@ nym-sdk = { workspace = true }
 
 tokio = { workspace = true }
 http = { workspace = true }
+tonic = { workspace = true }
 
 zingo-testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
 zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+
+tempfile = "3.2.0"
+chrono = "0.4.19"
+portpicker = "0.1.1"

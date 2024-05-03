@@ -13,7 +13,9 @@ name = "zingoproxylib"
 path = "src/lib.rs"
 
 [features]
+# TODO: Add [default = [ "nym" ]] when nym poc is removed.
 nym = []
+# NOTE: Depricated
 nym_poc = []
 
 [dependencies]

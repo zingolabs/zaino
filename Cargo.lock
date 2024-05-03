@@ -746,7 +746,9 @@ checksum = "a21f936df1771bf62b77f047b726c4625ff2e8aa607c01ec06e5a05bd8463401"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
+ "js-sys",
  "num-traits",
+ "wasm-bindgen",
  "windows-targets 0.52.0",
 ]
 
@@ -2560,7 +2562,9 @@ dependencies = [
  "zcash_address",
  "zcash_client_backend",
  "zcash_primitives",
- "zingo-testutils 0.1.0 (git+https://github.com/zingolabs/zingolib.git?branch=nym_integration)",
+ "zingo-netutils",
+ "zingo-proxyd",
+ "zingo-testutils 0.1.0",
  "zingoconfig",
  "zingolib",
 ]
@@ -7301,9 +7305,13 @@ dependencies = [
 name = "zingo-testutils"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "http",
  "nym-sdk",
+ "portpicker",
+ "tempfile",
  "tokio",
+ "tonic",
  "zcash_client_backend",
  "zingo-proxyd",
  "zingo-rpc",

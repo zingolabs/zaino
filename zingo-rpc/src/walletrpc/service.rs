@@ -19,8 +19,9 @@ use std::error::Error as StdError;
 use tonic::{self, codec::CompressionEncoding, Status};
 use tonic::{service::interceptor::InterceptedService, transport::Endpoint};
 
-use crate::nym::utils::{
-    deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request,
+use crate::{
+    nym::utils::{deserialize_response, serialize_request},
+    primitives::NymClient,
 };
 
 /// Wrapper struct for the Nym enabled CompactTxStreamerClient.
@@ -223,11 +224,10 @@ where
                                 }
                             };
                         let nym_conf_path = "/tmp/nym_client";
-                        let mut client = nym_spawn(nym_conf_path).await;
-                        let response_data = nym_forward(&mut client, addr, serialized_request)
-                            .await
-                            .unwrap();
-                        nym_close(client).await;
+                        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+                        let response_data =
+                            client.nym_forward(addr, serialized_request).await.unwrap();
+                        client.nym_close().await;
                         let response: SendResponse =
                             match deserialize_response(response_data.as_slice()).await {
                                 Ok(res) => res,
