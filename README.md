@@ -14,14 +14,16 @@ will eventually hold the rust implementations of the LightWallet Service and Dar
 
 # Zingo-ProxyD
 A lightweight gRPC server for testing and development. This should not be used to run mainnet nodes in its current form as it lacks the queueing and error checking logic necessary.
+Zingo-ProxyD also has a basic nym server, gated behind the "nym" feature. Enabling this feature will run both the gRPC server and Nym server.
 
-Zingo-ProxyD can also act as a Nym powered proxy between zcash wallets and LightWalletD, currently capable of sending zcash over the Nym Mixnet. This functionality is currently feature gated behind "nym_wallet", for wallet-side functionality, and "nym_server", for server-side functionality.
+Under the "nym_poc" feature flag Zingo-ProxyD can also act as a Nym powered proxy between zcash wallets and Zingo-ProxyD, capable of sending zcash transactions over the Nym Mixnet. 
+Note: The wallet-side nym service RPC implementations are moving to CompactTxStreamerClient for easier consumption by wallets. Functionality under the "nym_poc" feature flag will be removed once a working example has been implemented directly in zingolib.
 
 This is the POC and initial work on enabling zcash infrastructure to use the nym mixnet.
 
 [Nym_POC](./docs/nym_poc.pdf) shows the current state of this work ands our vision for the future. 
 
-Our plan is to first enable wallets to send and recieve transactions via a nym powered proxy between wallets and a lightwalletd before looking at the wider zcash ecosystem.
+Our plan is to first enable wallets to send and recieve transactions via a nym powered proxy between wallets and a lightwalletd/zebrad before looking at the wider zcash ecosystem.
 
 
 # Dependencies
@@ -38,14 +40,18 @@ Our plan is to first enable wallets to send and recieve transactions via a nym p
 - To run zingo-cli through zingo-proxy, connecting to lightwalletd/zebrad locally:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
-3) Run `$ cargo run --bin zingoproxyd`
-3) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8080" --data-dir ~/wallets/test_wallet`
+3) Run `$ cargo run`, or to activate nym server run `$ cargo run --features "nym"`
+From zingolib:
+4) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8080" --data-dir ~/wallets/test_wallet`
 
-- To run zingo-cli through zingo-proxy, connecting to lightwalletd/zebrad locally, with the Nym functionality active:
+
+The walletside Nym implementations are moving to ease wallet integration but the POC walletside nym server is still available under the "nym_poc" feature flag.
+- To run the POC:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
-3) Run `$ cargo run --bin zingoproxyd --features "nym_wallet"`
+3) Run `$ cargo run --features "nym"`
 4) Copy nym address displayed
-5) Run `$ cargo run --bin zingoproxyd --features "nym_server" -- "nserver address copied"`
-6) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8080" --data-dir ~/wallets/testnet_wallet`
+5) Run `$ cargo run --features "nym_poc" -- <nym address copied>`
+From zingolib:
+6) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8088" --data-dir ~/wallets/testnet_wallet`
 
