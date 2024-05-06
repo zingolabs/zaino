@@ -41,6 +41,7 @@ Our plan is to first enable wallets to send and recieve transactions via a nym p
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
 3) Run `$ cargo run`, or to activate nym server run `$ cargo run --features "nym"`
+
 From zingolib:
 4) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8080" --data-dir ~/wallets/test_wallet`
 
@@ -52,6 +53,7 @@ The walletside Nym implementations are moving to ease wallet integration but the
 3) Run `$ cargo run --features "nym"`
 4) Copy nym address displayed
 5) Run `$ cargo run --features "nym_poc" -- <nym address copied>`
+
 From zingolib:
 6) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8088" --data-dir ~/wallets/testnet_wallet`
 
