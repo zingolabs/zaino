@@ -19,6 +19,8 @@ pub async fn spawn_proxy(
     let mut handles = vec![];
     let nym_addr_out: Option<String>;
 
+    println!(" - Loading Zing-Proxy..");
+
     #[cfg(feature = "nym")]
     {
         let path = "/tmp/nym_server";
@@ -30,6 +32,8 @@ pub async fn spawn_proxy(
     }
     let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online).await;
     handles.push(proxy_handle);
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     #[cfg(not(feature = "nym"))]
     {

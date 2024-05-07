@@ -8,7 +8,7 @@ fn write_lightwalletd_yml(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let file_path = dir.join("lightwalletd.yml");
     let mut file = std::fs::File::create(file_path)?;
-    writeln!(file, "bind-addr: 127.0.0.1:{}", bind_addr_port)?;
+    writeln!(file, "grpc-bind-addr: 127.0.0.1:{}", bind_addr_port)?;
     writeln!(file, "cache-size: 10")?;
     writeln!(file, "log-level: 10")?;
     Ok(())
@@ -40,7 +40,10 @@ fn create_temp_conf_files(
     lwd_port: u16,
     rpcport: u16,
 ) -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
-    let temp_dir = tempfile::TempDir::new()?;
+    // let temp_dir = tempfile::TempDir::new()?;
+    let temp_dir = tempfile::Builder::new()
+        .prefix("zingoproxytest")
+        .tempdir()?;
     let conf_dir = temp_dir.path().join("conf");
     std::fs::create_dir(&conf_dir)?;
     write_lightwalletd_yml(&conf_dir, lwd_port)?;
@@ -60,55 +63,30 @@ pub fn get_proxy_uri(proxy_port: u16) -> http::Uri {
 pub async fn launch_test_manager(
     online: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (
+    std::path::PathBuf,
     zingo_testutils::regtest::RegtestManager,
     zingo_testutils::regtest::ChildProcessHandler,
     Vec<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
     u16,
     Option<String>,
 ) {
-    // let lwd_port = portpicker::pick_unused_port().expect("No ports free");
-    // let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
-    // let proxy_port = portpicker::pick_unused_port().expect("No ports free");
-
-    let lwd_port = 9067;
-    let zcashd_port = 18232;
-    let proxy_port = 8080;
-
-    print!(
-        "Ports used for test: proxy port: {}, lwd port: {}, zcashd port: {}\n",
-        proxy_port, lwd_port, zcashd_port
-    );
+    let lwd_port = portpicker::pick_unused_port().expect("No ports free");
+    let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
+    let proxy_port = portpicker::pick_unused_port().expect("No ports free");
 
     let temp_conf_dir = create_temp_conf_files(lwd_port, zcashd_port).unwrap();
-    let temp_conf_path = temp_conf_dir.as_ref().display().to_string();
-
-    println!("Temp Path Used: {}", temp_conf_path);
-
-    let output = std::process::Command::new("tree")
-        .arg(temp_conf_path.clone())
-        .output()
-        .expect("failed to execute process");
-
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    println!("Tree command output:\n{}", output_str);
+    let temp_conf_path = temp_conf_dir.path().to_path_buf();
 
     let regtest_manager = zingo_testutils::regtest::RegtestManager::new(temp_conf_dir.into_path());
     let regtest_handler = regtest_manager
         .launch(true)
         .expect("Failed to start regtest services");
 
-    let output = std::process::Command::new("tree")
-        .arg(temp_conf_path)
-        .output()
-        .expect("failed to execute process");
-
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    println!("Tree command output:\n{}", output_str);
-
     let (handles, nym_addr) =
         zingoproxylib::proxy::spawn_proxy(&proxy_port, &lwd_port, &zcashd_port, online).await;
 
     (
+        temp_conf_path,
         regtest_manager,
         regtest_handler,
         handles,
@@ -118,9 +96,15 @@ pub async fn launch_test_manager(
 }
 
 pub async fn drop_test_manager(
+    temp_conf_path: Option<std::path::PathBuf>,
     child_process_handler: zingo_testutils::regtest::ChildProcessHandler,
     online: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     zingoproxylib::proxy::close_proxy(online).await;
     drop(child_process_handler);
+    if let Some(path) = temp_conf_path {
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            eprintln!("Failed to delete temporary directory: {:?}", e);
+        }
+    }
 }

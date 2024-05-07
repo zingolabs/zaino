@@ -3,9 +3,9 @@
 
 #![forbid(unsafe_code)]
 
+use proxytestutils::{drop_test_manager, get_proxy_uri, launch_test_manager};
 use std::sync::{atomic::AtomicBool, Arc};
 use zingo_netutils::GrpcConnector;
-use proxytestutils::{drop_test_manager, get_proxy_uri, launch_test_manager};
 
 mod proxy {
     use super::*;
@@ -14,17 +14,8 @@ mod proxy {
     async fn connect_to_lwd_get_info() {
         let online = Arc::new(AtomicBool::new(true));
 
-        let (_regtest_manager, regtest_handles, _handles, proxy_port, _nym_addr) =
+        let (conf_path, _regtest_manager, regtest_handles, _handles, proxy_port, _nym_addr) =
             launch_test_manager(online.clone()).await;
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-        _regtest_manager.generate_n_blocks(10).unwrap();
-
-        println!(
-            "Chain height: {}",
-            _regtest_manager.get_current_height().unwrap()
-        );
 
         let proxy_uri = get_proxy_uri(proxy_port);
         println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);
@@ -42,8 +33,7 @@ mod proxy {
 
         println!("{:#?}", lightd_info.into_inner());
 
-        // TODO: Flush TempDir in drop_test_manager
-        drop_test_manager(regtest_handles, online).await
+        drop_test_manager(Some(conf_path), regtest_handles, online).await
     }
 }
 
