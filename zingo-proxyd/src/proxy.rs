@@ -19,7 +19,7 @@ pub async fn spawn_proxy(
     let mut handles = vec![];
     let nym_addr_out: Option<String>;
 
-    println!(" - Loading Zing-Proxy..");
+    println!("Loading Zing-Proxy..");
 
     #[cfg(feature = "nym")]
     {

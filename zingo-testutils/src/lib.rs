@@ -1,5 +1,8 @@
 //! Utility functions for Zingo-Proxy Testing.
 
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 use std::io::Write;
 
 fn write_lightwalletd_yml(
@@ -51,6 +54,7 @@ fn create_temp_conf_files(
     Ok(temp_dir)
 }
 
+/// Returns zingo-proxy listen porn.
 pub fn get_proxy_uri(proxy_port: u16) -> http::Uri {
     http::Uri::builder()
         .scheme("http")
@@ -60,6 +64,7 @@ pub fn get_proxy_uri(proxy_port: u16) -> http::Uri {
         .unwrap()
 }
 
+/// Launches a zingo regtest manager and zingo-proxy, created TempDir for configuration and log files.
 pub async fn launch_test_manager(
     online: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (
@@ -95,6 +100,7 @@ pub async fn launch_test_manager(
     )
 }
 
+/// Closes test manager child processes, optionally cleans configuration and log files for test.
 pub async fn drop_test_manager(
     temp_conf_path: Option<std::path::PathBuf>,
     child_process_handler: zingo_testutils::regtest::ChildProcessHandler,

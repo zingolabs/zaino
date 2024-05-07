@@ -2,7 +2,10 @@
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use http::Uri;
@@ -20,16 +23,20 @@ impl ProxyServer {
         online: Arc<AtomicBool>,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         tokio::task::spawn(async move {
-            // TODO: Use online to control active status.
-            // while proxy_online.load(Ordering::SeqCst) {
             let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
             println!("GRPC server listening on: {sockaddr}");
-            tonic::transport::Server::builder()
-                .add_service(svc)
-                .serve(sockaddr)
-                .await
-            // }
+            while online.load(Ordering::SeqCst) {
+                let server = tonic::transport::Server::builder()
+                    .add_service(svc.clone())
+                    .serve(sockaddr)
+                    .await;
+                match server {
+                    Ok(_) => (),
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
         })
     }
 

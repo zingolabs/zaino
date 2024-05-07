@@ -1,6 +1,9 @@
 //! Nym-gRPC server implementation.
 
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use nym_sdk::mixnet::{MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
@@ -21,9 +24,9 @@ impl NymServer {
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         let mut request_in: Vec<ReconstructedMessage> = Vec::new();
         tokio::task::spawn(async move {
-            loop {
-                // TODO: Use online to control active status.
-                // while online.load(Ordering::SeqCst) {
+            // loop {
+            // TODO: Use online to control active status.
+            while online.load(Ordering::SeqCst) {
                 while let Some(request_nym) = self.0 .0.wait_for_messages().await {
                     if request_nym.is_empty() {
                         continue;
@@ -60,6 +63,7 @@ impl NymServer {
                     .await
                     .unwrap();
             }
+            Ok(())
         })
     }
 }
