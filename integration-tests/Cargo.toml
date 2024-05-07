@@ -11,7 +11,7 @@ nym = []
 nym_poc = []
 
 [dependencies]
-zingo-testutils = { path = "../zingo-testutils" }
+zingoproxy-testutils = { path = "../zingoproxy-testutils" }
 zingo-proxyd = { path = "../zingo-proxyd" }
 
 zcash_client_backend = { workspace = true }

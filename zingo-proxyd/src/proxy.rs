@@ -21,7 +21,7 @@ pub async fn spawn_proxy(
 
     println!("Loading Zing-Proxy..");
 
-    #[cfg(feature = "nym")]
+    #[cfg(not(feature = "nym_poc"))]
     {
         let path = "/tmp/nym_server";
         let nym_server: NymServer = NymServer(NymClient::nym_spawn(path).await);
@@ -35,7 +35,7 @@ pub async fn spawn_proxy(
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    #[cfg(not(feature = "nym"))]
+    #[cfg(feature = "nym_poc")]
     {
         nym_addr_out = None;
     }

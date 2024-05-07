@@ -1,12 +1,8 @@
 [package]
-name = "zingo-testutils"
+name = "zingoproxy-testutils"
 version = "0.1.0"
 authors = ["zingo@zingolabs.org"]
 edition = "2021"
-
-[lib]
-name = "proxytestutils"
-path = "src/lib.rs"
 
 [features]
 nym = []

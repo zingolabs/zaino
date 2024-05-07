@@ -3,9 +3,9 @@
 
 #![forbid(unsafe_code)]
 
-use proxytestutils::{drop_test_manager, get_proxy_uri, launch_test_manager};
 use std::sync::{atomic::AtomicBool, Arc};
 use zingo_netutils::GrpcConnector;
+use zingoproxy_testutils::{drop_test_manager, get_proxy_uri, launch_test_manager};
 
 mod proxy {
     use super::*;
@@ -37,12 +37,10 @@ mod proxy {
     }
 }
 
-#[cfg(feature = "nym")]
 mod nym {
     // TODO: Add Nym Tests.
 }
 
-#[cfg(feature = "darkside")]
 mod darkside {
     // TODO: Add darkside tests.
 }

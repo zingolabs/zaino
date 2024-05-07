@@ -2564,9 +2564,9 @@ dependencies = [
  "zcash_primitives",
  "zingo-netutils",
  "zingo-proxyd",
- "zingo-testutils 0.1.0",
  "zingoconfig",
  "zingolib",
+ "zingoproxy-testutils",
 ]
 
 [[package]]
@@ -7304,24 +7304,6 @@ dependencies = [
 [[package]]
 name = "zingo-testutils"
 version = "0.1.0"
-dependencies = [
- "chrono",
- "http",
- "nym-sdk",
- "portpicker",
- "tempfile",
- "tokio",
- "tonic",
- "zcash_client_backend",
- "zingo-proxyd",
- "zingo-rpc",
- "zingo-testutils 0.1.0 (git+https://github.com/zingolabs/zingolib.git?branch=nym_integration)",
- "zingoconfig",
-]
-
-[[package]]
-name = "zingo-testutils"
-version = "0.1.0"
 source = "git+https://github.com/zingolabs/zingolib.git?branch=nym_integration#f5eeb37c04d7b1b58f8c6189291ce73349cec471"
 dependencies = [
  "futures",
@@ -7433,6 +7415,24 @@ dependencies = [
  "zingo-netutils",
  "zingo-status",
  "zingo-testvectors",
+ "zingoconfig",
+]
+
+[[package]]
+name = "zingoproxy-testutils"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "http",
+ "nym-sdk",
+ "portpicker",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "zcash_client_backend",
+ "zingo-proxyd",
+ "zingo-rpc",
+ "zingo-testutils",
  "zingoconfig",
 ]
 

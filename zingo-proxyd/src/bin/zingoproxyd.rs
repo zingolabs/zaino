@@ -23,15 +23,12 @@ async fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    #[cfg(any(feature = "nym", feature = "nym_poc"))]
-    {
-        nym_bin_common::logging::setup_logging();
-    }
+    nym_bin_common::logging::setup_logging();
 
-    let mut proxy_port: u16 = 8080;
+    let proxy_port: u16 = 8080;
     #[cfg(feature = "nym_poc")]
     {
-        proxy_port = 8088;
+        let proxy_port = 8088;
     }
     let lwd_port: u16 = 9067;
     let zcashd_port: u16 = 18232;
