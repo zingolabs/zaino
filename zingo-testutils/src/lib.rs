@@ -66,23 +66,44 @@ pub async fn launch_test_manager(
     u16,
     Option<String>,
 ) {
-    let lwd_port = portpicker::pick_unused_port().expect("No ports free");
-    let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
-    let proxy_port = portpicker::pick_unused_port().expect("No ports free");
+    // let lwd_port = portpicker::pick_unused_port().expect("No ports free");
+    // let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
+    // let proxy_port = portpicker::pick_unused_port().expect("No ports free");
+
+    let lwd_port = 9067;
+    let zcashd_port = 18232;
+    let proxy_port = 8080;
 
     print!(
-        "proxy port, lwd port, zcashd port: {}, {}, {}\n",
+        "Ports used for test: proxy port: {}, lwd port: {}, zcashd port: {}\n",
         proxy_port, lwd_port, zcashd_port
     );
 
     let temp_conf_dir = create_temp_conf_files(lwd_port, zcashd_port).unwrap();
+    let temp_conf_path = temp_conf_dir.as_ref().display().to_string();
 
-    let regtest_manager = zingo_testutils::regtest::RegtestManager::new(std::path::PathBuf::from(
-        temp_conf_dir.path(),
-    ));
+    println!("Temp Path Used: {}", temp_conf_path);
+
+    let output = std::process::Command::new("tree")
+        .arg(temp_conf_path.clone())
+        .output()
+        .expect("failed to execute process");
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    println!("Tree command output:\n{}", output_str);
+
+    let regtest_manager = zingo_testutils::regtest::RegtestManager::new(temp_conf_dir.into_path());
     let regtest_handler = regtest_manager
         .launch(true)
         .expect("Failed to start regtest services");
+
+    let output = std::process::Command::new("tree")
+        .arg(temp_conf_path)
+        .output()
+        .expect("failed to execute process");
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    println!("Tree command output:\n{}", output_str);
 
     let (handles, nym_addr) =
         zingoproxylib::proxy::spawn_proxy(&proxy_port, &lwd_port, &zcashd_port, online).await;

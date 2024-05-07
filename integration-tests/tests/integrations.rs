@@ -5,7 +5,7 @@
 
 use std::sync::{atomic::AtomicBool, Arc};
 use zingo_netutils::GrpcConnector;
-use zingo_testutils::{drop_test_manager, get_proxy_uri, launch_test_manager};
+use proxytestutils::{drop_test_manager, get_proxy_uri, launch_test_manager};
 
 mod proxy {
     use super::*;
@@ -18,6 +18,13 @@ mod proxy {
             launch_test_manager(online.clone()).await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+        _regtest_manager.generate_n_blocks(10).unwrap();
+
+        println!(
+            "Chain height: {}",
+            _regtest_manager.get_current_height().unwrap()
+        );
 
         let proxy_uri = get_proxy_uri(proxy_port);
         println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);

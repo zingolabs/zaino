@@ -7,7 +7,7 @@ edition = "2021"
 
 [features]
 nym = []
-# NOTE: Depricated
+# NOTE: Deprecated
 nym_poc = []
 
 [dependencies]

@@ -5,7 +5,7 @@ authors = ["zingo@zingolabs.org"]
 edition = "2021"
 
 [features]
-# NOTE: Depricated
+# NOTE: Deprecated
 nym_poc = []
 
 [dependencies]
