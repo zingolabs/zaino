@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-use zingo_netutils::GrpcConnector;
+use zingo_rpc::walletrpc::grpc::GrpcConnector;
 use zingoproxy_testutils::{drop_test_manager, get_proxy_uri, launch_test_manager};
 
 mod proxy {
@@ -13,14 +13,12 @@ mod proxy {
     #[tokio::test]
     async fn connect_to_lwd_get_info() {
         let online = Arc::new(AtomicBool::new(true));
-
         let (conf_path, _regtest_manager, regtest_handles, _handles, proxy_port, _nym_addr) =
             launch_test_manager(online.clone()).await;
 
         let proxy_uri = get_proxy_uri(proxy_port);
         println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);
 
-        // TODO: Add GrpcConnector that uses zingo-rpc's NymTxStreamerClient.
         let mut client = GrpcConnector::new(proxy_uri)
             .get_client()
             .await
@@ -32,6 +30,23 @@ mod proxy {
             .expect("Failed to retrieve lightd info from GRPC server");
 
         println!("{:#?}", lightd_info.into_inner());
+
+        drop_test_manager(Some(conf_path), regtest_handles, online).await
+    }
+
+    #[tokio::test]
+    async fn send_over_proxy() {
+        let online = Arc::new(AtomicBool::new(true));
+        let (conf_path, _regtest_manager, regtest_handles, _handles, proxy_port, _nym_addr) =
+            launch_test_manager(online.clone()).await;
+
+        let proxy_uri = get_proxy_uri(proxy_port);
+        println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);
+
+        let mut client = GrpcConnector::new(proxy_uri)
+            .get_client()
+            .await
+            .expect("Failed to create GRPC client");
 
         drop_test_manager(Some(conf_path), regtest_handles, online).await
     }

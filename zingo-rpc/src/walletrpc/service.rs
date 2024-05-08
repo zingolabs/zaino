@@ -1,6 +1,6 @@
-//! Wrapper implementation of LibRustZCash's CompactTXStreamerClient that also holds feature-gated, nym-enabled implementations.
+//! Wrapper implementation of LibRustZCash's CompactTXStreamerClient that also holds nym-enabled implementations.
 //!
-//! NOTE: Currently only send_transaction has been implemented.
+//! NOTE: Currently only send_transaction has been implemented over nym.
 
 use http::Uri;
 use http_body::Body;
@@ -27,7 +27,8 @@ use crate::{
 /// Wrapper struct for the Nym enabled CompactTxStreamerClient.
 #[derive(Debug, Clone)]
 pub struct NymTxStreamerClient<T> {
-    compact_tx_streamer_client: CompactTxStreamerClient<T>,
+    /// LibRustZcash's CompactTxStreamerClient.
+    pub compact_tx_streamer_client: CompactTxStreamerClient<T>,
 }
 
 impl NymTxStreamerClient<tonic::transport::Channel> {

@@ -13,7 +13,14 @@ fn write_lightwalletd_yml(
     let mut file = std::fs::File::create(file_path)?;
     writeln!(file, "grpc-bind-addr: 127.0.0.1:{}", bind_addr_port)?;
     writeln!(file, "cache-size: 10")?;
+    writeln!(file, "log-file: ../logs/lwd.log")?;
     writeln!(file, "log-level: 10")?;
+    writeln!(
+        file,
+        "zcash-conf-path: ../conf/zcash.conf
+"
+    )?;
+
     Ok(())
 }
 
@@ -34,6 +41,7 @@ fn write_zcash_conf(dir: &std::path::Path, rpcport: u16) -> Result<(), Box<dyn s
     writeln!(file, "rpcpassword=xxxxxx")?;
     writeln!(file, "rpcport={}", rpcport)?;
     writeln!(file, "rpcallowip=127.0.0.1")?;
+    writeln!(file, "listen=0")?;
     writeln!(file, "minetolocalwallet=0")?;
     writeln!(file, "mineraddress=zregtestsapling1fp58yvw40ytns3qrcc4p58ga9xunqglf5al6tl49fdlq3yrc2wk99dwrnxmhcyw5nlsqqa680rq")?;
     Ok(())

@@ -5,6 +5,7 @@ authors = ["zingo@zingolabs.org"]
 edition = "2021"
 
 [features]
+test = []
 # NOTE: Deprecated
 nym_poc = []
 
@@ -25,3 +26,9 @@ prost = { workspace = true }
 bytes = { workspace = true }
 http-body = { workspace = true }
 
+tokio-rustls = "0.23.3"
+tower = { version = "0.4" }
+hyper-rustls = { version = "0.23", features = ["http2"] }
+webpki-roots = "0.21.0"
+hyper = { version = "0.14", features = ["full"] }
+rustls-pemfile = "1.0.0"
