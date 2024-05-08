@@ -5,6 +5,82 @@
 
 use std::io::Write;
 
+pub struct TestManager {
+    pub temp_conf_path: std::path::PathBuf,
+    pub regtest_manager: zingo_testutils::regtest::RegtestManager,
+    pub proxy_port: u16,
+    pub nym_addr: Option<String>,
+    pub online: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TestManager {
+    pub async fn launch(
+        online: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> (
+        Self,
+        zingo_testutils::regtest::ChildProcessHandler,
+        Vec<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
+    ) {
+        let lwd_port = portpicker::pick_unused_port().expect("No ports free");
+        let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
+        let proxy_port = portpicker::pick_unused_port().expect("No ports free");
+
+        let temp_conf_dir = create_temp_conf_files(lwd_port, zcashd_port).unwrap();
+        let temp_conf_path = temp_conf_dir.path().to_path_buf();
+        let nym_conf_path = temp_conf_path.join("nym");
+
+        let regtest_manager =
+            zingo_testutils::regtest::RegtestManager::new(temp_conf_dir.into_path());
+        let regtest_handler = regtest_manager
+            .launch(true)
+            .expect("Failed to start regtest services");
+
+        let (proxy_handles, nym_addr) = zingoproxylib::proxy::spawn_proxy(
+            &proxy_port,
+            &lwd_port,
+            &zcashd_port,
+            nym_conf_path.to_str().unwrap(),
+            online.clone(),
+        )
+        .await;
+
+        (
+            TestManager {
+                temp_conf_path,
+                regtest_manager,
+                proxy_port,
+                nym_addr,
+                online,
+            },
+            regtest_handler,
+            proxy_handles,
+        )
+    }
+}
+
+impl Drop for TestManager {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.temp_conf_path) {
+            eprintln!("Failed to delete temporary directory: {:?}", e);
+        }
+    }
+}
+
+/// Closes test manager child processes, optionally cleans configuration and log files for test.
+pub async fn drop_test_manager(
+    temp_conf_path: Option<std::path::PathBuf>,
+    child_process_handler: zingo_testutils::regtest::ChildProcessHandler,
+    online: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    online.store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(child_process_handler);
+    if let Some(path) = temp_conf_path {
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            eprintln!("Failed to delete temporary directory: {:?}", e);
+        }
+    }
+}
+
 fn write_lightwalletd_yml(
     dir: &std::path::Path,
     bind_addr_port: u16,
@@ -13,13 +89,8 @@ fn write_lightwalletd_yml(
     let mut file = std::fs::File::create(file_path)?;
     writeln!(file, "grpc-bind-addr: 127.0.0.1:{}", bind_addr_port)?;
     writeln!(file, "cache-size: 10")?;
-    writeln!(file, "log-file: ../logs/lwd.log")?;
     writeln!(file, "log-level: 10")?;
-    writeln!(
-        file,
-        "zcash-conf-path: ../conf/zcash.conf
-"
-    )?;
+    writeln!(file, "zcash-conf-path: ../conf/zcash.conf")?;
 
     Ok(())
 }
@@ -72,53 +143,60 @@ pub fn get_proxy_uri(proxy_port: u16) -> http::Uri {
         .unwrap()
 }
 
-/// Launches a zingo regtest manager and zingo-proxy, created TempDir for configuration and log files.
-pub async fn launch_test_manager(
-    online: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> (
-    std::path::PathBuf,
-    zingo_testutils::regtest::RegtestManager,
-    zingo_testutils::regtest::ChildProcessHandler,
-    Vec<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
-    u16,
-    Option<String>,
-) {
-    let lwd_port = portpicker::pick_unused_port().expect("No ports free");
-    let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
-    let proxy_port = portpicker::pick_unused_port().expect("No ports free");
+// /// Launches a zingo regtest manager and zingo-proxy, created TempDir for configuration and log files.
+// pub async fn launch_test_manager(
+//     online: std::sync::Arc<std::sync::atomic::AtomicBool>,
+// ) -> (
+//     std::path::PathBuf,
+//     zingo_testutils::regtest::RegtestManager,
+//     zingo_testutils::regtest::ChildProcessHandler,
+//     Vec<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
+//     u16,
+//     Option<String>,
+// ) {
+//     let lwd_port = portpicker::pick_unused_port().expect("No ports free");
+//     let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
+//     let proxy_port = portpicker::pick_unused_port().expect("No ports free");
 
-    let temp_conf_dir = create_temp_conf_files(lwd_port, zcashd_port).unwrap();
-    let temp_conf_path = temp_conf_dir.path().to_path_buf();
+//     let temp_conf_dir = create_temp_conf_files(lwd_port, zcashd_port).unwrap();
+//     let temp_conf_path = temp_conf_dir.path().to_path_buf();
+//     let nym_conf_path = temp_conf_path.join("nym");
 
-    let regtest_manager = zingo_testutils::regtest::RegtestManager::new(temp_conf_dir.into_path());
-    let regtest_handler = regtest_manager
-        .launch(true)
-        .expect("Failed to start regtest services");
+//     let regtest_manager = zingo_testutils::regtest::RegtestManager::new(temp_conf_dir.into_path());
+//     let regtest_handler = regtest_manager
+//         .launch(true)
+//         .expect("Failed to start regtest services");
 
-    let (handles, nym_addr) =
-        zingoproxylib::proxy::spawn_proxy(&proxy_port, &lwd_port, &zcashd_port, online).await;
+//     let (handles, nym_addr) = zingoproxylib::proxy::spawn_proxy(
+//         &proxy_port,
+//         &lwd_port,
+//         &zcashd_port,
+//         nym_conf_path.to_str().unwrap(),
+//         online,
+//     )
+//     .await;
 
-    (
-        temp_conf_path,
-        regtest_manager,
-        regtest_handler,
-        handles,
-        proxy_port,
-        nym_addr,
-    )
-}
+//     (
+//         temp_conf_path,
+//         regtest_manager,
+//         regtest_handler,
+//         handles,
+//         proxy_port,
+//         nym_addr,
+//     )
+// }
 
-/// Closes test manager child processes, optionally cleans configuration and log files for test.
-pub async fn drop_test_manager(
-    temp_conf_path: Option<std::path::PathBuf>,
-    child_process_handler: zingo_testutils::regtest::ChildProcessHandler,
-    online: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
-    zingoproxylib::proxy::close_proxy(online).await;
-    drop(child_process_handler);
-    if let Some(path) = temp_conf_path {
-        if let Err(e) = std::fs::remove_dir_all(&path) {
-            eprintln!("Failed to delete temporary directory: {:?}", e);
-        }
-    }
-}
+// /// Closes test manager child processes, optionally cleans configuration and log files for test.
+// pub async fn drop_test_manager(
+//     temp_conf_path: Option<std::path::PathBuf>,
+//     child_process_handler: zingo_testutils::regtest::ChildProcessHandler,
+//     online: std::sync::Arc<std::sync::atomic::AtomicBool>,
+// ) {
+//     zingoproxylib::proxy::close_proxy(online);
+//     drop(child_process_handler);
+//     if let Some(path) = temp_conf_path {
+//         if let Err(e) = std::fs::remove_dir_all(&path) {
+//             eprintln!("Failed to delete temporary directory: {:?}", e);
+//         }
+//     }
+// }

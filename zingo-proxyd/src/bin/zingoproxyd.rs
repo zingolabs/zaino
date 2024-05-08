@@ -33,8 +33,14 @@ async fn main() {
     let lwd_port: u16 = 9067;
     let zcashd_port: u16 = 18232;
 
-    let (_handles, _nym_address) =
-        spawn_proxy(&proxy_port, &lwd_port, &zcashd_port, online.clone()).await;
+    let (_handles, _nym_address) = spawn_proxy(
+        &proxy_port,
+        &lwd_port,
+        &zcashd_port,
+        "/tmp/nym_server",
+        online.clone(),
+    )
+    .await;
 
     while online.load(Ordering::SeqCst) {}
 }

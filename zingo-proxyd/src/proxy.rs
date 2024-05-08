@@ -14,6 +14,7 @@ pub async fn spawn_proxy(
     proxy_port: &u16,
     lwd_port: &u16,
     zebrad_port: &u16,
+    nym_conf_path: &str,
     online: Arc<AtomicBool>,
 ) -> (Vec<JoinHandle<Result<(), TonicError>>>, Option<String>) {
     let mut handles = vec![];
@@ -23,8 +24,7 @@ pub async fn spawn_proxy(
 
     #[cfg(not(feature = "nym_poc"))]
     {
-        let path = "/tmp/nym_server";
-        let nym_server: NymServer = NymServer(NymClient::nym_spawn(path).await);
+        let nym_server: NymServer = NymServer(NymClient::nym_spawn(nym_conf_path).await);
         nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
 
         let nym_proxy_handle = nym_server.serve(online.clone()).await;
