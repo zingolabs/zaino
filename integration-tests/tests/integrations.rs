@@ -31,12 +31,7 @@ mod proxy {
 
         println!("{:#?}", lightd_info.into_inner());
 
-        drop_test_manager(
-            Some(test_manager.temp_conf_path.clone()),
-            regtest_handler,
-            online,
-        )
-        .await;
+        drop_test_manager(regtest_handler, online).await;
     }
 
     #[tokio::test]
@@ -46,19 +41,12 @@ mod proxy {
             TestManager::launch(online.clone()).await;
 
         let proxy_uri = get_proxy_uri(test_manager.proxy_port);
-        println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);
-
         let mut client = GrpcConnector::new(proxy_uri)
             .get_client()
             .await
             .expect("Failed to create GRPC client");
 
-        drop_test_manager(
-            Some(test_manager.temp_conf_path.clone()),
-            regtest_handler,
-            online,
-        )
-        .await;
+        drop_test_manager(regtest_handler, online).await;
     }
 }
 

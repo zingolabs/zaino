@@ -24,6 +24,7 @@ tonic = { workspace = true }
 zingo-testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
 zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
 
+ctrlc = "3.2.1"
 tempfile = "3.2.0"
 chrono = "0.4.19"
 portpicker = "0.1.1"

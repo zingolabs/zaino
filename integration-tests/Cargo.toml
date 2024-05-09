@@ -23,7 +23,6 @@ http = { workspace = true }
 
 # TODO: Change dependency to stable once net-utils merges.
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration", features = ["test-features"] }
-# zingo-testutils-git = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
 zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
 
 zcash_primitives = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }

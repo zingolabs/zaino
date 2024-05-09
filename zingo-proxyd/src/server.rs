@@ -72,35 +72,3 @@ pub async fn spawn_server(
     let server = ProxyServer::new(lwd_uri, zebra_uri);
     server.serve(proxy_port.clone(), online)
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use std::time::Duration;
-//     use tokio::time::sleep;
-//     use zcash_client_backend::proto::service::Empty;
-//     use zingo_netutils::GrpcConnector;
-
-//     #[tokio::test]
-//     /// NOTE: This test currently requires a manual boot of zcashd + lightwalletd to run
-//     async fn connect_to_lwd_get_info() {
-//         let server_port = 8080;
-//         let _server_handle = spawn_server(&server_port, &9067, &18232).await;
-//         sleep(Duration::from_secs(3)).await;
-//         let proxy_uri = Uri::builder()
-//             .scheme("http")
-//             .authority(format!("localhost:{server_port}"))
-//             .path_and_query("")
-//             .build()
-//             .unwrap();
-//         println!("{}", proxy_uri);
-//         let lightd_info = GrpcConnector::new(proxy_uri)
-//             .get_client()
-//             .await
-//             .unwrap()
-//             .get_lightd_info(Empty {})
-//             .await
-//             .unwrap();
-//         println!("{:#?}", lightd_info.into_inner());
-//     }
-// }

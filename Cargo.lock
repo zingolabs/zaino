@@ -7430,6 +7430,7 @@ name = "zingoproxy-testutils"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ctrlc",
  "http",
  "nym-sdk",
  "portpicker",
