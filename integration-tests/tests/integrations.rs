@@ -4,10 +4,12 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-use zingo_rpc::walletrpc::grpc::GrpcConnector;
-use zingoproxy_testutils::{drop_test_manager, get_proxy_uri, TestManager};
+// use zingo_rpc::walletrpc::grpc::GrpcConnector;
+use zingoproxy_testutils::{drop_test_manager, TestManager};
 
 mod proxy {
+    use zingo_netutils::GrpcConnector;
+
     use super::*;
 
     #[tokio::test]
@@ -16,10 +18,12 @@ mod proxy {
         let (test_manager, regtest_handler, _proxy_handler) =
             TestManager::launch(online.clone()).await;
 
-        let proxy_uri = get_proxy_uri(test_manager.proxy_port);
-        println!("Attempting to connect to GRPC server at URI: {}", proxy_uri);
+        println!(
+            "Attempting to connect to GRPC server at URI: {}",
+            test_manager.get_proxy_uri()
+        );
 
-        let mut client = GrpcConnector::new(proxy_uri)
+        let mut client = GrpcConnector::new(test_manager.get_proxy_uri())
             .get_client()
             .await
             .expect("Failed to create GRPC client");
@@ -31,7 +35,12 @@ mod proxy {
 
         println!("{:#?}", lightd_info.into_inner());
 
-        drop_test_manager(regtest_handler, online).await;
+        drop_test_manager(
+            Some(test_manager.temp_conf_dir.path().to_path_buf()),
+            regtest_handler,
+            online,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -39,14 +48,42 @@ mod proxy {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _proxy_handler) =
             TestManager::launch(online.clone()).await;
+        let zingo_client = test_manager.build_lightclient().await;
 
-        let proxy_uri = get_proxy_uri(test_manager.proxy_port);
-        let mut client = GrpcConnector::new(proxy_uri)
-            .get_client()
+        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
+        zingo_client.do_sync(false).await.unwrap();
+
+        println!(
+            "zingo_client balance: {:#?}",
+            zingo_client.do_balance().await
+        );
+
+        zingo_client
+            .do_send(vec![(
+                &zingolib::get_base_address!(zingo_client, "sapling"),
+                250_000,
+                None,
+            )])
             .await
-            .expect("Failed to create GRPC client");
+            .unwrap();
+        zingo_client.do_sync(false).await.unwrap();
 
-        drop_test_manager(regtest_handler, online).await;
+        println!(
+            "zingo_client balance: {:#?}",
+            zingo_client.do_balance().await
+        );
+
+        assert_eq!(
+            zingo_client.do_balance().await.sapling_balance.unwrap(),
+            250_000
+        );
+
+        drop_test_manager(
+            Some(test_manager.temp_conf_dir.path().to_path_buf()),
+            regtest_handler,
+            online,
+        )
+        .await;
     }
 }
 

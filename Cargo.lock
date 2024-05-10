@@ -7442,6 +7442,7 @@ dependencies = [
  "zingo-rpc",
  "zingo-testutils",
  "zingoconfig",
+ "zingolib",
 ]
 
 [[package]]

@@ -11,6 +11,8 @@ pub struct TestManager {
     pub temp_conf_dir: tempfile::TempDir,
     /// Zingolib regtest manager.
     pub regtest_manager: zingo_testutils::regtest::RegtestManager,
+    /// Zingolib regtest network.
+    pub regtest_network: zingoconfig::RegtestNetwork,
     /// Zing-Proxy gRPC listen port.
     pub proxy_port: u16,
     /// Zingo-Proxy Nym listen address.
@@ -38,6 +40,8 @@ impl TestManager {
 
         set_custom_drops(online.clone(), Some(temp_conf_path.clone()));
 
+        let regtest_network = zingoconfig::RegtestNetwork::new(1, 1, 1, 1, 1, 1);
+
         let regtest_manager = zingo_testutils::regtest::RegtestManager::new(temp_conf_path.clone());
         let regtest_handler = regtest_manager
             .launch(true)
@@ -56,6 +60,7 @@ impl TestManager {
             TestManager {
                 temp_conf_dir,
                 regtest_manager,
+                regtest_network,
                 proxy_port,
                 nym_addr,
                 online,
@@ -64,15 +69,57 @@ impl TestManager {
             proxy_handler,
         )
     }
+
+    /// Returns zingo-proxy listen port.
+    pub fn get_proxy_uri(&self) -> http::Uri {
+        http::Uri::builder()
+            .scheme("http")
+            .authority(format!("127.0.0.1:{0}", self.proxy_port))
+            .path_and_query("")
+            .build()
+            .unwrap()
+    }
+
+    /// Builds aand returns Zingolib lightclient.
+    pub async fn build_lightclient(&self) -> zingolib::lightclient::LightClient {
+        let mut client_builder = zingo_testutils::scenarios::setup::ClientBuilder::new(
+            self.get_proxy_uri(),
+            self.temp_conf_dir.path().to_path_buf(),
+        );
+        client_builder
+            .build_faucet(false, self.regtest_network)
+            .await
+    }
 }
 
 /// Closes test manager child processes, optionally cleans configuration and log files for test.
 pub async fn drop_test_manager(
+    temp_conf_path: Option<std::path::PathBuf>,
     child_process_handler: zingo_testutils::regtest::ChildProcessHandler,
     online: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     online.store(false, std::sync::atomic::Ordering::SeqCst);
     drop(child_process_handler);
+
+    let mut temp_wallet_path = temp_conf_path.clone().unwrap();
+    if let Some(dir_name) = temp_wallet_path.file_name().and_then(|n| n.to_str()) {
+        let new_dir_name = format!("{}_client_1", dir_name);
+        temp_wallet_path.set_file_name(new_dir_name); // Update the directory name
+    }
+
+    if let Some(ref path) = temp_conf_path {
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            eprintln!(
+                "Failed to delete temporary regtest configuration directory: {:?}",
+                e
+            );
+        }
+    }
+    if let Some(ref path) = Some(temp_wallet_path) {
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            eprintln!("Failed to delete temporary directory: {:?}", e);
+        }
+    }
 }
 
 fn set_custom_drops(
@@ -84,29 +131,48 @@ fn set_custom_drops(
     let temp_conf_path_panic = temp_conf_path.clone();
     let temp_conf_path_ctrlc = temp_conf_path.clone();
 
+    let mut temp_wallet_path = temp_conf_path.unwrap();
+    if let Some(dir_name) = temp_wallet_path.file_name().and_then(|n| n.to_str()) {
+        let new_dir_name = format!("{}_client_1", dir_name);
+        temp_wallet_path.set_file_name(new_dir_name); // Update the directory name
+    }
+    let temp_wallet_path_panic = Some(temp_wallet_path.clone());
+    let temp_wallet_path_ctrlc = Some(temp_wallet_path.clone());
+
+    let default_panic_hook = std::panic::take_hook();
+
     std::panic::set_hook(Box::new(move |panic_info| {
-        if let Some(location) = panic_info.location() {
-            println!(
-                "Panic occurred in file '{}' at line {}",
-                location.file(),
-                location.line()
-            );
-        } else {
-            println!("Panic occurred but no location information available.");
-        };
+        default_panic_hook(panic_info);
         online_panic.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(ref path) = temp_conf_path_panic {
             if let Err(e) = std::fs::remove_dir_all(&path) {
-                eprintln!("Failed to delete temporary directory: {:?}", e);
+                eprintln!(
+                    "Failed to delete temporary regtest config directory: {:?}",
+                    e
+                );
             }
         }
+        if let Some(ref path) = temp_wallet_path_panic {
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                eprintln!("Failed to delete temporary wallet directory: {:?}", e);
+            }
+        }
+        std::process::exit(0);
     }));
     ctrlc::set_handler(move || {
         println!("Received Ctrl+C, exiting.");
         online_ctrlc.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(ref path) = temp_conf_path_ctrlc {
             if let Err(e) = std::fs::remove_dir_all(&path) {
-                eprintln!("Failed to delete temporary directory: {:?}", e);
+                eprintln!(
+                    "Failed to delete temporary regtest config directory: {:?}",
+                    e
+                );
+            }
+        }
+        if let Some(ref path) = temp_wallet_path_ctrlc {
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                eprintln!("Failed to delete temporary wallet directory: {:?}", e);
             }
         }
         std::process::exit(0);
@@ -147,7 +213,9 @@ fn write_zcash_conf(dir: &std::path::Path, rpcport: u16) -> Result<(), Box<dyn s
     writeln!(file, "rpcallowip=127.0.0.1")?;
     writeln!(file, "listen=0")?;
     writeln!(file, "minetolocalwallet=0")?;
-    writeln!(file, "mineraddress=zregtestsapling1fp58yvw40ytns3qrcc4p58ga9xunqglf5al6tl49fdlq3yrc2wk99dwrnxmhcyw5nlsqqa680rq")?;
+    // writeln!(file, "mineraddress=zregtestsapling1fmq2ufux3gm0v8qf7x585wj56le4wjfsqsj27zprjghntrerntggg507hxh2ydcdkn7sx8kya7p")?;
+    writeln!(file, "mineraddress=uregtest1zkuzfv5m3yhv2j4fmvq5rjurkxenxyq8r7h4daun2zkznrjaa8ra8asgdm8wwgwjvlwwrxx7347r8w0ee6dqyw4rufw4wg9djwcr6frzkezmdw6dud3wsm99eany5r8wgsctlxquu009nzd6hsme2tcsk0v3sgjvxa70er7h27z5epr67p5q767s2z5gt88paru56mxpm6pwz0cu35m")?;
+
     Ok(())
 }
 
@@ -163,14 +231,4 @@ fn create_temp_conf_files(
     write_lightwalletd_yml(&conf_dir, lwd_port)?;
     write_zcash_conf(&conf_dir, rpcport)?;
     Ok(temp_dir)
-}
-
-/// Returns zingo-proxy listen porn.
-pub fn get_proxy_uri(proxy_port: u16) -> http::Uri {
-    http::Uri::builder()
-        .scheme("http")
-        .authority(format!("127.0.0.1:{proxy_port}"))
-        .path_and_query("")
-        .build()
-        .unwrap()
 }
