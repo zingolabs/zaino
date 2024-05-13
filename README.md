@@ -9,7 +9,6 @@ A note to developers/consumers/contributers: The end goal is not an exact one-to
 We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet. And a Lightweight gRPC server for testing and development (this may be fleshed out to be a mainnet LightWalletD alternative in the future but is currently not a priority and will depend on zebrad).
 
 # Security Vulnerability Disclosure
-
 If you believe you have discovered a security issue, please contact us at:
 
 zingodisclosure@proton.me
