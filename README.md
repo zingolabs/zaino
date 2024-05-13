@@ -8,6 +8,11 @@ Eventually, we'll no longer have any calls that need to use the lightwalletd, an
 A note to developers/consumers/contributers: The end goal is not an exact one-to-one port of all existing lwd functionaliy.
 We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet. And a Lightweight gRPC server for testing and development (this may be fleshed out to be a mainnet LightWalletD alternative in the future but is currently not a priority and will depend on zebrad).
 
+# Security Vulnerability Disclosure
+
+If you believe you have discovered a security issue, please contact us at:
+
+zingodisclosure@proton.me
 
 # Zingo-RPC
 will eventually hold the rust implementations of the LightWallet Service and Darkside RPCs, along with the wallet-side and server-side Nym Service implementations.
