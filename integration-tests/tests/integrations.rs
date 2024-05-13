@@ -4,12 +4,12 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-// use zingo_rpc::walletrpc::grpc::GrpcConnector;
 use zingoproxy_testutils::{drop_test_manager, TestManager};
 
-mod proxy {
-    use zingo_netutils::GrpcConnector;
+use zingo_netutils::GrpcConnector;
+// use zingo_rpc::walletrpc::grpc::GrpcConnector;
 
+mod proxy {
     use super::*;
 
     #[tokio::test]
@@ -88,9 +88,9 @@ mod proxy {
 }
 
 mod nym {
-    // TODO: Add Nym Tests.
+    // TODO: Build nym encanhed zingolib version using zingo-rpc::walletrpc::service.
 }
 
 mod darkside {
-    // TODO: Add darkside tests.
+    // TODO: Add darkside.
 }

@@ -5,10 +5,13 @@
 
 use std::io::Write;
 
+static CTRL_C_ONCE: std::sync::Once = std::sync::Once::new();
+
 /// Configuration data for Zingo-Proxy Tests.
 pub struct TestManager {
     /// Temporary Directory for nym, zcashd and lightwalletd configuration and regtest data.
     pub temp_conf_dir: tempfile::TempDir,
+    // std::path::PathBuf,
     /// Zingolib regtest manager.
     pub regtest_manager: zingo_testutils::regtest::RegtestManager,
     /// Zingolib regtest network.
@@ -159,25 +162,28 @@ fn set_custom_drops(
         }
         std::process::exit(0);
     }));
-    ctrlc::set_handler(move || {
-        println!("Received Ctrl+C, exiting.");
-        online_ctrlc.store(false, std::sync::atomic::Ordering::SeqCst);
-        if let Some(ref path) = temp_conf_path_ctrlc {
-            if let Err(e) = std::fs::remove_dir_all(&path) {
-                eprintln!(
-                    "Failed to delete temporary regtest config directory: {:?}",
-                    e
-                );
+
+    CTRL_C_ONCE.call_once(|| {
+        ctrlc::set_handler(move || {
+            println!("Received Ctrl+C, exiting.");
+            online_ctrlc.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Some(ref path) = temp_conf_path_ctrlc {
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    eprintln!(
+                        "Failed to delete temporary regtest config directory: {:?}",
+                        e
+                    );
+                }
             }
-        }
-        if let Some(ref path) = temp_wallet_path_ctrlc {
-            if let Err(e) = std::fs::remove_dir_all(&path) {
-                eprintln!("Failed to delete temporary wallet directory: {:?}", e);
+            if let Some(ref path) = temp_wallet_path_ctrlc {
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    eprintln!("Failed to delete temporary wallet directory: {:?}", e);
+                }
             }
-        }
-        std::process::exit(0);
+            std::process::exit(0);
+        })
+        .expect("Error setting Ctrl-C handler");
     })
-    .expect("Error setting Ctrl-C handler");
 }
 
 fn write_lightwalletd_yml(
