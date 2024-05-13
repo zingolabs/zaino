@@ -25,10 +25,10 @@ async fn main() {
 
     nym_bin_common::logging::setup_logging();
 
-    let proxy_port: u16 = 8080;
+    let mut proxy_port: u16 = 8080;
     #[cfg(feature = "nym_poc")]
     {
-        let proxy_port = 8088;
+        proxy_port = 8088;
     }
     let lwd_port: u16 = 9067;
     let zcashd_port: u16 = 18232;

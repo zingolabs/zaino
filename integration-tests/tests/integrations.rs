@@ -7,7 +7,6 @@ use std::sync::{atomic::AtomicBool, Arc};
 use zingoproxy_testutils::{drop_test_manager, TestManager};
 
 use zingo_netutils::GrpcConnector;
-// use zingo_rpc::walletrpc::grpc::GrpcConnector;
 
 mod proxy {
     use super::*;
