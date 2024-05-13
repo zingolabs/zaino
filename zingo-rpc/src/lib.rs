@@ -3,8 +3,11 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-pub mod nym;
 pub mod primitives;
+pub mod proto;
+
 pub mod rpc;
-pub mod utils;
 pub mod walletrpc;
+
+pub mod nym;
+pub mod utils;
