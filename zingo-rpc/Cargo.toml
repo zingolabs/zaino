@@ -5,7 +5,7 @@ authors = ["zingo@zingolabs.org"]
 edition = "2021"
 
 [features]
-test = []
+darkside = []
 # NOTE: Deprecated
 nym_poc = []
 

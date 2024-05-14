@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [features]
 # TODO: Add [default = [ "nym" ]] when nym poc is removed, or remove "nym" all together.
 nym = []
+darkside = []
 # NOTE: Deprecated
 nym_poc = []
 
