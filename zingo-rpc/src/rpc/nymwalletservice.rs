@@ -20,6 +20,8 @@ use crate::{
     primitives::{NymClient, ProxyClient},
 };
 
+use crate::utils::GrpcConnector;
+
 #[async_trait]
 impl CompactTxStreamer for ProxyClient {
     define_grpc_passthrough!(

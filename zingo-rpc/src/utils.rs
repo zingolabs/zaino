@@ -37,8 +37,6 @@ macro_rules! define_grpc_passthrough {
             Self: 'async_trait,
         {
             println!("received call of {}", stringify!($name));
-            #[cfg(not(feature = "darkside"))]
-            {
                 Box::pin(async {
                     GrpcConnector::new($self.lightwalletd_uri.clone())
                         .get_client()
@@ -47,18 +45,6 @@ macro_rules! define_grpc_passthrough {
                         .$name($($($arg),*)?)
                         .await
                 })
-            }
-            #[cfg(feature = "darkside")]
-            {
-                Box::pin(async {
-                    GrpcConnector::new($self.lightwalletd_uri.clone())
-                        .get_darkside_client()
-                        .await
-                        .expect("Proxy server failed to create client")
-                        .$name($($($arg),*)?)
-                        .await
-                })
-            }
 
         }
     };
@@ -169,7 +155,6 @@ impl GrpcConnector {
         }
     }
 
-    #[cfg(feature = "darkside")]
     pub fn get_darkside_client(
         &self,
     ) -> impl std::future::Future<

@@ -5,14 +5,12 @@ use zcash_client_backend::proto::service::{
 };
 
 use crate::{
-    define_grpc_passthrough,
     primitives::ProxyClient,
     proto::darkside::{
         darkside_streamer_server::DarksideStreamer, DarksideBlock, DarksideBlocksUrl,
         DarksideEmptyBlocks, DarksideHeight, DarksideMetaState, DarksideSubtreeRoots,
         DarksideTransactionsUrl,
     },
-    utils::GrpcConnector,
 };
 
 impl DarksideStreamer for ProxyClient {
@@ -23,61 +21,131 @@ impl DarksideStreamer for ProxyClient {
     /// test so that no state leaks from one test to another.
     /// Also sets (some of) the values returned by GetLightdInfo(). The Sapling
     /// activation height specified here must be where the block range starts.
-
-    // async fn reset(
-    //     &self,
-    //     request: tonic::Request<DarksideMetaState>,
-    // ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
-
-    define_grpc_passthrough!(
-        fn reset(
-            &self,
-            request: tonic::Request<DarksideMetaState>,
-        ) -> Empty
-    );
+    fn reset<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<DarksideMetaState>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// StageBlocksStream accepts a list of blocks and saves them into the blocks
     /// staging area until ApplyStaged() is called; there is no immediate effect on
     /// the mock zcashd. Blocks are hex-encoded. Order is important, see ApplyStaged.
-    async fn stage_blocks_stream(
-        &self,
-        request: tonic::Request<tonic::Streaming<DarksideBlock>>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn stage_blocks_stream<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<tonic::Streaming<DarksideBlock>>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// StageBlocks is the same as StageBlocksStream() except the blocks are fetched
     /// from the given URL. Blocks are one per line, hex-encoded (not JSON).
-    async fn stage_blocks(
-        &self,
-        request: tonic::Request<DarksideBlocksUrl>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn stage_blocks<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<DarksideBlocksUrl>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// StageBlocksCreate is like the previous two, except it creates 'count'
     /// empty blocks at consecutive heights starting at height 'height'. The
     /// 'nonce' is part of the header, so it contributes to the block hash; this
     /// lets you create identical blocks (same transactions and height), but with
     /// different hashes.
-    async fn stage_blocks_create(
-        &self,
-        request: tonic::Request<DarksideEmptyBlocks>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn stage_blocks_create<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<DarksideEmptyBlocks>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// StageTransactionsStream stores the given transaction-height pairs in the
     /// staging area until ApplyStaged() is called. Note that these transactions
     /// are not returned by the production GetTransaction() gRPC until they
     /// appear in a "mined" block (contained in the active blockchain presented
     /// by the mock zcashd).
-    async fn stage_transactions_stream(
-        &self,
-        request: tonic::Request<tonic::Streaming<RawTransaction>>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn stage_transactions_stream<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<tonic::Streaming<RawTransaction>>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// StageTransactions is the same except the transactions are fetched from
     /// the given url. They are all staged into the block at the given height.
     /// Staging transactions to different heights requires multiple calls.
-    async fn stage_transactions(
-        &self,
-        request: tonic::Request<DarksideTransactionsUrl>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn stage_transactions<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<DarksideTransactionsUrl>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// ApplyStaged iterates the list of blocks that were staged by the
     /// StageBlocks*() gRPCs, in the order they were staged, and "merges" each
@@ -95,16 +163,26 @@ impl DarksideStreamer for ProxyClient {
     /// (i.e. what's returned by GetLatestBlock). Note that ApplyStaged() can
     /// also be used to simply advance the latest block height presented by mock
     /// zcashd. That is, there doesn't need to be anything in the staging area.
-    async fn apply_staged(
-        &self,
-        request: tonic::Request<DarksideHeight>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn apply_staged<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<DarksideHeight>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Server streaming response type for the GetIncomingTransactions method.
-    type GetIncomingTransactionsStream: tonic::codegen::tokio_stream::Stream<
-            Item = std::result::Result<RawTransaction, tonic::Status>,
-        > + Send
-        + 'static;
+    type GetIncomingTransactionsStream = tonic::Streaming<RawTransaction>;
 
     /// Calls to the production gRPC SendTransaction() store the transaction in
     /// a separate area (not the staging area); this method returns all transactions
@@ -113,52 +191,159 @@ impl DarksideStreamer for ProxyClient {
     /// been mined yet. The intention is that the transactions returned here can
     /// then, for example, be given to StageTransactions() to get them "mined"
     /// into a specified block on the next ApplyStaged().
-    async fn get_incoming_transactions(
-        &self,
-        request: tonic::Request<Empty>,
-    ) -> std::result::Result<tonic::Response<Self::GetIncomingTransactionsStream>, tonic::Status>;
+    fn get_incoming_transactions<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<Empty>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<
+                        tonic::Response<Self::GetIncomingTransactionsStream>,
+                        tonic::Status,
+                    >,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Clear the incoming transaction pool.
-    async fn clear_incoming_transactions(
-        &self,
-        request: tonic::Request<Empty>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn clear_incoming_transactions<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<Empty>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Add a GetAddressUtxosReply entry to be returned by GetAddressUtxos().
     /// There is no staging or applying for these, very simple.
-    async fn add_address_utxo(
-        &self,
-        request: tonic::Request<GetAddressUtxosReply>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn add_address_utxo<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<GetAddressUtxosReply>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Clear the list of GetAddressUtxos entries (can't fail)
-    async fn clear_address_utxo(
-        &self,
-        request: tonic::Request<Empty>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn clear_address_utxo<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<Empty>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Adds a GetTreeState to the tree state cache
-    async fn add_tree_state(
-        &self,
-        request: tonic::Request<TreeState>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn add_tree_state<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<TreeState>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Removes a GetTreeState for the given height from cache if present (can't fail)
-    async fn remove_tree_state(
-        &self,
-        request: tonic::Request<BlockId>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn remove_tree_state<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<BlockId>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Clear the list of GetTreeStates entries (can't fail)
-    async fn clear_all_tree_states(
-        &self,
-        request: tonic::Request<Empty>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn clear_all_tree_states<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<Empty>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 
     /// Sets the subtree roots cache (for GetSubtreeRoots),
     /// replacing any existing entries
-    async fn set_subtree_roots(
-        &self,
-        request: tonic::Request<DarksideSubtreeRoots>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status>;
+    fn set_subtree_roots<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<DarksideSubtreeRoots>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<tonic::Response<Empty>, tonic::Status>,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        unimplemented!()
+    }
 }

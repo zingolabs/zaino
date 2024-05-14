@@ -10,7 +10,7 @@ use zcash_client_backend::proto::{
     },
 };
 
-use crate::{define_grpc_passthrough, primitives::ProxyClient, utils::GrpcConnector;};
+use crate::{define_grpc_passthrough, primitives::ProxyClient, utils::GrpcConnector};
 
 impl CompactTxStreamer for ProxyClient {
     // fn get_latest_block<'life0, 'async_trait>(
