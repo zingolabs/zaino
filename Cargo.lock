@@ -7279,6 +7279,8 @@ name = "zingo-rpc"
 version = "0.1.0"
 dependencies = [
  "bytes 1.5.0",
+ "futures",
+ "futures-core",
  "http",
  "http-body",
  "hyper",

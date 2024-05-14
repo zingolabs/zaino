@@ -7,7 +7,6 @@ pub mod primitives;
 pub mod proto;
 
 pub mod rpc;
-pub mod walletrpc;
 
 pub mod nym;
 pub mod utils;
