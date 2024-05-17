@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod jsonrpc;
 pub mod nym;
 pub mod primitives;
 pub mod rpc;
