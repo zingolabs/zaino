@@ -108,9 +108,9 @@ pub struct GetBalanceResponse {
 
 /// Wrapper for `SerializedBlock` to handle hex serialization/deserialization.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HexSerializedBlock(SerializedBlock);
+pub struct ProxySerializedBlock(SerializedBlock);
 
-impl Serialize for HexSerializedBlock {
+impl Serialize for ProxySerializedBlock {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -120,7 +120,7 @@ impl Serialize for HexSerializedBlock {
     }
 }
 
-impl<'de> Deserialize<'de> for HexSerializedBlock {
+impl<'de> Deserialize<'de> for ProxySerializedBlock {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -128,7 +128,7 @@ impl<'de> Deserialize<'de> for HexSerializedBlock {
         struct HexVisitor;
 
         impl<'de> serde::de::Visitor<'de> for HexVisitor {
-            type Value = HexSerializedBlock;
+            type Value = ProxySerializedBlock;
 
             fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
                 formatter.write_str("a hex-encoded string")
@@ -139,7 +139,7 @@ impl<'de> Deserialize<'de> for HexSerializedBlock {
                 E: serde::de::Error,
             {
                 let bytes = hex::decode(value).map_err(serde::de::Error::custom)?;
-                Ok(HexSerializedBlock(SerializedBlock::from(bytes)))
+                Ok(ProxySerializedBlock(SerializedBlock::from(bytes)))
             }
         }
 
@@ -147,17 +147,17 @@ impl<'de> Deserialize<'de> for HexSerializedBlock {
     }
 }
 
-impl FromHex for HexSerializedBlock {
+impl FromHex for ProxySerializedBlock {
     type Error = hex::FromHexError;
 
     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
         hex::decode(hex)
-            .map(|bytes| HexSerializedBlock(SerializedBlock::from(bytes)))
+            .map(|bytes| ProxySerializedBlock(SerializedBlock::from(bytes)))
             .map_err(|e| e.into())
     }
 }
 
-impl AsRef<[u8]> for HexSerializedBlock {
+impl AsRef<[u8]> for ProxySerializedBlock {
     fn as_ref(&self) -> &[u8] {
         &self.0.as_ref()
     }
@@ -170,7 +170,7 @@ impl AsRef<[u8]> for HexSerializedBlock {
 #[serde(untagged)]
 pub enum GetBlockResponse {
     /// The request block, hex-encoded.
-    Raw(#[serde(with = "hex")] HexSerializedBlock),
+    Raw(#[serde(with = "hex")] ProxySerializedBlock),
     /// The block object.
     Object {
         /// The hash of the requested block.
