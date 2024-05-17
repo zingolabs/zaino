@@ -25,6 +25,7 @@ async fn main() {
 
     nym_bin_common::logging::setup_logging();
 
+    #[allow(unused_mut)]
     let mut proxy_port: u16 = 8080;
     #[cfg(feature = "nym_poc")]
     {
