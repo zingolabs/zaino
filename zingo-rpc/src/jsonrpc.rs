@@ -7,6 +7,8 @@ use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use serde::ser::SerializeStruct;
+
 use zebra_chain::{
     block::{self, Height, SerializedBlock},
     subtree::NoteCommitmentSubtreeIndex,
@@ -281,70 +283,24 @@ impl<'de, Tree: AsRef<[u8]> + FromHex<Error = hex::FromHexError> + Deserialize<'
     }
 }
 
-/// Wrapper struct for trees that need to be serialized and deserialized from hex.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HexEncodedSerializedTree<T> {
-    inner: T,
-}
+/// A serialized Sapling note commitment tree
+///
+/// Replicates functionality used in Zebra.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ProxySerializedTree(Vec<u8>);
 
-impl<T> HexEncodedSerializedTree<T>
-where
-    T: From<Vec<u8>> + AsRef<[u8]>,
-{
-    pub fn new(inner: T) -> Self {
-        Self { inner }
-    }
-}
-
-impl<T> Serialize for HexEncodedSerializedTree<T>
-where
-    T: AsRef<[u8]> + Serialize,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let hex_string = hex::encode(self.inner.as_ref());
-        serializer.serialize_str(&hex_string)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for HexEncodedSerializedTree<T>
-where
-    T: AsRef<[u8]> + From<Vec<u8>> + Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let hex_string = String::deserialize(deserializer)?;
-        let bytes = hex::decode(&hex_string).map_err(serde::de::Error::custom)?;
-        Ok(HexEncodedSerializedTree {
-            inner: T::from(bytes),
-        })
-    }
-}
-
-impl<T> FromHex for HexEncodedSerializedTree<T>
-where
-    T: From<Vec<u8>>,
-{
+impl FromHex for ProxySerializedTree {
     type Error = hex::FromHexError;
 
-    fn from_hex<S: AsRef<[u8]>>(hex: S) -> Result<Self, Self::Error> {
-        let bytes = hex::decode(hex).map_err(serde::de::Error::custom)?;
-        Ok(HexEncodedSerializedTree {
-            inner: T::from(bytes),
-        })
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = hex::decode(hex)?;
+        Ok(ProxySerializedTree(bytes))
     }
 }
 
-impl<T> AsRef<[u8]> for HexEncodedSerializedTree<T>
-where
-    T: AsRef<[u8]>,
-{
+impl AsRef<[u8]> for ProxySerializedTree {
     fn as_ref(&self) -> &[u8] {
-        self.inner.as_ref()
+        &self.0
     }
 }
 
@@ -369,11 +325,84 @@ pub struct GetTreestateResponse {
 
     /// A treestate containing a Sapling note commitment tree, hex-encoded.
     #[serde(skip_serializing_if = "ProxyTreestate::is_empty")]
-    sapling: ProxyTreestate<HexEncodedSerializedTree<zebra_chain::sapling::tree::SerializedTree>>,
+    sapling: ProxyTreestate<ProxySerializedTree>,
 
     /// A treestate containing an Orchard note commitment tree, hex-encoded.
     #[serde(skip_serializing_if = "ProxyTreestate::is_empty")]
-    orchard: ProxyTreestate<HexEncodedSerializedTree<zebra_chain::orchard::tree::SerializedTree>>,
+    orchard: ProxyTreestate<ProxySerializedTree>,
+    // NOTE: CREATE PoxySerializedTree TO SIMPLIFY CODING>>
+}
+
+/// Wrapper type that can hold Sapling or Orchard subtree roots with hex encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxySubtreeRpcData {
+    /// Merkle root of the 2^16-leaf subtree.
+    pub root: String,
+    /// Height of the block containing the note that completed this subtree.
+    pub height: Height,
+}
+
+impl ProxySubtreeRpcData {
+    /// Returns new instance of ProxySubtreeRpcData
+    pub fn new(root: String, height: Height) -> Self {
+        Self { root, height }
+    }
+}
+
+impl serde::Serialize for ProxySubtreeRpcData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("ProxySubtreeRpcData", 2)?;
+        state.serialize_field("root", &self.root)?;
+        state.serialize_field("height", &self.height)?;
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ProxySubtreeRpcData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Inner {
+            root: String,
+            height: Height,
+        }
+
+        let inner = Inner::deserialize(deserializer)?;
+        Ok(ProxySubtreeRpcData {
+            root: inner.root,
+            height: inner.height,
+        })
+    }
+}
+
+impl FromHex for ProxySubtreeRpcData {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let hex_str = std::str::from_utf8(hex.as_ref())
+            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
+
+        if hex_str.len() < 8 {
+            return Err(hex::FromHexError::OddLength);
+        }
+
+        let root_end_index = hex_str.len() - 8;
+        let (root_hex, height_hex) = hex_str.split_at(root_end_index);
+
+        let root = root_hex.to_string();
+        let height = u32::from_str_radix(height_hex, 16)
+            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
+
+        Ok(ProxySubtreeRpcData {
+            root,
+            height: Height(height),
+        })
+    }
 }
 
 /// Contains the Sapling or Orchard pool label, the index of the first subtree in the list,
@@ -392,7 +421,7 @@ pub struct GetSubtreesResponse {
     ///
     /// The generic subtree root type is a hex-encoded Sapling or Orchard subtree root string.
     // #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub subtrees: Vec<SubtreeRpcData>,
+    pub subtrees: Vec<ProxySubtreeRpcData>,
 }
 
 /// Contains raw transaction, encoded as hex bytes.
@@ -416,6 +445,81 @@ pub enum GetTransactionResponse {
     },
 }
 
+/// Zingo-Proxy encoding of a Bitcoin script.
+#[derive(Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ProxyScript {
+    /// # Correctness
+    ///
+    /// Consensus-critical serialization uses [`ZcashSerialize`].
+    /// [`serde`]-based hex serialization must only be used for RPCs and testing.
+    #[serde(with = "hex")]
+    script: Vec<u8>,
+}
+
+impl ProxyScript {
+    /// Create a new Bitcoin script from its raw bytes.
+    /// The raw bytes must not contain the length prefix.
+    pub fn new(raw_bytes: &[u8]) -> Self {
+        Self {
+            script: raw_bytes.to_vec(),
+        }
+    }
+
+    /// Return the raw bytes of the script without the length prefix.
+    ///
+    /// # Correctness
+    ///
+    /// These raw bytes do not have a length prefix.
+    /// The Zcash serialization format requires a length prefix; use `zcash_serialize`
+    /// and `zcash_deserialize` to create byte data with a length prefix.
+    pub fn as_raw_bytes(&self) -> &[u8] {
+        &self.script
+    }
+}
+
+impl core::fmt::Display for ProxyScript {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str(&self.encode_hex::<String>())
+    }
+}
+
+impl core::fmt::Debug for ProxyScript {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_tuple("Script")
+            .field(&hex::encode(&self.script))
+            .finish()
+    }
+}
+
+impl ToHex for &ProxyScript {
+    fn encode_hex<T: FromIterator<char>>(&self) -> T {
+        self.as_raw_bytes().encode_hex()
+    }
+
+    fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
+        self.as_raw_bytes().encode_hex_upper()
+    }
+}
+
+impl ToHex for ProxyScript {
+    fn encode_hex<T: FromIterator<char>>(&self) -> T {
+        (&self).encode_hex()
+    }
+
+    fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
+        (&self).encode_hex_upper()
+    }
+}
+
+impl FromHex for ProxyScript {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = Vec::from_hex(hex)?;
+        Ok(Self { script: bytes })
+    }
+}
+
 /// .
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_address_utxos`].
@@ -434,7 +538,7 @@ pub struct GetUtxosResponse {
 
     /// The transparent output script, hex encoded
     #[serde(with = "hex")]
-    script: transparent::Script,
+    script: ProxyScript,
 
     /// The amount of zatoshis in the transparent output
     satoshis: u64,
