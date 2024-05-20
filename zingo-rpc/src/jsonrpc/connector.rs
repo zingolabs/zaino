@@ -5,13 +5,13 @@ use hyper::{http, Body, Client, Request};
 use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use zebra_rpc::methods::{GetBlockChainInfo, GetBlockHash, GetInfo, SentTransactionHash};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use super::primitives::{
-    AddressStringsRequest, GetBalanceResponse, GetBlockRequest, GetBlockResponse,
-    GetSubtreesRequest, GetSubtreesResponse, GetTransactionRequest, GetTransactionResponse,
-    GetTreestateRequest, GetTreestateResponse, GetUtxosResponse, SendTransactionRequest,
+    AddressStringsRequest, BestBlockHashResponse, GetBalanceResponse, GetBlockRequest,
+    GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetSubtreesRequest,
+    GetSubtreesResponse, GetTransactionRequest, GetTransactionResponse, GetTreestateRequest,
+    GetTreestateResponse, GetUtxosResponse, SendTransactionRequest, SendTransactionResponse,
     TxidsByAddressRequest, TxidsResponse,
 };
 
@@ -38,15 +38,108 @@ struct RpcError {
     data: Option<Value>,
 }
 
+/// General error type for handling JsonRpcConnector errors.
+#[derive(Debug)]
+pub struct JsonRpcConnectorError {
+    details: String,
+    source: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+impl JsonRpcConnectorError {
+    /// Constructor for errors without an underlying source
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self {
+            details: msg.into(),
+            source: None,
+        }
+    }
+
+    /// Constructor for errors with an underlying source
+    pub fn new_with_source(
+        msg: impl Into<String>,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        Self {
+            details: msg.into(),
+            source: Some(source),
+        }
+    }
+
+    /// Maps JsonRpcConnectorError to tonic::Status
+    pub fn to_grpc_status(&self) -> tonic::Status {
+        eprintln!("Error occurred: {}", self);
+
+        if let Some(source) = &self.source {
+            if source.is::<serde_json::Error>() {
+                return tonic::Status::invalid_argument(self.to_string());
+            } else if source.is::<hyper::Error>() {
+                return tonic::Status::unavailable(self.to_string());
+            } else if source.is::<http::Error>() {
+                return tonic::Status::internal(self.to_string());
+            }
+        }
+
+        tonic::Status::internal(self.to_string())
+    }
+}
+
+impl std::error::Error for JsonRpcConnectorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_deref()
+            .map(|e| e as &(dyn std::error::Error + 'static))
+    }
+}
+
+impl std::fmt::Display for JsonRpcConnectorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl From<serde_json::Error> for JsonRpcConnectorError {
+    fn from(err: serde_json::Error) -> Self {
+        JsonRpcConnectorError::new_with_source(
+            format!("Serialization/Deserialization Error: {}", err),
+            Box::new(err),
+        )
+    }
+}
+
+impl From<hyper::Error> for JsonRpcConnectorError {
+    fn from(err: hyper::Error) -> Self {
+        JsonRpcConnectorError::new_with_source(
+            format!("HTTP Request Error: {}", err),
+            Box::new(err),
+        )
+    }
+}
+
+impl From<http::Error> for JsonRpcConnectorError {
+    fn from(err: http::Error) -> Self {
+        JsonRpcConnectorError::new_with_source(format!("HTTP Error: {}", err), Box::new(err))
+    }
+}
+
+impl From<String> for JsonRpcConnectorError {
+    fn from(err: String) -> Self {
+        JsonRpcConnectorError::new(err)
+    }
+}
+
 /// JsonRPC Client config data.
 pub struct JsonRpcConnector {
     uri: http::Uri,
+    id_counter: AtomicI32,
 }
 
 impl JsonRpcConnector {
     /// Returns a new JsonRpcConnector instance.
     pub fn new(uri: http::Uri) -> Self {
-        Self { uri }
+        Self {
+            uri,
+            id_counter: AtomicI32::new(0),
+        }
     }
 
     /// Returns the uri the JsonRpcConnector is configured to send requests to.
@@ -59,8 +152,8 @@ impl JsonRpcConnector {
         &self,
         method: &str,
         params: T,
-        id: i32,
-    ) -> Result<R, Box<dyn std::error::Error>> {
+    ) -> Result<R, JsonRpcConnectorError> {
+        let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
         let client = Client::builder().build(HttpsConnector::new());
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -68,18 +161,44 @@ impl JsonRpcConnector {
             params,
             id,
         };
+        let request_body = serde_json::to_string(&req).map_err(|e| {
+            JsonRpcConnectorError::new_with_source("Failed to serialize request", Box::new(e))
+        })?;
         let request = Request::builder()
             .method("POST")
             .uri(self.uri.clone())
             .header("Content-Type", "application/json")
-            .body(Body::from(serde_json::to_string(&req)?))?;
+            .body(Body::from(request_body))
+            .map_err(|e| {
+                JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
+            })?;
+        let response = client.request(request).await.map_err(|e| {
+            JsonRpcConnectorError::new_with_source("HTTP request failed", Box::new(e))
+        })?;
+        let body_bytes = hyper::body::to_bytes(response.into_body())
+            .await
+            .map_err(|e| {
+                JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
+            })?;
 
-        let response = client.request(request).await?;
-        let body_bytes = hyper::body::to_bytes(response.into_body()).await?;
-        let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)?;
+        // Test Code!!!
+        let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
+            JsonRpcConnectorError::new_with_source(
+                "Failed to convert response body to string",
+                Box::new(e),
+            )
+        })?;
+        println!("Raw response body: {}", body_str);
+
+        let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
+            JsonRpcConnectorError::new_with_source("Failed to deserialize response", Box::new(e))
+        })?;
 
         match response.error {
-            Some(error) => Err(format!("RPC Error {}: {}", error.code, error.message).into()),
+            Some(error) => Err(JsonRpcConnectorError::new(format!(
+                "RPC Error {}: {}",
+                error.code, error.message
+            ))),
             None => Ok(response.result),
         }
     }
@@ -89,8 +208,9 @@ impl JsonRpcConnector {
     /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
     /// tags: control
-    pub async fn get_info(&self, id: i32) -> Result<GetInfo, Box<dyn std::error::Error>> {
-        self.send_request::<(), GetInfo>("getinfo", (), id).await
+    pub async fn get_info(&self) -> Result<GetInfoResponse, JsonRpcConnectorError> {
+        self.send_request::<(), GetInfoResponse>("getinfo", ())
+            .await
     }
 
     /// Returns blockchain state information, as a [`GetBlockChainInfo`] JSON struct.
@@ -100,9 +220,8 @@ impl JsonRpcConnector {
     /// tags: blockchain
     pub async fn get_blockchain_info(
         &self,
-        id: i32,
-    ) -> Result<GetBlockChainInfo, Box<dyn std::error::Error>> {
-        self.send_request::<(), GetBlockChainInfo>("getblockchaininfo", (), id)
+    ) -> Result<GetBlockchainInfoResponse, JsonRpcConnectorError> {
+        self.send_request::<(), GetBlockchainInfoResponse>("getblockchaininfo", ())
             .await
     }
 
@@ -119,10 +238,9 @@ impl JsonRpcConnector {
     pub async fn get_address_balance(
         &self,
         addresses: Vec<String>,
-        id: i32,
-    ) -> Result<GetBalanceResponse, Box<dyn std::error::Error>> {
+    ) -> Result<GetBalanceResponse, JsonRpcConnectorError> {
         let params = AddressStringsRequest { addresses };
-        self.send_request("getaddressbalance", params, id).await
+        self.send_request("getaddressbalance", params).await
     }
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
@@ -138,12 +256,11 @@ impl JsonRpcConnector {
     pub async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-        id: i32,
-    ) -> Result<SentTransactionHash, Box<dyn std::error::Error>> {
+    ) -> Result<SendTransactionResponse, JsonRpcConnectorError> {
         let params = SendTransactionRequest {
             raw_transaction_hex,
         };
-        self.send_request("sendrawtransaction", params, id).await
+        self.send_request("sendrawtransaction", params).await
     }
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
@@ -162,13 +279,12 @@ impl JsonRpcConnector {
         &self,
         hash_or_height: String,
         verbosity: Option<u8>,
-        id: i32,
-    ) -> Result<GetBlockResponse, Box<dyn std::error::Error>> {
+    ) -> Result<GetBlockResponse, JsonRpcConnectorError> {
         let params = GetBlockRequest {
             hash_or_height,
             verbosity,
         };
-        self.send_request("getblock", params, id).await
+        self.send_request("getblock", params).await
     }
 
     /// Returns the hash of the current best blockchain tip block, as a [`GetBlockHash`] JSON string.
@@ -178,9 +294,8 @@ impl JsonRpcConnector {
     /// tags: blockchain
     pub async fn get_best_block_hash(
         &self,
-        id: i32,
-    ) -> Result<GetBlockHash, Box<dyn std::error::Error>> {
-        self.send_request::<(), GetBlockHash>("getbestblockhash", (), id)
+    ) -> Result<BestBlockHashResponse, JsonRpcConnectorError> {
+        self.send_request::<(), BestBlockHashResponse>("getbestblockhash", ())
             .await
     }
 
@@ -189,11 +304,8 @@ impl JsonRpcConnector {
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
-    pub async fn get_raw_mempool(
-        &self,
-        id: i32,
-    ) -> Result<TxidsResponse, Box<dyn std::error::Error>> {
-        self.send_request::<(), TxidsResponse>("getrawmempool", (), id)
+    pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, JsonRpcConnectorError> {
+        self.send_request::<(), TxidsResponse>("getrawmempool", ())
             .await
     }
 
@@ -209,10 +321,9 @@ impl JsonRpcConnector {
     pub async fn get_treestate(
         &self,
         hash_or_height: String,
-        id: i32,
-    ) -> Result<GetTreestateResponse, Box<dyn std::error::Error>> {
+    ) -> Result<GetTreestateResponse, JsonRpcConnectorError> {
         let params = GetTreestateRequest { hash_or_height };
-        self.send_request("z_gettreestate", params, id).await
+        self.send_request("z_gettreestate", params).await
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.
@@ -231,14 +342,13 @@ impl JsonRpcConnector {
         pool: String,
         start_index: u16,
         limit: Option<u16>,
-        id: i32,
-    ) -> Result<GetSubtreesResponse, Box<dyn std::error::Error>> {
+    ) -> Result<GetSubtreesResponse, JsonRpcConnectorError> {
         let params = GetSubtreesRequest {
             pool,
             start_index,
             limit,
         };
-        self.send_request("z_getsubtreesbyindex", params, id).await
+        self.send_request("z_getsubtreesbyindex", params).await
     }
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
@@ -255,10 +365,9 @@ impl JsonRpcConnector {
         &self,
         txid_hex: String,
         verbose: Option<u8>,
-        id: i32,
-    ) -> Result<GetTransactionResponse, Box<dyn std::error::Error>> {
+    ) -> Result<GetTransactionResponse, JsonRpcConnectorError> {
         let params = GetTransactionRequest { txid_hex, verbose };
-        self.send_request("getrawtransaction", params, id).await
+        self.send_request("getrawtransaction", params).await
     }
 
     /// Returns the transaction ids made by the provided transparent addresses.
@@ -278,15 +387,14 @@ impl JsonRpcConnector {
         addresses: Vec<String>,
         start: u32,
         end: u32,
-        id: i32,
-    ) -> Result<TxidsResponse, Box<dyn std::error::Error>> {
+    ) -> Result<TxidsResponse, JsonRpcConnectorError> {
         let params = TxidsByAddressRequest {
             addresses,
             start,
             end,
         };
 
-        self.send_request("getaddresstxids", params, id).await
+        self.send_request("getaddresstxids", params).await
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -301,9 +409,8 @@ impl JsonRpcConnector {
     pub async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
-        id: i32,
-    ) -> Result<Vec<GetUtxosResponse>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<GetUtxosResponse>, JsonRpcConnectorError> {
         let params = AddressStringsRequest { addresses };
-        self.send_request("getaddressutxos", params, id).await
+        self.send_request("getaddressutxos", params).await
     }
 }

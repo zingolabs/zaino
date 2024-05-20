@@ -8549,6 +8549,8 @@ dependencies = [
  "hyper",
  "hyper-rustls 0.23.2",
  "hyper-tls",
+ "indexmap 2.2.6",
+ "jsonrpc-core",
  "nym-bin-common",
  "nym-sdk",
  "nym-sphinx-addressing",

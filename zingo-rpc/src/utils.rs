@@ -35,3 +35,13 @@ macro_rules! define_grpc_passthrough {
         }
     };
 }
+
+/// Returns build info for Zingo-Proxy.
+pub fn get_build_info() -> (String, String, String, String, String) {
+    let commit_hash = env!("GIT_COMMIT").to_string();
+    let branch = env!("BRANCH").to_string();
+    let build_date = env!("BUILD_DATE").to_string();
+    let build_user = env!("BUILD_USER").to_string();
+    let version = env!("VERSION").to_string();
+    (commit_hash, branch, build_date, build_user, version)
+}

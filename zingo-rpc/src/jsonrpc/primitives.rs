@@ -1,9 +1,9 @@
 //! Request and response types for jsonRPC client.
 
 use hex::{FromHex, ToHex};
-use serde::{Deserialize, Serialize};
-
+use indexmap::IndexMap;
 use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
 
 use zebra_chain::{
     block::{self, Height, SerializedBlock},
@@ -20,6 +20,35 @@ use zebra_rpc::methods::{GetBlockHash, GetBlockTrees};
 pub struct AddressStringsRequest {
     /// A list of transparent address strings.
     pub addresses: Vec<String>,
+}
+
+impl AddressStringsRequest {
+    /// Creates a new `AddressStrings` given a vector.
+    #[cfg(test)]
+    pub fn new(addresses: Vec<String>) -> Self {
+        AddressStringsRequest { addresses }
+    }
+
+    /// Given a list of addresses as strings:
+    /// - check if provided list have all valid transparent addresses.
+    /// - return valid addresses as a set of `Address`.
+    pub fn valid_addresses(
+        self,
+    ) -> jsonrpc_core::Result<std::collections::HashSet<zebra_chain::transparent::Address>> {
+        let valid_addresses: std::collections::HashSet<zebra_chain::transparent::Address> = self
+            .addresses
+            .into_iter()
+            .map(|address| {
+                address.parse().map_err(|error| {
+                    jsonrpc_core::Error::invalid_params(format!(
+                        "invalid address {address:?}: {error}"
+                    ))
+                })
+            })
+            .collect::<jsonrpc_core::Result<_>>()?;
+
+        Ok(valid_addresses)
+    }
 }
 
 /// Hex-encoded raw transaction.
@@ -88,13 +117,96 @@ pub struct TxidsByAddressRequest {
     pub end: u32,
 }
 
-/// Vec of transaction ids, as a JSON array.
+/// Response to a `getinfo` RPC request.
 ///
-/// This is used for the output parameter of [`JsonRpcConnector::get_raw_mempool`] and [`JsonRpcConnector::get_address_tx_ids`].
+/// This is used for the output parameter of [`JsonRpcConnector::get_info`].
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct TxidsResponse {
-    /// Vec of txids.
-    pub transactions: Vec<String>,
+pub struct GetInfoResponse {
+    /// The node version build number
+    pub build: String,
+    /// The server sub-version identifier, used as the network protocol user-agent
+    pub subversion: String,
+}
+
+/// A hex-encoded [`ConsensusBranchId`] string.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ProxyConsensusBranchIdHex(
+    #[serde(with = "hex")] pub zebra_chain::parameters::ConsensusBranchId,
+);
+
+/// The activation status of a [`NetworkUpgrade`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ProxyNetworkUpgradeStatus {
+    /// The network upgrade is currently active.
+    ///
+    /// Includes all network upgrades that have previously activated,
+    /// even if they are not the most recent network upgrade.
+    #[serde(rename = "active")]
+    Active,
+
+    /// The network upgrade does not have an activation height.
+    #[serde(rename = "disabled")]
+    Disabled,
+
+    /// The network upgrade has an activation height, but we haven't reached it yet.
+    #[serde(rename = "pending")]
+    Pending,
+}
+
+/// Information about [`NetworkUpgrade`] activation.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProxyNetworkUpgradeInfo {
+    /// Name of upgrade, string.
+    pub name: zebra_chain::parameters::NetworkUpgrade,
+
+    /// Block height of activation, numeric.
+    #[serde(rename = "activationheight")]
+    pub activation_height: Height,
+
+    /// Status of upgrade, string.
+    pub status: ProxyNetworkUpgradeStatus,
+}
+
+/// The [`ConsensusBranchId`]s for the tip and the next block.
+///
+/// These branch IDs are different when the next block is a network upgrade activation block.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProxyTipConsensusBranch {
+    /// Branch ID used to validate the current chain tip, big-endian, hex-encoded.
+    #[serde(rename = "chaintip")]
+    pub chain_tip: ProxyConsensusBranchIdHex,
+
+    /// Branch ID used to validate the next block, big-endian, hex-encoded.
+    #[serde(rename = "nextblock")]
+    pub next_block: ProxyConsensusBranchIdHex,
+}
+
+/// Response to a `getblockchaininfo` RPC request.
+///
+/// This is used for the output parameter of [`JsonRpcConnector::get_blockchain_info`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetBlockchainInfoResponse {
+    /// Current network name as defined in BIP70 (main, test, regtest)
+    pub chain: String,
+
+    /// The current number of blocks processed in the server, numeric
+    pub blocks: Height,
+
+    /// The hash of the currently best block, in big-endian order, hex-encoded
+    #[serde(rename = "bestblockhash", with = "hex")]
+    pub best_block_hash: block::Hash,
+
+    /// If syncing, the estimated height of the chain, else the current best height, numeric.
+    ///
+    /// In Zebra, this is always the height estimate, so it might be a little inaccurate.
+    #[serde(rename = "estimatedheight")]
+    pub estimated_height: Height,
+
+    /// Status of network upgrades
+    pub upgrades: IndexMap<ProxyConsensusBranchIdHex, ProxyNetworkUpgradeInfo>,
+
+    /// Branch IDs of the current and upcoming consensus rules
+    pub consensus: ProxyTipConsensusBranch,
 }
 
 /// The transparent balance of a set of addresses.
@@ -105,6 +217,12 @@ pub struct GetBalanceResponse {
     /// The total transparent balance.
     pub balance: u64,
 }
+
+/// Contains the hex-encoded hash of the sent transaction.
+///
+/// This is used for the output parameter of [`JsonRpcConnector::send_raw_transaction`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct SendTransactionResponse(#[serde(with = "hex")] transaction::Hash);
 
 /// Wrapper for `SerializedBlock` to handle hex serialization/deserialization.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -196,6 +314,22 @@ pub enum GetBlockResponse {
     },
 }
 
+/// Contains the hex-encoded hash of the requested block.
+///
+/// This is used for the output parameter of [`JsonRpcConnector::get_best_block_hash`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct BestBlockHashResponse(#[serde(with = "hex")] pub block::Hash);
+
+/// Vec of transaction ids, as a JSON array.
+///
+/// This is used for the output parameter of [`JsonRpcConnector::get_raw_mempool`] and [`JsonRpcConnector::get_address_tx_ids`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct TxidsResponse {
+    /// Vec of txids.
+    pub transactions: Vec<String>,
+}
+
 /// Zingo-Proxy commitment tree structure replicating functionality in Zebra.
 ///
 /// A wrapper that contains either an Orchard or Sapling note commitment tree.
@@ -203,7 +337,7 @@ pub enum GetBlockResponse {
 pub struct ProxyCommitments<Tree: AsRef<[u8]>> {
     #[serde(with = "hex")]
     #[serde(rename = "finalState")]
-    final_state: Tree,
+    pub final_state: Tree,
 }
 
 impl<Tree: AsRef<[u8]> + FromHex<Error = hex::FromHexError>> ProxyCommitments<Tree> {
@@ -281,25 +415,24 @@ impl AsRef<[u8]> for ProxySerializedTree {
 pub struct GetTreestateResponse {
     /// The block hash corresponding to the treestate, hex-encoded.
     #[serde(with = "hex")]
-    hash: block::Hash,
+    pub hash: block::Hash,
 
     /// The block height corresponding to the treestate, numeric.
-    height: Height,
+    pub height: Height,
 
     /// Unix time when the block corresponding to the treestate was mined,
     /// numeric.
     ///
     /// UTC seconds since the Unix 1970-01-01 epoch.
-    time: u32,
+    pub time: u32,
 
     /// A treestate containing a Sapling note commitment tree, hex-encoded.
     #[serde(skip_serializing_if = "ProxyTreestate::is_empty")]
-    sapling: ProxyTreestate<ProxySerializedTree>,
+    pub sapling: ProxyTreestate<ProxySerializedTree>,
 
     /// A treestate containing an Orchard note commitment tree, hex-encoded.
     #[serde(skip_serializing_if = "ProxyTreestate::is_empty")]
-    orchard: ProxyTreestate<ProxySerializedTree>,
-    // NOTE: CREATE PoxySerializedTree TO SIMPLIFY CODING>>
+    pub orchard: ProxyTreestate<ProxySerializedTree>,
 }
 
 /// Wrapper type that can hold Sapling or Orchard subtree roots with hex encoding.
@@ -422,7 +555,7 @@ pub struct ProxyScript {
     /// Consensus-critical serialization uses [`ZcashSerialize`].
     /// [`serde`]-based hex serialization must only be used for RPCs and testing.
     #[serde(with = "hex")]
-    script: Vec<u8>,
+    pub script: Vec<u8>,
 }
 
 impl ProxyScript {
@@ -495,23 +628,23 @@ impl FromHex for ProxyScript {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetUtxosResponse {
     /// The transparent address, base58check encoded
-    address: transparent::Address,
+    pub address: transparent::Address,
 
     /// The output txid, in big-endian order, hex-encoded
     #[serde(with = "hex")]
-    txid: transaction::Hash,
+    pub txid: transaction::Hash,
 
     /// The transparent output index, numeric
     #[serde(rename = "outputIndex")]
-    output_index: zebra_state::OutputIndex,
+    pub output_index: zebra_state::OutputIndex,
 
     /// The transparent output script, hex encoded
     #[serde(with = "hex")]
-    script: ProxyScript,
+    pub script: ProxyScript,
 
     /// The amount of zatoshis in the transparent output
-    satoshis: u64,
+    pub satoshis: u64,
 
     /// The block height, numeric.
-    height: Height,
+    pub height: Height,
 }

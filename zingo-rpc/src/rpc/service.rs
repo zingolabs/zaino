@@ -1,5 +1,6 @@
 //! Lightwallet service RPC implementations.
 
+use hex::FromHex;
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
@@ -9,8 +10,14 @@ use zcash_client_backend::proto::{
         SendResponse, SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
+use zebra_chain::block::Height;
 
-use crate::{define_grpc_passthrough, primitives::ProxyClient};
+use crate::{
+    define_grpc_passthrough,
+    jsonrpc::{connector::JsonRpcConnector, primitives::ProxyConsensusBranchIdHex},
+    primitives::ProxyClient,
+    utils::get_build_info,
+};
 
 impl CompactTxStreamer for ProxyClient {
     // fn get_latest_block<'life0, 'async_trait>(
@@ -159,12 +166,78 @@ impl CompactTxStreamer for ProxyClient {
         ) -> tonic::Streaming<GetAddressUtxosReply>
     );
 
-    define_grpc_passthrough!(
-        fn get_lightd_info(
-            &self,
-            request: tonic::Request<Empty>,
-        ) -> LightdInfo
-    );
+    // define_grpc_passthrough!(
+    //     fn get_lightd_info(
+    //         &self,
+    //         request: tonic::Request<Empty>,
+    //     ) -> LightdInfo
+    // );
+
+    fn get_lightd_info<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<Empty>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<
+                        tonic::Response<zcash_client_backend::proto::service::LightdInfo>,
+                        tonic::Status,
+                    >,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        println!("received call of get_lightd_info");
+        Box::pin(async {
+            let zebrad_client = JsonRpcConnector::new(self.zebrad_uri.clone());
+
+            let zebra_info = zebrad_client
+                .get_info()
+                .await
+                .map_err(|e| e.to_grpc_status())?;
+            let blockchain_info = zebrad_client
+                .get_blockchain_info()
+                .await
+                .map_err(|e| e.to_grpc_status())?;
+
+            println!("zebra_info: {:#?}", zebra_info);
+            println!("blockchain_info: {:#?}", blockchain_info);
+
+            let sapling_id_str = "76b809bb";
+            let sapling_id = ProxyConsensusBranchIdHex(
+                zebra_chain::parameters::ConsensusBranchId::from_hex(sapling_id_str).unwrap(),
+            );
+            let sapling_height = blockchain_info
+                .upgrades
+                .get(&sapling_id)
+                .map_or(Height(1), |sapling_json| sapling_json.activation_height);
+
+            let (git_commit, branch, build_date, build_user, version) = get_build_info();
+
+            let lightd_info = LightdInfo {
+                version,
+                vendor: "ZingoLabs - Zingo-Proxy".to_string(),
+                taddr_support: true,
+                chain_name: blockchain_info.chain,
+                sapling_activation_height: sapling_height.0 as u64,
+                consensus_branch_id: blockchain_info.consensus.chain_tip.0.to_string(),
+                block_height: blockchain_info.blocks.0 as u64,
+                git_commit,
+                branch,
+                build_date,
+                build_user,
+                estimated_height: blockchain_info.estimated_height.0 as u64,
+                zcashd_build: zebra_info.build,
+                zcashd_subversion: zebra_info.subversion,
+            };
+
+            Ok(tonic::Response::new(lightd_info))
+        })
+    }
 
     define_grpc_passthrough!(
         fn ping(
