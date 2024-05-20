@@ -195,6 +195,8 @@ impl CompactTxStreamer for ProxyClient {
         Box::pin(async {
             let zebrad_client = JsonRpcConnector::new(self.zebrad_uri.clone());
 
+            println!("Sending RPC to: {}", self.zebrad_uri.clone());
+
             let zebra_info = zebrad_client
                 .get_info()
                 .await
