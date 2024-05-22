@@ -113,14 +113,17 @@ pub async fn drop_test_manager(
     if let Some(ref path) = temp_conf_path {
         if let Err(e) = std::fs::remove_dir_all(&path) {
             eprintln!(
-                "Failed to delete temporary regtest configuration directory: {:?}",
+                "@zingoproxyd: Failed to delete temporary regtest configuration directory: {:?}.",
                 e
             );
         }
     }
     if let Some(ref path) = Some(temp_wallet_path) {
         if let Err(e) = std::fs::remove_dir_all(&path) {
-            eprintln!("Failed to delete temporary directory: {:?}", e);
+            eprintln!(
+                "@zingoproxyd: Failed to delete temporary directory: {:?}.",
+                e
+            );
         }
     }
 }
@@ -150,14 +153,17 @@ fn set_custom_drops(
         if let Some(ref path) = temp_conf_path_panic {
             if let Err(e) = std::fs::remove_dir_all(&path) {
                 eprintln!(
-                    "Failed to delete temporary regtest config directory: {:?}",
+                    "@zingoproxyd: Failed to delete temporary regtest config directory: {:?}.",
                     e
                 );
             }
         }
         if let Some(ref path) = temp_wallet_path_panic {
             if let Err(e) = std::fs::remove_dir_all(&path) {
-                eprintln!("Failed to delete temporary wallet directory: {:?}", e);
+                eprintln!(
+                    "@zingoproxyd: Failed to delete temporary wallet directory: {:?}.",
+                    e
+                );
             }
         }
         std::process::exit(0);
@@ -165,19 +171,22 @@ fn set_custom_drops(
 
     CTRL_C_ONCE.call_once(|| {
         ctrlc::set_handler(move || {
-            println!("Received Ctrl+C, exiting.");
+            println!("@zingoproxyd: Received Ctrl+C, exiting.");
             online_ctrlc.store(false, std::sync::atomic::Ordering::SeqCst);
             if let Some(ref path) = temp_conf_path_ctrlc {
                 if let Err(e) = std::fs::remove_dir_all(&path) {
                     eprintln!(
-                        "Failed to delete temporary regtest config directory: {:?}",
+                        "@zingoproxyd: Failed to delete temporary regtest config directory: {:?}.",
                         e
                     );
                 }
             }
             if let Some(ref path) = temp_wallet_path_ctrlc {
                 if let Err(e) = std::fs::remove_dir_all(&path) {
-                    eprintln!("Failed to delete temporary wallet directory: {:?}", e);
+                    eprintln!(
+                        "@zingoproxyd: Failed to delete temporary wallet directory: {:?}.",
+                        e
+                    );
                 }
             }
             std::process::exit(0);
@@ -219,7 +228,7 @@ fn write_zcash_conf(dir: &std::path::Path, rpcport: u16) -> Result<(), Box<dyn s
     writeln!(file, "rpcallowip=127.0.0.1")?;
     writeln!(file, "listen=0")?;
     writeln!(file, "minetolocalwallet=0")?;
-    // writeln!(file, "mineraddress=zregtestsapling1fmq2ufux3gm0v8qf7x585wj56le4wjfsqsj27zprjghntrerntggg507hxh2ydcdkn7sx8kya7p")?;
+    // writeln!(file, "mineraddress=zregtestsapling1fmq2ufux3gm0v8qf7x585wj56le4wjfsqsj27zprjghntrerntggg507hxh2ydcdkn7sx8kya7p")?; // USE FOR SAPLING.
     writeln!(file, "mineraddress=uregtest1zkuzfv5m3yhv2j4fmvq5rjurkxenxyq8r7h4daun2zkznrjaa8ra8asgdm8wwgwjvlwwrxx7347r8w0ee6dqyw4rufw4wg9djwcr6frzkezmdw6dud3wsm99eany5r8wgsctlxquu009nzd6hsme2tcsk0v3sgjvxa70er7h27z5epr67p5q767s2z5gt88paru56mxpm6pwz0cu35m")?;
 
     Ok(())

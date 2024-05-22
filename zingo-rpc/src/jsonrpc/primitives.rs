@@ -335,6 +335,7 @@ pub struct TxidsResponse {
 /// A wrapper that contains either an Orchard or Sapling note commitment tree.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProxyCommitments<Tree: AsRef<[u8]>> {
+    /// Commitment tree state
     #[serde(with = "hex")]
     #[serde(rename = "finalState")]
     pub final_state: Tree,

@@ -1,4 +1,6 @@
 //! JsonRPC client implementation.
+//!
+//! TODO: - Add option for http connector.
 
 use http::Uri;
 use hyper::{http, Body, Client, Request};
@@ -26,7 +28,7 @@ struct RpcRequest<T> {
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcResponse<T> {
     id: i32,
-    jsonrpc: String,
+    jsonrpc: Option<String>,
     result: T,
     error: Option<RpcError>,
 }
@@ -67,7 +69,7 @@ impl JsonRpcConnectorError {
 
     /// Maps JsonRpcConnectorError to tonic::Status
     pub fn to_grpc_status(&self) -> tonic::Status {
-        eprintln!("Error occurred: {}", self);
+        eprintln!("@zingoproxyd: Error occurred: {}.", self);
 
         if let Some(source) = &self.source {
             if source.is::<serde_json::Error>() {
@@ -127,19 +129,68 @@ impl From<String> for JsonRpcConnectorError {
     }
 }
 
+impl From<std::string::FromUtf8Error> for JsonRpcConnectorError {
+    fn from(err: std::string::FromUtf8Error) -> Self {
+        JsonRpcConnectorError::new_with_source("UTF-8 Conversion Error", Box::new(err))
+    }
+}
+
+impl From<tokio::time::error::Elapsed> for JsonRpcConnectorError {
+    fn from(err: tokio::time::error::Elapsed) -> Self {
+        JsonRpcConnectorError::new_with_source("Request Timeout Error", Box::new(err))
+    }
+}
+
+impl From<JsonRpcConnectorError> for tonic::Status {
+    fn from(err: JsonRpcConnectorError) -> Self {
+        tonic::Status::internal(err.to_string())
+    }
+}
+
 /// JsonRPC Client config data.
 pub struct JsonRpcConnector {
     uri: http::Uri,
     id_counter: AtomicI32,
+    user: Option<String>,
+    password: Option<String>,
 }
 
 impl JsonRpcConnector {
-    /// Returns a new JsonRpcConnector instance.
-    pub fn new(uri: http::Uri) -> Self {
-        Self {
+    /// Returns a new JsonRpcConnector instance, tests uri and returns error if connection is not established.
+    pub async fn new(
+        uri: http::Uri,
+        user: Option<String>,
+        password: Option<String>,
+    ) -> Result<Self, JsonRpcConnectorError> {
+        if let Some(port) = uri.port_u16() {
+            let checked_uri =
+                JsonRpcConnector::test_and_return_uri(&port, user.clone(), password.clone())
+                    .await?;
+            Ok(Self {
+                uri: checked_uri,
+                id_counter: AtomicI32::new(0),
+                user,
+                password,
+            })
+        } else {
+            Err(JsonRpcConnectorError::new("No port number found in URI."))
+        }
+    }
+
+    /// Returns a new JsonRpcConnector instance from zebrad uri port, tests port and returns error if connection not established.
+    pub async fn new_from_port(
+        port: &u16,
+        user: Option<String>,
+        password: Option<String>,
+    ) -> Result<Self, JsonRpcConnectorError> {
+        let uri =
+            JsonRpcConnector::test_and_return_uri(port, user.clone(), password.clone()).await?;
+        Ok(Self {
             uri,
             id_counter: AtomicI32::new(0),
-        }
+            user,
+            password,
+        })
     }
 
     /// Returns the uri the JsonRpcConnector is configured to send requests to.
@@ -155,6 +206,14 @@ impl JsonRpcConnector {
     ) -> Result<R, JsonRpcConnectorError> {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
         let client = Client::builder().build(HttpsConnector::new());
+        let mut request_builder = Request::builder()
+            .method("POST")
+            .uri(self.uri.clone())
+            .header("Content-Type", "application/json");
+        if let (Some(user), Some(password)) = (&self.user, &self.password) {
+            let auth = base64::encode(format!("{}:{}", user, password));
+            request_builder = request_builder.header("Authorization", format!("Basic {}", auth));
+        }
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
@@ -164,10 +223,7 @@ impl JsonRpcConnector {
         let request_body = serde_json::to_string(&req).map_err(|e| {
             JsonRpcConnectorError::new_with_source("Failed to serialize request", Box::new(e))
         })?;
-        let request = Request::builder()
-            .method("POST")
-            .uri(self.uri.clone())
-            .header("Content-Type", "application/json")
+        let request = request_builder
             .body(Body::from(request_body))
             .map_err(|e| {
                 JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
@@ -180,26 +236,92 @@ impl JsonRpcConnector {
             .map_err(|e| {
                 JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
             })?;
-
-        // Test Code!!!
-        let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
-            JsonRpcConnectorError::new_with_source(
-                "Failed to convert response body to string",
-                Box::new(e),
-            )
-        })?;
-        println!("Raw response body: {}", body_str);
-
         let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
             JsonRpcConnectorError::new_with_source("Failed to deserialize response", Box::new(e))
         })?;
-
         match response.error {
             Some(error) => Err(JsonRpcConnectorError::new(format!(
                 "RPC Error {}: {}",
                 error.code, error.message
             ))),
             None => Ok(response.result),
+        }
+    }
+
+    /// Tests connection with zebrad / zebrad.
+    pub async fn test_connection(
+        uri: Uri,
+        user: Option<String>,
+        password: Option<String>,
+    ) -> Result<(), JsonRpcConnectorError> {
+        let client = Client::builder().build::<_, Body>(HttpsConnector::new());
+
+        let user = user.unwrap_or_else(|| "xxxxxx".to_string());
+        let password = password.unwrap_or_else(|| "xxxxxx".to_string());
+        let encoded_auth = base64::encode(format!("{}:{}", user, password));
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri.clone())
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Basic {}", encoded_auth))
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#,
+            ))
+            .map_err(|e| {
+                JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
+            })?;
+        let response =
+            tokio::time::timeout(tokio::time::Duration::from_secs(3), client.request(request))
+                .await
+                .map_err(|e| {
+                    JsonRpcConnectorError::new_with_source("Request timed out", Box::new(e))
+                })??;
+        let body_bytes = hyper::body::to_bytes(response.into_body())
+            .await
+            .map_err(|e| {
+                JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
+            })?;
+        let _response: RpcResponse<serde_json::Value> = serde_json::from_slice(&body_bytes)
+            .map_err(|e| {
+                JsonRpcConnectorError::new_with_source(
+                    "Failed to deserialize response",
+                    Box::new(e),
+                )
+            })?;
+        Ok(())
+    }
+
+    /// Tries to connect to zebrad/zcashd using IPv4 and IPv6 and returns the correct uri type.
+    pub async fn test_and_return_uri(
+        port: &u16,
+        user: Option<String>,
+        password: Option<String>,
+    ) -> Result<Uri, JsonRpcConnectorError> {
+        let ipv4_uri: Uri = format!("http://127.0.0.1:{}", port).parse().map_err(|e| {
+            JsonRpcConnectorError::new_with_source("Failed to parse IPv4 URI", Box::new(e))
+        })?;
+        let ipv6_uri: Uri = format!("http://[::1]:{}", port).parse().map_err(|e| {
+            JsonRpcConnectorError::new_with_source("Failed to parse IPv6 URI", Box::new(e))
+        })?;
+
+        match JsonRpcConnector::test_connection(ipv4_uri.clone(), user.clone(), password.clone())
+            .await
+        {
+            Ok(_) => {
+                println!("@zingoproxyd: Connected to node using IPv4.");
+                return Ok(ipv4_uri);
+            }
+            Err(e_ipv4) => {
+                eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd[nym]: Trying on IPv6.", e_ipv4);
+                match JsonRpcConnector::test_connection(ipv6_uri.clone(), user, password).await {
+                    Ok(_) => {
+                        println!("@zingoproxyd: Connected to node using IPv6.");
+                        Ok(ipv6_uri)
+                    }
+                    Err(e_ipv6) => Err(e_ipv6),
+                }
+            }
         }
     }
 

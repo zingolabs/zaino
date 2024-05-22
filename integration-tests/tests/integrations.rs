@@ -18,7 +18,7 @@ mod proxy {
             TestManager::launch(online.clone()).await;
 
         println!(
-            "Attempting to connect to GRPC server at URI: {}",
+            "@zingoproxytest: Attempting to connect to GRPC server at URI: {}.",
             test_manager.get_proxy_uri()
         );
 
@@ -32,7 +32,10 @@ mod proxy {
             .await
             .expect("Failed to retrieve lightd info from GRPC server");
 
-        println!("{:#?}", lightd_info.into_inner());
+        println!(
+            "@zingoproxytest: Lightd_info response:\n{:#?}.",
+            lightd_info.into_inner()
+        );
 
         drop_test_manager(
             Some(test_manager.temp_conf_dir.path().to_path_buf()),
@@ -53,7 +56,7 @@ mod proxy {
         zingo_client.do_sync(false).await.unwrap();
 
         println!(
-            "zingo_client balance: {:#?}",
+            "@zingoproxytest: zingo_client balance: {:#?}.",
             zingo_client.do_balance().await
         );
 
@@ -68,7 +71,7 @@ mod proxy {
         zingo_client.do_sync(false).await.unwrap();
 
         println!(
-            "zingo_client balance: {:#?}",
+            "@zingoproxytest: zingo_client balance: {:#?}.",
             zingo_client.do_balance().await
         );
 
@@ -87,7 +90,7 @@ mod proxy {
 }
 
 mod nym {
-    // TODO: Build nym encanhed zingolib version using zingo-rpc::walletrpc::service.
+    // TODO: Build nym enhanced zingolib version using zingo-rpc::walletrpc::service.
 }
 
 mod darkside {

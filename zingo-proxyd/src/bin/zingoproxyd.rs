@@ -17,7 +17,7 @@ async fn main() {
     let online = Arc::new(AtomicBool::new(true));
     let online_ctrlc = online.clone();
     ctrlc::set_handler(move || {
-        println!("Received Ctrl+C, exiting.");
+        println!("@zingoproxyd: Received Ctrl+C, exiting.");
         online_ctrlc.store(false, Ordering::SeqCst);
         process::exit(0);
     })

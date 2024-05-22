@@ -57,7 +57,7 @@ impl CompactTxStreamer for ProxyClient {
         &self,
         request: Request<RawTransaction>,
     ) -> Result<Response<SendResponse>, Status> {
-        println!("Received call to send_transaction");
+        println!("@zingoproxyd[nym]: Received call of send_transaction.");
 
         //serialize RawTransaction
         let serialized_request = match serialize_request(&request.into_inner()).await {
@@ -71,8 +71,14 @@ impl CompactTxStreamer for ProxyClient {
         };
 
         //print request for testing:
-        println!("request sent: {:?}", serialized_request);
-        println!("request length: {}", serialized_request.len());
+        println!(
+            "@zingoproxyd[nym][TEST]: Request sent: {:?}.",
+            serialized_request
+        );
+        println!(
+            "@zingoproxyd[nym][TEST]: Request length: {}.",
+            serialized_request.len()
+        );
 
         // -- forward request over nym
         let args: Vec<String> = env::args().collect();
@@ -86,8 +92,14 @@ impl CompactTxStreamer for ProxyClient {
         client.nym_close().await;
 
         //print response for testing
-        println!("response received: {:?}", response_data);
-        println!("response length: {}", response_data.len());
+        println!(
+            "@zingoproxyd[nym][TEST]: Response received: {:?}.",
+            response_data
+        );
+        println!(
+            "@zingoproxyd[nym][TEST]: Response length: {}.",
+            response_data.len()
+        );
 
         //deserialize SendResponse
         let response: SendResponse = match deserialize_response(response_data.as_slice()).await {

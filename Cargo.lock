@@ -8542,6 +8542,7 @@ dependencies = [
 name = "zingo-rpc"
 version = "0.1.0"
 dependencies = [
+ "base64 0.13.1",
  "bytes 1.6.0",
  "hex 0.4.3",
  "http",

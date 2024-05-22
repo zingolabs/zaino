@@ -38,7 +38,7 @@ impl CompactTxStreamer for ProxyClient {
     //     'life0: 'async_trait,
     //     Self: 'async_trait,
     // {
-    //     println!("received call of get_latest_block");
+    //     println!("@zingoproxyd[nym]: Received call of get_latest_block.");
     //     Box::pin(async {
     //         let zebrad_info = ::zingo_netutils::GrpcConnector::new(self.zebrad_uri.clone())
     //             .get_client()
@@ -46,7 +46,6 @@ impl CompactTxStreamer for ProxyClient {
     //         todo!("get_latest_block not yet implemented")
     //     })
     // }
-
     define_grpc_passthrough!(
         fn get_latest_block(
             &self,
@@ -166,13 +165,6 @@ impl CompactTxStreamer for ProxyClient {
         ) -> tonic::Streaming<GetAddressUtxosReply>
     );
 
-    // define_grpc_passthrough!(
-    //     fn get_lightd_info(
-    //         &self,
-    //         request: tonic::Request<Empty>,
-    //     ) -> LightdInfo
-    // );
-
     fn get_lightd_info<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<Empty>,
@@ -191,11 +183,16 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("received call of get_lightd_info");
+        println!("@zingoproxyd: Received call of get_lightd_info.");
+        // TODO Add user and password as fields of ProxyClient and use here.
         Box::pin(async {
-            let zebrad_client = JsonRpcConnector::new(self.zebrad_uri.clone());
-
-            println!("Sending RPC to: {}", self.zebrad_uri.clone());
+            let zebrad_client = JsonRpcConnector::new(
+                self.zebrad_uri.clone(),
+                Some("xxxxxx".to_string()),
+                Some("xxxxxx".to_string()),
+            )
+            .await
+            .unwrap();
 
             let zebra_info = zebrad_client
                 .get_info()
@@ -205,9 +202,6 @@ impl CompactTxStreamer for ProxyClient {
                 .get_blockchain_info()
                 .await
                 .map_err(|e| e.to_grpc_status())?;
-
-            println!("zebra_info: {:#?}", zebra_info);
-            println!("blockchain_info: {:#?}", blockchain_info);
 
             let sapling_id_str = "76b809bb";
             let sapling_id = ProxyConsensusBranchIdHex(
@@ -222,7 +216,7 @@ impl CompactTxStreamer for ProxyClient {
 
             let lightd_info = LightdInfo {
                 version,
-                vendor: "ZingoLabs - Zingo-Proxy".to_string(),
+                vendor: "ZingoLabs ZingoProxyD".to_string(),
                 taddr_support: true,
                 chain_name: blockchain_info.chain,
                 sapling_activation_height: sapling_height.0 as u64,
@@ -240,6 +234,12 @@ impl CompactTxStreamer for ProxyClient {
             Ok(tonic::Response::new(lightd_info))
         })
     }
+    // define_grpc_passthrough!(
+    //     fn get_lightd_info(
+    //         &self,
+    //         request: tonic::Request<Empty>,
+    //     ) -> LightdInfo
+    // );
 
     define_grpc_passthrough!(
         fn ping(

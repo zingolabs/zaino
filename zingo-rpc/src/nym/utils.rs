@@ -1,4 +1,6 @@
 //! Utility functions for Nym-Proxy
+//!
+//! TODO: - Add NymClientError error type and rewrite functions to return <Result<(), NymClientError>>.
 
 use nym_sdk::mixnet::{
     MixnetClientBuilder, MixnetMessageSender, Recipient, ReconstructedMessage, StoragePaths,
@@ -23,7 +25,7 @@ impl NymClient {
         .unwrap();
 
         let nym_addr = client.nym_address().to_string();
-        println!("Nym server listening on: {nym_addr}");
+        println!("@zingoproxyd[nym]: Nym server listening on: {nym_addr}.");
 
         Self(client)
     }
