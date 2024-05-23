@@ -24,25 +24,21 @@ pub async fn spawn_proxy(
     let mut handles = vec![];
     let nym_addr_out: Option<String>;
 
-    println!("@zingoproxyd: Launching Zingo-Proxy..");
+    println!("@zingoproxyd: Launching Zingo-Proxy..\n@zingoproxyd: Launching gRPC Server..");
+    let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online.clone()).await;
+    handles.push(proxy_handle);
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     #[cfg(not(feature = "nym_poc"))]
     {
         println!("@zingoproxyd[nym]: Launching Nym Server..");
-
         let nym_server: NymServer = NymServer(NymClient::nym_spawn(nym_conf_path).await);
         nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
 
-        let nym_proxy_handle = nym_server.serve(online.clone()).await;
+        let nym_proxy_handle = nym_server.serve(online).await;
         handles.push(nym_proxy_handle);
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
-
-    println!("@zingoproxyd: Launching gRPC Server..");
-
-    let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online).await;
-    handles.push(proxy_handle);
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     #[cfg(feature = "nym_poc")]
     {

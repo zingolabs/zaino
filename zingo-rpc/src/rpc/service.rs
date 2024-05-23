@@ -191,8 +191,7 @@ impl CompactTxStreamer for ProxyClient {
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
             )
-            .await
-            .unwrap();
+            .await;
 
             let zebra_info = zebrad_client
                 .get_info()

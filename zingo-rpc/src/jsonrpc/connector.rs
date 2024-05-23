@@ -157,41 +157,30 @@ pub struct JsonRpcConnector {
 
 impl JsonRpcConnector {
     /// Returns a new JsonRpcConnector instance, tests uri and returns error if connection is not established.
-    pub async fn new(
-        uri: http::Uri,
-        user: Option<String>,
-        password: Option<String>,
-    ) -> Result<Self, JsonRpcConnectorError> {
-        if let Some(port) = uri.port_u16() {
-            let checked_uri =
-                JsonRpcConnector::test_and_return_uri(&port, user.clone(), password.clone())
-                    .await?;
-            Ok(Self {
-                uri: checked_uri,
-                id_counter: AtomicI32::new(0),
-                user,
-                password,
-            })
-        } else {
-            Err(JsonRpcConnectorError::new("No port number found in URI."))
-        }
-    }
-
-    /// Returns a new JsonRpcConnector instance from zebrad uri port, tests port and returns error if connection not established.
-    pub async fn new_from_port(
-        port: &u16,
-        user: Option<String>,
-        password: Option<String>,
-    ) -> Result<Self, JsonRpcConnectorError> {
-        let uri =
-            JsonRpcConnector::test_and_return_uri(port, user.clone(), password.clone()).await?;
-        Ok(Self {
+    pub async fn new(uri: http::Uri, user: Option<String>, password: Option<String>) -> Self {
+        Self {
             uri,
             id_counter: AtomicI32::new(0),
             user,
             password,
-        })
+        }
     }
+
+    // /// Returns a new JsonRpcConnector instance from zebrad uri port, tests port and returns error if connection not established.
+    // pub async fn new_from_port(
+    //     port: &u16,
+    //     user: Option<String>,
+    //     password: Option<String>,
+    // ) -> Result<Self, JsonRpcConnectorError> {
+    //     let uri =
+    //         JsonRpcConnector::test_and_return_uri(port, user.clone(), password.clone()).await?;
+    //     Ok(Self {
+    //         uri,
+    //         id_counter: AtomicI32::new(0),
+    //         user,
+    //         password,
+    //     })
+    // }
 
     /// Returns the uri the JsonRpcConnector is configured to send requests to.
     pub fn uri(&self) -> &Uri {
@@ -248,82 +237,134 @@ impl JsonRpcConnector {
         }
     }
 
-    /// Tests connection with zebrad / zebrad.
-    pub async fn test_connection(
-        uri: Uri,
-        user: Option<String>,
-        password: Option<String>,
-    ) -> Result<(), JsonRpcConnectorError> {
-        let client = Client::builder().build::<_, Body>(HttpsConnector::new());
+    // /// Tests connection with zebrad / zebrad.
+    // pub async fn test_connection(
+    //     uri: Uri,
+    //     user: Option<String>,
+    //     password: Option<String>,
+    // ) -> Result<(), JsonRpcConnectorError> {
+    //     let client = Client::builder().build::<_, Body>(HttpsConnector::new());
 
-        let user = user.unwrap_or_else(|| "xxxxxx".to_string());
-        let password = password.unwrap_or_else(|| "xxxxxx".to_string());
-        let encoded_auth = base64::encode(format!("{}:{}", user, password));
+    //     let user = user.unwrap_or_else(|| "xxxxxx".to_string());
+    //     let password = password.unwrap_or_else(|| "xxxxxx".to_string());
+    //     let encoded_auth = base64::encode(format!("{}:{}", user, password));
 
-        let request = Request::builder()
-            .method("POST")
-            .uri(uri.clone())
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Basic {}", encoded_auth))
-            .body(Body::from(
-                r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#,
-            ))
-            .map_err(|e| {
-                JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
-            })?;
-        let response =
-            tokio::time::timeout(tokio::time::Duration::from_secs(3), client.request(request))
-                .await
-                .map_err(|e| {
-                    JsonRpcConnectorError::new_with_source("Request timed out", Box::new(e))
-                })??;
-        let body_bytes = hyper::body::to_bytes(response.into_body())
-            .await
-            .map_err(|e| {
-                JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
-            })?;
-        let _response: RpcResponse<serde_json::Value> = serde_json::from_slice(&body_bytes)
-            .map_err(|e| {
-                JsonRpcConnectorError::new_with_source(
-                    "Failed to deserialize response",
-                    Box::new(e),
-                )
-            })?;
-        Ok(())
-    }
+    //     let request = Request::builder()
+    //         .method("POST")
+    //         .uri(uri.clone())
+    //         .header("Content-Type", "application/json")
+    //         .header("Authorization", format!("Basic {}", encoded_auth))
+    //         .body(Body::from(
+    //             r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#,
+    //         ))
+    //         .map_err(|e| {
+    //             JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
+    //         })?;
+    //     let response =
+    //         tokio::time::timeout(tokio::time::Duration::from_secs(3), client.request(request))
+    //             .await
+    //             .map_err(|e| {
+    //                 JsonRpcConnectorError::new_with_source("Request timed out", Box::new(e))
+    //             })??;
+    //     let body_bytes = hyper::body::to_bytes(response.into_body())
+    //         .await
+    //         .map_err(|e| {
+    //             JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
+    //         })?;
+    //     let _response: RpcResponse<serde_json::Value> = serde_json::from_slice(&body_bytes)
+    //         .map_err(|e| {
+    //             JsonRpcConnectorError::new_with_source(
+    //                 "Failed to deserialize response",
+    //                 Box::new(e),
+    //             )
+    //         })?;
+    //     Ok(())
+    // }
 
-    /// Tries to connect to zebrad/zcashd using IPv4 and IPv6 and returns the correct uri type.
-    pub async fn test_and_return_uri(
-        port: &u16,
-        user: Option<String>,
-        password: Option<String>,
-    ) -> Result<Uri, JsonRpcConnectorError> {
-        let ipv4_uri: Uri = format!("http://127.0.0.1:{}", port).parse().map_err(|e| {
-            JsonRpcConnectorError::new_with_source("Failed to parse IPv4 URI", Box::new(e))
-        })?;
-        let ipv6_uri: Uri = format!("http://[::1]:{}", port).parse().map_err(|e| {
-            JsonRpcConnectorError::new_with_source("Failed to parse IPv6 URI", Box::new(e))
-        })?;
+    // /// Tries to connect to zebrad/zcashd using IPv4 and IPv6 and returns the correct uri type.
+    // // pub async fn test_and_return_uri(
+    // //     port: &u16,
+    // //     user: Option<String>,
+    // //     password: Option<String>,
+    // // ) -> Result<Uri, JsonRpcConnectorError> {
+    // //     let ipv4_uri: Uri = format!("http://127.0.0.1:{}", port).parse().map_err(|e| {
+    // //         JsonRpcConnectorError::new_with_source("Failed to parse IPv4 URI", Box::new(e))
+    // //     })?;
+    // //     let ipv6_uri: Uri = format!("http://[::1]:{}", port).parse().map_err(|e| {
+    // //         JsonRpcConnectorError::new_with_source("Failed to parse IPv6 URI", Box::new(e))
+    // //     })?;
 
-        match JsonRpcConnector::test_connection(ipv4_uri.clone(), user.clone(), password.clone())
-            .await
-        {
-            Ok(_) => {
-                println!("@zingoproxyd: Connected to node using IPv4.");
-                return Ok(ipv4_uri);
-            }
-            Err(e_ipv4) => {
-                eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd[nym]: Trying on IPv6.", e_ipv4);
-                match JsonRpcConnector::test_connection(ipv6_uri.clone(), user, password).await {
-                    Ok(_) => {
-                        println!("@zingoproxyd: Connected to node using IPv6.");
-                        Ok(ipv6_uri)
-                    }
-                    Err(e_ipv6) => Err(e_ipv6),
-                }
-            }
-        }
-    }
+    // //     match JsonRpcConnector::test_connection(ipv4_uri.clone(), user.clone(), password.clone())
+    // //         .await
+    // //     {
+    // //         Ok(_) => {
+    // //             println!("@zingoproxyd: Connected to node using IPv4.");
+    // //             return Ok(ipv4_uri);
+    // //         }
+    // //         Err(e_ipv4) => {
+    // //             eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd[nym]: Trying on IPv6.", e_ipv4);
+    // //             match JsonRpcConnector::test_connection(ipv6_uri.clone(), user, password).await {
+    // //                 Ok(_) => {
+    // //                     println!("@zingoproxyd: Connected to node using IPv6.");
+    // //                     Ok(ipv6_uri)
+    // //                 }
+    // //                 Err(e_ipv6) => Err(e_ipv6),
+    // //             }
+    // //         }
+    // //     }
+    // // }
+    // pub async fn test_and_return_uri(
+    //     port: &u16,
+    //     user: Option<String>,
+    //     password: Option<String>,
+    // ) -> Result<Uri, JsonRpcConnectorError> {
+    //     let ipv4_uri: Uri = format!("http://127.0.0.1:{}", port).parse().map_err(|e| {
+    //         JsonRpcConnectorError::new_with_source("Failed to parse IPv4 URI", Box::new(e))
+    //     })?;
+    //     let ipv6_uri: Uri = format!("http://[::1]:{}", port).parse().map_err(|e| {
+    //         JsonRpcConnectorError::new_with_source("Failed to parse IPv6 URI", Box::new(e))
+    //     })?;
+
+    //     for _ in 0..3 {
+    //         println!("@zingoproxyd: Trying connection on IPv4.");
+    //         match JsonRpcConnector::test_connection(
+    //             ipv4_uri.clone(),
+    //             user.clone(),
+    //             password.clone(),
+    //         )
+    //         .await
+    //         {
+    //             Ok(_) => {
+    //                 println!("@zingoproxyd: Connected to node using IPv4.");
+    //                 return Ok(ipv4_uri);
+    //             }
+    //             Err(e_ipv4) => {
+    //                 eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd[nym]: Trying connection on IPv6.", e_ipv4);
+    //                 match JsonRpcConnector::test_connection(
+    //                     ipv6_uri.clone(),
+    //                     user.clone(),
+    //                     password.clone(),
+    //                 )
+    //                 .await
+    //                 {
+    //                     Ok(_) => {
+    //                         println!("@zingoproxyd: Connected to node using IPv6.");
+    //                         return Ok(ipv6_uri);
+    //                     }
+    //                     Err(e_ipv6) => {
+    //                         eprintln!("@zingoproxyd: Failed to connect to node using IPv6 with error: {}.\n@zingoproxyd: Connection not established. Retrying..", e_ipv6);
+    //                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     eprintln!("@zingoproxyd: Could not establish connection with node. Please check config and confirm node is listening at the correct address.");
+    //     Err(JsonRpcConnectorError::new(
+    //         "Could not establish connection with node. Exiting..",
+    //     ))
+    // }
 
     /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
     ///
@@ -535,4 +576,94 @@ impl JsonRpcConnector {
         let params = AddressStringsRequest { addresses };
         self.send_request("getaddressutxos", params).await
     }
+}
+
+/// Tests connection with zebrad / zebrad.
+pub async fn test_node_connection(
+    uri: Uri,
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<(), JsonRpcConnectorError> {
+    let client = Client::builder().build::<_, Body>(HttpsConnector::new());
+
+    let user = user.unwrap_or_else(|| "xxxxxx".to_string());
+    let password = password.unwrap_or_else(|| "xxxxxx".to_string());
+    let encoded_auth = base64::encode(format!("{}:{}", user, password));
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri.clone())
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Basic {}", encoded_auth))
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#,
+        ))
+        .map_err(|e| {
+            JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
+        })?;
+    let response =
+        tokio::time::timeout(tokio::time::Duration::from_secs(3), client.request(request))
+            .await
+            .map_err(|e| {
+                JsonRpcConnectorError::new_with_source("Request timed out", Box::new(e))
+            })??;
+    let body_bytes = hyper::body::to_bytes(response.into_body())
+        .await
+        .map_err(|e| {
+            JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
+        })?;
+    let _response: RpcResponse<serde_json::Value> =
+        serde_json::from_slice(&body_bytes).map_err(|e| {
+            JsonRpcConnectorError::new_with_source("Failed to deserialize response", Box::new(e))
+        })?;
+    Ok(())
+}
+
+/// Tries to connect to zebrad/zcashd using IPv4 and IPv6 and returns the correct uri type.
+pub async fn test_node_and_return_uri(
+    port: &u16,
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<Uri, JsonRpcConnectorError> {
+    let ipv4_uri: Uri = format!("http://127.0.0.1:{}", port).parse().map_err(|e| {
+        JsonRpcConnectorError::new_with_source("Failed to parse IPv4 URI", Box::new(e))
+    })?;
+    let ipv6_uri: Uri = format!("http://[::1]:{}", port).parse().map_err(|e| {
+        JsonRpcConnectorError::new_with_source("Failed to parse IPv6 URI", Box::new(e))
+    })?;
+
+    for _ in 0..3 {
+        println!("@zingoproxyd: Trying connection on IPv4.");
+        match test_node_connection(ipv4_uri.clone(), user.clone(), password.clone()).await {
+            Ok(_) => {
+                println!(
+                    "@zingoproxyd: Connected to node using IPv4 at address {}.",
+                    ipv4_uri
+                );
+                return Ok(ipv4_uri);
+            }
+            Err(e_ipv4) => {
+                eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd[nym]: Trying connection on IPv6.", e_ipv4);
+                match test_node_connection(ipv6_uri.clone(), user.clone(), password.clone()).await {
+                    Ok(_) => {
+                        println!(
+                            "@zingoproxyd: Connected to node using IPv6 at address {}.",
+                            ipv6_uri
+                        );
+                        return Ok(ipv6_uri);
+                    }
+                    Err(e_ipv6) => {
+                        eprintln!("@zingoproxyd: Failed to connect to node using IPv6 with error: {}.\n@zingoproxyd: Connection not established. Retrying..", e_ipv6);
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("@zingoproxyd: Could not establish connection with node. Please check config and confirm node is listening at the correct address. \n@zingoproxyd: Exiting..");
+    std::process::exit(1);
+    // Err(JsonRpcConnectorError::new(
+    //     "Could not establish connection with node. Exiting..",
+    // ))
 }

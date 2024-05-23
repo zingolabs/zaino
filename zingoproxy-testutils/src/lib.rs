@@ -16,10 +16,12 @@ pub struct TestManager {
     pub regtest_manager: zingo_testutils::regtest::RegtestManager,
     /// Zingolib regtest network.
     pub regtest_network: zingoconfig::RegtestNetwork,
-    /// Zing-Proxy gRPC listen port.
+    /// Zingo-Proxy gRPC listen port.
     pub proxy_port: u16,
     /// Zingo-Proxy Nym listen address.
     pub nym_addr: Option<String>,
+    /// Zebrad/Zcashd JsonRpc listen port.
+    pub zebrad_port: u16,
     /// Online status of Zingo-Proxy.
     pub online: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -34,10 +36,10 @@ impl TestManager {
         Vec<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
     ) {
         let lwd_port = portpicker::pick_unused_port().expect("No ports free");
-        let zcashd_port = portpicker::pick_unused_port().expect("No ports free");
+        let zebrad_port = portpicker::pick_unused_port().expect("No ports free");
         let proxy_port = portpicker::pick_unused_port().expect("No ports free");
 
-        let temp_conf_dir = create_temp_conf_files(lwd_port, zcashd_port).unwrap();
+        let temp_conf_dir = create_temp_conf_files(lwd_port, zebrad_port).unwrap();
         let temp_conf_path = temp_conf_dir.path().to_path_buf();
         let nym_conf_path = temp_conf_path.join("nym");
 
@@ -53,7 +55,7 @@ impl TestManager {
         let (proxy_handler, nym_addr) = zingoproxylib::proxy::spawn_proxy(
             &proxy_port,
             &lwd_port,
-            &zcashd_port,
+            &zebrad_port,
             nym_conf_path.to_str().unwrap(),
             online.clone(),
         )
@@ -66,6 +68,7 @@ impl TestManager {
                 regtest_network,
                 proxy_port,
                 nym_addr,
+                zebrad_port,
                 online,
             },
             regtest_handler,
@@ -73,7 +76,7 @@ impl TestManager {
         )
     }
 
-    /// Returns zingo-proxy listen port.
+    /// Returns zingo-proxy listen address.
     pub fn get_proxy_uri(&self) -> http::Uri {
         http::Uri::builder()
             .scheme("http")
@@ -81,6 +84,17 @@ impl TestManager {
             .path_and_query("")
             .build()
             .unwrap()
+    }
+
+    /// Returns zebrad listen address.
+    pub async fn test_and_return_zebrad_uri(&self) -> http::Uri {
+        zingo_rpc::jsonrpc::connector::test_node_and_return_uri(
+            &self.zebrad_port,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap()
     }
 
     /// Builds aand returns Zingolib lightclient.

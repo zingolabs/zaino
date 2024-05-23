@@ -12,7 +12,7 @@ mod proxy {
     use super::*;
 
     #[tokio::test]
-    async fn connect_to_lwd_get_info() {
+    async fn proxy_connect_to_node_get_info() {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _proxy_handler) =
             TestManager::launch(online.clone()).await;
@@ -46,7 +46,7 @@ mod proxy {
     }
 
     #[tokio::test]
-    async fn send_over_proxy() {
+    async fn proxy_send_transaction() {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _proxy_handler) =
             TestManager::launch(online.clone()).await;
@@ -56,7 +56,7 @@ mod proxy {
         zingo_client.do_sync(false).await.unwrap();
 
         println!(
-            "@zingoproxytest: zingo_client balance: {:#?}.",
+            "@zingoproxytest: zingo_client balance: \n{:#?}.",
             zingo_client.do_balance().await
         );
 
@@ -71,7 +71,7 @@ mod proxy {
         zingo_client.do_sync(false).await.unwrap();
 
         println!(
-            "@zingoproxytest: zingo_client balance: {:#?}.",
+            "@zingoproxytest: zingo_client balance: \n{:#?}.",
             zingo_client.do_balance().await
         );
 

@@ -13,7 +13,7 @@ use std::{
 
 use http::Uri;
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zingo_rpc::{jsonrpc::connector::JsonRpcConnector, primitives::ProxyClient};
+use zingo_rpc::{jsonrpc::connector::test_node_and_return_uri, primitives::ProxyClient};
 
 /// Configuration data for gRPC server.
 pub struct ProxyServer(pub ProxyClient);
@@ -68,7 +68,7 @@ pub async fn spawn_server(
         .unwrap();
 
     // TODO Add user and password as fields of ProxyClient and use here.
-    let zebra_uri = JsonRpcConnector::test_and_return_uri(
+    let zebra_uri = test_node_and_return_uri(
         zebrad_port,
         Some("xxxxxx".to_string()),
         Some("xxxxxx".to_string()),
