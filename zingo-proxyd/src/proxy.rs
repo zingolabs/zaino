@@ -105,6 +105,8 @@ fn startup_message() {
 &&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&&&&&&&&
 Thank you for using ZingoLabs ZingoProxyD!
 Donate at https://free2z.cash/zingolabs.
+
+Please note ZingoProxyD is currently in development and should not be used to run mainnet nodes.
     "#;
     println!("{}", welcome_message);
 }

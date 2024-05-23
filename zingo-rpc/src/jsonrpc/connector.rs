@@ -498,7 +498,7 @@ pub async fn test_node_and_return_uri(
                 return Ok(ipv4_uri);
             }
             Err(e_ipv4) => {
-                eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd[nym]: Trying connection on IPv6.", e_ipv4);
+                eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd: Trying connection on IPv6.", e_ipv4);
                 match test_node_connection(ipv6_uri.clone(), user.clone(), password.clone()).await {
                     Ok(_) => {
                         println!(
