@@ -184,7 +184,8 @@ impl CompactTxStreamer for ProxyClient {
         Self: 'async_trait,
     {
         println!("@zingoproxyd: Received call of get_lightd_info.");
-        // TODO Add user and password as fields of ProxyClient and use here.
+        // TODO: Add user and password as fields of ProxyClient and use here.
+        // TODO: Return Nym_Address in get_lightd_info response, for use buy wallets.
         Box::pin(async {
             let zebrad_client = JsonRpcConnector::new(
                 self.zebrad_uri.clone(),
