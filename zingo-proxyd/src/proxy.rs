@@ -104,9 +104,12 @@ fn startup_message() {
 &&&&&&&&&&&&&&&&@@#,   ,#@@%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&&&&&&
 &&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&&&&&&&&
 Thank you for using ZingoLabs ZingoProxyD!
-Donate at https://free2z.cash/zingolabs.
+- Donate to us at https://free2z.cash/zingolabs.
+- Submit any security conserns to us at zingodisclosure@proton.me.
 
-Please note ZingoProxyD is currently in development and should not be used to run mainnet nodes.
+****** Please note ZingoProxyD is currently in development and should not be used to run mainnet nodes. ******
+
+****** Currently LightwalletD is required for full functionality. ******
     "#;
     println!("{}", welcome_message);
 }

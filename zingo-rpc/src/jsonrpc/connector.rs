@@ -516,6 +516,6 @@ pub async fn test_node_and_return_uri(
         }
     }
 
-    eprintln!("@zingoproxyd: Could not establish connection with node. Please check config and confirm node is listening at the correct address. \n@zingoproxyd: Exiting..");
+    eprintln!("@zingoproxyd: Could not establish connection with node. \n@zingoproxyd: Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \n@zingoproxyd: Exiting..");
     std::process::exit(1);
 }
