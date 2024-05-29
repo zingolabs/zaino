@@ -13,8 +13,8 @@ use super::primitives::{
     AddressStringsRequest, BestBlockHashResponse, GetBalanceResponse, GetBlockRequest,
     GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetSubtreesRequest,
     GetSubtreesResponse, GetTransactionRequest, GetTransactionResponse, GetTreestateRequest,
-    GetTreestateResponse, GetUtxosResponse, SendTransactionRequest, SendTransactionResponse,
-    TxidsByAddressRequest, TxidsResponse,
+    GetTreestateResponse, GetUtxosResponse, SendTransactionResponse, TxidsByAddressRequest,
+    TxidsResponse,
 };
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -209,6 +209,13 @@ impl JsonRpcConnector {
             .map_err(|e| {
                 JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
             })?;
+
+        println!(
+            "@zingoproxyd: Received response from {} call to node: {:?}",
+            method.to_string(),
+            body_bytes
+        );
+
         let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
             JsonRpcConnectorError::new_with_source("Failed to deserialize response", Box::new(e))
         })?;
@@ -275,10 +282,8 @@ impl JsonRpcConnector {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SendTransactionResponse, JsonRpcConnectorError> {
-        let params = SendTransactionRequest {
-            raw_transaction_hex,
-        };
-        self.send_request("sendrawtransaction", params).await
+        self.send_request("sendrawtransaction", [raw_transaction_hex])
+            .await
     }
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.

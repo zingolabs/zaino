@@ -8,11 +8,11 @@ use zingoproxy_testutils::{drop_test_manager, TestManager};
 
 use zingo_netutils::GrpcConnector;
 
-mod proxy {
+mod wallet {
     use super::*;
 
     #[tokio::test]
-    async fn proxy_connect_to_node_get_info() {
+    async fn connect_to_node_get_info() {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _proxy_handler) =
             TestManager::launch(online.clone()).await;
@@ -21,12 +21,10 @@ mod proxy {
             "@zingoproxytest: Attempting to connect to GRPC server at URI: {}.",
             test_manager.get_proxy_uri()
         );
-
         let mut client = GrpcConnector::new(test_manager.get_proxy_uri())
             .get_client()
             .await
             .expect("Failed to create GRPC client");
-
         let lightd_info = client
             .get_lightd_info(zcash_client_backend::proto::service::Empty {})
             .await
@@ -36,7 +34,6 @@ mod proxy {
             "@zingoproxytest: Lightd_info response:\n{:#?}.",
             lightd_info.into_inner()
         );
-
         drop_test_manager(
             Some(test_manager.temp_conf_dir.path().to_path_buf()),
             regtest_handler,
@@ -46,7 +43,7 @@ mod proxy {
     }
 
     #[tokio::test]
-    async fn proxy_send_transaction() {
+    async fn send_and_sync() {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _proxy_handler) =
             TestManager::launch(online.clone()).await;
@@ -54,12 +51,6 @@ mod proxy {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-
-        println!(
-            "@zingoproxytest: zingo_client balance: \n{:#?}.",
-            zingo_client.do_balance().await
-        );
-
         zingo_client
             .do_send(vec![(
                 &zingolib::get_base_address!(zingo_client, "sapling"),
@@ -68,18 +59,12 @@ mod proxy {
             )])
             .await
             .unwrap();
+        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
+        let balance = zingo_client.do_balance().await;
+        println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
 
-        println!(
-            "@zingoproxytest: zingo_client balance: \n{:#?}.",
-            zingo_client.do_balance().await
-        );
-
-        assert_eq!(
-            zingo_client.do_balance().await.sapling_balance.unwrap(),
-            250_000
-        );
-
+        assert_eq!(balance.sapling_balance.unwrap(), 250_000);
         drop_test_manager(
             Some(test_manager.temp_conf_dir.path().to_path_buf()),
             regtest_handler,
@@ -87,6 +72,10 @@ mod proxy {
         )
         .await;
     }
+
+    // TODO: Add test for get_mempool_stream: lightclient::start_mempool_monitor.
+    // #[tokio::test]
+    // async fn mempool_monitor() {}
 }
 
 mod nym {

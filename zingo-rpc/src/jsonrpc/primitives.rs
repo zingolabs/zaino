@@ -51,15 +51,6 @@ impl AddressStringsRequest {
     }
 }
 
-/// Hex-encoded raw transaction.
-///
-/// This is used for the input parameter of [`JsonRpcConnector::send_raw_transaction`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SendTransactionRequest {
-    /// - Hex-encoded raw transaction bytes.
-    pub raw_transaction_hex: String,
-}
-
 /// Block to be fetched.
 ///
 /// This is used for the input parameter of [`JsonRpcConnector::get_block`].
@@ -222,7 +213,7 @@ pub struct GetBalanceResponse {
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::send_raw_transaction`].
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct SendTransactionResponse(#[serde(with = "hex")] transaction::Hash);
+pub struct SendTransactionResponse(#[serde(with = "hex")] pub transaction::Hash);
 
 /// Wrapper for `SerializedBlock` to handle hex serialization/deserialization.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -24,7 +24,7 @@ pub async fn spawn_proxy(
     let mut handles = vec![];
     let nym_addr_out: Option<String>;
 
-    startup_message();
+    // startup_message();
     println!("@zingoproxyd: Launching Zingo-Proxy..\n@zingoproxyd: Launching gRPC Server..");
     let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online.clone()).await;
     handles.push(proxy_handle);
