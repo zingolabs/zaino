@@ -10,11 +10,9 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use super::primitives::{
-    AddressStringsRequest, BestBlockHashResponse, GetBalanceResponse, GetBlockRequest,
-    GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetSubtreesRequest,
-    GetSubtreesResponse, GetTransactionRequest, GetTransactionResponse, GetTreestateRequest,
-    GetTreestateResponse, GetUtxosResponse, SendTransactionResponse, TxidsByAddressRequest,
-    TxidsResponse,
+    BestBlockHashResponse, GetBalanceResponse, GetBlockResponse, GetBlockchainInfoResponse,
+    GetInfoResponse, GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse,
+    GetUtxosResponse, SendTransactionResponse, TxidsResponse,
 };
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -196,11 +194,13 @@ impl JsonRpcConnector {
         let request_body = serde_json::to_string(&req).map_err(|e| {
             JsonRpcConnectorError::new_with_source("Failed to serialize request", Box::new(e))
         })?;
+        // println!("request body`: {:?}", request_body);
         let request = request_builder
             .body(Body::from(request_body))
             .map_err(|e| {
                 JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
             })?;
+        // println!("request: {:?}", request);
         let response = client.request(request).await.map_err(|e| {
             JsonRpcConnectorError::new_with_source("HTTP request failed", Box::new(e))
         })?;
@@ -211,7 +211,7 @@ impl JsonRpcConnector {
             })?;
 
         println!(
-            "@zingoproxyd: Received response from {} call to node: {:?}",
+            "@zingoproxyd: Received response from {} call to node: {:#?}",
             method.to_string(),
             body_bytes
         );
@@ -260,11 +260,13 @@ impl JsonRpcConnector {
     ///
     /// - `address_strings`: (object, example={"addresses": ["tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"]}) A JSON map with a single entry
     ///     - `addresses`: (array of strings) A list of base-58 encoded addresses.
+    ///
+    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_address_balance(
         &self,
         addresses: Vec<String>,
     ) -> Result<GetBalanceResponse, JsonRpcConnectorError> {
-        let params = AddressStringsRequest { addresses };
+        let params = vec![serde_json::to_value(addresses)?];
         self.send_request("getaddressbalance", params).await
     }
 
@@ -282,8 +284,8 @@ impl JsonRpcConnector {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SendTransactionResponse, JsonRpcConnectorError> {
-        self.send_request("sendrawtransaction", [raw_transaction_hex])
-            .await
+        let params = vec![serde_json::to_value(raw_transaction_hex)?];
+        self.send_request("sendrawtransaction", params).await
     }
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
@@ -298,14 +300,22 @@ impl JsonRpcConnector {
     ///
     /// - `hash_or_height`: (string, required, example="1") The hash or height for the block to be returned.
     /// - `verbosity`: (number, optional, default=1, example=1) 0 for hex encoded data, 1 for a json object, and 2 for json object with transaction data.
+    ///
+    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_block(
         &self,
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlockResponse, JsonRpcConnectorError> {
-        let params = GetBlockRequest {
-            hash_or_height,
-            verbosity,
+        let params = match verbosity {
+            Some(v) => vec![
+                serde_json::to_value(hash_or_height)?,
+                serde_json::to_value(v)?,
+            ],
+            None => vec![
+                serde_json::to_value(hash_or_height)?,
+                serde_json::to_value(1)?,
+            ],
         };
         self.send_request("getblock", params).await
     }
@@ -315,6 +325,8 @@ impl JsonRpcConnector {
     /// zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
     /// method: post
     /// tags: blockchain
+    ///
+    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_best_block_hash(
         &self,
     ) -> Result<BestBlockHashResponse, JsonRpcConnectorError> {
@@ -327,6 +339,8 @@ impl JsonRpcConnector {
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
+    ///
+    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, JsonRpcConnectorError> {
         self.send_request::<(), TxidsResponse>("getrawmempool", ())
             .await
@@ -345,7 +359,7 @@ impl JsonRpcConnector {
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, JsonRpcConnectorError> {
-        let params = GetTreestateRequest { hash_or_height };
+        let params = vec![serde_json::to_value(hash_or_height)?];
         self.send_request("z_gettreestate", params).await
     }
 
@@ -360,16 +374,24 @@ impl JsonRpcConnector {
     /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling" or "orchard".
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
+    ///
+    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_subtrees_by_index(
         &self,
         pool: String,
         start_index: u16,
         limit: Option<u16>,
     ) -> Result<GetSubtreesResponse, JsonRpcConnectorError> {
-        let params = GetSubtreesRequest {
-            pool,
-            start_index,
-            limit,
+        let params = match limit {
+            Some(v) => vec![
+                serde_json::to_value(pool)?,
+                serde_json::to_value(start_index)?,
+                serde_json::to_value(v)?,
+            ],
+            None => vec![
+                serde_json::to_value(pool)?,
+                serde_json::to_value(start_index)?,
+            ],
         };
         self.send_request("z_getsubtreesbyindex", params).await
     }
@@ -389,7 +411,11 @@ impl JsonRpcConnector {
         txid_hex: String,
         verbose: Option<u8>,
     ) -> Result<GetTransactionResponse, JsonRpcConnectorError> {
-        let params = GetTransactionRequest { txid_hex, verbose };
+        let params = match verbose {
+            Some(v) => vec![serde_json::to_value(txid_hex)?, serde_json::to_value(v)?],
+            None => vec![serde_json::to_value(txid_hex)?, serde_json::to_value(0)?],
+        };
+
         self.send_request("getrawtransaction", params).await
     }
 
@@ -405,19 +431,25 @@ impl JsonRpcConnector {
     ///     - `addresses`: (json array of string, required) The addresses to get transactions from.
     ///     - `start`: (numeric, required) The lower height to start looking for transactions (inclusive).
     ///     - `end`: (numeric, required) The top height to stop looking for transactions (inclusive).
-    pub async fn get_address_tx_ids(
+    pub async fn get_address_txids(
         &self,
         addresses: Vec<String>,
         start: u32,
         end: u32,
     ) -> Result<TxidsResponse, JsonRpcConnectorError> {
-        let params = TxidsByAddressRequest {
-            addresses,
-            start,
-            end,
-        };
+        // let params = vec![
+        //     serde_json::to_value(addresses)?,
+        //     serde_json::to_value(start)?,
+        //     serde_json::to_value(end)?,
+        // ];
 
-        self.send_request("getaddresstxids", params).await
+        let params = serde_json::json!({  // Using json! macro for clarity and correctness
+            "addresses": addresses,
+            "start": start,
+            "end": end
+        });
+
+        self.send_request("getaddresstxids", vec![params]).await
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -429,11 +461,13 @@ impl JsonRpcConnector {
     /// # Parameters
     ///
     /// - `addresses`: (array, required, example={\"addresses\": [\"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ\"]}) The addresses to get outputs from.
+    ///
+    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
     ) -> Result<Vec<GetUtxosResponse>, JsonRpcConnectorError> {
-        let params = AddressStringsRequest { addresses };
+        let params = vec![serde_json::to_value(addresses)?];
         self.send_request("getaddressutxos", params).await
     }
 }

@@ -43,7 +43,7 @@ mod wallet {
     }
 
     #[tokio::test]
-    async fn send_and_sync() {
+    async fn send_and_sync_shielded() {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _proxy_handler) =
             TestManager::launch(online.clone()).await;
@@ -65,6 +65,45 @@ mod wallet {
         println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
 
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
+        drop_test_manager(
+            Some(test_manager.temp_conf_dir.path().to_path_buf()),
+            regtest_handler,
+            online,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn send_and_sync_transparent() {
+        let online = Arc::new(AtomicBool::new(true));
+        let (test_manager, regtest_handler, _proxy_handler) =
+            TestManager::launch(online.clone()).await;
+        let zingo_client = test_manager.build_lightclient().await;
+
+        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
+        zingo_client.do_sync(false).await.unwrap();
+        zingo_client
+            .do_send(vec![(
+                &zingolib::get_base_address!(zingo_client, "transparent"),
+                250_000,
+                None,
+            )])
+            .await
+            .unwrap();
+        zingo_client
+            .do_send(vec![(
+                &zingolib::get_base_address!(zingo_client, "transparent"),
+                250_000,
+                None,
+            )])
+            .await
+            .unwrap();
+        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
+        zingo_client.do_sync(false).await.unwrap();
+        let balance = zingo_client.do_balance().await;
+        println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
+
+        assert_eq!(balance.transparent_balance.unwrap(), 500_000);
         drop_test_manager(
             Some(test_manager.temp_conf_dir.path().to_path_buf()),
             regtest_handler,

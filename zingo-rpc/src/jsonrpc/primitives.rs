@@ -8,105 +8,10 @@ use serde::{Deserialize, Serialize};
 use zebra_chain::{
     block::{self, Height, SerializedBlock},
     subtree::NoteCommitmentSubtreeIndex,
-    transaction::{self, SerializedTransaction},
+    transaction::{self},
     transparent,
 };
 use zebra_rpc::methods::{GetBlockHash, GetBlockTrees};
-
-/// List of transparent address strings.
-///
-/// This is used for the input parameter of [`JsonRpcConnector::get_address_balance`] and [`JsonRpcConnector::get_address_utxos`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AddressStringsRequest {
-    /// A list of transparent address strings.
-    pub addresses: Vec<String>,
-}
-
-impl AddressStringsRequest {
-    /// Creates a new `AddressStrings` given a vector.
-    #[cfg(test)]
-    pub fn new(addresses: Vec<String>) -> Self {
-        AddressStringsRequest { addresses }
-    }
-
-    /// Given a list of addresses as strings:
-    /// - check if provided list have all valid transparent addresses.
-    /// - return valid addresses as a set of `Address`.
-    pub fn valid_addresses(
-        self,
-    ) -> jsonrpc_core::Result<std::collections::HashSet<zebra_chain::transparent::Address>> {
-        let valid_addresses: std::collections::HashSet<zebra_chain::transparent::Address> = self
-            .addresses
-            .into_iter()
-            .map(|address| {
-                address.parse().map_err(|error| {
-                    jsonrpc_core::Error::invalid_params(format!(
-                        "invalid address {address:?}: {error}"
-                    ))
-                })
-            })
-            .collect::<jsonrpc_core::Result<_>>()?;
-
-        Ok(valid_addresses)
-    }
-}
-
-/// Block to be fetched.
-///
-/// This is used for the input parameter of [`JsonRpcConnector::get_block`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct GetBlockRequest {
-    /// The hash or height for the block to be returned.
-    pub hash_or_height: String,
-    /// 0 for hex encoded data, 1 for a json object, and 2 for json object with transaction data. Default=1.
-    pub verbosity: Option<u8>,
-}
-
-/// Block to be examined.
-///
-/// This is used for the input parameter of [`JsonRpcConnector::get_treestate`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct GetTreestateRequest {
-    /// The block hash or height.
-    pub hash_or_height: String,
-}
-
-/// Subtrees to be fetched.
-///
-/// This is used for the input parameter of [`JsonRpcConnector::get_subtrees_by_index`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct GetSubtreesRequest {
-    /// The pool from which subtrees should be returned. Either "sapling" or "orchard".
-    pub pool: String,
-    /// The index of the first 2^16-leaf subtree to return.
-    pub start_index: u16,
-    /// The maximum number of subtree values to return.
-    pub limit: Option<u16>,
-}
-
-/// Transaction to be fetched.
-///
-/// This is used for the input parameter of [`JsonRpcConnector::get_raw_transaction`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct GetTransactionRequest {
-    /// The transaction ID of the transaction to be returned.
-    pub txid_hex: String,
-    /// If 0, return a string of hex-encoded data, otherwise return a JSON object. Default=0.
-    pub verbose: Option<u8>,
-}
-
-/// List of transparent address strings and range of blocks to fetch Txids from.
-///
-/// This is used for the input parameter of [`JsonRpcConnector::get_address_tx_ids`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TxidsByAddressRequest {
-    /// A list of addresses to get transactions from.
-    pub addresses: Vec<String>,
-    /// The height to start looking for transactions.
-    pub start: u32,
-    /// The height to end looking for transactions.
-    pub end: u32,
-}
 
 /// Response to a `getinfo` RPC request.
 ///
@@ -314,117 +219,122 @@ pub struct BestBlockHashResponse(#[serde(with = "hex")] pub block::Hash);
 
 /// Vec of transaction ids, as a JSON array.
 ///
-/// This is used for the output parameter of [`JsonRpcConnector::get_raw_mempool`] and [`JsonRpcConnector::get_address_tx_ids`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+/// This is used for the output parameter of [`JsonRpcConnector::get_raw_mempool`] and [`JsonRpcConnector::get_address_txids`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct TxidsResponse {
     /// Vec of txids.
     pub transactions: Vec<String>,
 }
 
-/// Zingo-Proxy commitment tree structure replicating functionality in Zebra.
-///
-/// A wrapper that contains either an Orchard or Sapling note commitment tree.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ProxyCommitments<Tree: AsRef<[u8]>> {
-    /// Commitment tree state
-    #[serde(with = "hex")]
-    #[serde(rename = "finalState")]
-    pub final_state: Tree,
-}
-
-impl<Tree: AsRef<[u8]> + FromHex<Error = hex::FromHexError>> ProxyCommitments<Tree> {
-    /// Creates a new instance of `ProxyCommitments` from a hex string.
-    pub fn new_from_hex(hex_encoded_data: &str) -> Result<Self, hex::FromHexError> {
-        let tree = Tree::from_hex(hex_encoded_data)?;
-        Ok(Self { final_state: tree })
-    }
-
-    /// Checks if the internal tree is empty.
-    pub fn is_empty(&self) -> bool {
-        self.final_state.as_ref().is_empty()
-    }
-}
-
-/// Zingo-Proxy treestate structure replicating functionality in Zebra.
-///
-/// A treestate that is included in the [`z_gettreestate`][1] RPC response.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ProxyTreestate<Tree: AsRef<[u8]>> {
-    commitments: ProxyCommitments<Tree>,
-}
-
-impl<Tree: AsRef<[u8]> + FromHex<Error = hex::FromHexError>> ProxyTreestate<Tree> {
-    /// Creates a new instance of `ProxyTreestate`.
-    pub fn new(commitments: ProxyCommitments<Tree>) -> Self {
-        Self { commitments }
-    }
-
-    /// Checks if the internal tree is empty.
-    pub fn is_empty(&self) -> bool {
-        self.commitments.is_empty()
-    }
-}
-
-impl<'de, Tree: AsRef<[u8]> + FromHex<Error = hex::FromHexError> + Deserialize<'de>>
-    Deserialize<'de> for ProxyTreestate<Tree>
-{
+impl<'de> Deserialize<'de> for TxidsResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let hex_string: String = Deserialize::deserialize(deserializer)?;
-        let tree = Tree::from_hex(&hex_string).map_err(serde::de::Error::custom)?;
-        Ok(ProxyTreestate::new(ProxyCommitments { final_state: tree }))
+        let v = serde_json::Value::deserialize(deserializer)?;
+
+        let transactions = v
+            .as_array()
+            .ok_or_else(|| serde::de::Error::custom("Expected the JSON to be an array"))?
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from))
+            .collect::<Vec<String>>();
+
+        Ok(TxidsResponse { transactions })
     }
 }
 
-/// A serialized Sapling note commitment tree
+/// Zingo-Proxy commitment tree structure replicating functionality in Zebra.
 ///
-/// Replicates functionality used in Zebra.
+/// A wrapper that contains either an Orchard or Sapling note commitment tree.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct ProxySerializedTree(Vec<u8>);
-
-impl FromHex for ProxySerializedTree {
-    type Error = hex::FromHexError;
-
-    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        let bytes = hex::decode(hex)?;
-        Ok(ProxySerializedTree(bytes))
-    }
+pub struct ProxyCommitments {
+    /// Commitment tree state
+    pub final_state: String,
 }
 
-impl AsRef<[u8]> for ProxySerializedTree {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
+/// Zingo-Proxy sapling treestate.
+///
+/// A treestate that is included in the [`z_gettreestate`][1] RPC response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ProxySaplingTreestate {
+    /// Sapling note commitment tree.
+    pub commitments: ProxyCommitments,
+}
+
+/// Zingo-Proxy orchard treestate.
+///
+/// A treestate that is included in the [`z_gettreestate`][1] RPC response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ProxyOrchardTreestate {
+    /// Sapling note commitment tree.
+    pub commitments: ProxyCommitments,
 }
 
 /// Contains the hex-encoded Sapling & Orchard note commitment trees, and their
 /// corresponding [`block::Hash`], [`Height`], and block time.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_treestate`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct GetTreestateResponse {
-    /// The block hash corresponding to the treestate, hex-encoded.
-    #[serde(with = "hex")]
-    pub hash: block::Hash,
-
     /// The block height corresponding to the treestate, numeric.
-    pub height: Height,
+    pub height: i32,
 
-    /// Unix time when the block corresponding to the treestate was mined,
-    /// numeric.
+    /// The block hash corresponding to the treestate, hex-encoded.
+    pub hash: String,
+
+    /// Unix time when the block corresponding to the treestate was mined, numeric.
     ///
     /// UTC seconds since the Unix 1970-01-01 epoch.
     pub time: u32,
 
     /// A treestate containing a Sapling note commitment tree, hex-encoded.
-    #[serde(skip_serializing_if = "ProxyTreestate::is_empty")]
-    pub sapling: ProxyTreestate<ProxySerializedTree>,
+    pub sapling: ProxySaplingTreestate,
 
     /// A treestate containing an Orchard note commitment tree, hex-encoded.
-    #[serde(skip_serializing_if = "ProxyTreestate::is_empty")]
-    pub orchard: ProxyTreestate<ProxySerializedTree>,
+    pub orchard: ProxyOrchardTreestate,
+}
+
+impl<'de> Deserialize<'de> for GetTreestateResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        let height = v["height"]
+            .as_i64()
+            .ok_or_else(|| serde::de::Error::missing_field("height"))? as i32;
+        let hash = v["hash"]
+            .as_str() // This directly accesses the string value
+            .ok_or_else(|| serde::de::Error::missing_field("hash"))? // Converts Option to Result
+            .to_string();
+        let time = v["time"]
+            .as_i64()
+            .ok_or_else(|| serde::de::Error::missing_field("time"))? as u32;
+        let sapling_final_state = v["sapling"]["commitments"]["finalState"]
+            .as_str()
+            .ok_or_else(|| serde::de::Error::missing_field("sapling final state"))?
+            .to_string();
+        let orchard_final_state = v["orchard"]["commitments"]["finalState"]
+            .as_str()
+            .ok_or_else(|| serde::de::Error::missing_field("orchard final state"))?
+            .to_string();
+        Ok(GetTreestateResponse {
+            height,
+            hash,
+            time,
+            sapling: ProxySaplingTreestate {
+                commitments: ProxyCommitments {
+                    final_state: sapling_final_state,
+                },
+            },
+            orchard: ProxyOrchardTreestate {
+                commitments: ProxyCommitments {
+                    final_state: orchard_final_state,
+                },
+            },
+        })
+    }
 }
 
 /// Wrapper type that can hold Sapling or Orchard subtree roots with hex encoding.
@@ -518,18 +428,82 @@ pub struct GetSubtreesResponse {
     pub subtrees: Vec<ProxySubtreeRpcData>,
 }
 
+/// A serialized transaction.
+///
+/// Stores bytes that are guaranteed to be deserializable into a [`Transaction`].
+///
+/// Sorts in lexicographic order of the transaction's serialized data.
+#[derive(Clone, Eq, PartialEq, serde::Serialize)]
+pub struct ProxySerializedTransaction {
+    /// Transaction bytes.
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Display for ProxySerializedTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&hex::encode(&self.bytes))
+    }
+}
+
+impl std::fmt::Debug for ProxySerializedTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let data_hex = hex::encode(&self.bytes);
+
+        f.debug_tuple("ProxySerializedTransaction")
+            .field(&data_hex)
+            .finish()
+    }
+}
+
+impl AsRef<[u8]> for ProxySerializedTransaction {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes.as_ref()
+    }
+}
+
+impl From<Vec<u8>> for ProxySerializedTransaction {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+impl FromHex for ProxySerializedTransaction {
+    type Error = <Vec<u8> as FromHex>::Error;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = <Vec<u8>>::from_hex(hex)?;
+
+        Ok(bytes.into())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProxySerializedTransaction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        if let Some(hex_str) = v.as_str() {
+            let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
+            Ok(ProxySerializedTransaction { bytes })
+        } else {
+            Err(serde::de::Error::custom("expected a hex string"))
+        }
+    }
+}
+
 /// Contains raw transaction, encoded as hex bytes.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_raw_transaction`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum GetTransactionResponse {
     /// The raw transaction, encoded as hex bytes.
-    Raw(#[serde(with = "hex")] SerializedTransaction),
+    Raw(#[serde(with = "hex")] ProxySerializedTransaction),
     /// The transaction object.
     Object {
         /// The raw transaction, encoded as hex bytes.
         #[serde(with = "hex")]
-        hex: SerializedTransaction,
+        hex: ProxySerializedTransaction,
         /// The height of the block in the best chain that contains the transaction, or -1 if
         /// the transaction is in the mempool.
         height: i32,
@@ -537,6 +511,26 @@ pub enum GetTransactionResponse {
         /// or 0 if the transaction is in the mempool.
         confirmations: u32,
     },
+}
+
+impl<'de> Deserialize<'de> for GetTransactionResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        if v.get("height").is_some() && v.get("confirmations").is_some() {
+            let obj = GetTransactionResponse::Object {
+                hex: serde_json::from_value(v["hex"].clone()).unwrap(),
+                height: v["height"].as_i64().unwrap() as i32,
+                confirmations: v["confirmations"].as_u64().unwrap() as u32,
+            };
+            Ok(obj)
+        } else {
+            let raw = GetTransactionResponse::Raw(serde_json::from_value(v.clone()).unwrap());
+            Ok(raw)
+        }
+    }
 }
 
 /// Zingo-Proxy encoding of a Bitcoin script.

@@ -48,3 +48,5 @@ jsonrpc-core = "18.0.0"
 indexmap = { version = "2.2.6", features = ["serde"] }
 
 base64 = "0.13.0"
+tokio-stream = "0.1"
+futures = "0.3.30"
