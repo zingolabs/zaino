@@ -3,7 +3,7 @@
 use hex::FromHex;
 use tokio_stream::wrappers::ReceiverStream;
 use zcash_client_backend::proto::{
-    compact_formats::{CompactBlock, CompactTx},
+    compact_formats::{ChainMetadata, CompactBlock, CompactTx},
     service::{
         compact_tx_streamer_server::CompactTxStreamer, Address, Balance, BlockId, BlockRange,
         Empty, GetAddressUtxosReply, LightdInfo, RawTransaction, SubtreeRoot,
@@ -15,7 +15,7 @@ use crate::{
     define_grpc_passthrough,
     jsonrpc::{
         connector::JsonRpcConnector,
-        primitives::{GetTransactionResponse, ProxyConsensusBranchIdHex},
+        primitives::{GetBlockResponse, GetTransactionResponse, ProxyConsensusBranchIdHex},
     },
     primitives::ProxyClient,
     utils::get_build_info,
@@ -37,6 +37,37 @@ impl RawTransactionStream {
 
 impl futures::Stream for RawTransactionStream {
     type Item = Result<RawTransaction, tonic::Status>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
+        match poll {
+            std::task::Poll::Ready(Some(Ok(raw_tx))) => std::task::Poll::Ready(Some(Ok(raw_tx))),
+            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+/// Stream of CompactBlocks, output type of get_block_range.
+pub struct CompactBlockStream {
+    inner: ReceiverStream<Result<CompactBlock, tonic::Status>>,
+}
+
+impl CompactBlockStream {
+    /// Returns new instanse of CompactBlockStream.
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactBlock, tonic::Status>>) -> Self {
+        CompactBlockStream {
+            inner: ReceiverStream::new(rx),
+        }
+    }
+}
+
+impl futures::Stream for CompactBlockStream {
+    type Item = Result<CompactBlock, tonic::Status>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -171,40 +202,159 @@ impl CompactTxStreamer for ProxyClient {
 
     /// Server streaming response type for the GetBlockRange method.
     #[doc = "Server streaming response type for the GetBlockRange method."]
-    type GetBlockRangeStream = tonic::Streaming<CompactBlock>;
+    // type GetBlockRangeStream = tonic::Streaming<CompactBlock>;
+    type GetBlockRangeStream = std::pin::Pin<Box<CompactBlockStream>>;
 
-    // /// Return a list of consecutive compact blocks.
-    // ///
-    // /// NOTE: This implementation is slow. An internal block cache should be implemented that this rpc, along with the get_block rpc, can rely on.
-    // ///       - Add get_block_from_node function that fetches block from full node using JsonRpcConnector and updates the block cache with this block.
-    // ///       - add get_block function that queries the block cache for block and calls get_block_from_node to fetch block if not present.
-    // fn get_block_range<'life0, 'async_trait>(
-    //     &'life0 self,
-    //     request: tonic::Request<zcash_client_backend::proto::service::BlockRange>,
-    // ) -> core::pin::Pin<
-    //     Box<
-    //         dyn core::future::Future<
-    //                 Output = std::result::Result<
-    //                     tonic::Response<Self::GetBlockRangeStream>,
-    //                     tonic::Status,
-    //                 >,
-    //             > + core::marker::Send
-    //             + 'async_trait,
-    //     >,
-    // >
-    // where
-    //     'life0: 'async_trait,
-    //     Self: 'async_trait,
-    // {
-    //     println!("@zingoproxyd: Received call of get_block_range.");
-    //     Box::pin(async { todo!("get_block_range not yet implemented") })
-    // }
-    define_grpc_passthrough!(
-        fn get_block_range(
-            &self,
-            request: tonic::Request<BlockRange>,
-        ) -> Self::GetBlockRangeStream
-    );
+    /// Return a list of consecutive compact blocks.
+    ///
+    /// NOTE: This implementation is slow. An internal block cache should be implemented that this rpc, along with the get_block rpc, can rely on.
+    ///       - Add get_block_from_node function that fetches block from full node using JsonRpcConnector and updates the block cache with this block.
+    ///       - add get_block function that queries the block cache for block and calls get_block_from_node to fetch block if not present.
+    fn get_block_range<'life0, 'async_trait>(
+        &'life0 self,
+        request: tonic::Request<zcash_client_backend::proto::service::BlockRange>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<
+                        tonic::Response<Self::GetBlockRangeStream>,
+                        tonic::Status,
+                    >,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        println!("@zingoproxyd: Received call of get_block_range.");
+        let zebrad_uri = self.zebrad_uri.clone();
+        Box::pin(async move {
+            let blockrange = request.into_inner();
+            let mut start = blockrange
+                .start
+                .map(|s| s.height as u32)
+                .ok_or(tonic::Status::invalid_argument("Start block not specified"))?;
+            let mut end = blockrange
+                .end
+                .map(|e| e.height as u32)
+                .ok_or(tonic::Status::invalid_argument("End block not specified"))?;
+            if start > end {
+                (start, end) = (end, start);
+            }
+
+            let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
+            tokio::spawn(async move {
+                let zebrad_client = JsonRpcConnector::new(
+                    zebrad_uri,
+                    Some("xxxxxx".to_string()),
+                    Some("xxxxxx".to_string()),
+                )
+                .await;
+
+                for height in start..end {
+                    let block_1 = zebrad_client.get_block(height.to_string(), Some(1)).await;
+                    match block_1 {
+                        Ok(GetBlockResponse::Object {
+                            hash,
+                            confirmations: _,
+                            height,
+                            time,
+                            tx,
+                            trees,
+                        }) => {
+                            let block_0 =
+                                zebrad_client.get_block(hash.0.to_string(), Some(2)).await;
+                            match block_0 {
+                                Ok(GetBlockResponse::Object {
+                                    hash: _,
+                                    confirmations: _,
+                                    height: _,
+                                    time: _,
+                                    tx: _,
+                                    trees: _,
+                                }) => {
+                                    if channel_tx
+                                        .send(Err(tonic::Status::internal("Received object block type, this should not be impossible here.",
+                                        )))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(GetBlockResponse::Raw(block_hex)) => {
+                                    let block_hash: Vec<u8> = todo!(); //block_hash_0;
+                                    let block_height: u64 = height.unwrap().0 as u64;
+                                    let block_time: u32 = time.unwrap() as u32;
+                                    let block_tx: Vec<CompactTx> = todo!(); //tx;
+                                    let block_metadata: Option<ChainMetadata> = Some(ChainMetadata {
+                                        sapling_commitment_tree_size: todo!(), //trees.sapling.size,
+                                        orchard_commitment_tree_size: todo!(), //trees.orchard.size,
+                                        });
+                                    if channel_tx
+                                        .send(Ok(CompactBlock {
+                                            proto_version: todo!(),
+                                            height: block_height,
+                                            hash: block_hash,
+                                            prev_hash: todo!(),
+                                            time: block_time,
+                                            header: todo!(),
+                                            vtx: block_tx,
+                                            chain_metadata: block_metadata,
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    if channel_tx
+                                        .send(Err(tonic::Status::internal(e.to_string())))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(GetBlockResponse::Raw(_)) => {
+                            if channel_tx
+                                .send(Err(tonic::Status::internal(
+                                    "Received raw block type, this should not be impossible here.",
+                                )))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if channel_tx
+                                .send(Err(tonic::Status::internal(e.to_string())))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            let output_stream = CompactBlockStream::new(channel_rx);
+            let stream_boxed = Box::pin(output_stream);
+            Ok(tonic::Response::new(stream_boxed))
+        })
+    }
+    // define_grpc_passthrough!(
+    //     fn get_block_range(
+    //         &self,
+    //         request: tonic::Request<BlockRange>,
+    //     ) -> Self::GetBlockRangeStream
+    // );
 
     /// Server streaming response type for the GetBlockRangeNullifiers method.
     #[doc = " Server streaming response type for the GetBlockRangeNullifiers method."]
@@ -359,6 +509,8 @@ impl CompactTxStreamer for ProxyClient {
     type GetTaddressTxidsStream = std::pin::Pin<Box<RawTransactionStream>>;
 
     /// This name is misleading, returns the full transactions that have either inputs or outputs connected to the given transparent address.
+    ///
+    /// TODO: Add 30 second timout.
     fn get_taddress_txids<'life0, 'async_trait>(
         &'life0 self,
         request: tonic::Request<
