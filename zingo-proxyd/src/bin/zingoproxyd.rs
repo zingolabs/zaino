@@ -10,7 +10,7 @@ use std::{
 
 use zingoproxylib::proxy::spawn_proxy;
 
-extern crate ctrlc;
+use ctrlc;
 
 #[tokio::main]
 async fn main() {
