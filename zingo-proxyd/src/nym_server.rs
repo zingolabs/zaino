@@ -68,6 +68,7 @@ impl NymServer {
                     .await
                     .unwrap();
             }
+            println!("Nym server shutting down.");
             Ok(())
         })
     }

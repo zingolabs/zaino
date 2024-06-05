@@ -43,7 +43,6 @@ async fn main() {
     .await;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-
     while online.load(Ordering::SeqCst) {
         interval.tick().await;
     }
