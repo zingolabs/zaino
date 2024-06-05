@@ -10,7 +10,7 @@ use std::{
 
 use zingoproxylib::proxy::spawn_proxy;
 
-extern crate ctrlc;
+use ctrlc;
 
 #[tokio::main]
 async fn main() {
@@ -42,5 +42,9 @@ async fn main() {
     )
     .await;
 
-    while online.load(Ordering::SeqCst) {}
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+
+    while online.load(Ordering::SeqCst) {
+        interval.tick().await;
+    }
 }
