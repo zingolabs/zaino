@@ -437,13 +437,7 @@ impl JsonRpcConnector {
         start: u32,
         end: u32,
     ) -> Result<TxidsResponse, JsonRpcConnectorError> {
-        // let params = vec![
-        //     serde_json::to_value(addresses)?,
-        //     serde_json::to_value(start)?,
-        //     serde_json::to_value(end)?,
-        // ];
-
-        let params = serde_json::json!({  // Using json! macro for clarity and correctness
+        let params = serde_json::json!({
             "addresses": addresses,
             "start": start,
             "end": end

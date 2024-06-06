@@ -337,97 +337,6 @@ impl<'de> Deserialize<'de> for GetTreestateResponse {
     }
 }
 
-/// Wrapper type that can hold Sapling or Orchard subtree roots with hex encoding.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProxySubtreeRpcData {
-    /// Merkle root of the 2^16-leaf subtree.
-    pub root: String,
-    /// Height of the block containing the note that completed this subtree.
-    pub height: Height,
-}
-
-impl ProxySubtreeRpcData {
-    /// Returns new instance of ProxySubtreeRpcData
-    pub fn new(root: String, height: Height) -> Self {
-        Self { root, height }
-    }
-}
-
-impl serde::Serialize for ProxySubtreeRpcData {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut state = serializer.serialize_struct("ProxySubtreeRpcData", 2)?;
-        state.serialize_field("root", &self.root)?;
-        state.serialize_field("height", &self.height)?;
-        state.end()
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ProxySubtreeRpcData {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Inner {
-            root: String,
-            height: Height,
-        }
-
-        let inner = Inner::deserialize(deserializer)?;
-        Ok(ProxySubtreeRpcData {
-            root: inner.root,
-            height: inner.height,
-        })
-    }
-}
-
-impl FromHex for ProxySubtreeRpcData {
-    type Error = hex::FromHexError;
-
-    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        let hex_str = std::str::from_utf8(hex.as_ref())
-            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
-
-        if hex_str.len() < 8 {
-            return Err(hex::FromHexError::OddLength);
-        }
-
-        let root_end_index = hex_str.len() - 8;
-        let (root_hex, height_hex) = hex_str.split_at(root_end_index);
-
-        let root = root_hex.to_string();
-        let height = u32::from_str_radix(height_hex, 16)
-            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
-
-        Ok(ProxySubtreeRpcData {
-            root,
-            height: Height(height),
-        })
-    }
-}
-
-/// Contains the Sapling or Orchard pool label, the index of the first subtree in the list,
-/// and a list of subtree roots and end heights.
-///
-/// This is used for the output parameter of [`JsonRpcConnector::get_subtrees_by_index`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct GetSubtreesResponse {
-    /// The shielded pool to which the subtrees belong.
-    pub pool: String,
-
-    /// The index of the first subtree.
-    pub start_index: NoteCommitmentSubtreeIndex,
-
-    /// A sequential list of complete subtrees, in `index` order.
-    ///
-    /// The generic subtree root type is a hex-encoded Sapling or Orchard subtree root string.
-    // #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub subtrees: Vec<ProxySubtreeRpcData>,
-}
-
 /// A serialized transaction.
 ///
 /// Stores bytes that are guaranteed to be deserializable into a [`Transaction`].
@@ -531,6 +440,99 @@ impl<'de> Deserialize<'de> for GetTransactionResponse {
             Ok(raw)
         }
     }
+}
+
+/// *** THE FOLLOWING CODE IS CURRENTLY UNUSED BY ZINGO-PROXY AND UNTESTED! ***
+
+/// Wrapper type that can hold Sapling or Orchard subtree roots with hex encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxySubtreeRpcData {
+    /// Merkle root of the 2^16-leaf subtree.
+    pub root: String,
+    /// Height of the block containing the note that completed this subtree.
+    pub height: Height,
+}
+
+impl ProxySubtreeRpcData {
+    /// Returns new instance of ProxySubtreeRpcData
+    pub fn new(root: String, height: Height) -> Self {
+        Self { root, height }
+    }
+}
+
+impl serde::Serialize for ProxySubtreeRpcData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("ProxySubtreeRpcData", 2)?;
+        state.serialize_field("root", &self.root)?;
+        state.serialize_field("height", &self.height)?;
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ProxySubtreeRpcData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Inner {
+            root: String,
+            height: Height,
+        }
+
+        let inner = Inner::deserialize(deserializer)?;
+        Ok(ProxySubtreeRpcData {
+            root: inner.root,
+            height: inner.height,
+        })
+    }
+}
+
+impl FromHex for ProxySubtreeRpcData {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let hex_str = std::str::from_utf8(hex.as_ref())
+            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
+
+        if hex_str.len() < 8 {
+            return Err(hex::FromHexError::OddLength);
+        }
+
+        let root_end_index = hex_str.len() - 8;
+        let (root_hex, height_hex) = hex_str.split_at(root_end_index);
+
+        let root = root_hex.to_string();
+        let height = u32::from_str_radix(height_hex, 16)
+            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
+
+        Ok(ProxySubtreeRpcData {
+            root,
+            height: Height(height),
+        })
+    }
+}
+
+/// Contains the Sapling or Orchard pool label, the index of the first subtree in the list,
+/// and a list of subtree roots and end heights.
+///
+/// This is used for the output parameter of [`JsonRpcConnector::get_subtrees_by_index`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetSubtreesResponse {
+    /// The shielded pool to which the subtrees belong.
+    pub pool: String,
+
+    /// The index of the first subtree.
+    pub start_index: NoteCommitmentSubtreeIndex,
+
+    /// A sequential list of complete subtrees, in `index` order.
+    ///
+    /// The generic subtree root type is a hex-encoded Sapling or Orchard subtree root string.
+    // #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subtrees: Vec<ProxySubtreeRpcData>,
 }
 
 /// Zingo-Proxy encoding of a Bitcoin script.
