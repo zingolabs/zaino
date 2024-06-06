@@ -7,10 +7,7 @@ use std::{
         Arc,
     },
 };
-
 use zingoproxylib::proxy::spawn_proxy;
-
-use ctrlc;
 
 #[tokio::main]
 async fn main() {
