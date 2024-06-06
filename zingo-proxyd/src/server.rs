@@ -28,18 +28,37 @@ impl ProxyServer {
         tokio::task::spawn(async move {
             let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
-            println!("@zingoproxyd: GRPC server listening on: {sockaddr}.");
-            while online.load(Ordering::SeqCst) {
-                let server = tonic::transport::Server::builder()
-                    .add_service(svc.clone())
-                    .serve(sockaddr)
-                    .await;
-                match server {
-                    Ok(_) => (),
-                    Err(e) => return Err(e),
+            println!("@zingoproxyd: gRPC server listening on: {sockaddr}");
+
+            let server = tonic::transport::Server::builder()
+                .add_service(svc.clone())
+                .serve(sockaddr);
+
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+            tokio::select! {
+                result = server => {
+                    match result {
+                        Ok(_) => {
+                            // TODO: Gracefully restart gRPC server.
+                            println!("@zingoproxyd: gRPC Server closed early. Restart required");
+                            Ok(())
+                            }
+                        Err(e) => {
+                            // TODO: restart server or set online to false and exit
+                            println!("@zingoproxyd: gRPC Server closed with error: {}. Restart required", e);
+                            Err(e)
+                            }
+                    }
+                }
+                _ = async {
+                    while online.load(Ordering::SeqCst) {
+                        interval.tick().await;
+                    }
+                } => {
+                    println!("@zingoproxyd: gRPC server shutting down.");
+                    Ok(())
                 }
             }
-            Ok(())
         })
     }
 

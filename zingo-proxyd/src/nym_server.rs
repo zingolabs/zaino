@@ -28,9 +28,16 @@ impl NymServer {
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         let mut request_in: Vec<ReconstructedMessage> = Vec::new();
         tokio::task::spawn(async move {
+            // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
             while online.load(Ordering::SeqCst) {
                 while let Some(request_nym) = self.0 .0.wait_for_messages().await {
                     if request_nym.is_empty() {
+                        interval.tick().await;
+                        if !online.load(Ordering::SeqCst) {
+                            println!("Nym server shutting down.");
+                            return Ok(());
+                        }
                         continue;
                     }
                     request_in = request_nym;
@@ -74,6 +81,7 @@ impl NymServer {
                     .await
                     .unwrap();
             }
+            println!("Nym server shutting down.");
             Ok(())
         })
     }
