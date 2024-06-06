@@ -1,4 +1,6 @@
 //! Client-side service RPC nym wrapper implementations.
+//!
+//! NOTE: DEPRICATED.
 
 use std::env;
 use tonic::{async_trait, Request, Response, Status};
@@ -14,12 +16,12 @@ use zcash_client_backend::proto::{
 
 use crate::{
     define_grpc_passthrough,
-    nym::utils::{deserialize_response, nym_close, nym_forward, nym_spawn, serialize_request},
-    primitives::ProxyConfig,
+    nym::utils::{deserialize_response, serialize_request},
+    primitives::{NymClient, ProxyClient},
 };
 
 #[async_trait]
-impl CompactTxStreamer for ProxyConfig {
+impl CompactTxStreamer for ProxyClient {
     define_grpc_passthrough!(
         fn get_latest_block(
             &self,
@@ -72,29 +74,16 @@ impl CompactTxStreamer for ProxyConfig {
         println!("request sent: {:?}", serialized_request);
         println!("request length: {}", serialized_request.len());
 
-        // --- forward request over tcp
-        // let addr = "127.0.0.1:9090";
-        // let response_data =
-        //     match crate::nym_utils::forward_over_tcp(addr, &serialized_request).await {
-        //         Ok(data) => data,
-        //         Err(e) => {
-        //             return Err(Status::internal(format!(
-        //                 "Failed to forward transaction over TCP: {}",
-        //                 e
-        //             )))
-        //         }
-        //     };
-
         // -- forward request over nym
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
-        let mut client = nym_spawn(nym_conf_path).await;
-        let response_data =
-            nym_forward(&mut client, recipient_address.as_str(), serialized_request)
-                .await
-                .unwrap();
-        nym_close(client).await;
+        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+        let response_data = client
+            .nym_forward(recipient_address.as_str(), serialized_request)
+            .await
+            .unwrap();
+        client.nym_close().await;
 
         //print response for testing
         println!("response received: {:?}", response_data);

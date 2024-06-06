@@ -1,41 +1,46 @@
 //! Zingo-Proxy daemon
 
-use std::time::Duration;
-use std::{process, thread};
-
-extern crate ctrlc;
-
-use zingo_rpc::nym::utils::nym_spawn;
-use zingoproxylib::{nym_server::nym_serve, server::spawn_server};
+use std::{
+    process,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
+use zingoproxylib::proxy::spawn_proxy;
 
 #[tokio::main]
 async fn main() {
+    let online = Arc::new(AtomicBool::new(true));
+    let online_ctrlc = online.clone();
     ctrlc::set_handler(move || {
         println!("Received Ctrl+C, exiting.");
+        online_ctrlc.store(false, Ordering::SeqCst);
         process::exit(0);
     })
     .expect("Error setting Ctrl-C handler");
 
-    #[cfg(any(feature = "nym_wallet", feature = "nym_server"))]
-    {
-        nym_bin_common::logging::setup_logging();
-    }
+    nym_bin_common::logging::setup_logging();
 
-    #[cfg(any(not(feature = "nym_server"), feature = "nym_wallet"))]
+    let mut proxy_port: u16 = 8080;
+    #[cfg(feature = "nym_poc")]
     {
-        let server_port = 8080;
-        spawn_server(server_port, 9067, 18232).await;
-        loop {
-            thread::sleep(Duration::from_secs(10));
-        }
+        proxy_port = 8088;
     }
+    let lwd_port: u16 = 9067;
+    let zcashd_port: u16 = 18232;
 
-    #[cfg(all(feature = "nym_server", not(feature = "nym_wallet")))]
-    {
-        let path = "/tmp/nym_server";
-        let mut server = nym_spawn(path).await;
-        let our_address = server.nym_address();
-        println!("\nnserver - nym address: {our_address}");
-        nym_serve(&mut server).await;
+    let (_handles, _nym_address) = spawn_proxy(
+        &proxy_port,
+        &lwd_port,
+        &zcashd_port,
+        "/tmp/nym_server",
+        online.clone(),
+    )
+    .await;
+
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+    while online.load(Ordering::SeqCst) {
+        interval.tick().await;
     }
 }

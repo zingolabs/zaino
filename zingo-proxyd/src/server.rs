@@ -2,37 +2,66 @@
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use http::Uri;
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zingo_rpc::primitives::ProxyConfig;
+use zingo_rpc::primitives::ProxyClient;
 
 /// Configuration data for gRPC server.
-pub struct ProxyServer(pub ProxyConfig);
+pub struct ProxyServer(pub ProxyClient);
 
 impl ProxyServer {
     /// Starts gRPC service.
     pub fn serve(
         self,
         port: impl Into<u16> + Send + Sync + 'static,
+        online: Arc<AtomicBool>,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
-        println!("Starting server task");
         tokio::task::spawn(async move {
             let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
-            println!("Proxy listening on {sockaddr}");
-            tonic::transport::Server::builder()
-                .add_service(svc)
-                .serve(sockaddr)
-                .await
+            println!("GRPC server listening on: {sockaddr}");
+
+            let server = tonic::transport::Server::builder()
+                .add_service(svc.clone())
+                .serve(sockaddr);
+
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+            tokio::select! {
+                result = server => {
+                    match result {
+                        Ok(_) => {
+                            // TODO: Gracefully restart gRPC server.
+                            println!("gRPC Server closed early. Restart required");
+                            Ok(())
+                            }
+                        Err(e) => {
+                            // TODO: restart server or set online to false and exit
+                            println!("gRPC Server closed with error: {}. Restart required", e);
+                            Err(e)
+                            }
+                    }
+                }
+                _ = async {
+                    while online.load(Ordering::SeqCst) {
+                        interval.tick().await;
+                    }
+                } => {
+                    println!("gRPC server shutting down.");
+                    Ok(())
+                }
+            }
         })
     }
 
     /// Creates configuration data for gRPC server.
     pub fn new(lightwalletd_uri: http::Uri, zebrad_uri: http::Uri) -> Self {
-        ProxyServer(ProxyConfig {
+        ProxyServer(ProxyClient {
             lightwalletd_uri,
             zebrad_uri,
             online: Arc::new(AtomicBool::new(true)),
@@ -41,13 +70,12 @@ impl ProxyServer {
 }
 
 /// Spawns a gRPC server.
-
 pub async fn spawn_server(
-    proxy_port: u16,
-    lwd_port: u16,
-    zebrad_port: u16,
+    proxy_port: &u16,
+    lwd_port: &u16,
+    zebrad_port: &u16,
+    online: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
-    // NOTE: To connect to mainnet replace "localhost:{lwd_port}" with "eu.lightwalletd.com:443" or any official LightWalletD uri.
     let lwd_uri = Uri::builder()
         .scheme("http")
         .authority(format!("localhost:{lwd_port}"))
@@ -61,36 +89,5 @@ pub async fn spawn_server(
         .build()
         .unwrap();
     let server = ProxyServer::new(lwd_uri, zebra_uri);
-    server.serve(proxy_port)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-    use tokio::time::sleep;
-    use zcash_client_backend::proto::service::Empty;
-
-    #[tokio::test]
-    /// NOTE: This test currently requires a manual boot of zcashd + lightwalletd to run
-    async fn connect_to_lwd_get_info() {
-        let server_port = 8080;
-        let _server_handle = spawn_server(server_port, 9067, 18232).await;
-        sleep(Duration::from_secs(3)).await;
-        let proxy_uri = Uri::builder()
-            .scheme("http")
-            .authority(format!("localhost:{server_port}"))
-            .path_and_query("")
-            .build()
-            .unwrap();
-        println!("{}", proxy_uri);
-        let lightd_info = zingo_netutils::GrpcConnector::new(proxy_uri)
-            .get_client()
-            .await
-            .unwrap()
-            .get_lightd_info(Empty {})
-            .await
-            .unwrap();
-        println!("{:#?}", lightd_info.into_inner());
-    }
+    server.serve(proxy_port.clone(), online)
 }

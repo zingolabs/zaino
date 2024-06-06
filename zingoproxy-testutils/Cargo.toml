@@ -1,0 +1,31 @@
+[package]
+name = "zingoproxy-testutils"
+version = "0.1.0"
+authors = ["zingo@zingolabs.org"]
+edition = "2021"
+
+[features]
+nym = []
+# NOTE: Deprecated
+nym_poc = []
+
+[dependencies]
+zingo-rpc = { path = "../zingo-rpc" }
+zingo-proxyd = { path = "../zingo-proxyd" }
+
+zcash_client_backend = { workspace = true }
+
+nym-sdk = { workspace = true }
+
+tokio = { workspace = true }
+http = { workspace = true }
+tonic = { workspace = true }
+
+zingo-testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+
+ctrlc = "3.2.1"
+tempfile = "3.2.0"
+chrono = "0.4.19"
+portpicker = "0.1.1"
