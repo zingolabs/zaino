@@ -1002,20 +1002,20 @@ impl CompactTxStreamer for ProxyClient {
                 .get(&sapling_id)
                 .map_or(Height(1), |sapling_json| sapling_json.activation_height);
 
-            let (git_commit, branch, build_date, build_user, version) = get_build_info();
+            let build_info = get_build_info();
 
             let lightd_info = LightdInfo {
-                version,
+                version: build_info.version,
                 vendor: "ZingoLabs ZingoProxyD".to_string(),
                 taddr_support: true,
                 chain_name: blockchain_info.chain,
                 sapling_activation_height: sapling_height.0 as u64,
                 consensus_branch_id: blockchain_info.consensus.chain_tip.0.to_string(),
                 block_height: blockchain_info.blocks.0 as u64,
-                git_commit,
-                branch,
-                build_date,
-                build_user,
+                git_commit: build_info.commit_hash,
+                branch: build_info.branch,
+                build_date: build_info.build_date,
+                build_user: build_info.build_user,
                 estimated_height: blockchain_info.estimated_height.0 as u64,
                 zcashd_build: zebra_info.build,
                 zcashd_subversion: zebra_info.subversion,
