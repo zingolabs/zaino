@@ -210,6 +210,7 @@ impl JsonRpcConnector {
                 JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
             })?;
 
+        // NOTE: This is useful for development but is not clear to users and should be simplified or completely removed before production.
         println!(
             "@zingoproxyd: Received response from {} call to node: {:#?}",
             method.to_string(),
@@ -519,6 +520,7 @@ pub async fn test_node_and_return_uri(
     let ipv6_uri: Uri = format!("http://[::1]:{}", port).parse().map_err(|e| {
         JsonRpcConnectorError::new_with_source("Failed to parse IPv6 URI", Box::new(e))
     })?;
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
 
     for _ in 0..3 {
         println!("@zingoproxyd: Trying connection on IPv4.");
@@ -547,6 +549,7 @@ pub async fn test_node_and_return_uri(
                 }
             }
         }
+        interval.tick().await;
     }
 
     eprintln!("@zingoproxyd: Could not establish connection with node. \n@zingoproxyd: Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \n@zingoproxyd: Exiting..");

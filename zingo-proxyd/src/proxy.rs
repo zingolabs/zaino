@@ -4,6 +4,7 @@
 //!       - Update spawn_server and nym_spawn to return <Result<(), GrpcServerError>> and <Result<(), NymServerError>> and use here.
 
 use crate::{nym_server::NymServer, server::spawn_server};
+use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zingo_rpc::primitives::NymClient;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +29,7 @@ pub async fn spawn_proxy(
     println!("@zingoproxyd: Launching Zingo-Proxy..\n@zingoproxyd: Launching gRPC Server..");
     let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online.clone()).await;
     handles.push(proxy_handle);
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    wait_on_grpc_startup(proxy_port, online.clone()).await;
 
     #[cfg(not(feature = "nym_poc"))]
     {
@@ -38,6 +39,7 @@ pub async fn spawn_proxy(
 
         let nym_proxy_handle = nym_server.serve(online).await;
         handles.push(nym_proxy_handle);
+        // TODO: Add wait_on_nym_startup(nym_addr_out, online.clone()) function to test nym server.
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
@@ -51,6 +53,52 @@ pub async fn spawn_proxy(
 /// Closes test Zingo-Proxy servers currently active.
 pub async fn close_proxy(online: Arc<AtomicBool>) {
     online.store(false, Ordering::SeqCst);
+}
+
+/// Tries to connect to the gRPC server and retruns if connection established. Shuts down with error message if connection with server cannot be established after 3 attempts.
+async fn wait_on_grpc_startup(proxy_port: &u16, online: Arc<AtomicBool>) {
+    let proxy_uri = http::Uri::builder()
+        .scheme("http")
+        .authority(format!("localhost:{proxy_port}"))
+        .path_and_query("/")
+        .build()
+        .unwrap();
+    let mut attempts = 0;
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+    interval.tick().await;
+    while attempts < 3 {
+        match CompactTxStreamerClient::connect(proxy_uri.clone()).await {
+            Ok(mut client) => match client
+                .get_lightd_info(tonic::Request::new(
+                    zcash_client_backend::proto::service::Empty {},
+                ))
+                .await
+            {
+                Ok(_) => {
+                    return;
+                }
+                Err(e) => {
+                    println!(
+                        "@zingoproxyd: GRPC server connection attempt {} failed with error: {}. Re",
+                        attempts + 1,
+                        e
+                    );
+                }
+            },
+            Err(e) => {
+                println!(
+                    "@zingoproxyd: GRPC server attempt {} failed to connect with error: {}",
+                    attempts + 1,
+                    e
+                );
+            }
+        }
+        attempts += 1;
+        interval.tick().await;
+    }
+    println!("@zingoproxyd: Failed to start gRPC server, please check system config. Exiting Zingo-Proxy...");
+    online.store(false, Ordering::SeqCst);
+    std::process::exit(1);
 }
 
 fn startup_message() {
