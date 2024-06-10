@@ -8543,6 +8543,7 @@ name = "zingo-rpc"
 version = "0.1.0"
 dependencies = [
  "base64 0.13.1",
+ "byteorder",
  "bytes 1.6.0",
  "futures",
  "hex 0.4.3",
@@ -8569,6 +8570,7 @@ dependencies = [
  "tower",
  "webpki-roots 0.21.1",
  "zcash_client_backend",
+ "zcash_encoding 0.2.0 (git+https://github.com/zingolabs/librustzcash.git?branch=nym_integration)",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",

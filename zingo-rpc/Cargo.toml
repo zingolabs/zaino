@@ -17,6 +17,7 @@ zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git" }
 
 zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
 zingo-netutils = { workspace = true }
+zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
 
 nym-sdk = { workspace = true }
 nym-sphinx-addressing = { workspace = true }
@@ -50,3 +51,6 @@ indexmap = { version = "2.2.6", features = ["serde"] }
 base64 = "0.13.0"
 tokio-stream = "0.1"
 futures = "0.3.30"
+
+byteorder = "1"
+

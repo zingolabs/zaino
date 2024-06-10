@@ -1,5 +1,12 @@
 //! Block fetching and deserialization functionality.
 
+use crate::blockcache::{
+    transaction::FullTransaction,
+    utils::{read_bytes, read_i32, read_u32, ParseError, ParseFromSlice},
+};
+use std::io::Cursor;
+use zcash_encoding::CompactSize;
+
 /// A block header, containing metadata about a block.
 ///
 /// How are blocks chained together? They are chained together via the
@@ -80,6 +87,64 @@ pub struct BlockHeaderData {
     pub solution: Vec<u8>,
 }
 
+impl ParseFromSlice for BlockHeaderData {
+    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+        if txid != None {
+            return Err(ParseError::InvalidData(
+                "txid must be None for BlockHeaderData::parse_from_slice".to_string(),
+            ));
+        }
+        let mut cursor = Cursor::new(data);
+
+        let version = read_i32(&mut cursor, "Error reading BlockHeaderData::version")?;
+        let hash_prev_block = read_bytes(
+            &mut cursor,
+            32,
+            "Error reading BlockHeaderData::hash_prev_block",
+        )?;
+        let hash_merkle_root = read_bytes(
+            &mut cursor,
+            32,
+            "Error reading BlockHeaderData::hash_merkle_root",
+        )?;
+        let hash_final_sapling_root = read_bytes(
+            &mut cursor,
+            32,
+            "Error reading BlockHeaderData::hash_final_sapling_root",
+        )?;
+        let time = read_u32(&mut cursor, "Error reading BlockHeaderData::time")?;
+        let n_bits_bytes = read_bytes(
+            &mut cursor,
+            4,
+            "Error reading BlockHeaderData::n_bits_bytes",
+        )?;
+        let nonce = read_bytes(&mut cursor, 32, "Error reading BlockHeaderData::nonce")?;
+
+        let solution = {
+            let compact_length = CompactSize::read(&mut cursor)?;
+            read_bytes(
+                &mut cursor,
+                compact_length as usize,
+                "Error reading BlockHeaderData::solution",
+            )?
+        };
+
+        Ok((
+            &data[cursor.position() as usize..],
+            BlockHeaderData {
+                version,
+                hash_prev_block,
+                hash_merkle_root,
+                hash_final_sapling_root,
+                time,
+                n_bits_bytes,
+                nonce,
+                solution,
+            },
+        ))
+    }
+}
+
 /// Complete block header.
 #[derive(Debug)]
 pub struct FullBlockHeader {
@@ -105,12 +170,59 @@ pub struct FullBlock {
     pub height: i32,
 }
 
-// impl parse_from_slice for block_header(&[u8]) -> Result<(Self, &[u8]), ParseError>
+impl ParseFromSlice for FullBlock {
+    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+        let txid = txid.ok_or_else(|| {
+            ParseError::InvalidData("txid must be used for FullBlock::parse_from_slice".to_string())
+        })?;
+        let mut cursor = Cursor::new(data);
 
-// impl parse_from_slice for full_block(&[u8]) -> Result<(Self, &[u8]), ParseError>
+        let (remaining_data, block_header_data) =
+            BlockHeaderData::parse_from_slice(&data[cursor.position() as usize..], None)?;
+        cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+
+        let tx_count = CompactSize::read(&mut cursor)?;
+        if txid.len() != tx_count as usize {
+            return Err(ParseError::InvalidData(format!(
+                "number of txids ({}) does not match tx_count ({})",
+                txid.len(),
+                tx_count
+            )));
+        }
+        let mut transactions = Vec::with_capacity(tx_count as usize);
+        let mut remaining_data = &data[cursor.position() as usize..];
+        for txid_item in txid.iter() {
+            if remaining_data.is_empty() {
+                return Err(ParseError::InvalidData(format!(
+                    "parsing block transactions: not enough data for transaction.",
+                )));
+            }
+            let (new_remaining_data, tx) = FullTransaction::parse_from_slice(
+                &data[cursor.position() as usize..],
+                Some(vec![txid_item.clone()]),
+            )?;
+            transactions.push(tx);
+            remaining_data = new_remaining_data;
+        }
+
+        Ok((
+            remaining_data,
+            FullBlock {
+                hdr: FullBlockHeader {
+                    raw_block_header: block_header_data,
+                    cached_hash: Vec::new(), // return actual hash
+                },
+                vtx: transactions,
+                height: 0, // return actual height
+            },
+        ))
+    }
+}
 
 // impl parse_full_block(&[u8]) -> Result<Self, Error>
 
-// impl to_compact(Self) -> Result<compact_block, Error>
+// impl to_compact(Self) -> Result<CompactBlock, Error>
 
-// impl parse_to_compact(&[u8]) -> Result<compact_block, Error>
+// impl parse_to_compact(&[u8]) -> Result<CompactBlock, Error>
+
+// impl get_block_from_node(height: usize) -> Result<CompactBlock, Error>
