@@ -53,4 +53,6 @@ tokio-stream = "0.1"
 futures = "0.3.30"
 
 byteorder = "1"
+sha2 = "0.10"
+
 

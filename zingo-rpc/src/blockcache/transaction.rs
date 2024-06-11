@@ -1,9 +1,10 @@
 //! Transaction fetching and deserialization functionality.
 
 use crate::blockcache::utils::{
-    read_bool, read_bytes, read_u32, read_u64, skip_bytes, ParseError, ParseFromSlice,
+    read_bytes, read_u32, read_u64, skip_bytes, ParseError, ParseFromSlice,
 };
 use std::io::Cursor;
+use zcash_client_backend::proto::compact_formats::{CompactBlock, CompactTx};
 use zcash_encoding::CompactSize;
 
 /// Txin format as described in https://en.bitcoin.it/wiki/Transaction
@@ -654,6 +655,9 @@ impl ParseFromSlice for FullTransaction {
     }
 }
 
-// impl to_compact(Self) -> Result<compact_transaction, Error>
-
-// impl parse_to_compact(&[u8]) -> Result<(compact_transaction, &[u8]), Error>
+impl FullTransaction {
+    /// Converts a zcash full transaction into a compact transaction.
+    pub fn to_compact(self) -> Result<CompactTx, ParseError> {
+        todo!()
+    }
+}

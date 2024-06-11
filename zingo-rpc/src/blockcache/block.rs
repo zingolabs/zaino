@@ -2,9 +2,11 @@
 
 use crate::blockcache::{
     transaction::FullTransaction,
-    utils::{read_bytes, read_i32, read_u32, ParseError, ParseFromSlice},
+    utils::{read_bytes, read_i32, read_u32, read_zcash_script_i64, ParseError, ParseFromSlice},
 };
+use sha2::{Digest, Sha256};
 use std::io::Cursor;
+use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_encoding::CompactSize;
 
 /// A block header, containing metadata about a block.
@@ -145,6 +147,40 @@ impl ParseFromSlice for BlockHeaderData {
     }
 }
 
+impl BlockHeaderData {
+    /// Serializes the block header into a byte vector.
+    pub fn to_binary(&self) -> Result<Vec<u8>, ParseError> {
+        let mut buffer = Vec::new();
+
+        buffer.extend(&self.version.to_le_bytes());
+        buffer.extend(&self.hash_prev_block);
+        buffer.extend(&self.hash_merkle_root);
+        buffer.extend(&self.hash_final_sapling_root);
+        buffer.extend(&self.time.to_le_bytes());
+        buffer.extend(&self.n_bits_bytes);
+        buffer.extend(&self.nonce);
+        let mut solution_compact_size = Vec::new();
+        CompactSize::write(&mut solution_compact_size, self.solution.len())?;
+        buffer.extend(solution_compact_size);
+        buffer.extend(&self.solution);
+
+        Ok(buffer)
+    }
+
+    /// Extracts the block hash from the block header.
+    pub fn get_block_hash(&self) -> Result<Vec<u8>, ParseError> {
+        let serialized_header = self.to_binary()?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&serialized_header);
+        let digest = hasher.finalize_reset();
+        hasher.update(&digest);
+        let final_digest = hasher.finalize();
+
+        Ok(final_digest.to_vec())
+    }
+}
+
 /// Complete block header.
 #[derive(Debug)]
 pub struct FullBlockHeader {
@@ -204,25 +240,75 @@ impl ParseFromSlice for FullBlock {
             transactions.push(tx);
             remaining_data = new_remaining_data;
         }
+        let block_height = Self::get_block_height(&transactions)?;
+        let block_hash = block_header_data.get_block_hash()?;
 
         Ok((
             remaining_data,
             FullBlock {
                 hdr: FullBlockHeader {
                     raw_block_header: block_header_data,
-                    cached_hash: Vec::new(), // return actual hash
+                    cached_hash: block_hash,
                 },
                 vtx: transactions,
-                height: 0, // return actual height
+                height: block_height,
             },
         ))
     }
 }
 
-// impl parse_full_block(&[u8]) -> Result<Self, Error>
+/// Genesis block special case.
+///
+/// From LoightWalletD:
+/// see https://github.com/zcash/lightwalletd/issues/17#issuecomment-467110828.
+const GENESIS_TARGET_DIFFICULTY: u32 = 520617983;
 
-// impl to_compact(Self) -> Result<CompactBlock, Error>
+impl FullBlock {
+    /// Extracts the block height from the coinbase transaction.
+    pub fn get_block_height(transactions: &Vec<FullTransaction>) -> Result<i32, ParseError> {
+        let coinbase_script = transactions[0].raw_transaction.transparent_inputs[0]
+            .script_sig
+            .as_slice();
+        let mut cursor = Cursor::new(coinbase_script);
 
-// impl parse_to_compact(&[u8]) -> Result<CompactBlock, Error>
+        let height_num: i64 = read_zcash_script_i64(&mut cursor)?;
+        if height_num < 0 {
+            return Ok(-1);
+        }
+        if height_num > i64::from(u32::MAX) {
+            return Ok(-1);
+        }
+        if (height_num as u32) == GENESIS_TARGET_DIFFICULTY {
+            return Ok(0);
+        }
 
-// impl get_block_from_node(height: usize) -> Result<CompactBlock, Error>
+        Ok(height_num as i32)
+    }
+
+    /// Decodes a hex encoded zcash full block into a FullBlock struct.
+    pub fn parse_full_block(data: &[u8], txid: Option<Vec<u8>>) -> Result<Self, ParseError> {
+        todo!()
+    }
+
+    /// Converts a zcash full block into a compact block.
+    pub fn to_compact(self) -> Result<CompactBlock, ParseError> {
+        todo!()
+    }
+
+    /// Decodes a hex encoded zcash full block into a CompactBlock struct.
+    pub fn parse_to_compact(
+        data: &[u8],
+        txid: Option<Vec<u8>>,
+    ) -> Result<CompactBlock, ParseError> {
+        todo!()
+    }
+}
+
+/// Returns a compact block.
+///
+/// Retrieves a full block from zebrad/zcashd using 2 get_block calls.
+/// This is because a get_block verbose = 1 call is require to fetch txids.
+/// TODO: Save retrieved CompactBlock to the BlockCache.
+pub fn get_block_from_node(height: usize) -> Result<CompactBlock, ParseError> {
+    todo!()
+}
