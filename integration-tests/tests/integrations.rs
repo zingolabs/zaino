@@ -51,6 +51,9 @@ mod wallet {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
+
+        // std::thread::sleep(std::time::Duration::from_secs(10));
+
         zingo_client
             .do_send(vec![(
                 &zingolib::get_base_address!(zingo_client, "sapling"),

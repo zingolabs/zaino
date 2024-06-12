@@ -1,12 +1,17 @@
 //! Block fetching and deserialization functionality.
 
-use crate::blockcache::{
-    transaction::FullTransaction,
-    utils::{read_bytes, read_i32, read_u32, read_zcash_script_i64, ParseError, ParseFromSlice},
+use crate::{
+    blockcache::{
+        transaction::FullTransaction,
+        utils::{
+            read_bytes, read_i32, read_u32, read_zcash_script_i64, ParseError, ParseFromSlice,
+        },
+    },
+    jsonrpc::{connector::JsonRpcConnector, primitives::GetBlockResponse},
 };
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
-use zcash_client_backend::proto::compact_formats::CompactBlock;
+use zcash_client_backend::proto::compact_formats::{ChainMetadata, CompactBlock};
 use zcash_encoding::CompactSize;
 
 /// A block header, containing metadata about a block.
@@ -90,7 +95,10 @@ pub struct BlockHeaderData {
 }
 
 impl ParseFromSlice for BlockHeaderData {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for BlockHeaderData::parse_from_slice".to_string(),
@@ -168,7 +176,7 @@ impl BlockHeaderData {
     }
 
     /// Extracts the block hash from the block header.
-    pub fn get_block_hash(&self) -> Result<Vec<u8>, ParseError> {
+    pub fn get_hash(&self) -> Result<Vec<u8>, ParseError> {
         let serialized_header = self.to_binary()?;
 
         let mut hasher = Sha256::new();
@@ -207,7 +215,10 @@ pub struct FullBlock {
 }
 
 impl ParseFromSlice for FullBlock {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         let txid = txid.ok_or_else(|| {
             ParseError::InvalidData("txid must be used for FullBlock::parse_from_slice".to_string())
         })?;
@@ -216,6 +227,8 @@ impl ParseFromSlice for FullBlock {
         let (remaining_data, block_header_data) =
             BlockHeaderData::parse_from_slice(&data[cursor.position() as usize..], None)?;
         cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+
+        println!("\nBlockHeaderData: {:?}\n", block_header_data);
 
         let tx_count = CompactSize::read(&mut cursor)?;
         if txid.len() != tx_count as usize {
@@ -240,8 +253,10 @@ impl ParseFromSlice for FullBlock {
             transactions.push(tx);
             remaining_data = new_remaining_data;
         }
+        println!("\nTransactions: {:?}\n", transactions);
+
         let block_height = Self::get_block_height(&transactions)?;
-        let block_hash = block_header_data.get_block_hash()?;
+        let block_hash = block_header_data.get_hash()?;
 
         Ok((
             remaining_data,
@@ -259,7 +274,7 @@ impl ParseFromSlice for FullBlock {
 
 /// Genesis block special case.
 ///
-/// From LoightWalletD:
+/// From LightWalletD:
 /// see https://github.com/zcash/lightwalletd/issues/17#issuecomment-467110828.
 const GENESIS_TARGET_DIFFICULTY: u32 = 520617983;
 
@@ -286,21 +301,63 @@ impl FullBlock {
     }
 
     /// Decodes a hex encoded zcash full block into a FullBlock struct.
-    pub fn parse_full_block(data: &[u8], txid: Option<Vec<u8>>) -> Result<Self, ParseError> {
-        todo!()
+    pub fn parse_full_block(data: &[u8], txid: Option<Vec<Vec<u8>>>) -> Result<Self, ParseError> {
+        let (remaining_data, full_block) = Self::parse_from_slice(data, txid)?;
+        if remaining_data.len() != 0 {
+            return Err(ParseError::InvalidData(
+                "Error decoding full block, data ramaining: ({remaining_data})".to_string(),
+            ));
+        }
+        Ok(full_block)
     }
 
     /// Converts a zcash full block into a compact block.
-    pub fn to_compact(self) -> Result<CompactBlock, ParseError> {
-        todo!()
+    pub fn to_compact(
+        self,
+        sapling_commitment_tree_size: u32,
+        orchard_commitment_tree_size: u32,
+    ) -> Result<CompactBlock, ParseError> {
+        let vtx = self
+            .vtx
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, tx)| {
+                if tx.has_shielded_elements() {
+                    Some(tx.to_compact(index as u64))
+                } else {
+                    None
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let header = self.hdr.raw_block_header.to_binary()?;
+
+        let compact_block = CompactBlock {
+            proto_version: 1, // TODO: check this is correct!
+            height: self.height as u64,
+            hash: self.hdr.cached_hash.clone(),
+            prev_hash: self.hdr.raw_block_header.hash_prev_block.clone(),
+            time: self.hdr.raw_block_header.time,
+            header,
+            vtx,
+            chain_metadata: Some(ChainMetadata {
+                sapling_commitment_tree_size,
+                orchard_commitment_tree_size,
+            }),
+        };
+
+        Ok(compact_block)
     }
 
     /// Decodes a hex encoded zcash full block into a CompactBlock struct.
     pub fn parse_to_compact(
         data: &[u8],
-        txid: Option<Vec<u8>>,
+        txid: Option<Vec<Vec<u8>>>,
+        sapling_commitment_tree_size: u32,
+        orchard_commitment_tree_size: u32,
     ) -> Result<CompactBlock, ParseError> {
-        todo!()
+        Ok(Self::parse_full_block(data, txid)?
+            .to_compact(sapling_commitment_tree_size, orchard_commitment_tree_size)?)
     }
 }
 
@@ -309,6 +366,61 @@ impl FullBlock {
 /// Retrieves a full block from zebrad/zcashd using 2 get_block calls.
 /// This is because a get_block verbose = 1 call is require to fetch txids.
 /// TODO: Save retrieved CompactBlock to the BlockCache.
-pub fn get_block_from_node(height: usize) -> Result<CompactBlock, ParseError> {
-    todo!()
+/// TODO: Return more representative error type.
+pub async fn get_block_from_node(
+    zebra_uri: &http::Uri,
+    height: &u32,
+) -> Result<CompactBlock, ParseError> {
+    let zebrad_client = JsonRpcConnector::new(
+        zebra_uri.clone(),
+        Some("xxxxxx".to_string()),
+        Some("xxxxxx".to_string()),
+    )
+    .await;
+    let block_1 = zebrad_client.get_block(height.to_string(), Some(1)).await;
+    match block_1 {
+        Ok(GetBlockResponse::Object {
+            hash,
+            confirmations: _,
+            height: _,
+            time: _,
+            tx,
+            trees,
+        }) => {
+            let block_0 = zebrad_client.get_block(hash.0.to_string(), Some(0)).await;
+            match block_0 {
+                Ok(GetBlockResponse::Object {
+                    hash: _,
+                    confirmations: _,
+                    height: _,
+                    time: _,
+                    tx: _,
+                    trees: _,
+                }) => {
+                    return Err(ParseError::InvalidData(
+                        "Received object block type, this should not be possible here.".to_string(),
+                    ));
+                }
+                Ok(GetBlockResponse::Raw(block_hex)) => {
+                    Ok(FullBlock::parse_to_compact(
+                        block_hex.as_ref(),
+                        Some(tx.into_iter().map(|s| s.into_bytes()).collect()),
+                        0, //trees.sapling as u32,
+                        2, //trees.orchard as u32,
+                    )?)
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
+        }
+        Ok(GetBlockResponse::Raw(_)) => {
+            return Err(ParseError::InvalidData(
+                "Received raw block type, this should not be possible here.".to_string(),
+            ));
+        }
+        Err(e) => {
+            return Err(e.into());
+        }
+    }
 }

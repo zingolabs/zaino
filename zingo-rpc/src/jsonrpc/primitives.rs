@@ -11,7 +11,7 @@ use zebra_chain::{
     transaction::{self},
     transparent,
 };
-use zebra_rpc::methods::{GetBlockHash, GetBlockTrees};
+use zebra_rpc::methods::GetBlockHash;
 
 /// Response to a `getinfo` RPC request.
 ///
@@ -177,6 +177,15 @@ impl AsRef<[u8]> for ProxySerializedBlock {
     }
 }
 
+/// Information about the note commitment trees.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ProxyBlockTrees {
+    /// Sapling commitment tree size.
+    pub sapling: u64,
+    /// Orchard commitment tree size.
+    pub orchard: u64,
+}
+
 /// Contains the hex-encoded hash of the sent transaction.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_block`].
@@ -206,7 +215,7 @@ pub enum GetBlockResponse {
         tx: Vec<String>,
 
         /// Information about the note commitment trees.
-        trees: GetBlockTrees,
+        trees: zebra_rpc::methods::GetBlockTrees,
     },
 }
 

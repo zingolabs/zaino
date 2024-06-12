@@ -3,12 +3,14 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{Cursor, Read};
 
+use crate::jsonrpc::connector::JsonRpcConnectorError;
+
 /// Parser Error Type.
 #[derive(Debug)]
 pub enum ParseError {
     /// Io Error
     Io(std::io::Error),
-    /// Parse Error.
+    /// Invalid Data Error.
     InvalidData(String),
 }
 
@@ -18,12 +20,39 @@ impl From<std::io::Error> for ParseError {
     }
 }
 
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Io(err) => write!(f, "IO Error: {}", err),
+            ParseError::InvalidData(msg) => write!(f, "Invalid Data Error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ParseError::Io(err) => Some(err),
+            ParseError::InvalidData(_) => None,
+        }
+    }
+}
+
+impl From<JsonRpcConnectorError> for ParseError {
+    fn from(err: JsonRpcConnectorError) -> ParseError {
+        ParseError::InvalidData(err.to_string())
+    }
+}
+
 /// Used for decoding zcash blocks from a bytestring.
 pub trait ParseFromSlice {
     /// Reads data from a bytestring, consuming data read, and returns an instance of self along with the remaining data in the bytestring given.
     ///
     /// Txid is givin as an input as this is taken from a get_block verbose=1 call.
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError>
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError>
     where
         Self: Sized;
 }

@@ -4,7 +4,9 @@ use crate::blockcache::utils::{
     read_bytes, read_u32, read_u64, skip_bytes, ParseError, ParseFromSlice,
 };
 use std::io::Cursor;
-use zcash_client_backend::proto::compact_formats::{CompactBlock, CompactTx};
+use zcash_client_backend::proto::compact_formats::{
+    CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
+};
 use zcash_encoding::CompactSize;
 
 /// Txin format as described in https://en.bitcoin.it/wiki/Transaction
@@ -20,7 +22,10 @@ pub struct TxIn {
 }
 
 impl ParseFromSlice for TxIn {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for TxIn::parse_from_slice".to_string(),
@@ -55,7 +60,10 @@ pub struct TxOut {
 }
 
 impl ParseFromSlice for TxOut {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for TxOut::parse_from_slice".to_string(),
@@ -114,7 +122,10 @@ pub struct Spend {
 }
 
 impl ParseFromSlice for Spend {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for Spend::parse_from_slice".to_string(),
@@ -156,7 +167,10 @@ pub struct Output {
 }
 
 impl ParseFromSlice for Output {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for Output::parse_from_slice".to_string(),
@@ -202,7 +216,10 @@ pub struct JoinSplit {
 }
 
 impl ParseFromSlice for JoinSplit {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for JoinSplit::parse_from_slice".to_string(),
@@ -254,7 +271,10 @@ pub struct Action {
 }
 
 impl ParseFromSlice for Action {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for Action::parse_from_slice".to_string(),
@@ -604,7 +624,10 @@ pub struct FullTransaction {
 }
 
 impl ParseFromSlice for FullTransaction {
-    fn parse_from_slice(data: &[u8], txid: Option<Vec<u8>>) -> Result<(&[u8], Self), ParseError> {
+    fn parse_from_slice(
+        data: &[u8],
+        txid: Option<Vec<Vec<u8>>>,
+    ) -> Result<(&[u8], Self), ParseError> {
         let txid = txid.ok_or_else(|| {
             ParseError::InvalidData(
                 "txid must be used for FullTransaction::parse_from_slice".to_string(),
@@ -648,7 +671,7 @@ impl ParseFromSlice for FullTransaction {
         let full_transaction = FullTransaction {
             raw_transaction: transaction_data,
             raw_bytes: data[..(data.len() - remaining_data.len())].to_vec(),
-            tx_id: txid,
+            tx_id: txid[0].clone(),
         };
 
         Ok((remaining_data, full_transaction))
@@ -657,7 +680,58 @@ impl ParseFromSlice for FullTransaction {
 
 impl FullTransaction {
     /// Converts a zcash full transaction into a compact transaction.
-    pub fn to_compact(self) -> Result<CompactTx, ParseError> {
-        todo!()
+    pub fn to_compact(self, index: u64) -> Result<CompactTx, ParseError> {
+        let hash = self.tx_id;
+
+        // NOTE: LightWalletD currently does not return a fee and is not currently priority here. Please open an Issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy) if you require this functionality.
+        let fee = 0;
+
+        let spends = self
+            .raw_transaction
+            .shielded_spends
+            .iter()
+            .map(|spend| CompactSaplingSpend {
+                nf: spend.nullifier.clone(),
+            })
+            .collect();
+
+        let outputs = self
+            .raw_transaction
+            .shielded_outputs
+            .iter()
+            .map(|output| CompactSaplingOutput {
+                cmu: output.cmu.clone(),
+                ephemeral_key: output.ephemeral_key.clone(),
+                ciphertext: output.enc_ciphertext[..52].to_vec(),
+            })
+            .collect();
+
+        let actions = self
+            .raw_transaction
+            .orchard_actions
+            .iter()
+            .map(|action| CompactOrchardAction {
+                nullifier: action.nullifier.clone(),
+                cmx: action.cmx.clone(),
+                ephemeral_key: action.ephemeral_key.clone(),
+                ciphertext: action.enc_ciphertext[..52].to_vec(),
+            })
+            .collect();
+
+        Ok(CompactTx {
+            index,
+            hash,
+            fee,
+            spends,
+            outputs,
+            actions,
+        })
+    }
+
+    /// Returns true if the transaction contains either sapling spends or outputs.
+    pub fn has_shielded_elements(&self) -> bool {
+        !self.raw_transaction.shielded_spends.is_empty()
+            || !self.raw_transaction.shielded_outputs.is_empty()
+            || !self.raw_transaction.orchard_actions.is_empty()
     }
 }
