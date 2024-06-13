@@ -330,7 +330,8 @@ impl FullBlock {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let header = self.hdr.raw_block_header.to_binary()?;
+        // let header = self.hdr.raw_block_header.to_binary()?;
+        let header = Vec::new();
 
         let compact_block = CompactBlock {
             proto_version: 1, // TODO: check this is correct!
