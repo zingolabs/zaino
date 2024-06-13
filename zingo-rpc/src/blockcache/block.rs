@@ -4,7 +4,8 @@ use crate::{
     blockcache::{
         transaction::FullTransaction,
         utils::{
-            read_bytes, read_i32, read_u32, read_zcash_script_i64, ParseError, ParseFromSlice,
+            display_txids_to_server, read_bytes, read_i32, read_u32, read_zcash_script_i64,
+            ParseError, ParseFromSlice,
         },
     },
     jsonrpc::{connector::JsonRpcConnector, primitives::GetBlockResponse},
@@ -227,9 +228,6 @@ impl ParseFromSlice for FullBlock {
         let (remaining_data, block_header_data) =
             BlockHeaderData::parse_from_slice(&data[cursor.position() as usize..], None)?;
         cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
-
-        println!("\nBlockHeaderData: {:?}\n", block_header_data);
-
         let tx_count = CompactSize::read(&mut cursor)?;
         if txid.len() != tx_count as usize {
             return Err(ParseError::InvalidData(format!(
@@ -253,8 +251,6 @@ impl ParseFromSlice for FullBlock {
             transactions.push(tx);
             remaining_data = new_remaining_data;
         }
-        println!("\nTransactions: {:?}\n", transactions);
-
         let block_height = Self::get_block_height(&transactions)?;
         let block_hash = block_header_data.get_hash()?;
 
@@ -330,6 +326,7 @@ impl FullBlock {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        // NOTE: LightWalletD doesnt return a compact block header, however this could be used to return data if required.
         // let header = self.hdr.raw_block_header.to_binary()?;
         let header = Vec::new();
 
@@ -378,6 +375,14 @@ pub async fn get_block_from_node(
         Some("xxxxxx".to_string()),
     )
     .await;
+    println!(
+        "\ntest get_block_response: {:?}\n",
+        zebrad_client
+            .get_block(height.to_string(), Some(1))
+            .await
+            .unwrap()
+    );
+
     let block_1 = zebrad_client.get_block(height.to_string(), Some(1)).await;
     match block_1 {
         Ok(GetBlockResponse::Object {
@@ -402,14 +407,12 @@ pub async fn get_block_from_node(
                         "Received object block type, this should not be possible here.".to_string(),
                     ));
                 }
-                Ok(GetBlockResponse::Raw(block_hex)) => {
-                    Ok(FullBlock::parse_to_compact(
-                        block_hex.as_ref(),
-                        Some(tx.into_iter().map(|s| s.into_bytes()).collect()),
-                        0, //trees.sapling as u32,
-                        2, //trees.orchard as u32,
-                    )?)
-                }
+                Ok(GetBlockResponse::Raw(block_hex)) => Ok(FullBlock::parse_to_compact(
+                    block_hex.as_ref(),
+                    Some(display_txids_to_server(tx)),
+                    trees.sapling.size as u32,
+                    trees.orchard.size as u32,
+                )?),
                 Err(e) => {
                     return Err(e.into());
                 }

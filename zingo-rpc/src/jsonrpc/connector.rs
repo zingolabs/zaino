@@ -301,8 +301,6 @@ impl JsonRpcConnector {
     ///
     /// - `hash_or_height`: (string, required, example="1") The hash or height for the block to be returned.
     /// - `verbosity`: (number, optional, default=1, example=1) 0 for hex encoded data, 1 for a json object, and 2 for json object with transaction data.
-    ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_block(
         &self,
         hash_or_height: String,

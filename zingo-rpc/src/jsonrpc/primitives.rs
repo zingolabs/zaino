@@ -177,13 +177,26 @@ impl AsRef<[u8]> for ProxySerializedBlock {
     }
 }
 
+/// Sapling note commitment tree information.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ProxyTrees {
+    /// Commitment tree size.
+    pub size: u64,
+}
+
+// /// Orchard note commitment tree information.
+// #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+// pub struct ProxyOrchardTrees {
+//     pub size: u64,
+// }
+
 /// Information about the note commitment trees.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ProxyBlockTrees {
     /// Sapling commitment tree size.
-    pub sapling: u64,
+    pub sapling: ProxyTrees,
     /// Orchard commitment tree size.
-    pub orchard: u64,
+    pub orchard: ProxyTrees,
 }
 
 /// Contains the hex-encoded hash of the sent transaction.
@@ -215,7 +228,7 @@ pub enum GetBlockResponse {
         tx: Vec<String>,
 
         /// Information about the note commitment trees.
-        trees: zebra_rpc::methods::GetBlockTrees,
+        trees: ProxyBlockTrees, //zebra_rpc::methods::GetBlockTrees,
     },
 }
 

@@ -141,3 +141,20 @@ pub fn read_zcash_script_i64(cursor: &mut Cursor<&[u8]>) -> Result<i64, ParseErr
         }
     }
 }
+
+/// Takes a vec of big endian hex encoded txids and returns them as a vec of little endian raw bytes.
+pub fn display_txids_to_server(txids: Vec<String>) -> Vec<Vec<u8>> {
+    txids
+        .iter()
+        .map(|txid| {
+            txid.as_bytes()
+                .chunks(2)
+                .map(|chunk| {
+                    let hex_pair = std::str::from_utf8(chunk).unwrap();
+                    u8::from_str_radix(hex_pair, 16).unwrap()
+                })
+                .rev()
+                .collect()
+        })
+        .collect()
+}
