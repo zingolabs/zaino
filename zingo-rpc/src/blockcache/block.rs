@@ -298,11 +298,17 @@ impl FullBlock {
 
     /// Decodes a hex encoded zcash full block into a FullBlock struct.
     pub fn parse_full_block(data: &[u8], txid: Option<Vec<Vec<u8>>>) -> Result<Self, ParseError> {
+        println!(
+            "\nIn parse_full_block with inputs:\ndata: {:?}\n\ntxid: {:?}\n",
+            data, txid
+        );
         let (remaining_data, full_block) = Self::parse_from_slice(data, txid)?;
         if remaining_data.len() != 0 {
-            return Err(ParseError::InvalidData(
-                "Error decoding full block, data ramaining: ({remaining_data})".to_string(),
-            ));
+            return Err(ParseError::InvalidData(format!(
+                "Error decoding full block - Data Remaining: ({:?}) - Compact Block: ({:?})",
+                remaining_data,
+                full_block.to_compact(0, 0)
+            )));
         }
         Ok(full_block)
     }
@@ -326,7 +332,7 @@ impl FullBlock {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // NOTE: LightWalletD doesnt return a compact block header, however this could be used to return data if required.
+        // NOTE: LightWalletD doesnt return a compact block header, however this could be used to return data if useful.
         // let header = self.hdr.raw_block_header.to_binary()?;
         let header = Vec::new();
 
@@ -375,14 +381,6 @@ pub async fn get_block_from_node(
         Some("xxxxxx".to_string()),
     )
     .await;
-    println!(
-        "\ntest get_block_response: {:?}\n",
-        zebrad_client
-            .get_block(height.to_string(), Some(1))
-            .await
-            .unwrap()
-    );
-
     let block_1 = zebrad_client.get_block(height.to_string(), Some(1)).await;
     match block_1 {
         Ok(GetBlockResponse::Object {

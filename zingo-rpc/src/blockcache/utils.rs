@@ -122,7 +122,7 @@ const OP_1_NEGATE: u8 = 0x4f;
 const OP_1: u8 = 0x51;
 const OP_16: u8 = 0x60;
 
-/// Reads and interprets a Zcash (Bitcoin)-custom compact integer encoding used for int64 numbers in scripts.
+/// Reads and interprets a Zcash (Bitcoin) custom compact integer encoding used for int64 numbers in scripts.
 pub fn read_zcash_script_i64(cursor: &mut Cursor<&[u8]>) -> Result<i64, ParseError> {
     let first_byte = read_bytes(cursor, 1, "Error reading first byte in i64 script hash")?[0];
 

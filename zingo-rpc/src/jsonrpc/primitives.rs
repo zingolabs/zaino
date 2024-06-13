@@ -179,24 +179,18 @@ impl AsRef<[u8]> for ProxySerializedBlock {
 
 /// Sapling note commitment tree information.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct ProxyTrees {
+pub struct ProxyTree {
     /// Commitment tree size.
     pub size: u64,
 }
-
-// /// Orchard note commitment tree information.
-// #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-// pub struct ProxyOrchardTrees {
-//     pub size: u64,
-// }
 
 /// Information about the note commitment trees.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ProxyBlockTrees {
     /// Sapling commitment tree size.
-    pub sapling: ProxyTrees,
+    pub sapling: ProxyTree,
     /// Orchard commitment tree size.
-    pub orchard: ProxyTrees,
+    pub orchard: ProxyTree,
 }
 
 /// Contains the hex-encoded hash of the sent transaction.
