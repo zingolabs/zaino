@@ -99,10 +99,16 @@ impl ParseFromSlice for BlockHeaderData {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for BlockHeaderData::parse_from_slice".to_string(),
+            ));
+        }
+        if tx_version != None {
+            return Err(ParseError::InvalidData(
+                "tx_version must be None for BlockHeaderData::parse_from_slice".to_string(),
             ));
         }
         let mut cursor = Cursor::new(data);
@@ -219,15 +225,24 @@ impl ParseFromSlice for FullBlock {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         let txid = txid.ok_or_else(|| {
             ParseError::InvalidData("txid must be used for FullBlock::parse_from_slice".to_string())
         })?;
+        if tx_version != None {
+            return Err(ParseError::InvalidData(
+                "tx_version must be None for FullBlock::parse_from_slice".to_string(),
+            ));
+        }
         let mut cursor = Cursor::new(data);
 
         let (remaining_data, block_header_data) =
-            BlockHeaderData::parse_from_slice(&data[cursor.position() as usize..], None)?;
+            BlockHeaderData::parse_from_slice(&data[cursor.position() as usize..], None, None)?;
         cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+
+        println!("Block Header decoded: {:?}", block_header_data);
+
         let tx_count = CompactSize::read(&mut cursor)?;
         if txid.len() != tx_count as usize {
             return Err(ParseError::InvalidData(format!(
@@ -244,12 +259,24 @@ impl ParseFromSlice for FullBlock {
                     "parsing block transactions: not enough data for transaction.",
                 )));
             }
+            println!(
+                "\nremaining data before tx: {} bytes.\n",
+                remaining_data.len()
+            );
+
             let (new_remaining_data, tx) = FullTransaction::parse_from_slice(
                 &data[cursor.position() as usize..],
                 Some(vec![txid_item.clone()]),
+                None,
             )?;
             transactions.push(tx);
             remaining_data = new_remaining_data;
+            cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+
+            println!(
+                "\nremaining data after tx: {} bytes.\n",
+                remaining_data.len()
+            );
         }
         let block_height = Self::get_block_height(&transactions)?;
         let block_hash = block_header_data.get_hash()?;
@@ -298,15 +325,12 @@ impl FullBlock {
 
     /// Decodes a hex encoded zcash full block into a FullBlock struct.
     pub fn parse_full_block(data: &[u8], txid: Option<Vec<Vec<u8>>>) -> Result<Self, ParseError> {
-        println!(
-            "\nIn parse_full_block with inputs:\ndata: {:?}\n\ntxid: {:?}\n",
-            data, txid
-        );
-        let (remaining_data, full_block) = Self::parse_from_slice(data, txid)?;
+        println!("Starting Parse Full Block");
+        let (remaining_data, full_block) = Self::parse_from_slice(data, txid, None)?;
         if remaining_data.len() != 0 {
             return Err(ParseError::InvalidData(format!(
-                "Error decoding full block - Data Remaining: ({:?}) - Compact Block: ({:?})",
-                remaining_data,
+                "Error decoding full block - {} bytes of Remaining data. Compact Block Created: ({:?})",
+                remaining_data.len(),
                 full_block.to_compact(0, 0)
             )));
         }
@@ -360,6 +384,7 @@ impl FullBlock {
         sapling_commitment_tree_size: u32,
         orchard_commitment_tree_size: u32,
     ) -> Result<CompactBlock, ParseError> {
+        let test_block = Self::parse_full_block(data, txid.clone()).unwrap(); // TEST CODE REMOVE BEFORE MERGING!
         Ok(Self::parse_full_block(data, txid)?
             .to_compact(sapling_commitment_tree_size, orchard_commitment_tree_size)?)
     }
@@ -391,6 +416,7 @@ pub async fn get_block_from_node(
             tx,
             trees,
         }) => {
+            println!("\nTxids in Block: {:?}", tx);
             let block_0 = zebrad_client.get_block(hash.0.to_string(), Some(0)).await;
             match block_0 {
                 Ok(GetBlockResponse::Object {

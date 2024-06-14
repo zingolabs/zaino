@@ -48,10 +48,13 @@ impl From<JsonRpcConnectorError> for ParseError {
 pub trait ParseFromSlice {
     /// Reads data from a bytestring, consuming data read, and returns an instance of self along with the remaining data in the bytestring given.
     ///
-    /// Txid is givin as an input as this is taken from a get_block verbose=1 call.
+    /// txid is givin as an input as this is taken from a get_block verbose=1 call.
+    ///
+    /// tx_version is used for deserializing sapling spends and outputs.
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError>
     where
         Self: Sized;

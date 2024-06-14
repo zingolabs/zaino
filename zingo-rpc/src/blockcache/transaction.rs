@@ -25,10 +25,16 @@ impl ParseFromSlice for TxIn {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for TxIn::parse_from_slice".to_string(),
+            ));
+        }
+        if tx_version != None {
+            return Err(ParseError::InvalidData(
+                "tx_version must be None for TxIn::parse_from_slice".to_string(),
             ));
         }
         let mut cursor = Cursor::new(data);
@@ -63,10 +69,16 @@ impl ParseFromSlice for TxOut {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for TxOut::parse_from_slice".to_string(),
+            ));
+        }
+        if tx_version != None {
+            return Err(ParseError::InvalidData(
+                "tx_version must be None for TxOut::parse_from_slice".to_string(),
             ));
         }
         let mut cursor = Cursor::new(data);
@@ -87,18 +99,22 @@ fn parse_transparent(data: &[u8]) -> Result<(&[u8], Vec<TxIn>, Vec<TxOut>), Pars
     let mut cursor = Cursor::new(data);
 
     let tx_in_count = CompactSize::read(&mut cursor)?;
+    println!("tx_in_count: {}", tx_in_count);
+
     let mut tx_ins = Vec::with_capacity(tx_in_count as usize);
     for _ in 0..tx_in_count {
         let (remaining_data, tx_in) =
-            TxIn::parse_from_slice(&data[cursor.position() as usize..], None)?;
+            TxIn::parse_from_slice(&data[cursor.position() as usize..], None, None)?;
         tx_ins.push(tx_in);
         cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
     }
     let tx_out_count = CompactSize::read(&mut cursor)?;
+    println!("tx_out_count: {}", tx_out_count);
+
     let mut tx_outs = Vec::with_capacity(tx_out_count as usize);
     for _ in 0..tx_out_count {
         let (remaining_data, tx_out) =
-            TxOut::parse_from_slice(&data[cursor.position() as usize..], None)?;
+            TxOut::parse_from_slice(&data[cursor.position() as usize..], None, None)?;
         tx_outs.push(tx_out);
         cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
     }
@@ -125,20 +141,30 @@ impl ParseFromSlice for Spend {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for Spend::parse_from_slice".to_string(),
             ));
         }
+        let tx_version = tx_version.ok_or_else(|| {
+            ParseError::InvalidData(
+                "tx_version must be used for Spend::parse_from_slice".to_string(),
+            )
+        })?;
         let mut cursor = Cursor::new(data);
 
         skip_bytes(&mut cursor, 32, "Error skipping Spend::Cv")?;
-        skip_bytes(&mut cursor, 32, "Error skipping Spend::Anchor")?;
+        if tx_version <= 4 {
+            skip_bytes(&mut cursor, 32, "Error skipping Spend::Anchor")?;
+        }
         let nullifier = read_bytes(&mut cursor, 32, "Error reading Spend::nullifier")?;
         skip_bytes(&mut cursor, 32, "Error skipping Spend::Rk")?;
-        skip_bytes(&mut cursor, 32, "Error skipping Spend::Zkproof")?;
-        skip_bytes(&mut cursor, 32, "Error skipping Spend::SpendAuthSig")?;
+        if tx_version <= 4 {
+            skip_bytes(&mut cursor, 192, "Error skipping Spend::Zkproof")?;
+            skip_bytes(&mut cursor, 64, "Error skipping Spend::SpendAuthSig")?;
+        }
 
         Ok((&data[cursor.position() as usize..], Spend { nullifier }))
     }
@@ -170,12 +196,18 @@ impl ParseFromSlice for Output {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for Output::parse_from_slice".to_string(),
             ));
         }
+        let tx_version = tx_version.ok_or_else(|| {
+            ParseError::InvalidData(
+                "tx_version must be used for Output::parse_from_slice".to_string(),
+            )
+        })?;
         let mut cursor = Cursor::new(data);
 
         skip_bytes(&mut cursor, 32, "Error skipping Output::Cv")?;
@@ -183,7 +215,9 @@ impl ParseFromSlice for Output {
         let ephemeral_key = read_bytes(&mut cursor, 32, "Error reading Output::ephemeral_key")?;
         let enc_ciphertext = read_bytes(&mut cursor, 580, "Error reading Output::enc_ciphertext")?;
         skip_bytes(&mut cursor, 80, "Error skipping Output::OutCiphertext")?;
-        skip_bytes(&mut cursor, 192, "Error skipping Output::Zkproof")?;
+        if tx_version <= 4 {
+            skip_bytes(&mut cursor, 192, "Error skipping Output::Zkproof")?;
+        }
 
         Ok((
             &data[cursor.position() as usize..],
@@ -219,10 +253,16 @@ impl ParseFromSlice for JoinSplit {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for JoinSplit::parse_from_slice".to_string(),
+            ));
+        }
+        if tx_version != None {
+            return Err(ParseError::InvalidData(
+                "tx_version must be None for JoinSplit::parse_from_slice".to_string(),
             ));
         }
         let mut cursor = Cursor::new(data);
@@ -274,10 +314,16 @@ impl ParseFromSlice for Action {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
         if txid != None {
             return Err(ParseError::InvalidData(
                 "txid must be None for Action::parse_from_slice".to_string(),
+            ));
+        }
+        if tx_version != None {
+            return Err(ParseError::InvalidData(
+                "tx_version must be None for Action::parse_from_slice".to_string(),
             ));
         }
         let mut cursor = Cursor::new(data);
@@ -387,7 +433,7 @@ impl TransactionData {
         let mut shielded_spends = Vec::with_capacity(spend_count as usize);
         for _ in 0..spend_count {
             let (remaining_data, spend) =
-                Spend::parse_from_slice(&data[cursor.position() as usize..], None)?;
+                Spend::parse_from_slice(&data[cursor.position() as usize..], None, Some(4))?;
             shielded_spends.push(spend);
             cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
         }
@@ -395,7 +441,7 @@ impl TransactionData {
         let mut shielded_outputs = Vec::with_capacity(output_count as usize);
         for _ in 0..output_count {
             let (remaining_data, output) =
-                Output::parse_from_slice(&data[cursor.position() as usize..], None)?;
+                Output::parse_from_slice(&data[cursor.position() as usize..], None, Some(4))?;
             shielded_outputs.push(output);
             cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
         }
@@ -403,7 +449,7 @@ impl TransactionData {
         let mut join_splits = Vec::with_capacity(join_split_count as usize);
         for _ in 0..join_split_count {
             let (remaining_data, join_split) =
-                JoinSplit::parse_from_slice(&data[cursor.position() as usize..], None)?;
+                JoinSplit::parse_from_slice(&data[cursor.position() as usize..], None, None)?;
             join_splits.push(join_split);
             cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
         }
@@ -450,6 +496,7 @@ impl TransactionData {
         version: u32,
         n_version_group_id: u32,
     ) -> Result<(&[u8], Self), ParseError> {
+        println!("In parse_v5, remaining data: {}", data.len());
         if n_version_group_id != 0x26A7270A {
             return Err(ParseError::InvalidData(format!(
                 "version group ID {:x} must be 0x892F2085 for v5 transactions",
@@ -481,10 +528,11 @@ impl TransactionData {
                 spend_count
             )));
         }
+        println!("spend_count: {}", spend_count);
         let mut shielded_spends = Vec::with_capacity(spend_count as usize);
         for _ in 0..spend_count {
             let (remaining_data, spend) =
-                Spend::parse_from_slice(&data[cursor.position() as usize..], None)?;
+                Spend::parse_from_slice(&data[cursor.position() as usize..], None, Some(5))?;
             shielded_spends.push(spend);
             cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
         }
@@ -495,10 +543,11 @@ impl TransactionData {
                 output_count
             )));
         }
+        println!("output_count: {}", output_count);
         let mut shielded_outputs = Vec::with_capacity(output_count as usize);
         for _ in 0..output_count {
             let (remaining_data, output) =
-                Output::parse_from_slice(&data[cursor.position() as usize..], None)?;
+                Output::parse_from_slice(&data[cursor.position() as usize..], None, Some(5))?;
             shielded_outputs.push(output);
             cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
         }
@@ -549,10 +598,11 @@ impl TransactionData {
                 actions_count
             )));
         }
+        println!("action_count: {}", actions_count);
         let mut orchard_actions = Vec::with_capacity(actions_count as usize);
         for _ in 0..actions_count {
             let (remaining_data, action) =
-                Action::parse_from_slice(&data[cursor.position() as usize..], None)?;
+                Action::parse_from_slice(&data[cursor.position() as usize..], None, None)?;
             orchard_actions.push(action);
             cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
         }
@@ -627,12 +677,24 @@ impl ParseFromSlice for FullTransaction {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
+        tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
+        println!(
+            "in FullTransaction::parse_from_slice with txid: {:?}, remaining data: {}",
+            txid,
+            data.len()
+        );
+
         let txid = txid.ok_or_else(|| {
             ParseError::InvalidData(
                 "txid must be used for FullTransaction::parse_from_slice".to_string(),
             )
         })?;
+        if tx_version != None {
+            return Err(ParseError::InvalidData(
+                "tx_version must be None for FullTransaction::parse_from_slice".to_string(),
+            ));
+        }
         let mut cursor = Cursor::new(data);
 
         let header = read_u32(&mut cursor, "Error reading FullTransaction::header")?;

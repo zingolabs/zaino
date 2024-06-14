@@ -211,11 +211,11 @@ impl JsonRpcConnector {
             })?;
 
         // NOTE: This is useful for development but is not clear to users and should be simplified or completely removed before production.
-        println!(
-            "@zingoproxyd: Received response from {} call to node: {:#?}",
-            method.to_string(),
-            body_bytes
-        );
+        // println!(
+        //     "@zingoproxyd: Received response from {} call to node: {:#?}",
+        //     method.to_string(),
+        //     body_bytes
+        // );
 
         let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
             JsonRpcConnectorError::new_with_source("Failed to deserialize response", Box::new(e))

@@ -203,85 +203,85 @@ impl CompactTxStreamer for ProxyClient {
 
     /// Server streaming response type for the GetBlockRange method.
     #[doc = "Server streaming response type for the GetBlockRange method."]
-    type GetBlockRangeStream = tonic::Streaming<CompactBlock>;
-    // type GetBlockRangeStream = std::pin::Pin<Box<CompactBlockStream>>;
+    // type GetBlockRangeStream = tonic::Streaming<CompactBlock>;
+    type GetBlockRangeStream = std::pin::Pin<Box<CompactBlockStream>>;
 
-    // /// Return a list of consecutive compact blocks.
-    // ///
-    // /// TODO: This implementation is slow. An internal block cache should be implemented that this rpc, along with the get_block rpc, can rely on.
-    // ///       - add get_block function that queries the block cache for block and calls get_block_from_node to fetch block if not present.
-    // /// TODO: Add 30s timeout.
-    // fn get_block_range<'life0, 'async_trait>(
-    //     &'life0 self,
-    //     request: tonic::Request<zcash_client_backend::proto::service::BlockRange>,
-    // ) -> core::pin::Pin<
-    //     Box<
-    //         dyn core::future::Future<
-    //                 Output = std::result::Result<
-    //                     tonic::Response<Self::GetBlockRangeStream>,
-    //                     tonic::Status,
-    //                 >,
-    //             > + core::marker::Send
-    //             + 'async_trait,
-    //     >,
-    // >
-    // where
-    //     'life0: 'async_trait,
-    //     Self: 'async_trait,
-    // {
-    //     println!("@zingoproxyd: Received call of get_block_range.");
-    //     let zebrad_uri = self.zebrad_uri.clone();
-    //     Box::pin(async move {
-    //         let blockrange = request.into_inner();
-    //         let mut start = blockrange
-    //             .start
-    //             .map(|s| s.height as u32)
-    //             .ok_or(tonic::Status::invalid_argument("Start block not specified"))?;
-    //         let mut end = blockrange
-    //             .end
-    //             .map(|e| e.height as u32)
-    //             .ok_or(tonic::Status::invalid_argument("End block not specified"))?;
-    //         if start > end {
-    //             (start, end) = (end, start);
-    //         }
-    //         println!(
-    //             "\n Fetching Blocks in Range - Start: {}, End: {}\n",
-    //             start, end
-    //         );
-    //         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
-    //         tokio::spawn(async move {
-    //             for height in (start..=end).rev() {
-    //                 let compact_block = get_block_from_node(&zebrad_uri, &height).await;
-    //                 match compact_block {
-    //                     Ok(block) => {
-    //                         println!("\nCompact Block at Height {}: {:?}\n", height, block);
-    //                         if channel_tx.send(Ok(block)).await.is_err() {
-    //                             break;
-    //                         }
-    //                     }
-    //                     Err(e) => {
-    //                         if channel_tx
-    //                             .send(Err(tonic::Status::internal(e.to_string())))
-    //                             .await
-    //                             .is_err()
-    //                         {
-    //                             break;
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         });
-    //         let output_stream = CompactBlockStream::new(channel_rx);
-    //         let stream_boxed = Box::pin(output_stream);
-    //         Ok(tonic::Response::new(stream_boxed))
-    //     })
-    // }
-    define_grpc_passthrough!(
-        fn get_block_range(
-            &self,
-            request: tonic::Request<BlockRange>,
-        ) -> Self::GetBlockRangeStream
-    );
+    /// Return a list of consecutive compact blocks.
+    ///
+    /// TODO: This implementation is slow. An internal block cache should be implemented that this rpc, along with the get_block rpc, can rely on.
+    ///       - add get_block function that queries the block cache for block and calls get_block_from_node to fetch block if not present.
+    /// TODO: Add 30s timeout.
+    fn get_block_range<'life0, 'async_trait>(
+        &'life0 self,
+        request: tonic::Request<zcash_client_backend::proto::service::BlockRange>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<
+                        tonic::Response<Self::GetBlockRangeStream>,
+                        tonic::Status,
+                    >,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        println!("@zingoproxyd: Received call of get_block_range.");
+        let zebrad_uri = self.zebrad_uri.clone();
+        Box::pin(async move {
+            let blockrange = request.into_inner();
+            let mut start = blockrange
+                .start
+                .map(|s| s.height as u32)
+                .ok_or(tonic::Status::invalid_argument("Start block not specified"))?;
+            let mut end = blockrange
+                .end
+                .map(|e| e.height as u32)
+                .ok_or(tonic::Status::invalid_argument("End block not specified"))?;
+            if start > end {
+                (start, end) = (end, start);
+            }
+            println!(
+                "\n Fetching Blocks in Range - Start: {}, End: {}\n",
+                start, end
+            );
+            let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
+            tokio::spawn(async move {
+                for height in (start..=end).rev() {
+                    let compact_block = get_block_from_node(&zebrad_uri, &height).await;
+                    match compact_block {
+                        Ok(block) => {
+                            println!("\nCompact Block at Height {}: {:?}\n", height, block);
+                            if channel_tx.send(Ok(block)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if channel_tx
+                                .send(Err(tonic::Status::internal(e.to_string())))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            let output_stream = CompactBlockStream::new(channel_rx);
+            let stream_boxed = Box::pin(output_stream);
+            Ok(tonic::Response::new(stream_boxed))
+        })
+    }
+    // define_grpc_passthrough!(
+    //     fn get_block_range(
+    //         &self,
+    //         request: tonic::Request<BlockRange>,
+    //     ) -> Self::GetBlockRangeStream
+    // );
 
     /// Server streaming response type for the GetBlockRangeNullifiers method.
     #[doc = " Server streaming response type for the GetBlockRangeNullifiers method."]

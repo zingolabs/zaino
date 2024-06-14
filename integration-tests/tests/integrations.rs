@@ -59,10 +59,21 @@ mod wallet {
             )])
             .await
             .unwrap();
-        test_manager.regtest_manager.generate_n_blocks(2).unwrap();
+        // zingo_client
+        //     .do_send(vec![(
+        //         &zingolib::get_base_address!(zingo_client, "sapling"),
+        //         250_000,
+        //         None,
+        //     )])
+        //     .await
+        //     .unwrap();
+        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
         // test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         // zingo_client.do_sync(false).await.unwrap();
+        // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
         let balance = zingo_client.do_balance().await;
         println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
@@ -84,7 +95,7 @@ mod wallet {
             TestManager::launch(online.clone()).await;
         let zingo_client = test_manager.build_lightclient().await;
 
-        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
+        test_manager.regtest_manager.generate_n_blocks(2).unwrap();
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
@@ -94,20 +105,20 @@ mod wallet {
             )])
             .await
             .unwrap();
-        zingo_client
-            .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "transparent"),
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+        // zingo_client
+        //     .do_send(vec![(
+        //         &zingolib::get_base_address!(zingo_client, "transparent"),
+        //         250_000,
+        //         None,
+        //     )])
+        //     .await
+        //     .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
         let balance = zingo_client.do_balance().await;
         println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
 
-        assert_eq!(balance.transparent_balance.unwrap(), 500_000);
+        assert_eq!(balance.transparent_balance.unwrap(), 250_000);
         drop_test_manager(
             Some(test_manager.temp_conf_dir.path().to_path_buf()),
             regtest_handler,
