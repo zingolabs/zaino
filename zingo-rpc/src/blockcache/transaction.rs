@@ -99,8 +99,6 @@ fn parse_transparent(data: &[u8]) -> Result<(&[u8], Vec<TxIn>, Vec<TxOut>), Pars
     let mut cursor = Cursor::new(data);
 
     let tx_in_count = CompactSize::read(&mut cursor)?;
-    println!("tx_in_count: {}", tx_in_count);
-
     let mut tx_ins = Vec::with_capacity(tx_in_count as usize);
     for _ in 0..tx_in_count {
         let (remaining_data, tx_in) =
@@ -109,8 +107,6 @@ fn parse_transparent(data: &[u8]) -> Result<(&[u8], Vec<TxIn>, Vec<TxOut>), Pars
         cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
     }
     let tx_out_count = CompactSize::read(&mut cursor)?;
-    println!("tx_out_count: {}", tx_out_count);
-
     let mut tx_outs = Vec::with_capacity(tx_out_count as usize);
     for _ in 0..tx_out_count {
         let (remaining_data, tx_out) =
@@ -496,7 +492,6 @@ impl TransactionData {
         version: u32,
         n_version_group_id: u32,
     ) -> Result<(&[u8], Self), ParseError> {
-        println!("In parse_v5, remaining data: {}", data.len());
         if n_version_group_id != 0x26A7270A {
             return Err(ParseError::InvalidData(format!(
                 "version group ID {:x} must be 0x892F2085 for v5 transactions",
@@ -528,7 +523,6 @@ impl TransactionData {
                 spend_count
             )));
         }
-        println!("spend_count: {}", spend_count);
         let mut shielded_spends = Vec::with_capacity(spend_count as usize);
         for _ in 0..spend_count {
             let (remaining_data, spend) =
@@ -543,7 +537,6 @@ impl TransactionData {
                 output_count
             )));
         }
-        println!("output_count: {}", output_count);
         let mut shielded_outputs = Vec::with_capacity(output_count as usize);
         for _ in 0..output_count {
             let (remaining_data, output) =
@@ -598,7 +591,6 @@ impl TransactionData {
                 actions_count
             )));
         }
-        println!("action_count: {}", actions_count);
         let mut orchard_actions = Vec::with_capacity(actions_count as usize);
         for _ in 0..actions_count {
             let (remaining_data, action) =
@@ -679,12 +671,6 @@ impl ParseFromSlice for FullTransaction {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        println!(
-            "in FullTransaction::parse_from_slice with txid: {:?}, remaining data: {}",
-            txid,
-            data.len()
-        );
-
         let txid = txid.ok_or_else(|| {
             ParseError::InvalidData(
                 "txid must be used for FullTransaction::parse_from_slice".to_string(),
