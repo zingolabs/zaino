@@ -169,63 +169,89 @@ impl JsonRpcConnector {
         &self.uri
     }
 
-    /// Sends a jsonRPC request and returns the response.``
+    /// Sends a jsonRPC request and returns the response.
+    ///
+    /// NOTE/TODO: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
+    /// This is because the node's queue can become overloaded and stop servicing RPCs.
+    /// This functionality is weak and should be incorporated in Zingo-Proxy's queue mechanism [WIP] that handles various errors appropriately.
     pub async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: T,
     ) -> Result<R, JsonRpcConnectorError> {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
-        let client = Client::builder().build(HttpsConnector::new());
-        let mut request_builder = Request::builder()
-            .method("POST")
-            .uri(self.uri.clone())
-            .header("Content-Type", "application/json");
-        if let (Some(user), Some(password)) = (&self.user, &self.password) {
-            let auth = base64::encode(format!("{}:{}", user, password));
-            request_builder = request_builder.header("Authorization", format!("Basic {}", auth));
-        }
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
             params,
             id,
         };
-        let request_body = serde_json::to_string(&req).map_err(|e| {
-            JsonRpcConnectorError::new_with_source("Failed to serialize request", Box::new(e))
-        })?;
-        // println!("request body`: {:?}", request_body);
-        let request = request_builder
-            .body(Body::from(request_body))
-            .map_err(|e| {
-                JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
+        let max_attempts = 5;
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let client = Client::builder().build(HttpsConnector::new());
+            let mut request_builder = Request::builder()
+                .method("POST")
+                .uri(self.uri.clone())
+                .header("Content-Type", "application/json");
+            if let (Some(user), Some(password)) = (&self.user, &self.password) {
+                let auth = base64::encode(format!("{}:{}", user, password));
+                request_builder =
+                    request_builder.header("Authorization", format!("Basic {}", auth));
+            }
+            let request_body = serde_json::to_string(&req).map_err(|e| {
+                JsonRpcConnectorError::new_with_source("Failed to serialize request", Box::new(e))
             })?;
-        // println!("request: {:?}", request);
-        let response = client.request(request).await.map_err(|e| {
-            JsonRpcConnectorError::new_with_source("HTTP request failed", Box::new(e))
-        })?;
-        let body_bytes = hyper::body::to_bytes(response.into_body())
-            .await
-            .map_err(|e| {
-                JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
+            let request = request_builder
+                .body(Body::from(request_body))
+                .map_err(|e| {
+                    JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
+                })?;
+            let response = client.request(request).await.map_err(|e| {
+                JsonRpcConnectorError::new_with_source("HTTP request failed", Box::new(e))
             })?;
+            let body_bytes = hyper::body::to_bytes(response.into_body())
+                .await
+                .map_err(|e| {
+                    JsonRpcConnectorError::new_with_source(
+                        "Failed to read response body",
+                        Box::new(e),
+                    )
+                })?;
 
-        // NOTE: This is useful for development but is not clear to users and should be simplified or completely removed before production.
-        // println!(
-        //     "@zingoproxyd: Received response from {} call to node: {:#?}",
-        //     method.to_string(),
-        //     body_bytes
-        // );
+            // let test_response: RpcResponse<R> =
+            //     serde_json::from_slice(&body_bytes).unwrap_or_else(|e| {
+            //         panic!(
+            //             "Failed to deserialize response: {}\nBody bytes: {:?}",
+            //             e,
+            //             String::from_utf8_lossy(&body_bytes)
+            //         )
+            //     });
+            let body_str = String::from_utf8_lossy(&body_bytes);
+            if body_str.contains("Work queue depth exceeded") {
+                if attempts >= max_attempts {
+                    return Err(JsonRpcConnectorError::new(
+                        "Work queue depth exceeded after multiple attempts",
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            }
 
-        let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
-            JsonRpcConnectorError::new_with_source("Failed to deserialize response", Box::new(e))
-        })?;
-        match response.error {
-            Some(error) => Err(JsonRpcConnectorError::new(format!(
-                "RPC Error {}: {}",
-                error.code, error.message
-            ))),
-            None => Ok(response.result),
+            let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
+                JsonRpcConnectorError::new_with_source(
+                    "Failed to deserialize response",
+                    Box::new(e),
+                )
+            })?;
+            return match response.error {
+                Some(error) => Err(JsonRpcConnectorError::new(format!(
+                    "RPC Error {}: {}",
+                    error.code, error.message
+                ))),
+                None => Ok(response.result),
+            };
         }
     }
 

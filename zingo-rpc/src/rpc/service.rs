@@ -3,10 +3,10 @@
 use hex::FromHex;
 use tokio_stream::wrappers::ReceiverStream;
 use zcash_client_backend::proto::{
-    compact_formats::{ChainMetadata, CompactBlock, CompactTx},
+    compact_formats::{CompactBlock, CompactTx},
     service::{
-        compact_tx_streamer_server::CompactTxStreamer, Address, Balance, BlockId, BlockRange,
-        Empty, GetAddressUtxosReply, LightdInfo, RawTransaction, SubtreeRoot,
+        compact_tx_streamer_server::CompactTxStreamer, Address, Balance, BlockId, Empty,
+        GetAddressUtxosReply, LightdInfo, RawTransaction, SubtreeRoot,
     },
 };
 use zebra_chain::block::Height;
@@ -16,7 +16,7 @@ use crate::{
     define_grpc_passthrough,
     jsonrpc::{
         connector::JsonRpcConnector,
-        primitives::{GetBlockResponse, GetTransactionResponse, ProxyConsensusBranchIdHex},
+        primitives::{GetTransactionResponse, ProxyConsensusBranchIdHex},
     },
     primitives::ProxyClient,
     utils::get_build_info,
@@ -668,72 +668,72 @@ impl CompactTxStreamer for ProxyClient {
         ) -> Self::GetMempoolStreamStream
     );
 
-    // /// GetTreeState returns the note commitment tree state corresponding to the given block.
-    // /// See section 3.7 of the Zcash protocol specification. It returns several other useful
-    // /// values also (even though they can be obtained using GetBlock).
-    // /// The block can be specified by either height or hash.
-    // fn get_tree_state<'life0, 'async_trait>(
-    //     &'life0 self,
-    //     request: tonic::Request<zcash_client_backend::proto::service::BlockId>,
-    // ) -> core::pin::Pin<
-    //     Box<
-    //         dyn core::future::Future<
-    //                 Output = std::result::Result<
-    //                     tonic::Response<zcash_client_backend::proto::service::TreeState>,
-    //                     tonic::Status,
-    //                 >,
-    //             > + core::marker::Send
-    //             + 'async_trait,
-    //     >,
-    // >
-    // where
-    //     'life0: 'async_trait,
-    //     Self: 'async_trait,
-    // {
-    //     println!("@zingoproxyd: Received call of get_tree_state.");
-    //     Box::pin(async {
-    //         let block_id = request.into_inner();
-    //         let hash_or_height = if block_id.height != 0 {
-    //             block_id.height.to_string()
-    //         } else {
-    //             hex::encode(block_id.hash)
-    //         };
+    /// GetTreeState returns the note commitment tree state corresponding to the given block.
+    /// See section 3.7 of the Zcash protocol specification. It returns several other useful
+    /// values also (even though they can be obtained using GetBlock).
+    /// The block can be specified by either height or hash.
+    fn get_tree_state<'life0, 'async_trait>(
+        &'life0 self,
+        request: tonic::Request<zcash_client_backend::proto::service::BlockId>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<
+                        tonic::Response<zcash_client_backend::proto::service::TreeState>,
+                        tonic::Status,
+                    >,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        println!("@zingoproxyd: Received call of get_tree_state.");
+        Box::pin(async {
+            let block_id = request.into_inner();
+            let hash_or_height = if block_id.height != 0 {
+                block_id.height.to_string()
+            } else {
+                hex::encode(block_id.hash)
+            };
 
-    //         let zebrad_client = JsonRpcConnector::new(
-    //             self.zebrad_uri.clone(),
-    //             Some("xxxxxx".to_string()),
-    //             Some("xxxxxx".to_string()),
-    //         )
-    //         .await;
+            let zebrad_client = JsonRpcConnector::new(
+                self.zebrad_uri.clone(),
+                Some("xxxxxx".to_string()),
+                Some("xxxxxx".to_string()),
+            )
+            .await;
 
-    //         // TODO: This is slow. Chain, along with other blockchain info should be saved on startup and used here [blockcache?].
-    //         let chain = zebrad_client
-    //             .get_blockchain_info()
-    //             .await
-    //             .map_err(|e| e.to_grpc_status())?
-    //             .chain;
-    //         let treestate = zebrad_client
-    //             .get_treestate(hash_or_height)
-    //             .await
-    //             .map_err(|e| e.to_grpc_status())?;
-    //         Ok(tonic::Response::new(
-    //             zcash_client_backend::proto::service::TreeState {
-    //                 network: chain,
-    //                 height: treestate.height as u64,
-    //                 hash: treestate.hash.to_string(),
-    //                 time: treestate.time,
-    //                 sapling_tree: treestate.sapling.commitments.final_state.to_string(),
-    //                 orchard_tree: treestate.orchard.commitments.final_state.to_string(),
-    //             },
-    //         ))
-    //     })
-    // }
-    define_grpc_passthrough!(
-        fn get_tree_state(
-            &self,
-            request: tonic::Request<BlockId>,
-        ) -> zcash_client_backend::proto::service::TreeState
-    );
+            // TODO: This is slow. Chain, along with other blockchain info should be saved on startup and used here [blockcache?].
+            let chain = zebrad_client
+                .get_blockchain_info()
+                .await
+                .map_err(|e| e.to_grpc_status())?
+                .chain;
+            let treestate = zebrad_client
+                .get_treestate(hash_or_height)
+                .await
+                .map_err(|e| e.to_grpc_status())?;
+            Ok(tonic::Response::new(
+                zcash_client_backend::proto::service::TreeState {
+                    network: chain,
+                    height: treestate.height as u64,
+                    hash: treestate.hash.to_string(),
+                    time: treestate.time,
+                    sapling_tree: treestate.sapling.commitments.final_state.to_string(),
+                    orchard_tree: treestate.orchard.commitments.final_state.to_string(),
+                },
+            ))
+        })
+    }
+    // define_grpc_passthrough!(
+    //     fn get_tree_state(
+    //         &self,
+    //         request: tonic::Request<BlockId>,
+    //     ) -> zcash_client_backend::proto::service::TreeState
+    // );
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
