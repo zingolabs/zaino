@@ -171,7 +171,7 @@ impl JsonRpcConnector {
 
     /// Sends a jsonRPC request and returns the response.
     ///
-    /// NOTE/TODO: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
+    /// TODO: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     /// This is because the node's queue can become overloaded and stop servicing RPCs.
     /// This functionality is weak and should be incorporated in Zingo-Proxy's queue mechanism [WIP] that handles various errors appropriately.
     pub async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
@@ -219,15 +219,6 @@ impl JsonRpcConnector {
                         Box::new(e),
                     )
                 })?;
-
-            // let test_response: RpcResponse<R> =
-            //     serde_json::from_slice(&body_bytes).unwrap_or_else(|e| {
-            //         panic!(
-            //             "Failed to deserialize response: {}\nBody bytes: {:?}",
-            //             e,
-            //             String::from_utf8_lossy(&body_bytes)
-            //         )
-            //     });
             let body_str = String::from_utf8_lossy(&body_bytes);
             if body_str.contains("Work queue depth exceeded") {
                 if attempts >= max_attempts {
@@ -238,7 +229,6 @@ impl JsonRpcConnector {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             }
-
             let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
                 JsonRpcConnectorError::new_with_source(
                     "Failed to deserialize response",
@@ -364,8 +354,6 @@ impl JsonRpcConnector {
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
-    ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
     pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, JsonRpcConnectorError> {
         self.send_request::<(), TxidsResponse>("getrawmempool", ())
             .await

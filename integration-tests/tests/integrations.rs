@@ -419,6 +419,14 @@ mod wallet_basic {
             )])
             .await
             .unwrap();
+        zingo_client
+            .do_send(vec![(
+                &zingolib::get_base_address!(zingo_client, "sapling"),
+                250_000,
+                None,
+            )])
+            .await
+            .unwrap();
 
         let zingo_client_saved = zingo_client.export_save_buffer_async().await.unwrap();
         let zingo_client_loaded = std::sync::Arc::new(
@@ -431,19 +439,17 @@ mod wallet_basic {
         );
         LightClient::start_mempool_monitor(zingo_client_loaded.clone());
         // This seems to be long enough for the mempool monitor to kick in.
-        // One second is insufficient. Even if this fails, this can only ever be
-        // a false negative, giving us a balance of 100_000. Still, could be improved.
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         let balance = zingo_client.do_balance().await;
         println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.unverified_sapling_balance.unwrap(), 250_000);
+        assert_eq!(balance.unverified_sapling_balance.unwrap(), 500_000);
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
         let balance = zingo_client.do_balance().await;
         println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.verified_sapling_balance.unwrap(), 250_000);
+        assert_eq!(balance.verified_sapling_balance.unwrap(), 500_000);
 
         drop_test_manager(
             Some(test_manager.temp_conf_dir.path().to_path_buf()),

@@ -12,8 +12,8 @@ use zcash_client_backend::proto::{
 use zebra_chain::block::Height;
 
 use crate::{
-    blockcache::block::get_block_from_node,
-    define_grpc_passthrough,
+    blockcache::{block::get_block_from_node, mempool::Mempool},
+    // define_grpc_passthrough,
     jsonrpc::{
         connector::JsonRpcConnector,
         primitives::{GetTransactionResponse, ProxyConsensusBranchIdHex},
@@ -636,37 +636,105 @@ impl CompactTxStreamer for ProxyClient {
 
     /// Server streaming response type for the GetMempoolStream method.
     #[doc = "Server streaming response type for the GetMempoolStream method."]
-    type GetMempoolStreamStream = tonic::Streaming<RawTransaction>;
+    // type GetMempoolStreamStream = tonic::Streaming<RawTransaction>;
+    type GetMempoolStreamStream = std::pin::Pin<Box<RawTransactionStream>>;
 
-    // /// Return a stream of current Mempool transactions. This will keep the output stream open while
-    // /// there are mempool transactions. It will close the returned stream when a new block is mined.
-    // fn get_mempool_stream<'life0, 'async_trait>(
-    //     &'life0 self,
-    //     request: tonic::Request<Empty>,
-    // ) -> core::pin::Pin<
-    //     Box<
-    //         dyn core::future::Future<
-    //                 Output = std::result::Result<
-    //                     tonic::Response<Self::GetMempoolStreamStream>,
-    //                     tonic::Status,
-    //                 >,
-    //             > + core::marker::Send
-    //             + 'async_trait,
-    //     >,
-    // >
-    // where
-    //     'life0: 'async_trait,
-    //     Self: 'async_trait,
-    // {
-    //     println!("@zingoproxyd: Received call of get_mempool_stream.");
-    //     Box::pin(async { todo!("get_mempool_stream not yet implemented") })
-    // }
-    define_grpc_passthrough!(
-        fn get_mempool_stream(
-            &self,
-            request: tonic::Request<Empty>,
-        ) -> Self::GetMempoolStreamStream
-    );
+    /// Return a stream of current Mempool transactions. This will keep the output stream open while
+    /// there are mempool transactions. It will close the returned stream when a new block is mined.
+    ///
+    /// TODO: This implementation is slow. Zingo-Proxy's blockcache state engine should keep its own intyernal mempool state.
+    ///     - This RPC should query Zingo-Proxy's internal mempool state rather than creating its owm mempool and directly querying zebrad.
+    fn get_mempool_stream<'life0, 'async_trait>(
+        &'life0 self,
+        _request: tonic::Request<Empty>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = std::result::Result<
+                        tonic::Response<Self::GetMempoolStreamStream>,
+                        tonic::Status,
+                    >,
+                > + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        println!("@zingoproxyd: Received call of get_mempool_stream.");
+        Box::pin(async {
+            let zebrad_client = JsonRpcConnector::new(
+                self.zebrad_uri.clone(),
+                Some("xxxxxx".to_string()),
+                Some("xxxxxx".to_string()),
+            )
+            .await;
+
+            let zebrad_uri = self.zebrad_uri.clone();
+            let (tx, rx) = tokio::sync::mpsc::channel(32);
+            tokio::spawn(async move {
+                let mempool = Mempool::new();
+                mempool.update(&zebrad_uri).await.unwrap();
+                let mut mined = false;
+                let mut txid_index: usize = 0;
+                while !mined {
+                    let mempool_txids = mempool.get_mempool_txids().await.unwrap();
+                    for txid in &mempool_txids[txid_index..] {
+                        let transaction = zebrad_client
+                            .get_raw_transaction(txid.clone(), Some(1))
+                            .await;
+                        match transaction {
+                            Ok(GetTransactionResponse::Object { hex, height, .. }) => {
+                                txid_index += 1;
+                                if tx
+                                    .send(Ok(RawTransaction {
+                                        data: hex.bytes,
+                                        height: height as u64,
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(GetTransactionResponse::Raw(_)) => {
+                                if tx
+                                .send(Err(tonic::Status::internal(
+                                    "Received raw transaction type, this should not be impossible.",
+                                )))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            }
+                            Err(e) => {
+                                if tx
+                                    .send(Err(tonic::Status::internal(e.to_string())))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    mined = mempool.update(&zebrad_uri).await.unwrap();
+                }
+            });
+            let output_stream = RawTransactionStream::new(rx);
+            let stream_boxed = Box::pin(output_stream);
+            Ok(tonic::Response::new(stream_boxed))
+        })
+    }
+    // define_grpc_passthrough!(
+    //     fn get_mempool_stream(
+    //         &self,
+    //         request: tonic::Request<Empty>,
+    //     ) -> Self::GetMempoolStreamStream
+    // );
 
     /// GetTreeState returns the note commitment tree state corresponding to the given block.
     /// See section 3.7 of the Zcash protocol specification. It returns several other useful

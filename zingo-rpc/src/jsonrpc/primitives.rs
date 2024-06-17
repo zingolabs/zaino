@@ -451,6 +451,13 @@ impl<'de> Deserialize<'de> for GetTransactionResponse {
                 confirmations: v["confirmations"].as_u64().unwrap() as u32,
             };
             Ok(obj)
+        } else if v.get("hex").is_some() && v.get("txid").is_some() {
+            let obj = GetTransactionResponse::Object {
+                hex: serde_json::from_value(v["hex"].clone()).unwrap(),
+                height: -1 as i32,
+                confirmations: 0 as u32,
+            };
+            Ok(obj)
         } else {
             let raw = GetTransactionResponse::Raw(serde_json::from_value(v.clone()).unwrap());
             Ok(raw)
