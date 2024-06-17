@@ -1,7 +1,6 @@
 //! Zingo-Proxy mempool state functionality.
 
 use std::{collections::HashSet, time::SystemTime};
-use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::jsonrpc::connector::{JsonRpcConnector, JsonRpcConnectorError};
@@ -19,10 +18,10 @@ pub struct Mempool {
 }
 
 /// Mempool Error struct.
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum MempoolError {
     /// Errors from the JsonRPC client.
-    #[error("JsonRpcConnectorError: {0}")]
+    #[error("JsonRPC Connector Error: {0}")]
     JsonRpcError(#[from] JsonRpcConnectorError),
 }
 

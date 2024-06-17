@@ -6,42 +6,17 @@ use std::io::{Cursor, Read};
 use crate::jsonrpc::connector::JsonRpcConnectorError;
 
 /// Parser Error Type.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ParseError {
-    /// Io Error
-    Io(std::io::Error),
-    /// Invalid Data Error.
+    /// Io Error.
+    #[error("IO Error: {0}")]
+    Io(#[from] std::io::Error),
+    /// Invalid Data Error
+    #[error("Invalid Data Error: {0}")]
     InvalidData(String),
-}
-
-impl From<std::io::Error> for ParseError {
-    fn from(err: std::io::Error) -> ParseError {
-        ParseError::Io(err)
-    }
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ParseError::Io(err) => write!(f, "IO Error: {}", err),
-            ParseError::InvalidData(msg) => write!(f, "Invalid Data Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ParseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ParseError::Io(err) => Some(err),
-            ParseError::InvalidData(_) => None,
-        }
-    }
-}
-
-impl From<JsonRpcConnectorError> for ParseError {
-    fn from(err: JsonRpcConnectorError) -> ParseError {
-        ParseError::InvalidData(err.to_string())
-    }
+    /// Errors from the JsonRPC client.
+    #[error("JsonRPC Connector Error: {0}")]
+    JsonRpcError(#[from] JsonRpcConnectorError),
 }
 
 /// Used for decoding zcash blocks from a bytestring.

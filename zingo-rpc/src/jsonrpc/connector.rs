@@ -39,109 +39,61 @@ struct RpcError {
 }
 
 /// General error type for handling JsonRpcConnector errors.
-#[derive(Debug)]
-pub struct JsonRpcConnectorError {
-    details: String,
-    source: Option<Box<dyn std::error::Error + Send + Sync>>,
+#[derive(Debug, thiserror::Error)]
+pub enum JsonRpcConnectorError {
+    /// Uncatogorized Errors.
+    #[error("{0}")]
+    CustomError(String),
+
+    /// Serialization/Deserialization Errors.
+    #[error("Serialization/Deserialization Error: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
+
+    /// HTTP Request Errors.
+    #[error("HTTP Request Error: {0}")]
+    HyperError(#[from] hyper::Error),
+
+    ///HTTP Errors.
+    #[error("HTTP Error: {0}")]
+    HttpError(#[from] http::Error),
+
+    /// Invalid URI Errors.
+    #[error("Invalid URI: {0}")]
+    InvalidUriError(#[from] http::uri::InvalidUri),
+
+    /// UTF-8 Conversion Errors.
+    #[error("UTF-8 Conversion Error")]
+    Utf8Error(#[from] std::string::FromUtf8Error),
+
+    /// Request Timeout Errors.
+    #[error("Request Timeout Error")]
+    TimeoutError(#[from] tokio::time::error::Elapsed),
 }
 
 impl JsonRpcConnectorError {
     /// Constructor for errors without an underlying source
     pub fn new(msg: impl Into<String>) -> Self {
-        Self {
-            details: msg.into(),
-            source: None,
-        }
-    }
-
-    /// Constructor for errors with an underlying source
-    pub fn new_with_source(
-        msg: impl Into<String>,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    ) -> Self {
-        Self {
-            details: msg.into(),
-            source: Some(source),
-        }
+        JsonRpcConnectorError::CustomError(msg.into())
     }
 
     /// Maps JsonRpcConnectorError to tonic::Status
     pub fn to_grpc_status(&self) -> tonic::Status {
         eprintln!("@zingoproxyd: Error occurred: {}.", self);
 
-        if let Some(source) = &self.source {
-            if source.is::<serde_json::Error>() {
-                return tonic::Status::invalid_argument(self.to_string());
-            } else if source.is::<hyper::Error>() {
-                return tonic::Status::unavailable(self.to_string());
-            } else if source.is::<http::Error>() {
-                return tonic::Status::internal(self.to_string());
+        match self {
+            JsonRpcConnectorError::SerdeJsonError(_) => {
+                tonic::Status::invalid_argument(self.to_string())
             }
+            JsonRpcConnectorError::HyperError(_) => tonic::Status::unavailable(self.to_string()),
+            JsonRpcConnectorError::HttpError(_) => tonic::Status::internal(self.to_string()),
+            _ => tonic::Status::internal(self.to_string()),
         }
-
-        tonic::Status::internal(self.to_string())
-    }
-}
-
-impl std::error::Error for JsonRpcConnectorError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source
-            .as_deref()
-            .map(|e| e as &(dyn std::error::Error + 'static))
-    }
-}
-
-impl std::fmt::Display for JsonRpcConnectorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.details)
-    }
-}
-
-impl From<serde_json::Error> for JsonRpcConnectorError {
-    fn from(err: serde_json::Error) -> Self {
-        JsonRpcConnectorError::new_with_source(
-            format!("Serialization/Deserialization Error: {}", err),
-            Box::new(err),
-        )
-    }
-}
-
-impl From<hyper::Error> for JsonRpcConnectorError {
-    fn from(err: hyper::Error) -> Self {
-        JsonRpcConnectorError::new_with_source(
-            format!("HTTP Request Error: {}", err),
-            Box::new(err),
-        )
-    }
-}
-
-impl From<http::Error> for JsonRpcConnectorError {
-    fn from(err: http::Error) -> Self {
-        JsonRpcConnectorError::new_with_source(format!("HTTP Error: {}", err), Box::new(err))
-    }
-}
-
-impl From<String> for JsonRpcConnectorError {
-    fn from(err: String) -> Self {
-        JsonRpcConnectorError::new(err)
-    }
-}
-
-impl From<std::string::FromUtf8Error> for JsonRpcConnectorError {
-    fn from(err: std::string::FromUtf8Error) -> Self {
-        JsonRpcConnectorError::new_with_source("UTF-8 Conversion Error", Box::new(err))
-    }
-}
-
-impl From<tokio::time::error::Elapsed> for JsonRpcConnectorError {
-    fn from(err: tokio::time::error::Elapsed) -> Self {
-        JsonRpcConnectorError::new_with_source("Request Timeout Error", Box::new(err))
     }
 }
 
 impl From<JsonRpcConnectorError> for tonic::Status {
     fn from(err: JsonRpcConnectorError) -> Self {
-        tonic::Status::internal(err.to_string())
+        err.to_grpc_status()
     }
 }
 
@@ -200,25 +152,19 @@ impl JsonRpcConnector {
                 request_builder =
                     request_builder.header("Authorization", format!("Basic {}", auth));
             }
-            let request_body = serde_json::to_string(&req).map_err(|e| {
-                JsonRpcConnectorError::new_with_source("Failed to serialize request", Box::new(e))
-            })?;
+            let request_body = serde_json::to_string(&req)
+                .map_err(|e| JsonRpcConnectorError::SerdeJsonError(e.into()))?;
             let request = request_builder
                 .body(Body::from(request_body))
-                .map_err(|e| {
-                    JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
-                })?;
-            let response = client.request(request).await.map_err(|e| {
-                JsonRpcConnectorError::new_with_source("HTTP request failed", Box::new(e))
-            })?;
+                .map_err(|e| JsonRpcConnectorError::HttpError(e.into()))?;
+            let response = client
+                .request(request)
+                .await
+                .map_err(|e| JsonRpcConnectorError::HyperError(e.into()))?;
             let body_bytes = hyper::body::to_bytes(response.into_body())
                 .await
-                .map_err(|e| {
-                    JsonRpcConnectorError::new_with_source(
-                        "Failed to read response body",
-                        Box::new(e),
-                    )
-                })?;
+                .map_err(|e| JsonRpcConnectorError::HyperError(e.into()))?;
+
             let body_str = String::from_utf8_lossy(&body_bytes);
             if body_str.contains("Work queue depth exceeded") {
                 if attempts >= max_attempts {
@@ -229,12 +175,8 @@ impl JsonRpcConnector {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             }
-            let response: RpcResponse<R> = serde_json::from_slice(&body_bytes).map_err(|e| {
-                JsonRpcConnectorError::new_with_source(
-                    "Failed to deserialize response",
-                    Box::new(e),
-                )
-            })?;
+            let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
+                .map_err(|e| JsonRpcConnectorError::SerdeJsonError(e.into()))?;
             return match response.error {
                 Some(error) => Err(JsonRpcConnectorError::new(format!(
                     "RPC Error {}: {}",
@@ -499,24 +441,16 @@ pub async fn test_node_connection(
         .body(Body::from(
             r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#,
         ))
-        .map_err(|e| {
-            JsonRpcConnectorError::new_with_source("Failed to build request", Box::new(e))
-        })?;
+        .map_err(JsonRpcConnectorError::HttpError)?;
     let response =
         tokio::time::timeout(tokio::time::Duration::from_secs(3), client.request(request))
             .await
-            .map_err(|e| {
-                JsonRpcConnectorError::new_with_source("Request timed out", Box::new(e))
-            })??;
+            .map_err(JsonRpcConnectorError::TimeoutError)??;
     let body_bytes = hyper::body::to_bytes(response.into_body())
         .await
-        .map_err(|e| {
-            JsonRpcConnectorError::new_with_source("Failed to read response body", Box::new(e))
-        })?;
+        .map_err(JsonRpcConnectorError::HyperError)?;
     let _response: RpcResponse<serde_json::Value> =
-        serde_json::from_slice(&body_bytes).map_err(|e| {
-            JsonRpcConnectorError::new_with_source("Failed to deserialize response", Box::new(e))
-        })?;
+        serde_json::from_slice(&body_bytes).map_err(JsonRpcConnectorError::SerdeJsonError)?;
     Ok(())
 }
 
@@ -526,14 +460,13 @@ pub async fn test_node_and_return_uri(
     user: Option<String>,
     password: Option<String>,
 ) -> Result<Uri, JsonRpcConnectorError> {
-    let ipv4_uri: Uri = format!("http://127.0.0.1:{}", port).parse().map_err(|e| {
-        JsonRpcConnectorError::new_with_source("Failed to parse IPv4 URI", Box::new(e))
-    })?;
-    let ipv6_uri: Uri = format!("http://[::1]:{}", port).parse().map_err(|e| {
-        JsonRpcConnectorError::new_with_source("Failed to parse IPv6 URI", Box::new(e))
-    })?;
+    let ipv4_uri: Uri = format!("http://127.0.0.1:{}", port)
+        .parse()
+        .map_err(JsonRpcConnectorError::InvalidUriError)?;
+    let ipv6_uri: Uri = format!("http://[::1]:{}", port)
+        .parse()
+        .map_err(JsonRpcConnectorError::InvalidUriError)?;
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-
     for _ in 0..3 {
         println!("@zingoproxyd: Trying connection on IPv4.");
         match test_node_connection(ipv4_uri.clone(), user.clone(), password.clone()).await {
@@ -563,7 +496,6 @@ pub async fn test_node_and_return_uri(
         }
         interval.tick().await;
     }
-
     eprintln!("@zingoproxyd: Could not establish connection with node. \n@zingoproxyd: Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \n@zingoproxyd: Exiting..");
     std::process::exit(1);
 }
