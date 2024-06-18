@@ -13,7 +13,6 @@ use zebra_chain::block::Height;
 
 use crate::{
     blockcache::{block::get_block_from_node, mempool::Mempool},
-    // define_grpc_passthrough,
     jsonrpc::{
         connector::JsonRpcConnector,
         primitives::{GetTransactionResponse, ProxyConsensusBranchIdHex},
@@ -124,12 +123,6 @@ impl CompactTxStreamer for ProxyClient {
             Ok(tonic::Response::new(block_id))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_latest_block(
-    //         &self,
-    //         request: tonic::Request<ChainSpec>,
-    //     ) -> BlockId
-    // );
 
     /// Return the compact block corresponding to the given block identifier.
     ///
@@ -160,12 +153,6 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_block not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_block(
-    //         &self,
-    //         request: tonic::Request<BlockId>,
-    //     ) -> CompactBlock
-    // );
 
     /// Same as GetBlock except actions contain only nullifiers.
     ///
@@ -194,16 +181,9 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_block_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_block_nullifiers(
-    //         &self,
-    //         request: tonic::Request<BlockId>,
-    //     ) -> CompactBlock
-    // );
 
     /// Server streaming response type for the GetBlockRange method.
     #[doc = "Server streaming response type for the GetBlockRange method."]
-    // type GetBlockRangeStream = tonic::Streaming<CompactBlock>;
     type GetBlockRangeStream = std::pin::Pin<Box<CompactBlockStream>>;
 
     /// Return a list of consecutive compact blocks.
@@ -271,12 +251,6 @@ impl CompactTxStreamer for ProxyClient {
             Ok(tonic::Response::new(stream_boxed))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_block_range(
-    //         &self,
-    //         request: tonic::Request<BlockRange>,
-    //     ) -> Self::GetBlockRangeStream
-    // );
 
     /// Server streaming response type for the GetBlockRangeNullifiers method.
     #[doc = " Server streaming response type for the GetBlockRangeNullifiers method."]
@@ -309,12 +283,6 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_block_range_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_block_range_nullifiers(
-    //         &self,
-    //         request: tonic::request<blockrange>,
-    //     ) -> self::getblockrangenullifiersstream
-    // );
 
     /// Return the requested full (not compact) transaction (as from zcashd).
     fn get_transaction<'life0, 'async_trait>(
@@ -356,12 +324,16 @@ impl CompactTxStreamer for ProxyClient {
                 } else {
                     return Err(tonic::Status::not_found("Transaction not received"));
                 };
+                let height: u64 = height.try_into().map_err(|_e| {
+                    tonic::Status::internal(
+                        "Invalid response from server - Height conversion failed",
+                    )
+                })?;
 
-                // TODO: Remove unwrap on height and handle error.
                 Ok(tonic::Response::new(
                     zcash_client_backend::proto::service::RawTransaction {
                         data: hex.bytes,
-                        height: height.try_into().unwrap(),
+                        height,
                     },
                 ))
             } else {
@@ -371,12 +343,6 @@ impl CompactTxStreamer for ProxyClient {
             }
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_transaction(
-    //         &self,
-    //         request: tonic::Request<TxFilter>,
-    //     ) -> RawTransaction
-    // );
 
     /// Submit the given transaction to the Zcash network.
     fn send_transaction<'life0, 'async_trait>(
@@ -418,16 +384,9 @@ impl CompactTxStreamer for ProxyClient {
             ))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn send_transaction(
-    //         &self,
-    //         request: tonic::Request<RawTransaction>,
-    //     ) -> SendResponse
-    // );
 
     /// Server streaming response type for the GetTaddressTxids method.
     #[doc = "Server streaming response type for the GetTaddressTxids method."]
-    // type GetTaddressTxidsStream = tonic::Streaming<RawTransaction>;
     type GetTaddressTxidsStream = std::pin::Pin<Box<RawTransactionStream>>;
 
     /// This name is misleading, returns the full transactions that have either inputs or outputs connected to the given transparent address.
@@ -525,12 +484,6 @@ impl CompactTxStreamer for ProxyClient {
             Ok(tonic::Response::new(stream_boxed))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_taddress_txids(
-    //         &self,
-    //         request: tonic::Request<TransparentAddressBlockFilter>,
-    //     ) -> Self::GetTaddressTxidsStream
-    // );
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
@@ -557,12 +510,6 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_taddress_balance not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_taddress_balance(
-    //         &self,
-    //         request: tonic::Request<AddressList>,
-    //     ) -> Balance
-    // );
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
@@ -627,23 +574,17 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_mempool_tx not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_mempool_tx(
-    //         &self,
-    //         request: tonic::Request<Exclude>,
-    //     ) -> Self::GetMempoolTxStream
-    // );
 
     /// Server streaming response type for the GetMempoolStream method.
     #[doc = "Server streaming response type for the GetMempoolStream method."]
-    // type GetMempoolStreamStream = tonic::Streaming<RawTransaction>;
     type GetMempoolStreamStream = std::pin::Pin<Box<RawTransactionStream>>;
 
     /// Return a stream of current Mempool transactions. This will keep the output stream open while
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     ///
-    /// TODO: This implementation is slow. Zingo-Proxy's blockcache state engine should keep its own intyernal mempool state.
-    ///     - This RPC should query Zingo-Proxy's internal mempool state rather than creating its owm mempool and directly querying zebrad.
+    /// TODO: This implementation is slow. Zingo-Proxy's blockcache state engine should keep its own internal mempool state.
+    ///     - This RPC should query Zingo-Proxy's internal mempool state rather than creating its own mempool and directly querying zebrad.
+    /// TODO: Add 30s timeout.
     fn get_mempool_stream<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<Empty>,
@@ -675,53 +616,77 @@ impl CompactTxStreamer for ProxyClient {
             let (tx, rx) = tokio::sync::mpsc::channel(32);
             tokio::spawn(async move {
                 let mempool = Mempool::new();
-                mempool.update(&zebrad_uri).await.unwrap();
+                if let Err(e) = mempool.update(&zebrad_uri).await {
+                    tx.send(Err(tonic::Status::internal(e.to_string())))
+                        .await
+                        .ok();
+                    return;
+                }
                 let mut mined = false;
                 let mut txid_index: usize = 0;
                 while !mined {
-                    let mempool_txids = mempool.get_mempool_txids().await.unwrap();
-                    for txid in &mempool_txids[txid_index..] {
-                        let transaction = zebrad_client
-                            .get_raw_transaction(txid.clone(), Some(1))
-                            .await;
-                        match transaction {
-                            Ok(GetTransactionResponse::Object { hex, height, .. }) => {
-                                txid_index += 1;
-                                if tx
-                                    .send(Ok(RawTransaction {
-                                        data: hex.bytes,
-                                        height: height as u64,
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
+                    match mempool.get_mempool_txids().await {
+                        Ok(mempool_txids) => {
+                            for txid in &mempool_txids[txid_index..] {
+                                match zebrad_client
+                                    .get_raw_transaction(txid.clone(), Some(1))
+                                    .await {
+                                    Ok(GetTransactionResponse::Object { hex, height, .. }) => {
+                                        txid_index += 1;
+                                        if tx
+                                            .send(Ok(RawTransaction {
+                                                data: hex.bytes,
+                                                height: height as u64,
+                                            }))
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Ok(GetTransactionResponse::Raw(_)) => {
+                                        if tx
+                                        .send(Err(tonic::Status::internal(
+                                            "Received raw transaction type, this should not be impossible.",
+                                        )))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    }
+                                    Err(e) => {
+                                        if tx
+                                            .send(Err(tonic::Status::internal(e.to_string())))
+                                            .await
+                                            .is_err()
+                                        {
                                     break;
+                                        }
+                                    }
                                 }
                             }
-                            Ok(GetTransactionResponse::Raw(_)) => {
-                                if tx
-                                .send(Err(tonic::Status::internal(
-                                    "Received raw transaction type, this should not be impossible.",
-                                )))
+                        }
+                        Err(e) => {
+                            if tx
+                                .send(Err(tonic::Status::internal(e.to_string())))
                                 .await
                                 .is_err()
                             {
                                 break;
                             }
-                            }
-                            Err(e) => {
-                                if tx
-                                    .send(Err(tonic::Status::internal(e.to_string())))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
                         }
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    mined = mempool.update(&zebrad_uri).await.unwrap();
+                    mined = match mempool.update(&zebrad_uri).await {
+                        Ok(mined) => mined,
+                        Err(e) => {
+                            tx.send(Err(tonic::Status::internal(e.to_string())))
+                                .await
+                                .ok();
+                            break;
+                        }
+                    };
                 }
             });
             let output_stream = RawTransactionStream::new(rx);
@@ -729,12 +694,6 @@ impl CompactTxStreamer for ProxyClient {
             Ok(tonic::Response::new(stream_boxed))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_mempool_stream(
-    //         &self,
-    //         request: tonic::Request<Empty>,
-    //     ) -> Self::GetMempoolStreamStream
-    // );
 
     /// GetTreeState returns the note commitment tree state corresponding to the given block.
     /// See section 3.7 of the Zcash protocol specification. It returns several other useful
@@ -796,12 +755,6 @@ impl CompactTxStreamer for ProxyClient {
             ))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_tree_state(
-    //         &self,
-    //         request: tonic::Request<BlockId>,
-    //     ) -> zcash_client_backend::proto::service::TreeState
-    // );
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
@@ -828,12 +781,6 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_latest_tree_state not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_latest_tree_state(
-    //         &self,
-    //         request: tonic::Request<Empty>,
-    //     ) -> TreeState
-    // );
 
     /// Server streaming response type for the GetSubtreeRoots method.
     #[doc = " Server streaming response type for the GetSubtreeRoots method."]
@@ -867,12 +814,6 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_subtree_roots not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_subtree_roots(
-    //         &self,
-    //         request: tonic::Request<GetSubtreeRootsArg>,
-    //     ) -> Self::GetSubtreeRootsStream
-    // );
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
@@ -901,12 +842,6 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_address_utxos not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_address_utxos(
-    //         &self,
-    //         request: tonic::Request<GetAddressUtxosArg>,
-    //     ) -> GetAddressUtxosReplyList
-    // );
 
     /// Server streaming response type for the GetAddressUtxosStream method.
     #[doc = "Server streaming response type for the GetAddressUtxosStream method."]
@@ -937,12 +872,6 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("get_address_utxos_stream not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_address_utxos_stream(
-    //         &self,
-    //         request: tonic::Request<GetAddressUtxosArg>,
-    //     ) -> tonic::Streaming<GetAddressUtxosReply>
-    // );
 
     /// Return information about this lightwalletd instance and the blockchain
     fn get_lightd_info<'life0, 'async_trait>(
@@ -985,7 +914,13 @@ impl CompactTxStreamer for ProxyClient {
 
             let sapling_id_str = "76b809bb";
             let sapling_id = ProxyConsensusBranchIdHex(
-                zebra_chain::parameters::ConsensusBranchId::from_hex(sapling_id_str).unwrap(),
+                zebra_chain::parameters::ConsensusBranchId::from_hex(sapling_id_str).map_err(
+                    |_e| {
+                        tonic::Status::internal(
+                            "Internal Error - Consesnsus Branch ID hex conversion failed",
+                        )
+                    },
+                )?,
             );
             let sapling_height = blockchain_info
                 .upgrades
@@ -1014,12 +949,6 @@ impl CompactTxStreamer for ProxyClient {
             Ok(tonic::Response::new(lightd_info))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn get_lightd_info(
-    //         &self,
-    //         request: tonic::Request<Empty>,
-    //     ) -> LightdInfo
-    // );
 
     // /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production) [from zebrad]
     /// This RPC has not been implemented as it is not currently used by zingolib.
@@ -1047,10 +976,4 @@ impl CompactTxStreamer for ProxyClient {
             Err(tonic::Status::unimplemented("ping not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
         })
     }
-    // define_grpc_passthrough!(
-    //     fn ping(
-    //         &self,
-    //         request: tonic::Request<zcash_client_backend::proto::service::Duration>,
-    //     ) -> PingResponse
-    // );
 }

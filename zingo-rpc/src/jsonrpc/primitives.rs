@@ -445,21 +445,33 @@ impl<'de> Deserialize<'de> for GetTransactionResponse {
     {
         let v = serde_json::Value::deserialize(deserializer)?;
         if v.get("height").is_some() && v.get("confirmations").is_some() {
+            let hex = serde_json::from_value(v["hex"].clone()).map_err(serde::de::Error::custom)?;
+            let height = v["height"]
+                .as_i64()
+                .ok_or_else(|| serde::de::Error::custom("Missing or invalid height"))?
+                as i32;
+            let confirmations = v["confirmations"]
+                .as_u64()
+                .ok_or_else(|| serde::de::Error::custom("Missing or invalid confirmations"))?
+                as u32;
             let obj = GetTransactionResponse::Object {
-                hex: serde_json::from_value(v["hex"].clone()).unwrap(),
-                height: v["height"].as_i64().unwrap() as i32,
-                confirmations: v["confirmations"].as_u64().unwrap() as u32,
+                hex,
+                height,
+                confirmations,
             };
             Ok(obj)
         } else if v.get("hex").is_some() && v.get("txid").is_some() {
+            let hex = serde_json::from_value(v["hex"].clone()).map_err(serde::de::Error::custom)?;
             let obj = GetTransactionResponse::Object {
-                hex: serde_json::from_value(v["hex"].clone()).unwrap(),
-                height: -1 as i32,
-                confirmations: 0 as u32,
+                hex,
+                height: -1,
+                confirmations: 0,
             };
             Ok(obj)
         } else {
-            let raw = GetTransactionResponse::Raw(serde_json::from_value(v.clone()).unwrap());
+            let raw = GetTransactionResponse::Raw(
+                serde_json::from_value(v.clone()).map_err(serde::de::Error::custom)?,
+            );
             Ok(raw)
         }
     }
