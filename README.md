@@ -1,12 +1,8 @@
 # Zingo-Proxy
-A(n eventual) replacement for lightwalletd, written in Rust.
-
-Currently connects to a lightwalletd, and acts as a man-in-the-middle proxy that does nothing. 
-Each RPC we wish to support will be added individually, by connecting to zebrad and doing any nessisary processing.
-Eventually, we'll no longer have any calls that need to use the lightwalletd, and it can be removed from the network stack entirely.
+A rust implemented, nym enhanced, lightwalletd for Zcash.
 
 A note to developers/consumers/contributers: The end goal is not an exact one-to-one port of all existing lwd functionaliy.
-We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet. And a Lightweight gRPC server for testing and development (this may be fleshed out to be a mainnet LightWalletD alternative in the future but is currently not a priority and will depend on zebrad).
+We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet.
 
 # Security Vulnerability Disclosure
 If you believe you have discovered a security issue, please contact us at:
@@ -14,10 +10,10 @@ If you believe you have discovered a security issue, please contact us at:
 zingodisclosure@proton.me
 
 # Zingo-RPC
-will eventually hold the rust implementations of the LightWallet Service and Darkside RPCs, along with the wallet-side and server-side Nym Service implementations.
+Will eventually hold the rust implementations of the LightWallet Service and Darkside RPCs, along with the wallet-side and server-side Nym Service implementations.
 
 # Zingo-ProxyD
-A lightweight gRPC server for testing and development. Zingo-ProxyD also has a basic nym server, currently only receives send_transaction commands send over the mixnet. 
+Currently a lightweight gRPC server for testing and development. Zingo-ProxyD also has a basic nym server, currently only receives send_transaction commands send over the mixnet. 
 This should not be used to run mainnet nodes in its current form as it lacks the queueing and error checking logic necessary.
 
 Under the "nym_poc" feature flag Zingo-ProxyD can also act as a Nym powered proxy between zcash wallets and Zingo-ProxyD, capable of sending zcash transactions over the Nym Mixnet. 
@@ -32,7 +28,7 @@ Our plan is to first enable wallets to send and recieve transactions via a nym p
 
 # Dependencies
 1) zebrad <https://github.com/ZcashFoundation/zebra.git>
-2) lightwalletd <https://github.com/zcash/lightwalletd.git>
+2) lightwalletd <https://github.com/zcash/lightwalletd.git> [require for testing]
 3) zingolib <https://github.com/zingolabs/zingolib.git> [if running zingo-cli]
 4) zcashd, zcash-cli <https://github.com/zcash/zcash> [required for integration tests until zebrad has working regtest mode]
 
@@ -45,7 +41,6 @@ Our plan is to first enable wallets to send and recieve transactions via a nym p
 # zingoproxyd
 - To run zingo-cli through zingo-proxy, connecting to lightwalletd/zebrad locally:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
-2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
 3) Run `$ cargo run`
 
 From zingolib:
@@ -55,7 +50,6 @@ From zingolib:
 The walletside Nym implementations are moving to ease wallet integration but the POC walletside nym server is still available under the "nym_poc" feature flag.
 - To run the POC:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
-2) Run `$ ./lightwalletd --no-tls-very-insecure --zcash-conf-path $PATH_TO_ZINGO_PROXY/zcash.conf --data-dir . --log-file /dev/stdout`
 3) Run `$ cargo run`
 4) Copy nym address displayed
 5) Run `$ cargo run --features "nym_poc" -- <nym address copied>`

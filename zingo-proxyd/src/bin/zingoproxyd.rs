@@ -28,7 +28,14 @@ async fn main() {
     {
         proxy_port = 8088;
     }
-    let lwd_port: u16 = 9067;
+
+    #[allow(unused_mut)]
+    let mut lwd_port: u16 = 9067;
+    #[cfg(feature = "nym_poc")]
+    {
+        lwd_port = 8080;
+    }
+
     let zcashd_port: u16 = 18232;
 
     let (_handles, _nym_address) = spawn_proxy(

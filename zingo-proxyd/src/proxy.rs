@@ -29,7 +29,15 @@ pub async fn spawn_proxy(
     println!("@zingoproxyd: Launching Zingo-Proxy..\n@zingoproxyd: Launching gRPC Server..");
     let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online.clone()).await;
     handles.push(proxy_handle);
-    wait_on_grpc_startup(proxy_port, online.clone()).await;
+
+    #[cfg(not(feature = "nym_poc"))]
+    {
+        wait_on_grpc_startup(proxy_port, online.clone()).await;
+    }
+    #[cfg(feature = "nym_poc")]
+    {
+        wait_on_grpc_startup(lwd_port, online.clone()).await;
+    }
 
     #[cfg(not(feature = "nym_poc"))]
     {
