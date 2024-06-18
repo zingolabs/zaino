@@ -96,5 +96,5 @@ pub async fn spawn_server(
     .unwrap();
 
     let server = ProxyServer::new(lwd_uri, zebra_uri);
-    server.serve(proxy_port.clone(), online)
+    server.serve(*proxy_port, online)
 }

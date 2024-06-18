@@ -153,17 +153,17 @@ impl JsonRpcConnector {
                     request_builder.header("Authorization", format!("Basic {}", auth));
             }
             let request_body = serde_json::to_string(&req)
-                .map_err(|e| JsonRpcConnectorError::SerdeJsonError(e.into()))?;
+                .map_err(JsonRpcConnectorError::SerdeJsonError)?;
             let request = request_builder
                 .body(Body::from(request_body))
-                .map_err(|e| JsonRpcConnectorError::HttpError(e.into()))?;
+                .map_err(JsonRpcConnectorError::HttpError)?;
             let response = client
                 .request(request)
                 .await
-                .map_err(|e| JsonRpcConnectorError::HyperError(e.into()))?;
+                .map_err(JsonRpcConnectorError::HyperError)?;
             let body_bytes = hyper::body::to_bytes(response.into_body())
                 .await
-                .map_err(|e| JsonRpcConnectorError::HyperError(e.into()))?;
+                .map_err(JsonRpcConnectorError::HyperError)?;
 
             let body_str = String::from_utf8_lossy(&body_bytes);
             if body_str.contains("Work queue depth exceeded") {
@@ -176,7 +176,7 @@ impl JsonRpcConnector {
                 continue;
             }
             let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
-                .map_err(|e| JsonRpcConnectorError::SerdeJsonError(e.into()))?;
+                .map_err(JsonRpcConnectorError::SerdeJsonError)?;
             return match response.error {
                 Some(error) => Err(JsonRpcConnectorError::new(format!(
                     "RPC Error {}: {}",

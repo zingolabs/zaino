@@ -25,6 +25,12 @@ pub enum MempoolError {
     JsonRpcError(#[from] JsonRpcConnectorError),
 }
 
+impl Default for Mempool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Mempool {
     /// Returns an empty mempool.
     pub fn new() -> Self {
@@ -126,6 +132,6 @@ impl Mempool {
         &self,
     ) -> Result<Option<zebra_chain::block::Hash>, MempoolError> {
         let best_block_hash = self.best_block_hash.read().await;
-        Ok(best_block_hash.clone())
+        Ok(*best_block_hash)
     }
 }

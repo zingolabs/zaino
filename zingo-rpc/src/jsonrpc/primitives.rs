@@ -167,13 +167,12 @@ impl FromHex for ProxySerializedBlock {
     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
         hex::decode(hex)
             .map(|bytes| ProxySerializedBlock(SerializedBlock::from(bytes)))
-            .map_err(|e| e.into())
     }
 }
 
 impl AsRef<[u8]> for ProxySerializedBlock {
     fn as_ref(&self) -> &[u8] {
-        &self.0.as_ref()
+        self.0.as_ref()
     }
 }
 

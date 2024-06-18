@@ -125,7 +125,7 @@ pub async fn drop_test_manager(
     }
 
     if let Some(ref path) = temp_conf_path {
-        if let Err(e) = std::fs::remove_dir_all(&path) {
+        if let Err(e) = std::fs::remove_dir_all(path) {
             eprintln!(
                 "@zingoproxyd: Failed to delete temporary regtest configuration directory: {:?}.",
                 e
@@ -133,7 +133,7 @@ pub async fn drop_test_manager(
         }
     }
     if let Some(ref path) = Some(temp_wallet_path) {
-        if let Err(e) = std::fs::remove_dir_all(&path) {
+        if let Err(e) = std::fs::remove_dir_all(path) {
             eprintln!(
                 "@zingoproxyd: Failed to delete temporary directory: {:?}.",
                 e
@@ -165,7 +165,7 @@ fn set_custom_drops(
         default_panic_hook(panic_info);
         online_panic.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(ref path) = temp_conf_path_panic {
-            if let Err(e) = std::fs::remove_dir_all(&path) {
+            if let Err(e) = std::fs::remove_dir_all(path) {
                 eprintln!(
                     "@zingoproxyd: Failed to delete temporary regtest config directory: {:?}.",
                     e
@@ -173,7 +173,7 @@ fn set_custom_drops(
             }
         }
         if let Some(ref path) = temp_wallet_path_panic {
-            if let Err(e) = std::fs::remove_dir_all(&path) {
+            if let Err(e) = std::fs::remove_dir_all(path) {
                 eprintln!(
                     "@zingoproxyd: Failed to delete temporary wallet directory: {:?}.",
                     e
@@ -188,7 +188,7 @@ fn set_custom_drops(
             println!("@zingoproxyd: Received Ctrl+C, exiting.");
             online_ctrlc.store(false, std::sync::atomic::Ordering::SeqCst);
             if let Some(ref path) = temp_conf_path_ctrlc {
-                if let Err(e) = std::fs::remove_dir_all(&path) {
+                if let Err(e) = std::fs::remove_dir_all(path) {
                     eprintln!(
                         "@zingoproxyd: Failed to delete temporary regtest config directory: {:?}.",
                         e
@@ -196,7 +196,7 @@ fn set_custom_drops(
                 }
             }
             if let Some(ref path) = temp_wallet_path_ctrlc {
-                if let Err(e) = std::fs::remove_dir_all(&path) {
+                if let Err(e) = std::fs::remove_dir_all(path) {
                     eprintln!(
                         "@zingoproxyd: Failed to delete temporary wallet directory: {:?}.",
                         e

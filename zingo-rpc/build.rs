@@ -4,7 +4,7 @@ use std::process::Command;
 fn main() {
     // Fetch the commit hash
     let commit_hash = Command::new("git")
-        .args(&["rev-parse", "HEAD"])
+        .args(["rev-parse", "HEAD"])
         .output()
         .expect("Failed to get commit hash")
         .stdout;
@@ -13,7 +13,7 @@ fn main() {
 
     // Fetch the current branch
     let branch = Command::new("git")
-        .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .expect("Failed to get branch")
         .stdout;

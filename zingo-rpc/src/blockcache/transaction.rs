@@ -27,12 +27,12 @@ impl ParseFromSlice for TxIn {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if txid != None {
+        if txid.is_some() {
             return Err(ParseError::InvalidData(
                 "txid must be None for TxIn::parse_from_slice".to_string(),
             ));
         }
-        if tx_version != None {
+        if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for TxIn::parse_from_slice".to_string(),
             ));
@@ -71,12 +71,12 @@ impl ParseFromSlice for TxOut {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if txid != None {
+        if txid.is_some() {
             return Err(ParseError::InvalidData(
                 "txid must be None for TxOut::parse_from_slice".to_string(),
             ));
         }
-        if tx_version != None {
+        if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for TxOut::parse_from_slice".to_string(),
             ));
@@ -95,6 +95,7 @@ impl ParseFromSlice for TxOut {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_transparent(data: &[u8]) -> Result<(&[u8], Vec<TxIn>, Vec<TxOut>), ParseError> {
     let mut cursor = Cursor::new(data);
 
@@ -139,7 +140,7 @@ impl ParseFromSlice for Spend {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if txid != None {
+        if txid.is_some() {
             return Err(ParseError::InvalidData(
                 "txid must be None for Spend::parse_from_slice".to_string(),
             ));
@@ -194,7 +195,7 @@ impl ParseFromSlice for Output {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if txid != None {
+        if txid.is_some() {
             return Err(ParseError::InvalidData(
                 "txid must be None for Output::parse_from_slice".to_string(),
             ));
@@ -251,12 +252,12 @@ impl ParseFromSlice for JoinSplit {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if txid != None {
+        if txid.is_some() {
             return Err(ParseError::InvalidData(
                 "txid must be None for JoinSplit::parse_from_slice".to_string(),
             ));
         }
-        if tx_version != None {
+        if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for JoinSplit::parse_from_slice".to_string(),
             ));
@@ -312,12 +313,12 @@ impl ParseFromSlice for Action {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if txid != None {
+        if txid.is_some() {
             return Err(ParseError::InvalidData(
                 "txid must be None for Action::parse_from_slice".to_string(),
             ));
         }
-        if tx_version != None {
+        if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for Action::parse_from_slice".to_string(),
             ));
@@ -676,7 +677,7 @@ impl ParseFromSlice for FullTransaction {
                 "txid must be used for FullTransaction::parse_from_slice".to_string(),
             )
         })?;
-        if tx_version != None {
+        if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for FullTransaction::parse_from_slice".to_string(),
             ));

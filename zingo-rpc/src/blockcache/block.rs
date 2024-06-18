@@ -101,12 +101,12 @@ impl ParseFromSlice for BlockHeaderData {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if txid != None {
+        if txid.is_some() {
             return Err(ParseError::InvalidData(
                 "txid must be None for BlockHeaderData::parse_from_slice".to_string(),
             ));
         }
-        if tx_version != None {
+        if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for BlockHeaderData::parse_from_slice".to_string(),
             ));
@@ -189,7 +189,7 @@ impl BlockHeaderData {
         let mut hasher = Sha256::new();
         hasher.update(&serialized_header);
         let digest = hasher.finalize_reset();
-        hasher.update(&digest);
+        hasher.update(digest);
         let final_digest = hasher.finalize();
 
         Ok(final_digest.to_vec())
@@ -230,7 +230,7 @@ impl ParseFromSlice for FullBlock {
         let txid = txid.ok_or_else(|| {
             ParseError::InvalidData("txid must be used for FullBlock::parse_from_slice".to_string())
         })?;
-        if tx_version != None {
+        if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for FullBlock::parse_from_slice".to_string(),
             ));
@@ -252,9 +252,9 @@ impl ParseFromSlice for FullBlock {
         let mut remaining_data = &data[cursor.position() as usize..];
         for txid_item in txid.iter() {
             if remaining_data.is_empty() {
-                return Err(ParseError::InvalidData(format!(
-                    "parsing block transactions: not enough data for transaction.",
-                )));
+                return Err(ParseError::InvalidData(
+                    "parsing block transactions: not enough data for transaction.".to_string(),
+                ));
             }
             let (new_remaining_data, tx) = FullTransaction::parse_from_slice(
                 &data[cursor.position() as usize..],
@@ -290,7 +290,7 @@ const GENESIS_TARGET_DIFFICULTY: u32 = 520617983;
 
 impl FullBlock {
     /// Extracts the block height from the coinbase transaction.
-    pub fn get_block_height(transactions: &Vec<FullTransaction>) -> Result<i32, ParseError> {
+    pub fn get_block_height(transactions: &[FullTransaction]) -> Result<i32, ParseError> {
         let coinbase_script = transactions[0].raw_transaction.transparent_inputs[0]
             .script_sig
             .as_slice();
@@ -313,7 +313,7 @@ impl FullBlock {
     /// Decodes a hex encoded zcash full block into a FullBlock struct.
     pub fn parse_full_block(data: &[u8], txid: Option<Vec<Vec<u8>>>) -> Result<Self, ParseError> {
         let (remaining_data, full_block) = Self::parse_from_slice(data, txid, None)?;
-        if remaining_data.len() != 0 {
+        if !remaining_data.is_empty() {
             return Err(ParseError::InvalidData(format!(
                 "Error decoding full block - {} bytes of Remaining data. Compact Block Created: ({:?})",
                 remaining_data.len(),
@@ -370,8 +370,8 @@ impl FullBlock {
         sapling_commitment_tree_size: u32,
         orchard_commitment_tree_size: u32,
     ) -> Result<CompactBlock, ParseError> {
-        Ok(Self::parse_full_block(data, txid)?
-            .to_compact(sapling_commitment_tree_size, orchard_commitment_tree_size)?)
+        Self::parse_full_block(data, txid)?
+            .to_compact(sapling_commitment_tree_size, orchard_commitment_tree_size)
     }
 }
 
@@ -410,29 +410,21 @@ pub async fn get_block_from_node(
                     time: _,
                     tx: _,
                     trees: _,
-                }) => {
-                    return Err(ParseError::InvalidData(
-                        "Received object block type, this should not be possible here.".to_string(),
-                    ));
-                }
+                }) => Err(ParseError::InvalidData(
+                    "Received object block type, this should not be possible here.".to_string(),
+                )),
                 Ok(GetBlockResponse::Raw(block_hex)) => Ok(FullBlock::parse_to_compact(
                     block_hex.as_ref(),
                     Some(display_txids_to_server(tx)?),
                     trees.sapling.size as u32,
                     trees.orchard.size as u32,
                 )?),
-                Err(e) => {
-                    return Err(e.into());
-                }
+                Err(e) => Err(e.into()),
             }
         }
-        Ok(GetBlockResponse::Raw(_)) => {
-            return Err(ParseError::InvalidData(
-                "Received raw block type, this should not be possible here.".to_string(),
-            ));
-        }
-        Err(e) => {
-            return Err(e.into());
-        }
+        Ok(GetBlockResponse::Raw(_)) => Err(ParseError::InvalidData(
+            "Received raw block type, this should not be possible here.".to_string(),
+        )),
+        Err(e) => Err(e.into()),
     }
 }
