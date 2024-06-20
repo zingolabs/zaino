@@ -9,3 +9,4 @@ pub mod nym;
 pub mod primitives;
 pub mod rpc;
 pub mod utils;
+pub mod walletrpc;
