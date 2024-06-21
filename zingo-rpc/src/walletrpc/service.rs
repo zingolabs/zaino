@@ -20,8 +20,8 @@ use tonic::{self, codec::CompressionEncoding, Status};
 use tonic::{service::interceptor::InterceptedService, transport::Endpoint};
 
 use crate::{
-    nym::utils::{deserialize_response, serialize_request},
     primitives::NymClient,
+    walletrpc::utils::{deserialize_response, serialize_request},
 };
 
 /// Wrapper struct for the Nym enabled CompactTxStreamerClient.

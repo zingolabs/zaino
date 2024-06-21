@@ -16,8 +16,8 @@ use zcash_client_backend::proto::{
 
 use crate::{
     define_grpc_passthrough,
-    nym::utils::{deserialize_response, serialize_request},
     primitives::{NymClient, ProxyClient},
+    walletrpc::utils::{deserialize_response, serialize_request},
 };
 
 #[async_trait]
