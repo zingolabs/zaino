@@ -58,6 +58,7 @@ impl CompactTxStreamer for ProxyClient {
         request: Request<RawTransaction>,
     ) -> Result<Response<SendResponse>, Status> {
         println!("@zingoproxyd[nym]: Received call of send_transaction.");
+        // println!("@zingoproxyd[nym]: Received request: {:?}.", request);
 
         //serialize RawTransaction
         let serialized_request = match serialize_request(&request.into_inner()).await {

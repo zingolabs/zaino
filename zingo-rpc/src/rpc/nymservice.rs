@@ -22,13 +22,6 @@ impl NymClient {
             .path_and_query("/")
             .build()
             .unwrap();
-        let _lwd_uri_main = Uri::builder()
-            .scheme("https")
-            .authority("eu.lightwalletd.com:443")
-            .path_and_query("/")
-            .build()
-            .unwrap();
-        // replace zproxy_uri with lwd_uri_main to connect to mainnet:
         let client = Arc::new(GrpcConnector::new(zproxy_uri));
 
         let mut cmp_client = client
