@@ -70,6 +70,16 @@ impl CompactTxStreamer for ProxyClient {
                 )))
             }
         };
+        // let nym_request =
+        //     match write_nym_request_data(id, method, serialized_data)
+        //         Ok(data) => data,
+        //         Err(e) => {
+        //             return Err(Status::internal(format!(
+        //                 "Failed to write nym request data: {}",
+        //                 e
+        //             )))
+        //         }
+        //     };
 
         //print request for testing:
         println!(
@@ -87,7 +97,7 @@ impl CompactTxStreamer for ProxyClient {
         let nym_conf_path = "/tmp/nym_client";
         let mut client = NymClient::nym_spawn(nym_conf_path).await;
         let response_data = client
-            .nym_forward(recipient_address.as_str(), serialized_request)
+            .nym_forward(recipient_address.as_str(), serialized_request) // change serialized_request to nym request
             .await
             .unwrap();
         client.nym_close().await;
@@ -197,12 +207,84 @@ impl CompactTxStreamer for ProxyClient {
         ) -> tonic::Streaming<GetAddressUtxosReply>
     );
 
-    define_grpc_passthrough!(
-        fn get_lightd_info(
-            &self,
-            request: tonic::Request<Empty>,
-        ) -> LightdInfo
-    );
+    // define_grpc_passthrough!(
+    //     fn get_lightd_info(
+    //         &self,
+    //         request: tonic::Request<Empty>,
+    //     ) -> LightdInfo
+    // );
+    async fn get_lightd_info(
+        &self,
+        request: Request<Empty>,
+    ) -> Result<Response<LightdInfo>, Status> {
+        println!("@zingoproxyd[nym]: Received call of get_lightd_info.");
+        // println!("@zingoproxyd[nym]: Received request: {:?}.", request);
+
+        //serialize Empty ???? this...
+        let serialized_request = match serialize_request(&request.into_inner()).await {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to serialize request: {}",
+                    e
+                )))
+            }
+        };
+        // let nym_request =
+        //     match write_nym_request_data(id, method, serialized_data)
+        //         Ok(data) => data,
+        //         Err(e) => {
+        //             return Err(Status::internal(format!(
+        //                 "Failed to write nym request data: {}",
+        //                 e
+        //             )))
+        //         }
+        //     };
+
+        //print request for testing:
+        println!(
+            "@zingoproxyd[nym][TEST]: Request sent: {:?}.",
+            serialized_request
+        );
+        println!(
+            "@zingoproxyd[nym][TEST]: Request length: {}.",
+            serialized_request.len()
+        );
+
+        // -- forward request over nym
+        let args: Vec<String> = env::args().collect();
+        let recipient_address: String = args[1].clone();
+        let nym_conf_path = "/tmp/nym_client";
+        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+        let response_data = client
+            .nym_forward(recipient_address.as_str(), serialized_request) // change serialized_request to nym request
+            .await
+            .unwrap();
+        client.nym_close().await;
+
+        //print response for testing
+        println!(
+            "@zingoproxyd[nym][TEST]: Response received: {:?}.",
+            response_data
+        );
+        println!(
+            "@zingoproxyd[nym][TEST]: Response length: {}.",
+            response_data.len()
+        );
+
+        //deserialize SendResponse
+        let response: LightdInfo = match deserialize_response(response_data.as_slice()).await {
+            Ok(res) => res,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to decode response: {}",
+                    e
+                )))
+            }
+        };
+
+        Ok(Response::new(response))
+    }
 
     define_grpc_passthrough!(
         fn ping(

@@ -1,3 +1,3 @@
 //! Zingo-Proxy request queue.
 
-pub mod requests;
+pub mod request;

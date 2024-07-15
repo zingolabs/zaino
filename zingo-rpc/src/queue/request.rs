@@ -145,14 +145,14 @@ impl ZingoProxyRequest {
     /// Creates a ZingoProxyRequest from a gRPC service call, recieved by the gRPC server.
     ///
     /// TODO: implement proper functionality along with queue.
-    pub fn new_from_grpc(metadata: MetadataMap, bytes: Vec<u8>) -> Self {
+    pub fn new_from_grpc(metadata: MetadataMap, bytes: &[u8]) -> Self {
         ZingoProxyRequest::GrpcServerRequest(GrpcServerRequest {
             queuedata: QueueData::new(),
             request: GrpcRequest {
                 id: 0,                      // TODO
                 method: "TODO".to_string(), // TODO
                 metadata: RequestMetaData::MetaDataMap(metadata),
-                body: bytes,
+                body: bytes.to_vec(),
             },
         })
     }
