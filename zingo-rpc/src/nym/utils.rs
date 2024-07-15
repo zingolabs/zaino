@@ -13,10 +13,25 @@ fn read_nym_method(data: &[u8]) -> Result<(String, &[u8]), ParseError> {
     Ok((method, &data[cursor.position() as usize..]))
 }
 
+/// Check the body of the request is the correct length.
+fn check_nym_body(data: &[u8]) -> Result<&[u8], ParseError> {
+    let mut cursor = Cursor::new(data);
+    let body_len = CompactSize::read(&mut cursor)? as usize;
+    if &body_len != &data[cursor.position() as usize..].len() {
+        return Err(ParseError::InvalidData(
+            "Incorrect request body size read.".to_string(),
+        ));
+    };
+    Ok(&data[cursor.position() as usize..])
+}
+
 /// Extracts metadata from a NymRequest.
+///
+/// Returns [ID, Method, RequestData].
 pub fn read_nym_request_data(data: &[u8]) -> Result<(u64, String, &[u8]), ParseError> {
     let mut cursor = Cursor::new(data);
     let id = CompactSize::read(&mut cursor)?;
-    let (method, data) = read_nym_method(data)?;
-    Ok((id, method, data))
+    let (method, data) = read_nym_method(&data[cursor.position() as usize..])?;
+    let body = check_nym_body(data)?;
+    Ok((id, method, body))
 }

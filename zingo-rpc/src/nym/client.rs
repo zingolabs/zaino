@@ -31,6 +31,8 @@ impl NymClient {
     }
 
     /// Forwards an encoded gRPC request over the nym mixnet to the nym address specified and waits for the response.
+    ///
+    /// TODO: Add timout for waiting for response.
     pub async fn nym_forward(
         &mut self,
         recipient_address: &str,

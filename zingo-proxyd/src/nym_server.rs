@@ -11,31 +11,59 @@ use std::sync::{
 
 use nym_sdk::mixnet::{MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
-use prost::Message;
-use zcash_client_backend::proto::service::RawTransaction;
+// use prost::Message;
+// use zcash_client_backend::proto::service::RawTransaction;
 
-use zingo_rpc::{primitives::NymClient, queue::request::ZingoProxyRequest};
+use zingo_rpc::{
+    jsonrpc::connector::test_node_and_return_uri,
+    primitives::{NymClient, ProxyClient},
+    queue::request::ZingoProxyRequest,
+};
 
 /// Wrapper struct for a Nym client.
-pub struct NymServer(pub NymClient);
+pub struct NymServer {
+    /// NymClient data
+    pub nym_client: NymClient,
+    /// Nym Address
+    pub nym_addr: String,
+    /// Represents the Online status of the gRPC server.
+    pub online: Arc<AtomicBool>,
+}
 
 impl NymServer {
     /// Receives and decodes encoded gRPC messages sent over the nym mixnet, processes them, encodes the response.
     /// The encoded response is sent back to the sender using a surb (single use reply block).
-    pub async fn serve(
-        mut self,
-        online: Arc<AtomicBool>,
-    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+    pub async fn serve(mut self) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         let mut request_in: Vec<ReconstructedMessage> = Vec::new();
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-            while online.load(Ordering::SeqCst) {
+            // NOTE: the following should be removed with the addition of the queue and worker pool.
+            let lwd_port = 8080;
+            let zebrad_port = 18232;
+            println!("@zingoproxyd[nym]: Launching temporary proxy client..");
+            let proxy_client = ProxyClient {
+                lightwalletd_uri: http::Uri::builder()
+                    .scheme("http")
+                    .authority(format!("localhost:{lwd_port}"))
+                    .path_and_query("/")
+                    .build()
+                    .unwrap(),
+                zebrad_uri: test_node_and_return_uri(
+                    &zebrad_port,
+                    Some("xxxxxx".to_string()),
+                    Some("xxxxxx".to_string()),
+                )
+                .await
+                .unwrap(),
+                online: self.online.clone(),
+            };
+            while self.online.load(Ordering::SeqCst) {
                 // --- wait for request.
-                while let Some(request_nym) = self.0 .0.wait_for_messages().await {
+                while let Some(request_nym) = self.nym_client.0.wait_for_messages().await {
                     if request_nym.is_empty() {
                         interval.tick().await;
-                        if !online.load(Ordering::SeqCst) {
+                        if !self.online.load(Ordering::SeqCst) {
                             println!("Nym server shutting down.");
                             return Ok(());
                         }
@@ -51,46 +79,38 @@ impl NymServer {
                     .map(|r| r.message.clone())
                     .ok_or_else(|| "No response received from the nym network".to_string())
                     .unwrap();
-
-                // --- print request for testing
-                println!(
-                    "@zingoproxyd[nym]: request received: {:?} - request length: {}",
-                    &request_vu8[..],
-                    &request_vu8[..].len()
-                );
-
                 // --- fetch recipient address
                 let return_recipient = AnonymousSenderTag::try_from_base58_string(
                     request_in[0].sender_tag.unwrap().to_base58_string(),
                 )
                 .unwrap();
-
-                // --- decode to ZingoProxyRequest
+                // --- build ZingoProxyRequest
                 let zingo_proxy_request =
                     ZingoProxyRequest::new_from_nym(return_recipient, request_vu8.as_ref());
 
-                // --- deserialize request based on method
-                // let request = RawTransaction::decode(&request_vu8[..]).unwrap();
-                let request = RawTransaction::decode(&zingo_proxy_request.body()[..]).unwrap();
+                // print request for testing
+                // println!(
+                //     "@zingoproxyd[nym][TEST]: ZingoProxyRequest recieved: {:?}.",
+                //     zingo_proxy_request
+                // );
 
-                // --- process request based on method
-                let response = NymClient::nym_send_transaction(&request).await.unwrap();
+                // --- process request
+                // NOTE: when the queue is added requests will not be processed here but by the queue!
+                let response = proxy_client
+                    .process_nym_request(&zingo_proxy_request)
+                    .await
+                    .unwrap();
 
-                // --- encode response
-                let mut response_vu8 = Vec::new();
-                response.encode(&mut response_vu8).unwrap();
-
-                //print response for testing
-                println!(
-                    "@zingoproxyd[nym]: response sent: {:?} - response length: {}",
-                    &response_vu8[..],
-                    &response_vu8[..].len()
-                );
+                // print response for testing
+                // println!(
+                //     "@zingoproxyd[nym][TEST]: Response sent: {:?}.",
+                //     &response[..],
+                // );
 
                 // --- send response
-                self.0
-                     .0
-                    .send_reply(return_recipient, response_vu8)
+                self.nym_client
+                    .0
+                    .send_reply(return_recipient, response)
                     .await
                     .unwrap();
             }
@@ -98,6 +118,17 @@ impl NymServer {
             println!("Nym server shutting down.");
             Ok(())
         })
+    }
+
+    /// Returns a new NymServer Inatanse
+    pub async fn new(nym_conf_path: &str, online: Arc<AtomicBool>) -> Self {
+        let nym_client = NymClient::nym_spawn(nym_conf_path).await;
+        let nym_addr = nym_client.0.nym_address().to_string();
+        NymServer {
+            nym_client,
+            nym_addr,
+            online,
+        }
     }
 }
 

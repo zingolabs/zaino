@@ -24,6 +24,8 @@ use crate::{
     walletrpc::utils::{deserialize_response, serialize_request},
 };
 
+use super::utils::write_nym_request_data;
+
 /// Wrapper struct for the Nym enabled CompactTxStreamerClient.
 #[derive(Debug, Clone)]
 pub struct NymTxStreamerClient<T> {
@@ -224,20 +226,22 @@ where
                                     )))
                                 }
                             };
-                        // let nym_request =
-                        //     match write_nym_request_data(id, method, serialized_data)
-                        //         Ok(data) => data,
-                        //         Err(e) => {
-                        //             return Err(Status::internal(format!(
-                        //                 "Failed to write nym request data: {}",
-                        //                 e
-                        //             )))
-                        //         }
-                        //     };
+                        let nym_request = match write_nym_request_data(
+                            0,
+                            "SendTransaction".to_string(),
+                            serialized_request.as_ref(),
+                        ) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                return Err(Status::internal(format!(
+                                    "Failed to write nym request data: {}",
+                                    e
+                                )))
+                            }
+                        };
                         let nym_conf_path = "/tmp/nym_client";
                         let mut client = NymClient::nym_spawn(nym_conf_path).await;
-                        let response_data =
-                            client.nym_forward(addr, serialized_request).await.unwrap(); // change serialized_request to nym_request
+                        let response_data = client.nym_forward(addr, nym_request).await.unwrap();
                         client.nym_close().await;
                         let response: SendResponse =
                             match deserialize_response(response_data.as_slice()).await {
@@ -410,20 +414,22 @@ where
                                     )))
                                 }
                             };
-                        // let nym_request =
-                        //     match write_nym_request_data(id, method, serialized_data)
-                        //         Ok(data) => data,
-                        //         Err(e) => {
-                        //             return Err(Status::internal(format!(
-                        //                 "Failed to write nym request data: {}",
-                        //                 e
-                        //             )))
-                        //         }
-                        //     };
+                        let nym_request = match write_nym_request_data(
+                            0,
+                            "GetLightdInfo".to_string(),
+                            serialized_request.as_ref(),
+                        ) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                return Err(Status::internal(format!(
+                                    "Failed to write nym request data: {}",
+                                    e
+                                )))
+                            }
+                        };
                         let nym_conf_path = "/tmp/nym_client";
                         let mut client = NymClient::nym_spawn(nym_conf_path).await;
-                        let response_data =
-                            client.nym_forward(addr, serialized_request).await.unwrap(); // change serialized_request to nym_request
+                        let response_data = client.nym_forward(addr, nym_request).await.unwrap();
                         client.nym_close().await;
                         let response: LightdInfo =
                             match deserialize_response(response_data.as_slice()).await {

@@ -30,6 +30,7 @@ pub fn write_nym_request_data(id: u64, method: String, body: &[u8]) -> Result<Ve
     CompactSize::write(&mut buffer, id as usize)?;
     CompactSize::write(&mut buffer, method_bytes.len())?;
     buffer.extend(method_bytes);
+    CompactSize::write(&mut buffer, body.len())?;
     buffer.extend(body);
     Ok(buffer)
 }
