@@ -49,13 +49,19 @@ impl NymServer {
                     .path_and_query("/")
                     .build()
                     .unwrap(),
-                zebrad_uri: test_node_and_return_uri(
-                    &zebrad_port,
-                    Some("xxxxxx".to_string()),
-                    Some("xxxxxx".to_string()),
-                )
-                .await
-                .unwrap(),
+                zebrad_uri: http::Uri::builder()
+                    .scheme("http")
+                    .authority(format!("localhost:{zebrad_port}"))
+                    .path_and_query("/")
+                    .build()
+                    .unwrap(),
+                // zebrad_uri: test_node_and_return_uri(
+                //     &zebrad_port,
+                //     Some("xxxxxx".to_string()),
+                //     Some("xxxxxx".to_string()),
+                // )
+                // .await
+                // .unwrap(),
                 online: self.online.clone(),
             };
             while self.online.load(Ordering::SeqCst) {
