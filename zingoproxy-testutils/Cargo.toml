@@ -23,12 +23,6 @@ zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_in
 # zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", tag = "mob-release-1.4.2", package = "zingoconfig" }
 # zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "mob-release-1.4.2", package = "zingolib" }
 
-# LibRustZcash
-zcash_client_backend = { workspace = true }
-
-# NymSdk
-nym-sdk = { workspace = true }
-
 # Miscellaneous Workspace
 tokio = { workspace = true }
 tonic = { workspace = true }
@@ -37,5 +31,4 @@ http = { workspace = true }
 # Miscellaneous Crate
 ctrlc = "3.2.1" # "3.4.4"
 tempfile = "3.2.0" # "3.10.1"
-chrono = "0.4.19" # "0.4.38"
 portpicker = "0.1.1"

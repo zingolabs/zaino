@@ -180,6 +180,7 @@ fn set_custom_drops(
                 );
             }
         }
+        assert!(false);
         std::process::exit(0);
     }));
 
