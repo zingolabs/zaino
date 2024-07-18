@@ -16,8 +16,8 @@ use zcash_client_backend::proto::{
 
 use crate::{
     define_grpc_passthrough,
-    nym::utils::{deserialize_response, serialize_request},
     primitives::{NymClient, ProxyClient},
+    walletrpc::utils::{deserialize_response, serialize_request, write_nym_request_data},
 };
 
 #[async_trait]
@@ -57,9 +57,8 @@ impl CompactTxStreamer for ProxyClient {
         &self,
         request: Request<RawTransaction>,
     ) -> Result<Response<SendResponse>, Status> {
-        println!("@zingoproxyd[nym]: Received call of send_transaction.");
-
-        //serialize RawTransaction
+        println!("@zingoproxyd[nym_poc]: Received call of send_transaction.");
+        // -- serialize RawTransaction
         let serialized_request = match serialize_request(&request.into_inner()).await {
             Ok(data) => data,
             Err(e) => {
@@ -69,39 +68,31 @@ impl CompactTxStreamer for ProxyClient {
                 )))
             }
         };
-
-        //print request for testing:
-        println!(
-            "@zingoproxyd[nym][TEST]: Request sent: {:?}.",
-            serialized_request
-        );
-        println!(
-            "@zingoproxyd[nym][TEST]: Request length: {}.",
-            serialized_request.len()
-        );
-
-        // -- forward request over nym
+        // -- create ZingoProxyRequest
+        let nym_request = match write_nym_request_data(
+            0,
+            "SendTransaction".to_string(),
+            serialized_request.as_ref(),
+        ) {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to write nym request data: {}",
+                    e
+                )))
+            }
+        };
+        // -- forward request over nym and wait for response
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
         let mut client = NymClient::nym_spawn(nym_conf_path).await;
         let response_data = client
-            .nym_forward(recipient_address.as_str(), serialized_request)
+            .nym_forward(recipient_address.as_str(), nym_request)
             .await
             .unwrap();
         client.nym_close().await;
-
-        //print response for testing
-        println!(
-            "@zingoproxyd[nym][TEST]: Response received: {:?}.",
-            response_data
-        );
-        println!(
-            "@zingoproxyd[nym][TEST]: Response length: {}.",
-            response_data.len()
-        );
-
-        //deserialize SendResponse
+        // -- deserialize SendResponse
         let response: SendResponse = match deserialize_response(response_data.as_slice()).await {
             Ok(res) => res,
             Err(e) => {
@@ -111,7 +102,6 @@ impl CompactTxStreamer for ProxyClient {
                 )))
             }
         };
-
         Ok(Response::new(response))
     }
 
@@ -196,12 +186,63 @@ impl CompactTxStreamer for ProxyClient {
         ) -> tonic::Streaming<GetAddressUtxosReply>
     );
 
-    define_grpc_passthrough!(
-        fn get_lightd_info(
-            &self,
-            request: tonic::Request<Empty>,
-        ) -> LightdInfo
-    );
+    // define_grpc_passthrough!(
+    //     fn get_lightd_info(
+    //         &self,
+    //         request: tonic::Request<Empty>,
+    //     ) -> LightdInfo
+    // );
+    async fn get_lightd_info(
+        &self,
+        request: Request<Empty>,
+    ) -> Result<Response<LightdInfo>, Status> {
+        println!("@zingoproxyd[nym_poc]: Received call of get_lightd_info.");
+        // -- serialize Empty
+        let serialized_request = match serialize_request(&request.into_inner()).await {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to serialize request: {}",
+                    e
+                )))
+            }
+        };
+        // -- create ZingoProxyRequest
+        let nym_request = match write_nym_request_data(
+            0,
+            "GetLightdInfo".to_string(),
+            serialized_request.as_ref(),
+        ) {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to write nym request data: {}",
+                    e
+                )))
+            }
+        };
+        // -- forward request over nym and wait for response
+        let args: Vec<String> = env::args().collect();
+        let recipient_address: String = args[1].clone();
+        let nym_conf_path = "/tmp/nym_client";
+        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+        let response_data = client
+            .nym_forward(recipient_address.as_str(), nym_request)
+            .await
+            .unwrap();
+        client.nym_close().await;
+        // -- deserialize LightdInfo
+        let response: LightdInfo = match deserialize_response(response_data.as_slice()).await {
+            Ok(res) => res,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to decode response: {}",
+                    e
+                )))
+            }
+        };
+        Ok(Response::new(response))
+    }
 
     define_grpc_passthrough!(
         fn ping(

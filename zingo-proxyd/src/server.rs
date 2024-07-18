@@ -73,7 +73,7 @@ impl ProxyServer {
 }
 
 /// Spawns a gRPC server.
-pub async fn spawn_server(
+pub async fn spawn_grpc_server(
     proxy_port: &u16,
     lwd_port: &u16,
     zebrad_port: &u16,

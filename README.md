@@ -13,7 +13,7 @@ zingodisclosure@proton.me
 Will eventually hold the rust implementations of the LightWallet Service and Darkside RPCs, along with the wallet-side and server-side Nym Service implementations.
 
 # Zingo-ProxyD
-Currently a lightweight gRPC server for testing and development. Zingo-ProxyD also has a basic nym server, currently only receives send_transaction commands send over the mixnet. 
+Currently a lightweight gRPC server for testing and development. Zingo-ProxyD also has a basic nym server, currently only receives send_transaction and get_lightd_info commands send over the mixnet. 
 This should not be used to run mainnet nodes in its current form as it lacks the queueing and error checking logic necessary.
 
 Under the "nym_poc" feature flag Zingo-ProxyD can also act as a Nym powered proxy between zcash wallets and Zingo-ProxyD, capable of sending zcash transactions over the Nym Mixnet. 
@@ -54,6 +54,6 @@ The walletside Nym implementations are moving to ease wallet integration but the
 4) Copy nym address displayed
 5) Run `$ cargo run --features "nym_poc" -- <nym address copied>`
 
-From zingolib: [transactions send with this build will be sent over the mixnet]
+From zingolib: [get_lightd_info and send_transaction commands sent with this build will be sent over the mixnet]
 6) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8088" --data-dir ~/wallets/testnet_wallet`
 

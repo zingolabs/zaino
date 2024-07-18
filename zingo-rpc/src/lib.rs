@@ -7,5 +7,7 @@ pub mod blockcache;
 pub mod jsonrpc;
 pub mod nym;
 pub mod primitives;
+pub mod queue;
 pub mod rpc;
 pub mod utils;
+pub mod walletrpc;

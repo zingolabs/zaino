@@ -6,6 +6,8 @@ use std::io::{Cursor, Read};
 use crate::jsonrpc::connector::JsonRpcConnectorError;
 
 /// Parser Error Type.
+///
+/// TODO: Move this error and other Zingo-Proxy error types intoown errors mod.
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     /// Io Error.
@@ -20,9 +22,15 @@ pub enum ParseError {
     /// UTF-8 conversion error.
     #[error("UTF-8 Error: {0}")]
     Utf8Error(#[from] std::str::Utf8Error),
+    /// UTF-8 conversion error.
+    #[error("UTF-8 Conversion Error: {0}")]
+    FromUtf8Error(#[from] std::string::FromUtf8Error),
     /// Hexadecimal parsing error.
     #[error("Hex Parse Error: {0}")]
     ParseIntError(#[from] std::num::ParseIntError),
+    /// Errors originating from prost decodings.
+    #[error("Prost Decode Error: {0}")]
+    ProstDecodeError(#[from] prost::DecodeError),
 }
 
 /// Used for decoding zcash blocks from a bytestring.

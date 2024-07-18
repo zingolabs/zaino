@@ -3,9 +3,9 @@
 //! TODO: - Add ProxyServerError error type and rewrite functions to return <Result<(), ProxyServerError>>, propagating internal errors.
 //!       - Update spawn_server and nym_spawn to return <Result<(), GrpcServerError>> and <Result<(), NymServerError>> and use here.
 
-use crate::{nym_server::NymServer, server::spawn_server};
+use crate::{nym_server::NymServer, server::spawn_grpc_server};
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zingo_rpc::primitives::NymClient;
+use zingo_rpc::jsonrpc::connector::test_node_and_return_uri;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,8 +26,18 @@ pub async fn spawn_proxy(
     let nym_addr_out: Option<String>;
 
     startup_message();
-    println!("@zingoproxyd: Launching Zingo-Proxy..\n@zingoproxyd: Launching gRPC Server..");
-    let proxy_handle = spawn_server(proxy_port, lwd_port, zebrad_port, online.clone()).await;
+    println!("@zingoproxyd: Launching Zingo-Proxy!\n@zingoproxyd: Checking connection with node..");
+    // TODO Add user and password fields.
+    let _zebrad_uri = test_node_and_return_uri(
+        zebrad_port,
+        Some("xxxxxx".to_string()),
+        Some("xxxxxx".to_string()),
+    )
+    .await
+    .unwrap();
+
+    println!("@zingoproxyd: Launching gRPC Server..");
+    let proxy_handle = spawn_grpc_server(proxy_port, lwd_port, zebrad_port, online.clone()).await;
     handles.push(proxy_handle);
 
     #[cfg(not(feature = "nym_poc"))]
@@ -42,10 +52,14 @@ pub async fn spawn_proxy(
     #[cfg(not(feature = "nym_poc"))]
     {
         println!("@zingoproxyd[nym]: Launching Nym Server..");
-        let nym_server: NymServer = NymServer(NymClient::nym_spawn(nym_conf_path).await);
-        nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
 
-        let nym_proxy_handle = nym_server.serve(online).await;
+        // let nym_server: NymServer = NymServer(NymClient::nym_spawn(nym_conf_path).await);
+        // nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
+        // let nym_proxy_handle = nym_server.serve(online).await;
+        let nym_server = NymServer::new(nym_conf_path, online).await;
+        nym_addr_out = Some(nym_server.nym_addr.clone());
+        let nym_proxy_handle = nym_server.serve().await;
+
         handles.push(nym_proxy_handle);
         // TODO: Add wait_on_nym_startup(nym_addr_out, online.clone()) function to test nym server.
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
