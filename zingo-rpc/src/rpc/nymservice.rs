@@ -11,11 +11,11 @@ use crate::primitives::NymClient;
 
 impl NymClient {
     /// Forwards the recieved send_transaction request on to a Lightwalletd and returns the response.
-    /// TODO: Forward to zingo-Proxy instead of lwd.
     pub async fn nym_send_transaction(
         request: &RawTransaction,
     ) -> Result<SendResponse, Box<dyn std::error::Error>> {
-        let zproxy_port = 9067;
+        // TODO: Expose zproxy_port to point to actual zproxy listen port.
+        let zproxy_port = 8080;
         let zproxy_uri = Uri::builder()
             .scheme("http")
             .authority(format!("localhost:{zproxy_port}"))

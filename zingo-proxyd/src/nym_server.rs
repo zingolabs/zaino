@@ -1,4 +1,8 @@
 //! Nym-gRPC server implementation.
+//!
+//! TODO: - Add NymServerError error type and rewrite functions to return <Result<(), NymServerError>>, propagating internal errors. Include NymClientError from zingo-rpc::nym::utils.
+//!       - Update NymServer to handle all service RPCs (currently only accepts send_command). [Return "Not Yet Implemented" for unimplemented RPC's?]
+//!       - Update NymServer to handle multiple requests, from multiple clients, simultaniously. [Combine with zingoproxyd "queue" logic when implemented?]
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -46,8 +50,14 @@ impl NymServer {
                     .unwrap();
 
                 //print request for testing
-                println!("request received: {:?}", &request_vu8[..]);
-                println!("request length: {}", &request_vu8[..].len());
+                println!(
+                    "@zingoproxyd[nym]: request received: {:?}",
+                    &request_vu8[..]
+                );
+                println!(
+                    "@zingoproxyd[nym]: request length: {}",
+                    &request_vu8[..].len()
+                );
 
                 let request = RawTransaction::decode(&request_vu8[..]).unwrap();
                 let response = NymClient::nym_send_transaction(&request).await.unwrap();
@@ -55,8 +65,11 @@ impl NymServer {
                 response.encode(&mut response_vu8).unwrap();
 
                 //print response for testing
-                println!("response sent: {:?}", &response_vu8[..]);
-                println!("response length: {}", &response_vu8[..].len());
+                println!("@zingoproxyd[nym]: response sent: {:?}", &response_vu8[..]);
+                println!(
+                    "@zingoproxyd[nym]: response length: {}",
+                    &response_vu8[..].len()
+                );
 
                 let return_recipient = AnonymousSenderTag::try_from_base58_string(
                     request_in[0].sender_tag.unwrap().to_base58_string(),

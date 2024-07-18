@@ -14,7 +14,7 @@ async fn main() {
     let online = Arc::new(AtomicBool::new(true));
     let online_ctrlc = online.clone();
     ctrlc::set_handler(move || {
-        println!("Received Ctrl+C, exiting.");
+        println!("@zingoproxyd: Received Ctrl+C, exiting.");
         online_ctrlc.store(false, Ordering::SeqCst);
         process::exit(0);
     })
@@ -22,12 +22,20 @@ async fn main() {
 
     nym_bin_common::logging::setup_logging();
 
+    #[allow(unused_mut)]
     let mut proxy_port: u16 = 8080;
     #[cfg(feature = "nym_poc")]
     {
         proxy_port = 8088;
     }
-    let lwd_port: u16 = 9067;
+
+    #[allow(unused_mut)]
+    let mut lwd_port: u16 = 9067;
+    #[cfg(feature = "nym_poc")]
+    {
+        lwd_port = 8080;
+    }
+
     let zcashd_port: u16 = 18232;
 
     let (_handles, _nym_address) = spawn_proxy(

@@ -3,6 +3,7 @@ name = "zingo-rpc"
 version = "0.1.0"
 authors = ["zingo@zingolabs.org"]
 edition = "2021"
+build = "build.rs"
 
 [features]
 test = []
@@ -10,8 +11,13 @@ test = []
 nym_poc = []
 
 [dependencies]
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git" }
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git" }
+
 zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
 zingo-netutils = { workspace = true }
+zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
 
 nym-sdk = { workspace = true }
 nym-sphinx-addressing = { workspace = true }
@@ -25,10 +31,26 @@ tonic = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
 http-body = { workspace = true }
+tower = { workspace = true }
+hyper-rustls = { workspace = true, features = ["http2"] }
+hyper = { workspace = true, features = ["full"] }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 
-tokio-rustls = "0.23.3"
-tower = { version = "0.4" }
-hyper-rustls = { version = "0.23", features = ["http2"] }
 webpki-roots = "0.21.0"
-hyper = { version = "0.14", features = ["full"] }
-rustls-pemfile = "1.0.0"
+serde = { version = "1.0.201", features = ["derive"] }
+hyper-tls = "0.5"
+hex = { version = "0.4.3", features = ["serde"] }
+
+# The preserve_order feature in serde_jsonn is a dependency of jsonrpc-core
+serde_json = { version = "1.0.117", features = ["preserve_order"] }
+jsonrpc-core = "18.0.0"
+
+indexmap = { version = "2.2.6", features = ["serde"] }
+base64 = "0.13.0"
+tokio-stream = "0.1"
+futures = "0.3.30"
+byteorder = "1"
+sha2 = "0.10"
+thiserror = "1.0.59"
+

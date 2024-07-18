@@ -1,4 +1,7 @@
 //! gRPC server implementation.
+//!
+//! TODO: - Add GrpcServerError error type and rewrite functions to return <Result<(), GrpcServerError>>, propagating internal errors.
+//!       - Add user and password as fields of ProxyClient and use here.
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
@@ -10,7 +13,7 @@ use std::{
 
 use http::Uri;
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zingo_rpc::primitives::ProxyClient;
+use zingo_rpc::{jsonrpc::connector::test_node_and_return_uri, primitives::ProxyClient};
 
 /// Configuration data for gRPC server.
 pub struct ProxyServer(pub ProxyClient);
@@ -25,7 +28,7 @@ impl ProxyServer {
         tokio::task::spawn(async move {
             let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
-            println!("GRPC server listening on: {sockaddr}");
+            println!("@zingoproxyd: gRPC server listening on: {sockaddr}");
 
             let server = tonic::transport::Server::builder()
                 .add_service(svc.clone())
@@ -37,12 +40,12 @@ impl ProxyServer {
                     match result {
                         Ok(_) => {
                             // TODO: Gracefully restart gRPC server.
-                            println!("gRPC Server closed early. Restart required");
+                            println!("@zingoproxyd: gRPC Server closed early. Restart required");
                             Ok(())
                             }
                         Err(e) => {
                             // TODO: restart server or set online to false and exit
-                            println!("gRPC Server closed with error: {}. Restart required", e);
+                            println!("@zingoproxyd: gRPC Server closed with error: {}. Restart required", e);
                             Err(e)
                             }
                     }
@@ -52,7 +55,7 @@ impl ProxyServer {
                         interval.tick().await;
                     }
                 } => {
-                    println!("gRPC server shutting down.");
+                    println!("@zingoproxyd: gRPC server shutting down.");
                     Ok(())
                 }
             }
@@ -82,12 +85,16 @@ pub async fn spawn_server(
         .path_and_query("/")
         .build()
         .unwrap();
-    let zebra_uri = Uri::builder()
-        .scheme("http")
-        .authority(format!("localhost:{zebrad_port}"))
-        .path_and_query("/")
-        .build()
-        .unwrap();
+
+    // TODO Add user and password as fields of ProxyClient and use here.
+    let zebra_uri = test_node_and_return_uri(
+        zebrad_port,
+        Some("xxxxxx".to_string()),
+        Some("xxxxxx".to_string()),
+    )
+    .await
+    .unwrap();
+
     let server = ProxyServer::new(lwd_uri, zebra_uri);
-    server.serve(proxy_port.clone(), online)
+    server.serve(*proxy_port, online)
 }
