@@ -1,56 +1,64 @@
 [package]
 name = "zingo-rpc"
 version = "0.1.0"
-authors = ["zingo@zingolabs.org"]
-edition = "2021"
-build = "build.rs"
+description = "Crate containing the Zingo-Proxy LightWallet server library."
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [features]
-test = []
 # NOTE: Deprecated
 nym_poc = []
 
 [dependencies]
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git" }
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git" }
-
-zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
+# ZingoLib
 zingo-netutils = { workspace = true }
-zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
 
+# LibRustZcash
+zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
+zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
+# zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", tag = "always_require_change" }
+
+# NymSdk
 nym-sdk = { workspace = true }
 nym-sphinx-addressing = { workspace = true }
 nym-validator-client = { workspace = true }
 nym-bin-common = { workspace = true }
 nym-sphinx-anonymous-replies = { workspace = true }
 
-http = { workspace = true }
+# ZebraD
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git" }
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git" }
+# zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", tag = "v1.8.0" }
+# zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", tag = "v1.8.0" }
+# zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", tag = "v1.8.0" }
+
+# Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
+http = { workspace = true }
 http-body = { workspace = true }
 tower = { workspace = true }
-hyper-rustls = { workspace = true, features = ["http2"] }
 hyper = { workspace = true, features = ["full"] }
+hyper-rustls = { workspace = true, features = ["http2"] }
 tokio-rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
+thiserror = { workspace = true }
 
-webpki-roots = "0.21.0"
-serde = { version = "1.0.201", features = ["derive"] }
-hyper-tls = "0.5"
-hex = { version = "0.4.3", features = ["serde"] }
-
-# The preserve_order feature in serde_jsonn is a dependency of jsonrpc-core
-serde_json = { version = "1.0.117", features = ["preserve_order"] }
+# Miscellaneous Crate
+serde_json = { version = "1.0.117", features = ["preserve_order"] } # { version = "1.0.120", features = ["preserve_order"] } # The preserve_order feature in serde_jsonn is a dependency of jsonrpc-core
 jsonrpc-core = "18.0.0"
-
+webpki-roots = "0.21.0" # "0.26.3"
+serde = { version = "1.0.201", features = ["derive"] } # { version = "1.0.204", features = ["derive"] }
+hyper-tls = "0.5" # "0.6"
+hex = { version = "0.4.3", features = ["serde"] }
 indexmap = { version = "2.2.6", features = ["serde"] }
-base64 = "0.13.0"
-tokio-stream = "0.1"
+base64 = "0.13.0" # "0.22.1"
+tokio-stream = "0.1" # "0.1.15"
 futures = "0.3.30"
-byteorder = "1"
-sha2 = "0.10"
-thiserror = "1.0.59"
-
+byteorder = "1" # "1.5"
+sha2 = "0.10" # "0.10.8"

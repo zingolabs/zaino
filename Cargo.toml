@@ -9,26 +9,47 @@ members = [
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
 resolver = "2"
 
-[workspace.dependencies]
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
-# TODO: Change dependency to stable once net-utils merges.
-zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+[workspace.package]
+authors = ["Zingolabs Viridian"]
+repository = "https://github.com/zingolabs"
+homepage = "https://www.zingolabs.org/"
+edition = "2021"
+license = "Apache-2.0"
 
+
+[workspace.dependencies]
+# ZingoLib
+zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+# zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "mob-release-1.4.2", package = "zingo-netutils" }
+
+
+# LibRustZcash
+zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
+# zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "always_require_change", features = ["lightwalletd-tonic"] }
+
+# NymSdk
 nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-validator-client = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
+# nym-sdk = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
+# nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
+# nym-validator-client = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
+# nym-bin-common = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
+# nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
 
-http = "0.2.4"
-tokio = { version = "1.37.0", features = ["full"] }
-tonic = "0.10.2"
-prost = "0.12"
-bytes = "1.1"
-http-body = "0.4.4"
-hyper = { version = "0.14.28", features = ["full"] }
-hyper-rustls = { version = "0.23", features = ["http2"] }
+# Miscellaneous
+tokio = { version = "1.37.0", features = ["full"] } # { version = "1.38.1", features = ["full"] }
+tonic = "0.10.2" # "0.12"
+prost = "0.12" # "0.13.1"
+bytes = "1.1" # "1.6.1"
+http = "0.2.4" # "1.1"
+http-body = "0.4.4" # "1.0.1"
 tower = { version = "0.4.13" }
-tokio-rustls = "0.23"
-rustls-pemfile = "1.0.0"
-
+hyper = { version = "0.14.28", features = ["full"] } # { version = "1.4.1", features = ["full"] }
+hyper-rustls = { version = "0.23", features = ["http2"] } # { version = "0.26", features = ["http2"] } # Locked by nym (zeroize = v1.6. Therefore rustls = v0.22)
+tokio-rustls = "0.23" # "0.25" # Locked by nym (zeroize = v1.6. Therefore rustls = v0.22)
+rustls-pemfile = "1.0.0" # "2.1.2"
+thiserror = "1.0.59" # "1.0.62"
+# subtle = "2.4.1" ####
