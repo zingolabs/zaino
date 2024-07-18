@@ -2873,22 +2873,9 @@ dependencies = [
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
- "hex 0.4.3",
- "http",
- "itertools 0.10.5",
- "json",
- "log",
- "orchard 0.8.0",
- "serde_json",
- "shardtree 0.3.1",
  "tokio",
- "zcash_address 0.3.0",
- "zcash_client_backend",
- "zcash_primitives 0.13.0 (git+https://github.com/zingolabs/librustzcash.git?branch=nym_integration)",
  "zingo-netutils",
- "zingo-proxyd",
  "zingo-rpc",
- "zingoconfig",
  "zingolib",
  "zingoproxy-testutils",
 ]
@@ -4597,36 +4584,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orchard"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0462569fc8b0d1b158e4d640571867a4e4319225ebee2ab6647e60c70af19ae3"
-dependencies = [
- "aes 0.8.4",
- "bitvec",
- "blake2b_simd",
- "ff 0.13.0",
- "fpe",
- "group 0.13.0",
- "halo2_gadgets",
- "halo2_proofs",
- "hex 0.4.3",
- "incrementalmerkletree",
- "lazy_static",
- "memuse",
- "nonempty",
- "pasta_curves",
- "rand 0.8.5",
- "reddsa",
- "serde",
- "subtle 2.4.1",
- "tracing",
- "zcash_note_encryption",
- "zcash_spec",
- "zip32",
-]
-
-[[package]]
 name = "ordered-float"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6128,18 +6085,6 @@ name = "shardtree"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c19f96dde3a8693874f7e7c53d95616569b4009379a903789efbd448f4ea9cc7"
-dependencies = [
- "bitflags 2.5.0",
- "either",
- "incrementalmerkletree",
- "tracing",
-]
-
-[[package]]
-name = "shardtree"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b3cdd24424ce0b381646737fedddc33c4dcf7dcd2d545056b53f7982097bef5"
 dependencies = [
  "bitflags 2.5.0",
  "either",
@@ -7949,7 +7894,7 @@ dependencies = [
  "prost",
  "rayon",
  "secrecy",
- "shardtree 0.1.0",
+ "shardtree",
  "subtle 2.4.1",
  "time",
  "tonic",
@@ -8680,7 +8625,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.9.9",
- "shardtree 0.1.0",
+ "shardtree",
  "sodiumoxide",
  "subtle 2.4.1",
  "tokio",

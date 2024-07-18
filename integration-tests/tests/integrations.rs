@@ -4,43 +4,43 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-use zingo_netutils::GrpcConnector;
 use zingolib::lightclient::LightClient;
 use zingoproxy_testutils::{drop_test_manager, TestManager};
 
 mod wallet_basic {
     use super::*;
 
-    #[tokio::test]
-    async fn connect_to_node_get_info() {
-        let online = Arc::new(AtomicBool::new(true));
-        let (test_manager, regtest_handler, _proxy_handler) =
-            TestManager::launch(online.clone()).await;
+    // TODO: update not using GrpcConnector(using zingolib::lightclient). removed to simplify dependency tree.
+    // #[tokio::test]
+    // async fn connect_to_node_get_info() {
+    //     let online = Arc::new(AtomicBool::new(true));
+    //     let (test_manager, regtest_handler, _proxy_handler) =
+    //         TestManager::launch(online.clone()).await;
 
-        println!(
-            "@zingoproxytest: Attempting to connect to GRPC server at URI: {}.",
-            test_manager.get_proxy_uri()
-        );
-        let mut client = GrpcConnector::new(test_manager.get_proxy_uri())
-            .get_client()
-            .await
-            .expect("Failed to create GRPC client");
-        let lightd_info = client
-            .get_lightd_info(zcash_client_backend::proto::service::Empty {})
-            .await
-            .expect("Failed to retrieve lightd info from GRPC server");
+    //     println!(
+    //         "@zingoproxytest: Attempting to connect to GRPC server at URI: {}.",
+    //         test_manager.get_proxy_uri()
+    //     );
+    //     let mut client = GrpcConnector::new(test_manager.get_proxy_uri())
+    //         .get_client()
+    //         .await
+    //         .expect("Failed to create GRPC client");
+    //     let lightd_info = client
+    //         .get_lightd_info(zcash_client_backend::proto::service::Empty {})
+    //         .await
+    //         .expect("Failed to retrieve lightd info from GRPC server");
 
-        println!(
-            "@zingoproxytest: Lightd_info response:\n{:#?}.",
-            lightd_info.into_inner()
-        );
-        drop_test_manager(
-            Some(test_manager.temp_conf_dir.path().to_path_buf()),
-            regtest_handler,
-            online,
-        )
-        .await;
-    }
+    //     println!(
+    //         "@zingoproxytest: Lightd_info response:\n{:#?}.",
+    //         lightd_info.into_inner()
+    //     );
+    //     drop_test_manager(
+    //         Some(test_manager.temp_conf_dir.path().to_path_buf()),
+    //         regtest_handler,
+    //         online,
+    //     )
+    //     .await;
+    // }
 
     #[tokio::test]
     async fn send_to_orchard() {

@@ -14,30 +14,11 @@ nym_poc = []
 
 [dependencies]
 zingoproxy-testutils = { path = "../zingoproxy-testutils" }
-zingo-proxyd = { path = "../zingo-proxyd" }
 zingo-rpc = { path = "../zingo-rpc" }
 
 # ZingoLib
 zingo-netutils = { workspace = true }
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration", features = ["test-features"] }
-zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
-# zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", tag = "mob-release-1.4.2", package = "zingoconfig" }
-# zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "mob-release-1.4.2", package = "zingolib" }
-
-# LibRustZcash
-zcash_client_backend = { workspace = true }
-zcash_primitives = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
-zcash_address = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
 
 # Miscellaneous Workspace
 tokio = { workspace = true }
-http = { workspace = true }
-
-# Miscellaneous Crate
-orchard = "0.8"
-shardtree = "0.3" # "0.3.1"
-json = "0.12.4"
-log = "0.4.17" # "0.4.22"
-itertools = "0.10.5" # "0.13"
-serde_json = "1.0.117" # "1.0.120"
-hex = "0.4" # "0.4.3"
