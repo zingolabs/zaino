@@ -224,10 +224,16 @@ impl CompactTxStreamer for ProxyClient {
             if start > end {
                 (start, end) = (end, start);
             }
+            println!(
+                "@zingoproxytest: Fetching blocks in range: {}-{}.",
+                start, end
+            );
             let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
             tokio::spawn(async move {
-                let timeout = timeout(std::time::Duration::from_secs(30), async {
+                // NOTE: This timeout is so slow due to the blockcache not being implemented. This should be reduced to 30s once functionality is in place.
+                let timeout = timeout(std::time::Duration::from_secs(120), async {
                     for height in (start..=end).rev() {
+                        println!("@zingoproxytest: Fetching block at height: {}.", height);
                         let compact_block = get_block_from_node(&zebrad_uri, &height).await;
                         match compact_block {
                             Ok(block) => {
@@ -252,7 +258,9 @@ impl CompactTxStreamer for ProxyClient {
                     Ok(_) => {}
                     Err(_) => {
                         channel_tx
-                            .send(Err(tonic::Status::internal("Request timed out")))
+                            .send(Err(tonic::Status::internal(
+                                "get_block_range gRPC request timed out",
+                            )))
                             .await
                             .ok();
                     }
@@ -495,7 +503,9 @@ impl CompactTxStreamer for ProxyClient {
                     Ok(_) => {}
                     Err(_) => {
                         channel_tx
-                            .send(Err(tonic::Status::internal("Request timed out")))
+                            .send(Err(tonic::Status::internal(
+                                "get_taddress_txids gRPC request timed out",
+                            )))
                             .await
                             .ok();
                     }
@@ -716,7 +726,9 @@ impl CompactTxStreamer for ProxyClient {
                     Ok(_) => {}
                     Err(_) => {
                         channel_tx
-                            .send(Err(tonic::Status::internal("Request timed out")))
+                            .send(Err(tonic::Status::internal(
+                                "get_mempool_stream gRPC request timed out",
+                            )))
                             .await
                             .ok();
                     }

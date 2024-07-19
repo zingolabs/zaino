@@ -180,6 +180,7 @@ fn set_custom_drops(
                 );
             }
         }
+        // Assures tests fail on secondary thread panics.
         assert!(false);
         std::process::exit(0);
     }));
@@ -204,6 +205,8 @@ fn set_custom_drops(
                     );
                 }
             }
+            // Assures tests fail on ctrlc exit.
+            assert!(false);
             std::process::exit(0);
         })
         .expect("Error setting Ctrl-C handler");

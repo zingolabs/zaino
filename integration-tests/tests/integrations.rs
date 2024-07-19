@@ -386,6 +386,8 @@ mod wallet_basic {
             .await
             .unwrap();
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
+
+        println!("@zingoproxytest: syncing full batch.");
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
