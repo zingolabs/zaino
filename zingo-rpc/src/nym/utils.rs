@@ -1,7 +1,7 @@
 //! Utility functions for Nym-Proxy
 
+use crate::blockcache::utils::CompactSize;
 use std::io::Cursor;
-use zcash_encoding::CompactSize;
 
 use crate::blockcache::utils::{read_bytes, ParseError};
 

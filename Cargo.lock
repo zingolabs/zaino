@@ -8480,7 +8480,6 @@ dependencies = [
  "tonic",
  "tower",
  "zcash_client_backend",
- "zcash_encoding 0.2.0 (git+https://github.com/zingolabs/librustzcash.git?branch=nym_integration)",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",

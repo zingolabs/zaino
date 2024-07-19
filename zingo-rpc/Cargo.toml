@@ -14,9 +14,6 @@ nym_poc = []
 [dependencies]
 # LibRustZcash
 zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
-# Zcash_encoding is only required for CompactSize read/write functionality, this could be moved into zingo-rpx::blockcache::utils.rs to simplify dependency tree.
-zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
-# zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", tag = "always_require_change" }
 
 # NymSdk
 nym-sdk = { workspace = true }

@@ -1,13 +1,12 @@
 //! Transaction fetching and deserialization functionality.
 
 use crate::blockcache::utils::{
-    read_bytes, read_u32, read_u64, skip_bytes, ParseError, ParseFromSlice,
+    read_bytes, read_u32, read_u64, skip_bytes, CompactSize, ParseError, ParseFromSlice,
 };
 use std::io::Cursor;
 use zcash_client_backend::proto::compact_formats::{
     CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
 };
-use zcash_encoding::CompactSize;
 
 /// Txin format as described in https://en.bitcoin.it/wiki/Transaction
 #[derive(Debug)]

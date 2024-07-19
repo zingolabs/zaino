@@ -1,7 +1,7 @@
 //! Blockcache utility functionality.
 
-use byteorder::{LittleEndian, ReadBytesExt};
-use std::io::{Cursor, Read};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::io::{self, Cursor, Read, Write};
 
 use crate::jsonrpc::connector::JsonRpcConnectorError;
 
@@ -130,6 +130,90 @@ pub fn read_zcash_script_i64(cursor: &mut Cursor<&[u8]>) -> Result<i64, ParseErr
                 .rev()
                 .fold(0, |acc, &byte| (acc << 8) | u64::from(byte));
             Ok(number as i64)
+        }
+    }
+}
+
+/// Zcash CompactSize implementation taken from LibRustZcash::zcash_encoding to simplify dependency tree.
+///
+/// Namespace for functions for compact encoding of integers.
+///
+/// This codec requires integers to be in the range `0x0..=0x02000000`, for compatibility
+/// with Zcash consensus rules.
+pub struct CompactSize;
+
+/// The maximum allowed value representable as a `[CompactSize]`
+pub const MAX_COMPACT_SIZE: u32 = 0x02000000;
+
+impl CompactSize {
+    /// Reads an integer encoded in compact form.
+    pub fn read<R: Read>(mut reader: R) -> io::Result<u64> {
+        let flag = reader.read_u8()?;
+        let result = if flag < 253 {
+            Ok(flag as u64)
+        } else if flag == 253 {
+            match reader.read_u16::<LittleEndian>()? {
+                n if n < 253 => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "non-canonical CompactSize",
+                )),
+                n => Ok(n as u64),
+            }
+        } else if flag == 254 {
+            match reader.read_u32::<LittleEndian>()? {
+                n if n < 0x10000 => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "non-canonical CompactSize",
+                )),
+                n => Ok(n as u64),
+            }
+        } else {
+            match reader.read_u64::<LittleEndian>()? {
+                n if n < 0x100000000 => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "non-canonical CompactSize",
+                )),
+                n => Ok(n),
+            }
+        }?;
+
+        match result {
+            s if s > <u64>::from(MAX_COMPACT_SIZE) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CompactSize too large",
+            )),
+            s => Ok(s),
+        }
+    }
+
+    /// Reads an integer encoded in contact form and performs checked conversion
+    /// to the target type.
+    pub fn read_t<R: Read, T: TryFrom<u64>>(mut reader: R) -> io::Result<T> {
+        let n = Self::read(&mut reader)?;
+        <T>::try_from(n).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CompactSize value exceeds range of target type.",
+            )
+        })
+    }
+
+    /// Writes the provided `usize` value to the provided Writer in compact form.
+    pub fn write<W: Write>(mut writer: W, size: usize) -> io::Result<()> {
+        match size {
+            s if s < 253 => writer.write_u8(s as u8),
+            s if s <= 0xFFFF => {
+                writer.write_u8(253)?;
+                writer.write_u16::<LittleEndian>(s as u16)
+            }
+            s if s <= 0xFFFFFFFF => {
+                writer.write_u8(254)?;
+                writer.write_u32::<LittleEndian>(s as u32)
+            }
+            s => {
+                writer.write_u8(255)?;
+                writer.write_u64::<LittleEndian>(s as u64)
+            }
         }
     }
 }

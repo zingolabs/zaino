@@ -1,6 +1,6 @@
 //! Utility functions for wallet side nym code.
 
-use zcash_encoding::CompactSize;
+use crate::blockcache::utils::CompactSize;
 
 use crate::blockcache::utils::ParseError;
 

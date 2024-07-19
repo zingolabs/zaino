@@ -5,7 +5,7 @@ use crate::{
         transaction::FullTransaction,
         utils::{
             display_txids_to_server, read_bytes, read_i32, read_u32, read_zcash_script_i64,
-            ParseError, ParseFromSlice,
+            CompactSize, ParseError, ParseFromSlice,
         },
     },
     jsonrpc::{connector::JsonRpcConnector, primitives::GetBlockResponse},
@@ -13,7 +13,6 @@ use crate::{
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use zcash_client_backend::proto::compact_formats::{ChainMetadata, CompactBlock};
-use zcash_encoding::CompactSize;
 
 /// A block header, containing metadata about a block.
 ///
