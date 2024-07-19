@@ -12,19 +12,15 @@ repository = { workspace = true }
 nym_poc = []
 
 [dependencies]
-# ZingoLib
-zingo-netutils = { workspace = true }
-
 # LibRustZcash
 zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
+# Zcash_encoding is only required for CompactSize read/write functionality, this could be moved into zingo-rpx::blockcache::utils.rs to simplify dependency tree.
 zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration" }
 # zcash_encoding = { git = "https://github.com/zingolabs/librustzcash.git", tag = "always_require_change" }
 
 # NymSdk
 nym-sdk = { workspace = true }
 nym-sphinx-addressing = { workspace = true }
-nym-validator-client = { workspace = true }
-nym-bin-common = { workspace = true }
 nym-sphinx-anonymous-replies = { workspace = true }
 
 # ZebraD
@@ -38,21 +34,16 @@ zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git" }
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
-prost = { workspace = true }
-bytes = { workspace = true }
 http = { workspace = true }
-http-body = { workspace = true }
-tower = { workspace = true }
-hyper = { workspace = true, features = ["full"] }
-hyper-rustls = { workspace = true, features = ["http2"] }
-tokio-rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
 thiserror = { workspace = true }
 
 # Miscellaneous Crate
+prost = "0.12" # "0.13.1"
+bytes = "1.1" # "1.6.1"
+http-body = "0.4.4" # "1.0.1"
+tower = { version = "0.4.13" }
+hyper = { version = "0.14.28", features = ["full"] } # { version = "1.4.1", features = ["full"] }
 serde_json = { version = "1.0.117", features = ["preserve_order"] } # { version = "1.0.120", features = ["preserve_order"] } # The preserve_order feature in serde_jsonn is a dependency of jsonrpc-core
-jsonrpc-core = "18.0.0"
-webpki-roots = "0.21.0" # "0.26.3"
 serde = { version = "1.0.201", features = ["derive"] } # { version = "1.0.204", features = ["derive"] }
 hyper-tls = "0.5" # "0.6"
 hex = { version = "0.4.3", features = ["serde"] }

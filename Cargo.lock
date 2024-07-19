@@ -2872,9 +2872,6 @@ name = "integration-tests"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "zingo-netutils",
- "zingo-rpc",
- "zingolib",
  "zingoproxy-testutils",
 ]
 
@@ -6802,18 +6799,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-socks"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51165dfa029d2a65969413a6cc96f354b86b464498702f174a4efa13608fd8c0"
-dependencies = [
- "either",
- "futures-util",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "tokio-stream"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8457,27 +8442,14 @@ dependencies = [
 name = "zingo-proxyd"
 version = "0.1.0"
 dependencies = [
- "bytes 1.6.0",
  "ctrlc",
  "http",
- "http-body",
- "hyper",
- "hyper-rustls 0.23.2",
  "nym-bin-common",
  "nym-sdk",
- "nym-sphinx-addressing",
  "nym-sphinx-anonymous-replies",
- "nym-validator-client",
- "prost",
- "rustls-pemfile",
  "tokio",
- "tokio-rustls 0.23.4",
- "tokio-socks",
  "tonic",
- "tower",
- "webpki-roots 0.21.1",
  "zcash_client_backend",
- "zingo-netutils",
  "zingo-rpc",
 ]
 
@@ -8493,33 +8465,25 @@ dependencies = [
  "http",
  "http-body",
  "hyper",
- "hyper-rustls 0.23.2",
  "hyper-tls",
  "indexmap 2.2.6",
- "jsonrpc-core",
- "nym-bin-common",
  "nym-sdk",
  "nym-sphinx-addressing",
  "nym-sphinx-anonymous-replies",
- "nym-validator-client",
  "prost",
- "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2 0.10.8",
  "thiserror",
  "tokio",
- "tokio-rustls 0.23.4",
  "tokio-stream",
  "tonic",
  "tower",
- "webpki-roots 0.21.1",
  "zcash_client_backend",
  "zcash_encoding 0.2.0 (git+https://github.com/zingolabs/librustzcash.git?branch=nym_integration)",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
- "zingo-netutils",
 ]
 
 [[package]]

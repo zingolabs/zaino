@@ -11,11 +11,8 @@ use std::sync::{
 
 use nym_sdk::mixnet::{MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
-// use prost::Message;
-// use zcash_client_backend::proto::service::RawTransaction;
 
 use zingo_rpc::{
-    jsonrpc::connector::test_node_and_return_uri,
     primitives::{NymClient, ProxyClient},
     queue::request::ZingoProxyRequest,
 };
@@ -41,7 +38,6 @@ impl NymServer {
             // NOTE: the following should be removed with the addition of the queue and worker pool.
             let lwd_port = 8080;
             let zebrad_port = 18232;
-            println!("@zingoproxyd[nym]: Launching temporary proxy client..");
             let proxy_client = ProxyClient {
                 lightwalletd_uri: http::Uri::builder()
                     .scheme("http")
@@ -55,13 +51,6 @@ impl NymServer {
                     .path_and_query("/")
                     .build()
                     .unwrap(),
-                // zebrad_uri: test_node_and_return_uri(
-                //     &zebrad_port,
-                //     Some("xxxxxx".to_string()),
-                //     Some("xxxxxx".to_string()),
-                // )
-                // .await
-                // .unwrap(),
                 online: self.online.clone(),
             };
             while self.online.load(Ordering::SeqCst) {

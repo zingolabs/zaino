@@ -4,8 +4,9 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-use zingolib::lightclient::LightClient;
-use zingoproxy_testutils::{drop_test_manager, TestManager};
+use zingoproxy_testutils::{
+    drop_test_manager, get_zingo_address, start_zingo_mempool_monitor, ProxyPool, TestManager,
+};
 
 mod wallet_basic {
     use super::*;
@@ -53,7 +54,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "unified"),
+                &get_zingo_address(&zingo_client, "unified").await,
                 250_000,
                 None,
             )])
@@ -85,7 +86,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "sapling"),
+                &get_zingo_address(&zingo_client, "sapling").await,
                 250_000,
                 None,
             )])
@@ -117,7 +118,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "transparent"),
+                &get_zingo_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
             )])
@@ -149,7 +150,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "unified"),
+                &get_zingo_address(&zingo_client, "unified").await,
                 250_000,
                 None,
             )])
@@ -157,7 +158,7 @@ mod wallet_basic {
             .unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "sapling"),
+                &get_zingo_address(&zingo_client, "sapling").await,
                 250_000,
                 None,
             )])
@@ -165,7 +166,7 @@ mod wallet_basic {
             .unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "transparent"),
+                &get_zingo_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
             )])
@@ -199,7 +200,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "sapling"),
+                &get_zingo_address(&zingo_client, "sapling").await,
                 250_000,
                 None,
             )])
@@ -213,13 +214,7 @@ mod wallet_basic {
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
 
         zingo_client
-            .do_shield(
-                &[
-                    zingolib::wallet::Pool::Sapling,
-                    // zingolib::wallet::Pool::Transparent,
-                ],
-                None,
-            )
+            .do_shield(&[ProxyPool::Sapling.into()], None)
             .await
             .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
@@ -249,7 +244,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "transparent"),
+                &get_zingo_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
             )])
@@ -263,13 +258,7 @@ mod wallet_basic {
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
         zingo_client
-            .do_shield(
-                &[
-                    // zingolib::wallet::Pool::Sapling,
-                    zingolib::wallet::Pool::Transparent,
-                ],
-                None,
-            )
+            .do_shield(&[ProxyPool::Transparent.into()], None)
             .await
             .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
@@ -299,7 +288,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "sapling"),
+                &get_zingo_address(&zingo_client, "sapling").await,
                 250_000,
                 None,
             )])
@@ -307,7 +296,7 @@ mod wallet_basic {
             .unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "transparent"),
+                &get_zingo_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
             )])
@@ -323,10 +312,7 @@ mod wallet_basic {
 
         zingo_client
             .do_shield(
-                &[
-                    zingolib::wallet::Pool::Sapling,
-                    zingolib::wallet::Pool::Transparent,
-                ],
+                &[ProxyPool::Sapling.into(), ProxyPool::Transparent.into()],
                 None,
             )
             .await
@@ -361,7 +347,7 @@ mod wallet_basic {
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "unified"),
+                &get_zingo_address(&zingo_client, "unified").await,
                 250_000,
                 None,
             )])
@@ -370,7 +356,7 @@ mod wallet_basic {
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "sapling"),
+                &get_zingo_address(&zingo_client, "sapling").await,
                 250_000,
                 None,
             )])
@@ -379,7 +365,7 @@ mod wallet_basic {
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "transparent"),
+                &get_zingo_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
             )])
@@ -415,7 +401,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "sapling"),
+                &get_zingo_address(&zingo_client, "sapling").await,
                 250_000,
                 None,
             )])
@@ -423,25 +409,14 @@ mod wallet_basic {
             .unwrap();
         zingo_client
             .do_send(vec![(
-                &zingolib::get_base_address!(zingo_client, "sapling"),
+                &get_zingo_address(&zingo_client, "sapling").await,
                 250_000,
                 None,
             )])
             .await
             .unwrap();
 
-        let zingo_client_saved = zingo_client.export_save_buffer_async().await.unwrap();
-        let zingo_client_loaded = std::sync::Arc::new(
-            LightClient::read_wallet_from_buffer_async(
-                zingo_client.config(),
-                &zingo_client_saved[..],
-            )
-            .await
-            .unwrap(),
-        );
-        LightClient::start_mempool_monitor(zingo_client_loaded.clone());
-        // This seems to be long enough for the mempool monitor to kick in.
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        start_zingo_mempool_monitor(&zingo_client).await;
 
         let balance = zingo_client.do_balance().await;
         println!("@zingoproxytest: zingo_client balance: \n{:#?}.", balance);
@@ -464,8 +439,4 @@ mod wallet_basic {
 
 mod nym {
     // TODO: Build nym enhanced zingolib version using zingo-rpc::walletrpc::service.
-}
-
-mod darkside {
-    // TODO: Add darkside.
 }

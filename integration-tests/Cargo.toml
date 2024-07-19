@@ -14,11 +14,6 @@ nym_poc = []
 
 [dependencies]
 zingoproxy-testutils = { path = "../zingoproxy-testutils" }
-zingo-rpc = { path = "../zingo-rpc" }
-
-# ZingoLib
-zingo-netutils = { workspace = true }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration", features = ["test-features"] }
 
 # Miscellaneous Workspace
 tokio = { workspace = true }
