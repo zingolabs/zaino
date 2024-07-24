@@ -7,7 +7,7 @@ use nym_sdk::mixnet::{
 };
 use std::path::PathBuf;
 
-use crate::primitives::NymClient;
+use crate::primitives::client::NymClient;
 
 impl NymClient {
     /// Spawns a nym client and connects to the mixnet.

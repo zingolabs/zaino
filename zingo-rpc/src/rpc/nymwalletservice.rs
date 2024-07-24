@@ -4,19 +4,20 @@
 
 use std::env;
 use tonic::{async_trait, Request, Response, Status};
-use zcash_client_backend::proto::{
-    compact_formats::{CompactBlock, CompactTx},
-    service::{
-        compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
-        BlockRange, ChainSpec, Empty, Exclude, GetAddressUtxosArg, GetAddressUtxosReply,
-        GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
-    },
-};
 
 use crate::{
     define_grpc_passthrough,
     primitives::{NymClient, ProxyClient},
+    proto::{
+        compact_formats::{CompactBlock, CompactTx},
+        service::{
+            compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
+            BlockRange, ChainSpec, Duration, Empty, Exclude, GetAddressUtxosArg,
+            GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo,
+            PingResponse, RawTransaction, SendResponse, SubtreeRoot, TransparentAddressBlockFilter,
+            TreeState, TxFilter,
+        },
+    },
     walletrpc::utils::{deserialize_response, serialize_request, write_nym_request_data},
 };
 
@@ -247,7 +248,7 @@ impl CompactTxStreamer for ProxyClient {
     define_grpc_passthrough!(
         fn ping(
             &self,
-            request: tonic::Request<zcash_client_backend::proto::service::Duration>,
+            request: tonic::Request<Duration>,
         ) -> PingResponse
     );
 

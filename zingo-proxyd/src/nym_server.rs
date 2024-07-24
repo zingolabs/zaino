@@ -13,7 +13,7 @@ use nym_sdk::mixnet::{MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 
 use zingo_rpc::{
-    primitives::{NymClient, ProxyClient},
+    primitives::client::{NymClient, ProxyClient},
     queue::request::ZingoProxyRequest,
 };
 

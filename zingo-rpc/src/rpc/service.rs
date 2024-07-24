@@ -3,13 +3,6 @@
 use hex::FromHex;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
-use zcash_client_backend::proto::{
-    compact_formats::{CompactBlock, CompactTx},
-    service::{
-        compact_tx_streamer_server::CompactTxStreamer, Address, Balance, BlockId, Empty,
-        GetAddressUtxosReply, LightdInfo, RawTransaction, SubtreeRoot,
-    },
-};
 use zebra_chain::block::Height;
 
 use crate::{
@@ -18,7 +11,17 @@ use crate::{
         connector::JsonRpcConnector,
         primitives::{GetTransactionResponse, ProxyConsensusBranchIdHex},
     },
-    primitives::ProxyClient,
+    primitives::client::ProxyClient,
+    proto::{
+        compact_formats::{CompactBlock, CompactTx},
+        service::{
+            compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
+            BlockRange, ChainSpec, Duration, Empty, Exclude, GetAddressUtxosArg,
+            GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo,
+            PingResponse, RawTransaction, SendResponse, SubtreeRoot, TransparentAddressBlockFilter,
+            TreeState, TxFilter,
+        },
+    },
     utils::get_build_info,
 };
 
@@ -88,14 +91,11 @@ impl CompactTxStreamer for ProxyClient {
     /// Return the height of the tip of the best chain.
     fn get_latest_block<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::ChainSpec>,
+        _request: tonic::Request<ChainSpec>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::BlockId>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<BlockId>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -133,14 +133,11 @@ impl CompactTxStreamer for ProxyClient {
     /// TODO: This RPC should be implemented alongside the block cache.
     fn get_block<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::BlockId>,
+        _request: tonic::Request<BlockId>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::compact_formats::CompactBlock>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<CompactBlock>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -161,14 +158,11 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn get_block_nullifiers<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::BlockId>,
+        _request: tonic::Request<BlockId>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::compact_formats::CompactBlock>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<CompactBlock>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -193,7 +187,7 @@ impl CompactTxStreamer for ProxyClient {
     ///       - add get_block function that queries the block cache for block and calls get_block_from_node to fetch block if not present.
     fn get_block_range<'life0, 'async_trait>(
         &'life0 self,
-        request: tonic::Request<zcash_client_backend::proto::service::BlockRange>,
+        request: tonic::Request<BlockRange>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
@@ -282,7 +276,7 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn get_block_range_nullifiers<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::BlockRange>,
+        _request: tonic::Request<BlockRange>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
@@ -307,14 +301,11 @@ impl CompactTxStreamer for ProxyClient {
     /// Return the requested full (not compact) transaction (as from zcashd).
     fn get_transaction<'life0, 'async_trait>(
         &'life0 self,
-        request: tonic::Request<zcash_client_backend::proto::service::TxFilter>,
+        request: tonic::Request<TxFilter>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::RawTransaction>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<RawTransaction>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -350,12 +341,10 @@ impl CompactTxStreamer for ProxyClient {
                     )
                 })?;
 
-                Ok(tonic::Response::new(
-                    zcash_client_backend::proto::service::RawTransaction {
-                        data: hex.bytes,
-                        height,
-                    },
-                ))
+                Ok(tonic::Response::new(RawTransaction {
+                    data: hex.bytes,
+                    height,
+                }))
             } else {
                 Err(tonic::Status::invalid_argument(
                     "Transaction hash incorrect",
@@ -367,14 +356,11 @@ impl CompactTxStreamer for ProxyClient {
     /// Submit the given transaction to the Zcash network.
     fn send_transaction<'life0, 'async_trait>(
         &'life0 self,
-        request: tonic::Request<zcash_client_backend::proto::service::RawTransaction>,
+        request: tonic::Request<RawTransaction>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::SendResponse>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<SendResponse>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -396,12 +382,10 @@ impl CompactTxStreamer for ProxyClient {
             .await
             .map_err(|e| e.to_grpc_status())?;
 
-            Ok(tonic::Response::new(
-                zcash_client_backend::proto::service::SendResponse {
-                    error_code: 0,
-                    error_message: tx_output.0.to_string(),
-                },
-            ))
+            Ok(tonic::Response::new(SendResponse {
+                error_code: 0,
+                error_message: tx_output.0.to_string(),
+            }))
         })
     }
 
@@ -412,9 +396,7 @@ impl CompactTxStreamer for ProxyClient {
     /// This name is misleading, returns the full transactions that have either inputs or outputs connected to the given transparent address.
     fn get_taddress_txids<'life0, 'async_trait>(
         &'life0 self,
-        request: tonic::Request<
-            zcash_client_backend::proto::service::TransparentAddressBlockFilter,
-        >,
+        request: tonic::Request<TransparentAddressBlockFilter>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
@@ -521,14 +503,11 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn get_taddress_balance<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::AddressList>,
+        _request: tonic::Request<AddressList>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::Balance>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<Balance>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -585,7 +564,7 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn get_mempool_tx<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::Exclude>,
+        _request: tonic::Request<Exclude>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
@@ -746,14 +725,11 @@ impl CompactTxStreamer for ProxyClient {
     /// The block can be specified by either height or hash.
     fn get_tree_state<'life0, 'async_trait>(
         &'life0 self,
-        request: tonic::Request<zcash_client_backend::proto::service::BlockId>,
+        request: tonic::Request<BlockId>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::TreeState>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<TreeState>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -788,16 +764,14 @@ impl CompactTxStreamer for ProxyClient {
                 .get_treestate(hash_or_height)
                 .await
                 .map_err(|e| e.to_grpc_status())?;
-            Ok(tonic::Response::new(
-                zcash_client_backend::proto::service::TreeState {
-                    network: chain,
-                    height: treestate.height as u64,
-                    hash: treestate.hash.to_string(),
-                    time: treestate.time,
-                    sapling_tree: treestate.sapling.commitments.final_state.to_string(),
-                    orchard_tree: treestate.orchard.commitments.final_state.to_string(),
-                },
-            ))
+            Ok(tonic::Response::new(TreeState {
+                network: chain,
+                height: treestate.height as u64,
+                hash: treestate.hash.to_string(),
+                time: treestate.time,
+                sapling_tree: treestate.sapling.commitments.final_state.to_string(),
+                orchard_tree: treestate.orchard.commitments.final_state.to_string(),
+            }))
         })
     }
 
@@ -809,10 +783,7 @@ impl CompactTxStreamer for ProxyClient {
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::TreeState>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<TreeState>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -838,7 +809,7 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn get_subtree_roots<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::GetSubtreeRootsArg>,
+        _request: tonic::Request<GetSubtreeRootsArg>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
@@ -864,14 +835,12 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn get_address_utxos<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::GetAddressUtxosArg>,
+        _request: tonic::Request<GetAddressUtxosArg>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
                     Output = std::result::Result<
-                        tonic::Response<
-                            zcash_client_backend::proto::service::GetAddressUtxosReplyList,
-                        >,
+                        tonic::Response<GetAddressUtxosReplyList>,
                         tonic::Status,
                     >,
                 > + core::marker::Send
@@ -896,7 +865,7 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn get_address_utxos_stream<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::GetAddressUtxosArg>,
+        _request: tonic::Request<GetAddressUtxosArg>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
@@ -925,10 +894,7 @@ impl CompactTxStreamer for ProxyClient {
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::LightdInfo>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<LightdInfo>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,
@@ -1000,14 +966,11 @@ impl CompactTxStreamer for ProxyClient {
     /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
     fn ping<'life0, 'async_trait>(
         &'life0 self,
-        _request: tonic::Request<zcash_client_backend::proto::service::Duration>,
+        _request: tonic::Request<Duration>,
     ) -> core::pin::Pin<
         Box<
             dyn core::future::Future<
-                    Output = std::result::Result<
-                        tonic::Response<zcash_client_backend::proto::service::PingResponse>,
-                        tonic::Status,
-                    >,
+                    Output = std::result::Result<tonic::Response<PingResponse>, tonic::Status>,
                 > + core::marker::Send
                 + 'async_trait,
         >,

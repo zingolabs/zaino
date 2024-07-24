@@ -22,9 +22,6 @@ nym_poc = []
 [dependencies]
 zingo-rpc = { path = "../zingo-rpc" }
 
-# LibRustZcash
-zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
-
 # NymSdk
 nym-sdk = { workspace = true }
 nym-bin-common = { workspace = true }

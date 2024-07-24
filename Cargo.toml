@@ -18,10 +18,6 @@ license = "Apache-2.0"
 
 
 [workspace.dependencies]
-# LibRustZcash
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"] }
-# zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "always_require_change", features = ["lightwalletd-tonic"] }
-
 # NymSdk
 nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
@@ -37,3 +33,7 @@ tokio = { version = "1.37.0", features = ["full"] } # { version = "1.38.1", feat
 tonic = "0.10.2" # "0.12"
 http = "0.2.4" # "1.1"
 thiserror = "1.0.59" # "1.0.62"
+
+# [patch.crates-io]
+# incrementalmerkletree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "337f59179eda51261e9ddfc6b18e8fb84ea277c9" }
+# shardtree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "337f59179eda51261e9ddfc6b18e8fb84ea277c9" }

@@ -9,10 +9,10 @@ use crate::{
         },
     },
     jsonrpc::{connector::JsonRpcConnector, primitives::GetBlockResponse},
+    proto::compact_formats::{ChainMetadata, CompactBlock},
 };
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
-use zcash_client_backend::proto::compact_formats::{ChainMetadata, CompactBlock};
 
 /// A block header, containing metadata about a block.
 ///

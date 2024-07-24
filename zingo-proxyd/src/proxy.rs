@@ -4,8 +4,10 @@
 //!       - Update spawn_server and nym_spawn to return <Result<(), GrpcServerError>> and <Result<(), NymServerError>> and use here.
 
 use crate::{nym_server::NymServer, server::spawn_grpc_server};
-use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zingo_rpc::jsonrpc::connector::test_node_and_return_uri;
+use zingo_rpc::{
+    jsonrpc::connector::test_node_and_return_uri,
+    proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, Empty},
+};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -90,12 +92,7 @@ async fn wait_on_grpc_startup(proxy_port: &u16, online: Arc<AtomicBool>) {
     interval.tick().await;
     while attempts < 3 {
         match CompactTxStreamerClient::connect(proxy_uri.clone()).await {
-            Ok(mut client) => match client
-                .get_lightd_info(tonic::Request::new(
-                    zcash_client_backend::proto::service::Empty {},
-                ))
-                .await
-            {
+            Ok(mut client) => match client.get_lightd_info(tonic::Request::new(Empty {})).await {
                 Ok(_) => {
                     return;
                 }
