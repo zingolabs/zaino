@@ -17,14 +17,6 @@ nym-sdk = { workspace = true }
 nym-sphinx-addressing = { workspace = true }
 nym-sphinx-anonymous-replies = { workspace = true }
 
-# ZebraD
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git" }
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git" }
-# zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", tag = "v1.8.0" }
-# zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", tag = "v1.8.0" }
-# zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", tag = "v1.8.0" }
-
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }

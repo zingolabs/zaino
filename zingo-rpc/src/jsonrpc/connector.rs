@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use super::primitives::{
+use crate::jsonrpc::primitives::{
     BestBlockHashResponse, GetBalanceResponse, GetBlockResponse, GetBlockchainInfoResponse,
     GetInfoResponse, GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse,
     GetUtxosResponse, SendTransactionResponse, TxidsResponse,
@@ -152,8 +152,8 @@ impl JsonRpcConnector {
                 request_builder =
                     request_builder.header("Authorization", format!("Basic {}", auth));
             }
-            let request_body = serde_json::to_string(&req)
-                .map_err(JsonRpcConnectorError::SerdeJsonError)?;
+            let request_body =
+                serde_json::to_string(&req).map_err(JsonRpcConnectorError::SerdeJsonError)?;
             let request = request_builder
                 .body(Body::from(request_body))
                 .map_err(JsonRpcConnectorError::HttpError)?;

@@ -3,15 +3,15 @@
 use hex::FromHex;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
-use zebra_chain::block::Height;
 
 use crate::{
     blockcache::{block::get_block_from_node, mempool::Mempool},
-    jsonrpc::{
-        connector::JsonRpcConnector,
-        primitives::{GetTransactionResponse, ProxyConsensusBranchIdHex},
+    jsonrpc::{connector::JsonRpcConnector, primitives::GetTransactionResponse},
+    primitives::{
+        chain::{ConsensusBranchId, ConsensusBranchIdHex},
+        client::ProxyClient,
+        height::ChainHeight,
     },
-    primitives::client::ProxyClient,
     proto::{
         compact_formats::{CompactBlock, CompactTx},
         service::{
@@ -924,19 +924,19 @@ impl CompactTxStreamer for ProxyClient {
                 .map_err(|e| e.to_grpc_status())?;
 
             let sapling_id_str = "76b809bb";
-            let sapling_id = ProxyConsensusBranchIdHex(
-                zebra_chain::parameters::ConsensusBranchId::from_hex(sapling_id_str).map_err(
-                    |_e| {
-                        tonic::Status::internal(
-                            "Internal Error - Consesnsus Branch ID hex conversion failed",
-                        )
-                    },
-                )?,
+            let sapling_id = ConsensusBranchIdHex(
+                ConsensusBranchId::from_hex(sapling_id_str).map_err(|_e| {
+                    tonic::Status::internal(
+                        "Internal Error - Consesnsus Branch ID hex conversion failed",
+                    )
+                })?,
             );
             let sapling_height = blockchain_info
                 .upgrades
                 .get(&sapling_id)
-                .map_or(Height(1), |sapling_json| sapling_json.activation_height);
+                .map_or(ChainHeight(1), |sapling_json| {
+                    sapling_json.activation_height
+                });
 
             let build_info = get_build_info();
 
