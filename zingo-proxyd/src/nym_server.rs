@@ -81,7 +81,8 @@ impl NymServer {
                 .unwrap();
                 // --- build ZingoProxyRequest
                 let zingo_proxy_request =
-                    ZingoProxyRequest::new_from_nym(return_recipient, request_vu8.as_ref());
+                    ZingoProxyRequest::new_from_nym(return_recipient, request_vu8.as_ref())
+                        .unwrap();
 
                 // print request for testing
                 // println!(
@@ -117,7 +118,7 @@ impl NymServer {
 
     /// Returns a new NymServer Inatanse
     pub async fn new(nym_conf_path: &str, online: Arc<AtomicBool>) -> Self {
-        let nym_client = NymClient::nym_spawn(nym_conf_path).await;
+        let nym_client = NymClient::nym_spawn(nym_conf_path).await.unwrap();
         let nym_addr = nym_client.0.nym_address().to_string();
         NymServer {
             nym_client,

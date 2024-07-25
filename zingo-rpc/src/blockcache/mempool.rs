@@ -4,7 +4,7 @@ use std::{collections::HashSet, time::SystemTime};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    jsonrpc::connector::{JsonRpcConnector, JsonRpcConnectorError},
+    blockcache::error::MempoolError, jsonrpc::connector::JsonRpcConnector,
     primitives::block::BlockHash,
 };
 
@@ -18,14 +18,6 @@ pub struct Mempool {
     last_sync_time: Mutex<SystemTime>,
     /// Blockchain data, used to check when a new block has been mined.
     best_block_hash: RwLock<Option<BlockHash>>,
-}
-
-/// Mempool Error struct.
-#[derive(thiserror::Error, Debug)]
-pub enum MempoolError {
-    /// Errors from the JsonRPC client.
-    #[error("JsonRPC Connector Error: {0}")]
-    JsonRpcError(#[from] JsonRpcConnectorError),
 }
 
 impl Default for Mempool {

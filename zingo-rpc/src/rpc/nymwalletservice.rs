@@ -87,11 +87,10 @@ impl CompactTxStreamer for ProxyClient {
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
-        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
         let response_data = client
             .nym_forward(recipient_address.as_str(), nym_request)
-            .await
-            .unwrap();
+            .await?;
         client.nym_close().await;
         // -- deserialize SendResponse
         let response: SendResponse = match deserialize_response(response_data.as_slice()).await {
@@ -226,11 +225,10 @@ impl CompactTxStreamer for ProxyClient {
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
-        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
         let response_data = client
             .nym_forward(recipient_address.as_str(), nym_request)
-            .await
-            .unwrap();
+            .await?;
         client.nym_close().await;
         // -- deserialize LightdInfo
         let response: LightdInfo = match deserialize_response(response_data.as_slice()).await {

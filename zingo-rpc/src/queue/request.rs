@@ -5,18 +5,7 @@ use std::time::SystemTime;
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 use tonic::metadata::MetadataMap;
 
-use crate::nym::utils::read_nym_request_data;
-
-/// Zingo-Proxy request errors.
-#[derive(Debug, thiserror::Error)]
-pub enum RequestError {
-    /// Errors originating from incorrect enum types being called.
-    #[error("Incorrect variant")]
-    IncorrectVariant,
-    /// System time errors.
-    #[error("System time error: {0}")]
-    SystemTimeError(#[from] std::time::SystemTimeError),
-}
+use crate::{nym::utils::read_nym_request_data, queue::error::RequestError};
 
 /// Requests queuing metadata.
 #[derive(Debug)]
@@ -129,9 +118,9 @@ pub enum ZingoProxyRequest {
 
 impl ZingoProxyRequest {
     /// Creates a ZingoProxyRequest from an encoded gRPC service call, recieved by the Nym server.
-    pub fn new_from_nym(metadata: AnonymousSenderTag, bytes: &[u8]) -> Self {
-        let (id, method, body) = read_nym_request_data(bytes).unwrap();
-        ZingoProxyRequest::NymServerRequest(NymServerRequest {
+    pub fn new_from_nym(metadata: AnonymousSenderTag, bytes: &[u8]) -> Result<Self, RequestError> {
+        let (id, method, body) = read_nym_request_data(bytes)?;
+        Ok(ZingoProxyRequest::NymServerRequest(NymServerRequest {
             queuedata: QueueData::new(),
             request: NymRequest {
                 id,
@@ -139,7 +128,7 @@ impl ZingoProxyRequest {
                 metadata: RequestMetaData::AnonSendrTag(metadata),
                 body: body.to_vec(),
             },
-        })
+        }))
     }
 
     /// Creates a ZingoProxyRequest from a gRPC service call, recieved by the gRPC server.

@@ -1,19 +1,12 @@
 //! Blockheight, impl taken from zebra-chain for consistancy.
 
-use crate::primitives::error::SerializationError;
+use crate::primitives::error::{BoxError, SerializationError};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     ops::{Add, Sub},
 };
 use thiserror::Error;
-
-/// Error type alias to make working with generic errors easier.
-///
-/// Note: the 'static lifetime bound means that the *type* cannot have any
-/// non-'static lifetimes, (e.g., when a type contains a borrow and is
-/// parameterized by 'a), *not* that the object itself has 'static lifetime.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// A wrapper type representing blockchain heights. Safe conversion from
 /// various integer types, as well as addition and subtraction, are provided.

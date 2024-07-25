@@ -238,8 +238,8 @@ where
                             }
                         };
                         let nym_conf_path = "/tmp/nym_client";
-                        let mut client = NymClient::nym_spawn(nym_conf_path).await;
-                        let response_data = client.nym_forward(addr, nym_request).await.unwrap();
+                        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
+                        let response_data = client.nym_forward(addr, nym_request).await?;
                         client.nym_close().await;
                         let response: SendResponse =
                             match deserialize_response(response_data.as_slice()).await {
@@ -426,8 +426,8 @@ where
                             }
                         };
                         let nym_conf_path = "/tmp/nym_client";
-                        let mut client = NymClient::nym_spawn(nym_conf_path).await;
-                        let response_data = client.nym_forward(addr, nym_request).await.unwrap();
+                        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
+                        let response_data = client.nym_forward(addr, nym_request).await?;
                         client.nym_close().await;
                         let response: LightdInfo =
                             match deserialize_response(response_data.as_slice()).await {

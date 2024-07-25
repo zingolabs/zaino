@@ -1,8 +1,9 @@
 //! Transaction fetching and deserialization functionality.
 
 use crate::{
-    blockcache::utils::{
-        read_bytes, read_u32, read_u64, skip_bytes, CompactSize, ParseError, ParseFromSlice,
+    blockcache::{
+        error::ParseError,
+        utils::{read_bytes, read_u32, read_u64, skip_bytes, CompactSize, ParseFromSlice},
     },
     proto::compact_formats::{
         CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
