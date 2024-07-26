@@ -17,9 +17,17 @@ path = "src/lib.rs"
 
 [features]
 # NOTE: Deprecated
-nym_poc = []
+nym_poc = ["zingo-netutils", "zcash_client_backend"]
 
 [dependencies]
+# Zinglib and LibRustZcash:
+#
+# Only used in original nym_poc code, to be removed with creation of nym enhanced zingolib build. 
+#
+# Not to be used in production code as zingo-rpc will become a dep of zingolib and zingo-proxy now builds its onw CompactTxStreamer.
+zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration", optional = true }
+zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"], optional = true }
+
 zingo-rpc = { path = "../zingo-rpc" }
 
 # NymSdk

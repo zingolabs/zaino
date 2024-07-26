@@ -7200,6 +7200,8 @@ dependencies = [
  "nym-sphinx-anonymous-replies",
  "tokio",
  "tonic",
+ "zcash_client_backend",
+ "zingo-netutils",
  "zingo-rpc",
 ]
 
@@ -7232,6 +7234,8 @@ dependencies = [
  "tower",
  "which",
  "whoami",
+ "zcash_client_backend",
+ "zingo-netutils",
 ]
 
 [[package]]

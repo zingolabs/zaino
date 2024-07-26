@@ -11,10 +11,13 @@ use std::{
         Arc,
     },
 };
-use zingo_rpc::{
-    jsonrpc::connector::test_node_and_return_uri, primitives::client::ProxyClient,
-    proto::service::compact_tx_streamer_server::CompactTxStreamerServer,
-};
+use zingo_rpc::{jsonrpc::connector::test_node_and_return_uri, primitives::client::ProxyClient};
+
+#[cfg(not(feature = "nym_poc"))]
+use zingo_rpc::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
+
+#[cfg(feature = "nym_poc")]
+use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 
 /// Configuration data for gRPC server.
 pub struct ProxyServer(pub ProxyClient);
