@@ -3,12 +3,12 @@
 use std::time::SystemTime;
 
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
-use tonic::metadata::MetadataMap;
+use tokio::net::TcpStream;
 
 use crate::{nym::utils::read_nym_request_data, queue::error::RequestError};
 
 /// Requests queuing metadata.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct QueueData {
     // / Exclusive request id.
     // request_id: u64, // TODO: implement with request queue (implement exlusive request_id generator in queue object).
@@ -43,68 +43,74 @@ impl QueueData {
     }
 }
 
-/// Requests metadata either contains a return address for nym requests or a tonic MetaDataMap for gRPC requests.
-#[derive(Debug, Clone)]
-pub enum RequestMetaData {
-    /// Return address for Nym requests.
-    AnonSendrTag(AnonymousSenderTag),
-    /// Metadata for gRPC requests.
-    MetaDataMap(MetadataMap),
-}
-
-impl TryFrom<RequestMetaData> for AnonymousSenderTag {
-    type Error = RequestError;
-
-    fn try_from(value: RequestMetaData) -> Result<Self, Self::Error> {
-        match value {
-            RequestMetaData::AnonSendrTag(tag) => Ok(tag),
-            _ => Err(RequestError::IncorrectVariant),
-        }
-    }
-}
-
-impl TryFrom<RequestMetaData> for MetadataMap {
-    type Error = RequestError;
-
-    fn try_from(value: RequestMetaData) -> Result<Self, Self::Error> {
-        match value {
-            RequestMetaData::MetaDataMap(map) => Ok(map),
-            _ => Err(RequestError::IncorrectVariant),
-        }
-    }
-}
-
 /// Nym request data.
-#[derive(Debug)]
-struct NymRequest {
+#[derive(Debug, Clone)]
+pub struct NymRequest {
     id: u64,
     method: String,
-    metadata: RequestMetaData,
+    metadata: AnonymousSenderTag,
     body: Vec<u8>,
 }
 
-/// Grpc request data.
-/// TODO: Convert incoming gRPC calls to GrpcRequest before adding to queue (implement with request queue).
+impl NymRequest {
+    /// Returns the client assigned id for this request, only used to construct response.
+    pub fn client_id(&self) -> u64 {
+        self.id
+    }
+
+    /// Returns the RPC being called by the request.
+    pub fn method(&self) -> String {
+        self.method.clone()
+    }
+
+    /// Returns request metadata including sender data.
+    pub fn metadata(&self) -> AnonymousSenderTag {
+        self.metadata
+    }
+
+    /// Returns the request body.
+    pub fn body(&self) -> Vec<u8> {
+        self.body.clone()
+    }
+}
+
+/// TcpStream holing an incoming gRPC request.
 #[derive(Debug)]
-struct GrpcRequest {
-    id: u64,
-    method: String,
-    metadata: RequestMetaData,
-    body: Vec<u8>,
+pub struct TcpRequest(TcpStream);
+
+impl TcpRequest {
+    /// Returns the underlying TcpStream help by the request
+    pub fn get_stream(self) -> TcpStream {
+        self.0
+    }
 }
 
 /// Requests originating from the Nym server.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NymServerRequest {
     queuedata: QueueData,
     request: NymRequest,
 }
 
-/// Requests originating from the gRPC server.
+impl NymServerRequest {
+    /// Returns the underlying request.
+    pub fn get_request(&self) -> NymRequest {
+        self.request.clone()
+    }
+}
+
+/// Requests originating from the Tcp server.
 #[derive(Debug)]
-pub struct GrpcServerRequest {
+pub struct TcpServerRequest {
     queuedata: QueueData,
-    request: GrpcRequest,
+    request: TcpRequest,
+}
+
+impl TcpServerRequest {
+    /// Returns the underlying request.
+    pub fn get_request(self) -> TcpRequest {
+        self.request
+    }
 }
 
 /// Zingo-Proxy request, used by request queue.
@@ -113,7 +119,7 @@ pub enum ZingoProxyRequest {
     /// Requests originating from the Nym server.
     NymServerRequest(NymServerRequest),
     /// Requests originating from the gRPC server.
-    GrpcServerRequest(GrpcServerRequest),
+    TcpServerRequest(TcpServerRequest),
 }
 
 impl ZingoProxyRequest {
@@ -125,7 +131,7 @@ impl ZingoProxyRequest {
             request: NymRequest {
                 id,
                 method,
-                metadata: RequestMetaData::AnonSendrTag(metadata),
+                metadata,
                 body: body.to_vec(),
             },
         }))
@@ -134,15 +140,10 @@ impl ZingoProxyRequest {
     /// Creates a ZingoProxyRequest from a gRPC service call, recieved by the gRPC server.
     ///
     /// TODO: implement proper functionality along with queue.
-    pub fn new_from_grpc(metadata: MetadataMap, bytes: &[u8]) -> Self {
-        ZingoProxyRequest::GrpcServerRequest(GrpcServerRequest {
+    pub fn new_from_grpc(stream: TcpStream) -> Self {
+        ZingoProxyRequest::TcpServerRequest(TcpServerRequest {
             queuedata: QueueData::new(),
-            request: GrpcRequest {
-                id: 0,                      // TODO
-                method: "TODO".to_string(), // TODO
-                metadata: RequestMetaData::MetaDataMap(metadata),
-                body: bytes.to_vec(),
-            },
+            request: TcpRequest(stream),
         })
     }
 
@@ -150,7 +151,7 @@ impl ZingoProxyRequest {
     pub fn increase_requeues(&mut self) {
         match self {
             ZingoProxyRequest::NymServerRequest(ref mut req) => req.queuedata.increase_requeues(),
-            ZingoProxyRequest::GrpcServerRequest(ref mut req) => req.queuedata.increase_requeues(),
+            ZingoProxyRequest::TcpServerRequest(ref mut req) => req.queuedata.increase_requeues(),
         }
     }
 
@@ -158,7 +159,7 @@ impl ZingoProxyRequest {
     pub fn duration(&self) -> Result<std::time::Duration, RequestError> {
         match self {
             ZingoProxyRequest::NymServerRequest(ref req) => req.queuedata.duration(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.queuedata.duration(),
+            ZingoProxyRequest::TcpServerRequest(ref req) => req.queuedata.duration(),
         }
     }
 
@@ -166,39 +167,7 @@ impl ZingoProxyRequest {
     pub fn requeues(&self) -> u32 {
         match self {
             ZingoProxyRequest::NymServerRequest(ref req) => req.queuedata.requeues(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.queuedata.requeues(),
-        }
-    }
-
-    /// Returns the client assigned id for this request, only used to construct response.
-    pub fn client_id(&self) -> u64 {
-        match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.id,
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.id,
-        }
-    }
-
-    /// Returns the RPC being called by the request.
-    pub fn method(&self) -> String {
-        match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.method.clone(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.method.clone(),
-        }
-    }
-
-    /// Returns request metadata including sender data.
-    pub fn metadata(&self) -> RequestMetaData {
-        match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.metadata.clone(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.metadata.clone(),
-        }
-    }
-
-    /// Returns the number of times the request has been requeued.
-    pub fn body(&self) -> Vec<u8> {
-        match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.body.clone(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.body.clone(),
+            ZingoProxyRequest::TcpServerRequest(ref req) => req.queuedata.requeues(),
         }
     }
 }

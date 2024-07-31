@@ -3,15 +3,24 @@
 //! TODO: - Add NymClientError error type and rewrite functions to return <Result<(), NymClientError>>.
 
 use nym_sdk::mixnet::{
-    MixnetClientBuilder, MixnetMessageSender, Recipient, ReconstructedMessage, StoragePaths,
+    MixnetClient, MixnetClientBuilder, MixnetMessageSender, Recipient, ReconstructedMessage,
+    StoragePaths,
 };
 use std::path::PathBuf;
 
-use crate::{nym::error::NymError, primitives::client::NymClient};
+use crate::nym::error::NymError;
+
+/// Wrapper struct for a Nym client.
+pub struct NymClient {
+    /// Nym SDK Client.
+    pub client: MixnetClient,
+    /// Nym client address.
+    pub addr: String,
+}
 
 impl NymClient {
     /// Spawns a nym client and connects to the mixnet.
-    pub async fn nym_spawn(str_path: &str) -> Result<Self, NymError> {
+    pub async fn spawn(str_path: &str) -> Result<Self, NymError> {
         //nym_bin_common::logging::setup_logging();
         let client = MixnetClientBuilder::new_with_default_storage(StoragePaths::new_from_dir(
             PathBuf::from(str_path),
@@ -21,16 +30,16 @@ impl NymClient {
         .connect_to_mixnet()
         .await?;
 
-        let nym_addr = client.nym_address().to_string();
-        println!("@zingoproxyd[nym]: Nym server listening on: {nym_addr}.");
+        let addr = client.nym_address().to_string();
+        println!("@zingoproxyd[nym]: Nym server listening on: {addr}.");
 
-        Ok(Self(client))
+        Ok(Self { client, addr })
     }
 
     /// Forwards an encoded gRPC request over the nym mixnet to the nym address specified and waits for the response.
     ///
     /// TODO: Add timout for waiting for response.
-    pub async fn nym_forward(
+    pub async fn send(
         &mut self,
         recipient_address: &str,
         message: Vec<u8>,
@@ -38,10 +47,10 @@ impl NymClient {
         // Box<dyn std::error::Error>> {
         let recipient: Recipient =
             Recipient::try_from_base58_string(recipient_address.to_string())?;
-        self.0.send_plain_message(recipient, message).await?;
+        self.client.send_plain_message(recipient, message).await?;
 
         let mut nym_response: Vec<ReconstructedMessage> = Vec::new();
-        while let Some(response_in) = self.0.wait_for_messages().await {
+        while let Some(response_in) = self.client.wait_for_messages().await {
             if response_in.is_empty() {
                 continue;
             }
@@ -58,7 +67,7 @@ impl NymClient {
     }
 
     /// Closes the nym client.
-    pub async fn nym_close(self) {
-        self.0.disconnect().await;
+    pub async fn close(self) {
+        self.client.disconnect().await;
     }
 }

@@ -13,6 +13,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
+// /// Holds configuration data for ZingoProxyD.
+// pub struct ProxyConfig {
+// proxy_port: u16,
+// zebrad_port: u16,
+// nym_conf_path: String,
+// max_queue_size: usize,
+// max_workers: usize,
+// max_cache_mem: u16,
+// }
+
+// pub struct Proxy {
+// grpc_server: GrpcServer,*
+// nym_server: NymServer,*
+// state_engine,*
+// queue_manager,*
+// config: ProxyConfig,
+// }
+
 /// Launches test Zingo_Proxy server.
 pub async fn spawn_proxy(
     proxy_port: &u16,
@@ -58,7 +76,7 @@ pub async fn spawn_proxy(
         // let nym_server: NymServer = NymServer(NymClient::nym_spawn(nym_conf_path).await);
         // nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
         // let nym_proxy_handle = nym_server.serve(online).await;
-        let nym_server = NymServer::new(nym_conf_path, online).await;
+        let nym_server = NymServer::spawn(nym_conf_path, online).await;
         nym_addr_out = Some(nym_server.nym_addr.clone());
         let nym_proxy_handle = nym_server.serve().await;
 

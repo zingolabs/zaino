@@ -13,8 +13,7 @@ use nym_sdk::mixnet::{MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 
 use zingo_rpc::{
-    primitives::client::{NymClient, ProxyClient},
-    queue::request::ZingoProxyRequest,
+    nym::client::NymClient, primitives::client::ProxyClient, queue::request::ZingoProxyRequest,
 };
 
 /// Wrapper struct for a Nym client.
@@ -55,7 +54,7 @@ impl NymServer {
             };
             while self.online.load(Ordering::SeqCst) {
                 // --- wait for request.
-                while let Some(request_nym) = self.nym_client.0.wait_for_messages().await {
+                while let Some(request_nym) = self.nym_client.client.wait_for_messages().await {
                     if request_nym.is_empty() {
                         interval.tick().await;
                         if !self.online.load(Ordering::SeqCst) {
@@ -105,7 +104,7 @@ impl NymServer {
 
                 // --- send response
                 self.nym_client
-                    .0
+                    .client
                     .send_reply(return_recipient, response)
                     .await
                     .unwrap();
@@ -117,9 +116,9 @@ impl NymServer {
     }
 
     /// Returns a new NymServer Inatanse
-    pub async fn new(nym_conf_path: &str, online: Arc<AtomicBool>) -> Self {
-        let nym_client = NymClient::nym_spawn(nym_conf_path).await.unwrap();
-        let nym_addr = nym_client.0.nym_address().to_string();
+    pub async fn spawn(nym_conf_path: &str, online: Arc<AtomicBool>) -> Self {
+        let nym_client = NymClient::spawn(nym_conf_path).await.unwrap();
+        let nym_addr = nym_client.client.nym_address().to_string();
         NymServer {
             nym_client,
             nym_addr,

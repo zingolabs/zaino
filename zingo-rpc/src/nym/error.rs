@@ -14,11 +14,17 @@ pub enum NymError {
     #[error("Nym-SDK Error: {0}")]
     NymError(#[from] nym_sdk::Error),
     /// Nym address formatting errors.
-    #[error("Nym Recipient Formatting Error Error: {0}")]
+    #[error("Nym Recipient Formatting Error: {0}")]
     RecipientFormattingError(#[from] nym_sphinx_addressing::clients::RecipientFormattingError),
     /// Mixnet connection error.
     #[error("Connection Error: {0}")]
     ConnectionError(String),
+    /// Custom error for empty messages received from the Nym network.
+    #[error("Empty message received from the mixnet")]
+    EmptyMessageError,
+    /// Custom error for receiveing not AnonSenderTag (surb) from the Nym network.
+    #[error("No AnonSenderTag received from the mixnet")]
+    EmptyRecipientTagError,
 }
 
 impl From<NymError> for tonic::Status {
@@ -31,6 +37,12 @@ impl From<NymError> for tonic::Status {
             }
             NymError::ConnectionError(e) => {
                 tonic::Status::internal(format!("Connection error: {}", e))
+            }
+            NymError::EmptyMessageError => {
+                tonic::Status::internal(format!("Empty message received from nym mixnet"))
+            }
+            NymError::EmptyRecipientTagError => {
+                tonic::Status::internal(format!("No AnonSenderTag received from nym mixnet"))
             }
         }
     }

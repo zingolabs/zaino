@@ -7195,11 +7195,13 @@ version = "0.1.0"
 dependencies = [
  "ctrlc",
  "http",
+ "hyper",
  "nym-bin-common",
  "nym-sdk",
  "nym-sphinx-anonymous-replies",
  "tokio",
  "tonic",
+ "tower",
  "zcash_client_backend",
  "zingo-netutils",
  "zingo-rpc",

@@ -1,6 +1,9 @@
 //! Hold error types for the queue and related functionality.
 
-use crate::nym::error::NymError;
+use std::io;
+use tokio::sync::mpsc::error::TrySendError;
+
+use crate::{nym::error::NymError, queue::request::ZingoProxyRequest};
 
 /// Zingo-Proxy request errors.
 #[derive(Debug, thiserror::Error)]
@@ -15,3 +18,22 @@ pub enum RequestError {
     #[error("Nym error: {0}")]
     NymError(#[from] NymError),
 }
+
+/// Zingo-Proxy ingestor errors.
+#[derive(Debug, thiserror::Error)]
+pub enum IngestorError {
+    /// Request based errors.
+    #[error("Request error: {0}")]
+    RequestError(#[from] RequestError),
+    /// Nym based errors.
+    #[error("Nym error: {0}")]
+    NymError(#[from] NymError),
+    /// Tcp listener based error.
+    #[error("Failed to accept TcpStream: {0}")]
+    ClientConnectionError(#[from] io::Error),
+    /// Error from failing to send new request to the queue.
+    #[error("Failed to send request to the queue: {0}")]
+    QueuePushError(#[from] TrySendError<ZingoProxyRequest>),
+}
+
+// WorkerError.

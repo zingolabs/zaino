@@ -42,6 +42,7 @@ struct RpcError {
 }
 
 /// JsonRPC Client config data.
+#[derive(Debug)]
 pub struct JsonRpcConnector {
     uri: http::Uri,
     id_counter: AtomicI32,

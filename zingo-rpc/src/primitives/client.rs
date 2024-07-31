@@ -1,6 +1,5 @@
 //! Holds primitive structs for ZingoProxy network clients.
 
-use nym_sdk::mixnet::MixnetClient;
 use std::sync::{atomic::AtomicBool, Arc};
 
 /// Configuration data for gRPC server.
@@ -13,6 +12,3 @@ pub struct ProxyClient {
     /// Represents the Online status of the gRPC server.
     pub online: Arc<AtomicBool>,
 }
-
-/// Wrapper struct for a Nym client.
-pub struct NymClient(pub MixnetClient);

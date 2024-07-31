@@ -6,7 +6,8 @@ use std::env;
 use tonic::{async_trait, Request, Response, Status};
 
 use crate::{
-    primitives::client::{NymClient, ProxyClient},
+    nym::client::NymClient,
+    primitives::client::ProxyClient,
     walletrpc::utils::{deserialize_response, serialize_request, write_nym_request_data},
 };
 use zcash_client_backend::proto::{
@@ -119,11 +120,9 @@ impl CompactTxStreamer for ProxyClient {
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
-        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
-        let response_data = client
-            .nym_forward(recipient_address.as_str(), nym_request)
-            .await?;
-        client.nym_close().await;
+        let mut client = NymClient::spawn(nym_conf_path).await?;
+        let response_data = client.send(recipient_address.as_str(), nym_request).await?;
+        client.close().await;
         // -- deserialize SendResponse
         let response: SendResponse = match deserialize_response(response_data.as_slice()).await {
             Ok(res) => res,
@@ -257,11 +256,9 @@ impl CompactTxStreamer for ProxyClient {
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
-        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
-        let response_data = client
-            .nym_forward(recipient_address.as_str(), nym_request)
-            .await?;
-        client.nym_close().await;
+        let mut client = NymClient::spawn(nym_conf_path).await?;
+        let response_data = client.send(recipient_address.as_str(), nym_request).await?;
+        client.close().await;
         // -- deserialize LightdInfo
         let response: LightdInfo = match deserialize_response(response_data.as_slice()).await {
             Ok(res) => res,

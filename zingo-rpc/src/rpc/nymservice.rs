@@ -17,8 +17,8 @@ impl ProxyClient {
         request: &ZingoProxyRequest,
     ) -> Result<Vec<u8>, tonic::Status> {
         match request {
-            ZingoProxyRequest::NymServerRequest(_) => match request.method().as_str() {
-                "GetLightdInfo" => match prost::Message::decode(&request.body()[..]) {
+            ZingoProxyRequest::NymServerRequest(request) => match request.get_request().method().as_str() {
+                "GetLightdInfo" => match prost::Message::decode(&request.get_request().body()[..]) {
                     Ok(input) => {
                         let tonic_request = tonic::Request::new(input);
                         let tonic_response = self.get_lightd_info(tonic_request)
@@ -38,7 +38,7 @@ impl ProxyClient {
                         e
                     ))),
                 },
-                "SendTransaction" => match prost::Message::decode(&request.body()[..]) {
+                "SendTransaction" => match prost::Message::decode(&request.get_request().body()[..]) {
                     Ok(input) => {
                         let tonic_request = tonic::Request::new(input);
                         let tonic_response = self.send_transaction(tonic_request)
