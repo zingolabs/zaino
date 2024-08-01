@@ -23,7 +23,7 @@ use tonic::codegen::{BoxFuture, StdError};
 use tonic::transport::NamedService;
 use tower::Service;
 
-use zingo_rpc::{jsonrpc::connector::test_node_and_return_uri, primitives::client::ProxyClient};
+use zingo_rpc::{jsonrpc::connector::test_node_and_return_uri, rpc::GrpcClient};
 
 #[cfg(not(feature = "nym_poc"))]
 use zingo_rpc::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
@@ -32,7 +32,7 @@ use zingo_rpc::proto::service::compact_tx_streamer_server::CompactTxStreamerServ
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 
 /// Configuration data for gRPC server.
-pub struct GrpcServer(pub ProxyClient);
+pub struct GrpcServer(pub GrpcClient);
 
 impl GrpcServer {
     /// Starts gRPC service.
@@ -82,7 +82,7 @@ impl GrpcServer {
 
     /// Creates configuration data for gRPC server.
     pub fn new(lightwalletd_uri: http::Uri, zebrad_uri: http::Uri) -> Self {
-        GrpcServer(ProxyClient {
+        GrpcServer(GrpcClient {
             lightwalletd_uri,
             zebrad_uri,
             online: Arc::new(AtomicBool::new(true)),

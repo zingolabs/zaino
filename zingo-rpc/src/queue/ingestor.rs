@@ -28,13 +28,13 @@ pub enum IngestorStatus {
 /// Configuration data for gRPC server.
 pub struct TcpIngestor {
     /// Tcp Listener.
-    pub ingestor: TcpListener,
+    ingestor: TcpListener,
     /// Used to send requests to the queue.
-    pub queue: mpsc::Sender<ZingoProxyRequest>,
+    queue: mpsc::Sender<ZingoProxyRequest>,
     /// Represents the Online status of the gRPC server.
-    pub online: Arc<AtomicBool>,
+    online: Arc<AtomicBool>,
     /// Current status of the ingestor.
-    pub status: IngestorStatus,
+    status: IngestorStatus,
 }
 
 impl TcpIngestor {
@@ -104,13 +104,13 @@ impl TcpIngestor {
 /// Wrapper struct for a Nym client.
 pub struct NymIngestor {
     /// Nym Client
-    pub ingestor: NymClient,
+    ingestor: NymClient,
     /// Used to send requests to the queue.
-    pub queue: mpsc::Sender<ZingoProxyRequest>,
+    queue: mpsc::Sender<ZingoProxyRequest>,
     /// Represents the Online status of the gRPC server.
-    pub online: Arc<AtomicBool>,
+    online: Arc<AtomicBool>,
     /// Current status of the ingestor.
-    pub status: IngestorStatus,
+    status: IngestorStatus,
 }
 
 impl NymIngestor {

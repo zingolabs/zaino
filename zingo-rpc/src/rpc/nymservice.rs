@@ -2,7 +2,7 @@
 
 use prost::Message;
 
-use crate::{primitives::client::ProxyClient, queue::request::ZingoProxyRequest};
+use crate::{queue::request::ZingoProxyRequest, rpc::GrpcClient};
 
 #[cfg(not(feature = "nym_poc"))]
 use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;
@@ -10,7 +10,7 @@ use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;
 #[cfg(feature = "nym_poc")]
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamer;
 
-impl ProxyClient {
+impl GrpcClient {
     /// Processes gRPC requests coming from the nym server.
     pub async fn process_nym_request(
         &self,

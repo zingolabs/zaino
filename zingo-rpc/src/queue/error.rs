@@ -36,4 +36,6 @@ pub enum IngestorError {
     QueuePushError(#[from] TrySendError<ZingoProxyRequest>),
 }
 
-// WorkerError.
+/// Zingo-Proxy worker errors.
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerError {}

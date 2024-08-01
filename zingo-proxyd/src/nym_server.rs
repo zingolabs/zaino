@@ -12,9 +12,7 @@ use std::sync::{
 use nym_sdk::mixnet::{MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 
-use zingo_rpc::{
-    nym::client::NymClient, primitives::client::ProxyClient, queue::request::ZingoProxyRequest,
-};
+use zingo_rpc::{nym::client::NymClient, queue::request::ZingoProxyRequest, rpc::GrpcClient};
 
 /// Wrapper struct for a Nym client.
 pub struct NymServer {
@@ -37,7 +35,7 @@ impl NymServer {
             // NOTE: the following should be removed with the addition of the queue and worker pool.
             let lwd_port = 8080;
             let zebrad_port = 18232;
-            let proxy_client = ProxyClient {
+            let proxy_client = GrpcClient {
                 lightwalletd_uri: http::Uri::builder()
                     .scheme("http")
                     .authority(format!("localhost:{lwd_port}"))

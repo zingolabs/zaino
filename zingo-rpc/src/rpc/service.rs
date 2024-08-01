@@ -9,7 +9,6 @@ use crate::{
     jsonrpc::{connector::JsonRpcConnector, primitives::GetTransactionResponse},
     primitives::{
         chain::{ConsensusBranchId, ConsensusBranchIdHex},
-        client::ProxyClient,
         height::ChainHeight,
     },
     proto::{
@@ -22,6 +21,7 @@ use crate::{
             TreeState, TxFilter,
         },
     },
+    rpc::GrpcClient,
     utils::get_build_info,
 };
 
@@ -87,7 +87,7 @@ impl futures::Stream for CompactBlockStream {
     }
 }
 
-impl CompactTxStreamer for ProxyClient {
+impl CompactTxStreamer for GrpcClient {
     /// Return the height of the tip of the best chain.
     fn get_latest_block<'life0, 'async_trait>(
         &'life0 self,

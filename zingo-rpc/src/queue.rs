@@ -1,4 +1,4 @@
-//! Zingo-Proxy request queue.
+//! Zingo-Proxy client server.
 
 pub mod error;
 pub mod ingestor;

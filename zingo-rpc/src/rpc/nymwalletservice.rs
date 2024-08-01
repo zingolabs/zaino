@@ -7,7 +7,7 @@ use tonic::{async_trait, Request, Response, Status};
 
 use crate::{
     nym::client::NymClient,
-    primitives::client::ProxyClient,
+    rpc::GrpcClient,
     walletrpc::utils::{deserialize_response, serialize_request, write_nym_request_data},
 };
 use zcash_client_backend::proto::{
@@ -55,7 +55,7 @@ macro_rules! define_grpc_passthrough {
 }
 
 #[async_trait]
-impl CompactTxStreamer for ProxyClient {
+impl CompactTxStreamer for GrpcClient {
     define_grpc_passthrough!(
         fn get_latest_block(
             &self,
