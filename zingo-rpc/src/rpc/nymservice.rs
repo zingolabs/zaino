@@ -2,7 +2,7 @@
 
 use prost::Message;
 
-use crate::{queue::request::ZingoProxyRequest, rpc::GrpcClient};
+use crate::{queue::request::NymServerRequest, rpc::GrpcClient};
 
 #[cfg(not(feature = "nym_poc"))]
 use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;
@@ -14,10 +14,9 @@ impl GrpcClient {
     /// Processes gRPC requests coming from the nym server.
     pub async fn process_nym_request(
         &self,
-        request: &ZingoProxyRequest,
+        request: &NymServerRequest,
     ) -> Result<Vec<u8>, tonic::Status> {
-        match request {
-            ZingoProxyRequest::NymServerRequest(request) => match request.get_request().method().as_str() {
+        match request.get_request().method().as_str() {
                 "GetLightdInfo" => match prost::Message::decode(&request.get_request().body()[..]) {
                     Ok(input) => {
                         let tonic_request = tonic::Request::new(input);
@@ -78,8 +77,6 @@ impl GrpcClient {
                     Err(tonic::Status::unimplemented("RPC not yet implemented over nym. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
                     },
                 _ => Err(tonic::Status::invalid_argument("Incorrect Method String")),
-            },
-            _ => Err(tonic::Status::invalid_argument("Incorrect Request Type")),
-        }
+            }
     }
 }

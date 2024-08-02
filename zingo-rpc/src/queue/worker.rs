@@ -14,10 +14,15 @@ use tokio::{
 use tonic::transport::Server;
 
 use crate::{
-    proto::service::compact_tx_streamer_server::CompactTxStreamerServer,
     queue::{error::WorkerError, request::ZingoProxyRequest},
     rpc::GrpcClient,
 };
+
+#[cfg(not(feature = "nym_poc"))]
+use crate::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
+
+#[cfg(feature = "nym_poc")]
+use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 
 /// Status of the worker.
 #[derive(Debug, Clone, Copy)]
@@ -88,7 +93,7 @@ pub struct Worker {
     /// Used to pop requests from the queue
     queue: mpsc::Receiver<ZingoProxyRequest>,
     /// Used to requeue requests.
-    requeue: mpsc::Sender<ZingoProxyRequest>,
+    _requeue: mpsc::Sender<ZingoProxyRequest>,
     /// Used to send responses to the nym_responder.
     nym_responder: mpsc::Sender<(Vec<u8>, AnonymousSenderTag)>,
     /// gRPC client used for processing requests received over http.
@@ -104,7 +109,7 @@ impl Worker {
     pub async fn spawn(
         worker_id: usize,
         queue: mpsc::Receiver<ZingoProxyRequest>,
-        requeue: mpsc::Sender<ZingoProxyRequest>,
+        _requeue: mpsc::Sender<ZingoProxyRequest>,
         nym_responder: mpsc::Sender<(Vec<u8>, AnonymousSenderTag)>,
         lightwalletd_uri: Uri,
         zebrad_uri: Uri,
@@ -118,7 +123,7 @@ impl Worker {
         Ok(Worker {
             worker_id,
             queue,
-            requeue,
+            _requeue,
             nym_responder,
             grpc_client,
             status: WorkerStatus::new(StatusType::Spawning),
@@ -126,46 +131,67 @@ impl Worker {
         })
     }
 
-    /// Starts queue workers service routine.
+    /// Starts queue worker service routine.
+    ///
+    /// TODO: Add requeue on error.
     pub async fn serve(mut self) -> tokio::task::JoinHandle<Result<(), WorkerError>> {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
             let svc = CompactTxStreamerServer::new(self.grpc_client.clone());
-            let mut grpc_server = Server::builder().add_service(svc.clone());
+            // TODO: create tonic server here for use within loop.
+            self.status.set(StatusType::Standby);
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         if !self.check_online() {
+                            self.status.set(StatusType::Closing);
                             println!("Worker shutting down.");
                             return Ok(());
                         }
                     }
                     incoming = self.queue.recv() => {
                         if !self.check_online() {
+                            self.status.set(StatusType::Closing);
                             println!("worker shutting down.");
                             return Ok(());
                         }
+                        self.status.set(StatusType::Working);
                         match incoming {
-                            Some(ZingoProxyRequest::TcpServerRequest(req)) => {
-                                let stream = req.get_request().get_stream();
-                                let incoming = async_stream::stream! {
-                                yield Ok::<_, std::io::Error>(stream);
-                            };
-                            grpc_server
-                                .serve_with_incoming(incoming)
-                                .await?;
+                            Some(ZingoProxyRequest::TcpServerRequest(request)) => {
+                                Server::builder().add_service(svc.clone())
+                                    .serve_with_incoming( async_stream::stream! {
+                                        yield Ok::<_, std::io::Error>(
+                                            request.get_request().get_stream()
+                                        );
+                                    })
+                                    .await?;
                             }
-                            Some(ZingoProxyRequest::NymServerRequest(req)) => {
-                                // Handle NymServerRequest, for example:
-                                // self.process_nym_request(req).await?;
-                                // Or other logic specific to your application
+                            Some(ZingoProxyRequest::NymServerRequest(request)) => {
+                                match self.grpc_client
+                                    .process_nym_request(&request)
+                                    .await {
+                                    Ok(response) => {
+                                        if let Err(e) = self.nym_responder.send((response, request.get_request().metadata())).await {
+                                            // TODO:: Handle this error!
+                                            eprintln!("Failed to send response to nym responder: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // TODO:: Handle this error!
+                                        eprintln!("Failed to process nym received request: {}", e);
+
+                                    }
+
+                                }
                             }
                             None => {
-                                println!("Queue is closed, worker shutting down.");
+                                self.status.set(StatusType::Closing);
+                                println!("Queue closed, worker shutting down.");
                                 return Ok(());
                             }
                         }
+                        self.status.set(StatusType::Standby);
                     }
                 }
             }

@@ -89,10 +89,15 @@ impl NymServer {
 
                 // --- process request
                 // NOTE: when the queue is added requests will not be processed here but by the queue!
-                let response = proxy_client
-                    .process_nym_request(&zingo_proxy_request)
-                    .await
-                    .unwrap();
+                let response: Vec<u8>;
+                match zingo_proxy_request {
+                    ZingoProxyRequest::NymServerRequest(request) => {
+                        response = proxy_client.process_nym_request(&request).await.unwrap();
+                    }
+                    _ => {
+                        todo!()
+                    }
+                }
 
                 // print response for testing
                 // println!(

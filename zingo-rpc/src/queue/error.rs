@@ -38,4 +38,8 @@ pub enum IngestorError {
 
 /// Zingo-Proxy worker errors.
 #[derive(Debug, thiserror::Error)]
-pub enum WorkerError {}
+pub enum WorkerError {
+    /// Tonic transport error.
+    #[error("Tonic transport error: {0}")]
+    TonicTransportError(#[from] tonic::transport::Error),
+}
