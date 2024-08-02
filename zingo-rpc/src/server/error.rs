@@ -36,6 +36,14 @@ pub enum IngestorError {
     QueuePushError(#[from] TrySendError<ZingoProxyRequest>),
 }
 
+/// Zingo-Proxy distpater errors.
+#[derive(Debug, thiserror::Error)]
+pub enum DispatcherError {
+    /// Nym based errors.
+    #[error("Nym error: {0}")]
+    NymError(#[from] NymError),
+}
+
 /// Zingo-Proxy worker errors.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {

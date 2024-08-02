@@ -100,7 +100,7 @@ pub struct Worker {
     grpc_client: GrpcClient,
     /// Workers current status.
     status: WorkerStatus,
-    /// Represents the Online status of the gRPC server.
+    /// Represents the Online status of the Worker.
     pub online: Arc<AtomicBool>,
 }
 
@@ -133,7 +133,7 @@ impl Worker {
 
     /// Starts queue worker service routine.
     ///
-    /// TODO: Add requeue on error.
+    /// TODO: Add requeue logic for node errors.
     pub async fn serve(mut self) -> tokio::task::JoinHandle<Result<(), WorkerError>> {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
@@ -217,4 +217,14 @@ impl Worker {
     fn check_online(&self) -> bool {
         self.online.load(Ordering::SeqCst)
     }
+}
+
+/// Dynamically sized pool of workers.
+pub struct WorkerPool {
+    /// Maximun number of concurrent workers allowed.
+    max_size: usize,
+    /// Workers currently in the pool
+    workers: Vec<Worker>,
+    /// Represents the Online status of the WorkerPool.
+    pub online: Arc<AtomicBool>,
 }

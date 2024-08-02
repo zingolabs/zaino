@@ -15,8 +15,6 @@ use crate::{
 };
 
 /// Status of the worker.
-///
-/// TODO: Add duration to each variant.
 #[derive(Debug, Clone)]
 pub enum IngestorStatus {
     /// On hold, due to blockcache / node error.
@@ -25,7 +23,7 @@ pub enum IngestorStatus {
     Listening,
 }
 
-/// Configuration data for gRPC server.
+/// Listens for incoming gRPC requests over HTTP.
 pub struct TcpIngestor {
     /// Tcp Listener.
     ingestor: TcpListener,
@@ -75,6 +73,7 @@ impl TcpIngestor {
                                     println!("Tcp ingestor shutting down.");
                                     return Ok(());
                                 }
+                                // TODO: Convert to use try_send().
                                 if let Err(e) = self.queue.send(ZingoProxyRequest::new_from_grpc(stream)).await {
                                     // TODO:: Return queue full tonic status over tcpstream and close (that TcpStream..).
                                     eprintln!("Failed to send connection: {}", e);
@@ -101,7 +100,7 @@ impl TcpIngestor {
     }
 }
 
-/// Wrapper struct for a Nym client.
+/// Listens for incoming gRPC requests over Nym Mixnet.
 pub struct NymIngestor {
     /// Nym Client
     ingestor: NymClient,
@@ -120,7 +119,7 @@ impl NymIngestor {
         queue: mpsc::Sender<ZingoProxyRequest>,
         online: Arc<AtomicBool>,
     ) -> Result<Self, IngestorError> {
-        let listener = NymClient::spawn(nym_conf_path).await?;
+        let listener = NymClient::spawn(&format!("{}/ingestor", nym_conf_path)).await?;
         Ok(NymIngestor {
             ingestor: listener,
             queue,
@@ -165,12 +164,14 @@ impl NymIngestor {
                                 // TODO: Handle RequestError here.
                                 let zingo_proxy_request =
                                     ZingoProxyRequest::new_from_nym(return_recipient, request_vu8.as_ref())?;
+                                // TODO: Convert to use try_send().
                                 if let Err(e) = self.queue.send(zingo_proxy_request).await {
                                     // TODO: Return queue full tonic status over nym mixnet.
                                     eprintln!("Failed to send connection: {}", e);
                                 }
                             }
                             None => {
+                                // TODO: Error in nym client, handle error here (restart ingestor?).
                                 eprintln!("Failed to receive message from Nym network.");
                                 if !self.online.load(Ordering::SeqCst) {
                                     println!("Nym ingestor shutting down.");
