@@ -6,7 +6,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
     blockcache::{block::get_block_from_node, mempool::Mempool},
-    jsonrpc::{connector::JsonRpcConnector, primitives::GetTransactionResponse},
+    jsonrpc::{connector::JsonRpcConnector, response::GetTransactionResponse},
     primitives::{
         chain::{ConsensusBranchId, ConsensusBranchIdHex},
         height::ChainHeight,

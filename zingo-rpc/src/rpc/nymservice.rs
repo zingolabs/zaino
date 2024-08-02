@@ -2,7 +2,7 @@
 
 use prost::Message;
 
-use crate::{queue::request::NymServerRequest, rpc::GrpcClient};
+use crate::{rpc::GrpcClient, server::request::NymServerRequest};
 
 #[cfg(not(feature = "nym_poc"))]
 use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;

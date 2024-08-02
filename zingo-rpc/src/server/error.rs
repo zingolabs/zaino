@@ -1,9 +1,9 @@
-//! Hold error types for the queue and related functionality.
+//! Hold error types for the server and related functionality.
 
 use std::io;
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::{nym::error::NymError, queue::request::ZingoProxyRequest};
+use crate::{nym::error::NymError, server::request::ZingoProxyRequest};
 
 /// Zingo-Proxy request errors.
 #[derive(Debug, thiserror::Error)]

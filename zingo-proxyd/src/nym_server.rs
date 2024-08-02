@@ -12,7 +12,7 @@ use std::sync::{
 use nym_sdk::mixnet::{MixnetMessageSender, ReconstructedMessage};
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 
-use zingo_rpc::{nym::client::NymClient, queue::request::ZingoProxyRequest, rpc::GrpcClient};
+use zingo_rpc::{nym::client::NymClient, rpc::GrpcClient, server::request::ZingoProxyRequest};
 
 /// Wrapper struct for a Nym client.
 pub struct NymServer {

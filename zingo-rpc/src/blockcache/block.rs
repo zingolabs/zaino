@@ -9,7 +9,7 @@ use crate::{
             CompactSize, ParseFromSlice,
         },
     },
-    jsonrpc::{connector::JsonRpcConnector, primitives::GetBlockResponse},
+    jsonrpc::{connector::JsonRpcConnector, response::GetBlockResponse},
     proto::compact_formats::{ChainMetadata, CompactBlock},
 };
 use sha2::{Digest, Sha256};

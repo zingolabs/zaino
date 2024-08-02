@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::jsonrpc::{
     error::JsonRpcConnectorError,
-    primitives::{
+    response::{
         BestBlockHashResponse, GetBalanceResponse, GetBlockResponse, GetBlockchainInfoResponse,
         GetInfoResponse, GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse,
         GetUtxosResponse, SendTransactionResponse, TxidsResponse,

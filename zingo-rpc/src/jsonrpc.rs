@@ -2,4 +2,4 @@
 
 pub mod connector;
 pub mod error;
-pub mod primitives;
+pub mod response;

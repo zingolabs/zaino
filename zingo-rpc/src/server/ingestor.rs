@@ -1,4 +1,4 @@
-//! Holds the ingestor (listener) implementations.
+//! Holds the server ingestor (listener) implementations.
 
 use std::{
     net::SocketAddr,
@@ -11,7 +11,7 @@ use tokio::{net::TcpListener, sync::mpsc};
 
 use crate::{
     nym::{client::NymClient, error::NymError},
-    queue::{error::IngestorError, request::ZingoProxyRequest},
+    server::{error::IngestorError, request::ZingoProxyRequest},
 };
 
 /// Status of the worker.
@@ -21,7 +21,7 @@ use crate::{
 pub enum IngestorStatus {
     /// On hold, due to blockcache / node error.
     Inactive,
-    /// Processing requests from the queue.
+    /// Listening for new requests.
     Listening,
 }
 

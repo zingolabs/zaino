@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 use tokio::net::TcpStream;
 
-use crate::{nym::utils::read_nym_request_data, queue::error::RequestError};
+use crate::{nym::utils::read_nym_request_data, server::error::RequestError};
 
 /// Requests queuing metadata.
 #[derive(Debug, Clone)]

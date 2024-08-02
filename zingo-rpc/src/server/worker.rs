@@ -1,4 +1,4 @@
-//! Holds the queue worker implementation.
+//! Holds the server worker implementation.
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -14,8 +14,8 @@ use tokio::{
 use tonic::transport::Server;
 
 use crate::{
-    queue::{error::WorkerError, request::ZingoProxyRequest},
     rpc::GrpcClient,
+    server::{error::WorkerError, request::ZingoProxyRequest},
 };
 
 #[cfg(not(feature = "nym_poc"))]
