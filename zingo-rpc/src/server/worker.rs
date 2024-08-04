@@ -218,13 +218,3 @@ impl Worker {
         self.online.load(Ordering::SeqCst)
     }
 }
-
-/// Dynamically sized pool of workers.
-pub struct WorkerPool {
-    /// Maximun number of concurrent workers allowed.
-    max_size: usize,
-    /// Workers currently in the pool
-    workers: Vec<Worker>,
-    /// Represents the Online status of the WorkerPool.
-    pub online: Arc<AtomicBool>,
-}

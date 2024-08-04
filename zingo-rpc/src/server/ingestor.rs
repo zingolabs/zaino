@@ -95,6 +95,16 @@ impl TcpIngestor {
         })
     }
 
+    /// Ends the ingestor.
+    pub async fn shutdown(self) {
+        todo!()
+    }
+
+    /// Returns the ingestor current status.
+    pub fn status(&self) -> IngestorStatus {
+        self.status.clone()
+    }
+
     fn check_online(&self) -> bool {
         self.online.load(Ordering::SeqCst)
     }
@@ -183,6 +193,16 @@ impl NymIngestor {
                 }
             }
         })
+    }
+
+    /// Ends the ingestor.
+    pub async fn shutdown(self) {
+        todo!()
+    }
+
+    /// Returns the ingestor current status.
+    pub fn status(&self) -> IngestorStatus {
+        self.status.clone()
     }
 
     fn check_online(&self) -> bool {

@@ -100,6 +100,16 @@ impl NymDispatcher {
         })
     }
 
+    /// Ends the dispatcher.
+    pub async fn shutdown(self) {
+        todo!()
+    }
+
+    /// Returns the dispatchers current status.
+    pub fn status(&self) -> DispatcherStatus {
+        self.status.clone()
+    }
+
     fn check_online(&self) -> bool {
         self.online.load(Ordering::SeqCst)
     }
