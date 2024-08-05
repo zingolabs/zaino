@@ -2,7 +2,7 @@
 
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 use std::sync::{atomic::AtomicBool, Arc};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 
 use self::{
     dispatcher::NymDispatcher,
@@ -19,8 +19,8 @@ pub mod worker;
 
 /// Queue with max length.
 pub struct Queue<T> {
-    /// Maximum length of the queue.
-    max_size: usize,
+    /// Used to count current messages in queue.
+    semaphore: Arc<Semaphore>,
     /// Queue sender.
     queue_tx: mpsc::Sender<T>,
     /// Queue receiver.
@@ -28,8 +28,17 @@ pub struct Queue<T> {
 }
 
 impl<T> Queue<T> {
-    // Creates a new queue
-    // pub fn spawn(max_size) -> Self {}
+    /// Creates a new queue
+    pub fn spawn(max_size: usize) -> Self {
+        let (queue_tx, queue_rx) = mpsc::channel(max_size);
+        let semaphore = Arc::new(Semaphore::new(max_size));
+
+        Queue {
+            queue_tx,
+            queue_rx,
+            semaphore,
+        }
+    }
 
     // Returns a queue transmitter
     // pub fn tx(&self) -> mpsc::Sender<T> {}
