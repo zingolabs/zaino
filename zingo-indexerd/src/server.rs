@@ -32,7 +32,7 @@ impl ProxyServer {
         tokio::task::spawn(async move {
             let svc = CompactTxStreamerServer::new(self.0);
             let sockaddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port.into());
-            println!("@zingoproxyd: gRPC server listening on: {sockaddr}");
+            println!("@zingoindexerd: gRPC server listening on: {sockaddr}");
 
             let server = tonic::transport::Server::builder()
                 .add_service(svc.clone())
@@ -44,12 +44,12 @@ impl ProxyServer {
                     match result {
                         Ok(_) => {
                             // TODO: Gracefully restart gRPC server.
-                            println!("@zingoproxyd: gRPC Server closed early. Restart required");
+                            println!("@zingoindexerd: gRPC Server closed early. Restart required");
                             Ok(())
                             }
                         Err(e) => {
                             // TODO: restart server or set online to false and exit
-                            println!("@zingoproxyd: gRPC Server closed with error: {}. Restart required", e);
+                            println!("@zingoindexerd: gRPC Server closed with error: {}. Restart required", e);
                             Err(e)
                             }
                     }
@@ -59,7 +59,7 @@ impl ProxyServer {
                         interval.tick().await;
                     }
                 } => {
-                    println!("@zingoproxyd: gRPC server shutting down.");
+                    println!("@zingoindexerd: gRPC server shutting down.");
                     Ok(())
                 }
             }
@@ -78,7 +78,7 @@ impl ProxyServer {
 
 /// Spawns a gRPC server.
 pub async fn spawn_grpc_server(
-    proxy_port: &u16,
+    indexer_port: &u16,
     lwd_port: &u16,
     zebrad_port: &u16,
     online: Arc<AtomicBool>,
@@ -100,5 +100,5 @@ pub async fn spawn_grpc_server(
     .unwrap();
 
     let server = ProxyServer::new(lwd_uri, zebra_uri);
-    server.serve(*proxy_port, online)
+    server.serve(*indexer_port, online)
 }

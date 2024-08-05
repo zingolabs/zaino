@@ -40,7 +40,7 @@ macro_rules! define_grpc_passthrough {
             'life0: 'async_trait,
             Self: 'async_trait,
         {
-            println!("@zingoproxyd: Received call of {}.", stringify!($name));
+            println!("@zingoindexerd: Received call of {}.", stringify!($name));
             Box::pin(async {
                 ::zingo_netutils::GrpcConnector::new($self.lightwalletd_uri.clone())
                     .get_client()
@@ -90,7 +90,7 @@ impl CompactTxStreamer for ProxyClient {
         &self,
         request: Request<RawTransaction>,
     ) -> Result<Response<SendResponse>, Status> {
-        println!("@zingoproxyd[nym_poc]: Received call of send_transaction.");
+        println!("@zingoindexerd[nym_poc]: Received call of send_transaction.");
         // -- serialize RawTransaction
         let serialized_request = match serialize_request(&request.into_inner()).await {
             Ok(data) => data,
@@ -101,7 +101,7 @@ impl CompactTxStreamer for ProxyClient {
                 )))
             }
         };
-        // -- create ZingoProxyRequest
+        // -- create ZingoIndexerRequest
         let nym_request = match write_nym_request_data(
             0,
             "SendTransaction".to_string(),
@@ -228,7 +228,7 @@ impl CompactTxStreamer for ProxyClient {
         &self,
         request: Request<Empty>,
     ) -> Result<Response<LightdInfo>, Status> {
-        println!("@zingoproxyd[nym_poc]: Received call of get_lightd_info.");
+        println!("@zingoindexerd[nym_poc]: Received call of get_lightd_info.");
         // -- serialize Empty
         let serialized_request = match serialize_request(&request.into_inner()).await {
             Ok(data) => data,
@@ -239,7 +239,7 @@ impl CompactTxStreamer for ProxyClient {
                 )))
             }
         };
-        // -- create ZingoProxyRequest
+        // -- create ZingoIndexerRequest
         let nym_request = match write_nym_request_data(
             0,
             "GetLightdInfo".to_string(),

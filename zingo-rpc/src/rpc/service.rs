@@ -104,7 +104,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_latest_block.");
+        println!("@zingoindexerd: Received call of get_latest_block.");
         Box::pin(async {
             let blockchain_info = JsonRpcConnector::new(
                 self.zebrad_uri.clone(),
@@ -128,7 +128,7 @@ impl CompactTxStreamer for ProxyClient {
     /// Return the compact block corresponding to the given block identifier.
     ///
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     ///
     /// TODO: This RPC should be implemented alongside the block cache.
     fn get_block<'life0, 'async_trait>(
@@ -146,16 +146,16 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_block.");
+        println!("@zingoindexerd: Received call of get_block.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_block not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_block not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
     /// Same as GetBlock except actions contain only nullifiers.
     ///
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_block_nullifiers<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<BlockId>,
@@ -171,9 +171,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_block_nullifiers.");
+        println!("@zingoindexerd: Received call of get_block_nullifiers.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_block_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_block_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
@@ -203,7 +203,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_block_range.");
+        println!("@zingoindexerd: Received call of get_block_range.");
         let zebrad_uri = self.zebrad_uri.clone();
         Box::pin(async move {
             let blockrange = request.into_inner();
@@ -219,7 +219,7 @@ impl CompactTxStreamer for ProxyClient {
                 (start, end) = (end, start);
             }
             println!(
-                "@zingoproxytest: Fetching blocks in range: {}-{}.",
+                "@zingoindexertest: Fetching blocks in range: {}-{}.",
                 start, end
             );
             let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
@@ -227,7 +227,7 @@ impl CompactTxStreamer for ProxyClient {
                 // NOTE: This timeout is so slow due to the blockcache not being implemented. This should be reduced to 30s once functionality is in place.
                 let timeout = timeout(std::time::Duration::from_secs(120), async {
                     for height in (start..=end).rev() {
-                        println!("@zingoproxytest: Fetching block at height: {}.", height);
+                        println!("@zingoindexertest: Fetching block at height: {}.", height);
                         let compact_block = get_block_from_node(&zebrad_uri, &height).await;
                         match compact_block {
                             Ok(block) => {
@@ -273,7 +273,7 @@ impl CompactTxStreamer for ProxyClient {
     /// Same as GetBlockRange except actions contain only nullifiers.
     ///
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_block_range_nullifiers<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<BlockRange>,
@@ -292,9 +292,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_block_range_nullifiers.");
+        println!("@zingoindexerd: Received call of get_block_range_nullifiers.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_block_range_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_block_range_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
@@ -314,7 +314,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_transaction.");
+        println!("@zingoindexerd: Received call of get_transaction.");
         Box::pin(async {
             let hash = request.into_inner().hash;
             if hash.len() == 32 {
@@ -369,7 +369,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of send_transaction.");
+        println!("@zingoindexerd: Received call of send_transaction.");
         Box::pin(async {
             let hex_tx = hex::encode(request.into_inner().data);
             let tx_output = JsonRpcConnector::new(
@@ -412,7 +412,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_taddress_txids.");
+        println!("@zingoindexerd: Received call of get_taddress_txids.");
         Box::pin(async move {
             let block_filter = request.into_inner();
             let address = block_filter.address;
@@ -500,7 +500,7 @@ impl CompactTxStreamer for ProxyClient {
     }
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_taddress_balance<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<AddressList>,
@@ -516,14 +516,14 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_taddress_balance.");
+        println!("@zingoindexerd: Received call of get_taddress_balance.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_taddress_balance not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_taddress_balance not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     #[must_use]
     #[allow(clippy::type_complexity, clippy::type_repetition_in_bounds)]
     fn get_taddress_balance_stream<'life0, 'async_trait>(
@@ -540,9 +540,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_taddress_balance_stream.");
+        println!("@zingoindexerd: Received call of get_taddress_balance_stream.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_taddress_balance_stream not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_taddress_balance_stream not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
@@ -561,7 +561,7 @@ impl CompactTxStreamer for ProxyClient {
     /// in the exclude list that don't exist in the mempool are ignored.
     ///
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_mempool_tx<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<Exclude>,
@@ -580,9 +580,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_mempool_tx.");
+        println!("@zingoindexerd: Received call of get_mempool_tx.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_mempool_tx not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_mempool_tx not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
@@ -593,8 +593,8 @@ impl CompactTxStreamer for ProxyClient {
     /// Return a stream of current Mempool transactions. This will keep the output stream open while
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     ///
-    /// TODO: This implementation is slow. Zingo-Proxy's blockcache state engine should keep its own internal mempool state.
-    ///     - This RPC should query Zingo-Proxy's internal mempool state rather than creating its own mempool and directly querying zebrad.
+    /// TODO: This implementation is slow. Zingo-Indexer's blockcache state engine should keep its own internal mempool state.
+    ///     - This RPC should query Zingo-Indexer's internal mempool state rather than creating its own mempool and directly querying zebrad.
     fn get_mempool_stream<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<Empty>,
@@ -613,7 +613,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_mempool_stream.");
+        println!("@zingoindexerd: Received call of get_mempool_stream.");
         Box::pin(async {
             let zebrad_client = JsonRpcConnector::new(
                 self.zebrad_uri.clone(),
@@ -738,7 +738,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_tree_state.");
+        println!("@zingoindexerd: Received call of get_tree_state.");
         Box::pin(async {
             let block_id = request.into_inner();
             let hash_or_height = if block_id.height != 0 {
@@ -776,7 +776,7 @@ impl CompactTxStreamer for ProxyClient {
     }
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_latest_tree_state<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<Empty>,
@@ -792,9 +792,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_latest_tree_state.");
+        println!("@zingoindexerd: Received call of get_latest_tree_state.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_latest_tree_state not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_latest_tree_state not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
@@ -806,7 +806,7 @@ impl CompactTxStreamer for ProxyClient {
     /// note commitment trees.
     ///
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_subtree_roots<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<GetSubtreeRootsArg>,
@@ -825,14 +825,14 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_subtree_roots.");
+        println!("@zingoindexerd: Received call of get_subtree_roots.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_subtree_roots not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_subtree_roots not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_address_utxos<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<GetAddressUtxosArg>,
@@ -851,9 +851,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_address_utxos.");
+        println!("@zingoindexerd: Received call of get_address_utxos.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_address_utxos not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_address_utxos not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
@@ -862,7 +862,7 @@ impl CompactTxStreamer for ProxyClient {
     type GetAddressUtxosStreamStream = tonic::Streaming<GetAddressUtxosReply>;
 
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn get_address_utxos_stream<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<GetAddressUtxosArg>,
@@ -881,9 +881,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_address_utxos_stream.");
+        println!("@zingoindexerd: Received call of get_address_utxos_stream.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("get_address_utxos_stream not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("get_address_utxos_stream not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 
@@ -903,7 +903,7 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of get_lightd_info.");
+        println!("@zingoindexerd: Received call of get_lightd_info.");
         // TODO: Add user and password as fields of ProxyClient and use here.
         // TODO: Return Nym_Address in get_lightd_info response, for use by wallets.
         Box::pin(async {
@@ -942,7 +942,7 @@ impl CompactTxStreamer for ProxyClient {
 
             let lightd_info = LightdInfo {
                 version: build_info.version,
-                vendor: "ZingoLabs ZingoProxyD".to_string(),
+                vendor: "ZingoLabs ZingoIndexerD".to_string(),
                 taddr_support: true,
                 chain_name: blockchain_info.chain,
                 sapling_activation_height: sapling_height.0 as u64,
@@ -963,7 +963,7 @@ impl CompactTxStreamer for ProxyClient {
 
     // /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production) [from zebrad]
     /// This RPC has not been implemented as it is not currently used by zingolib.
-    /// If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy).
+    /// If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer).
     fn ping<'life0, 'async_trait>(
         &'life0 self,
         _request: tonic::Request<Duration>,
@@ -979,9 +979,9 @@ impl CompactTxStreamer for ProxyClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoproxyd: Received call of ping.");
+        println!("@zingoindexerd: Received call of ping.");
         Box::pin(async {
-            Err(tonic::Status::unimplemented("ping not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+            Err(tonic::Status::unimplemented("ping not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
     }
 }

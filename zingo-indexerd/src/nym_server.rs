@@ -2,7 +2,7 @@
 //!
 //! TODO: - Add NymServerError error type and rewrite functions to return <Result<(), NymServerError>>, propagating internal errors. Include NymClientError from zingo-rpc::nym::utils.
 //!       - Update NymServer to handle all service RPCs (currently only accepts send_command). [Return "Not Yet Implemented" for unimplemented RPC's?]
-//!       - Update NymServer to handle multiple requests, from multiple clients, simultaniously. [Combine with zingoproxyd "queue" logic when implemented?]
+//!       - Update NymServer to handle multiple requests, from multiple clients, simultaniously. [Combine with zingoindexerd "queue" logic when implemented?]
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -14,7 +14,7 @@ use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 
 use zingo_rpc::{
     primitives::client::{NymClient, ProxyClient},
-    queue::request::ZingoProxyRequest,
+    queue::request::ZingoIndexerRequest,
 };
 
 /// Wrapper struct for a Nym client.
@@ -38,7 +38,7 @@ impl NymServer {
             // NOTE: the following should be removed with the addition of the queue and worker pool.
             let lwd_port = 8080;
             let zebrad_port = 18232;
-            let proxy_client = ProxyClient {
+            let indexer_client = ProxyClient {
                 lightwalletd_uri: http::Uri::builder()
                     .scheme("http")
                     .authority(format!("localhost:{lwd_port}"))
@@ -79,27 +79,27 @@ impl NymServer {
                     request_in[0].sender_tag.unwrap().to_base58_string(),
                 )
                 .unwrap();
-                // --- build ZingoProxyRequest
-                let zingo_proxy_request =
-                    ZingoProxyRequest::new_from_nym(return_recipient, request_vu8.as_ref())
+                // --- build ZingoIndexerRequest
+                let zingo_indexer_request =
+                    ZingoIndexerRequest::new_from_nym(return_recipient, request_vu8.as_ref())
                         .unwrap();
 
                 // print request for testing
                 // println!(
-                //     "@zingoproxyd[nym][TEST]: ZingoProxyRequest recieved: {:?}.",
-                //     zingo_proxy_request
+                //     "@zingoindexerd[nym][TEST]: ZingoIndexerRequest recieved: {:?}.",
+                //     zingo_indexer_request
                 // );
 
                 // --- process request
                 // NOTE: when the queue is added requests will not be processed here but by the queue!
-                let response = proxy_client
-                    .process_nym_request(&zingo_proxy_request)
+                let response = indexer_client
+                    .process_nym_request(&zingo_indexer_request)
                     .await
                     .unwrap();
 
                 // print response for testing
                 // println!(
-                //     "@zingoproxyd[nym][TEST]: Response sent: {:?}.",
+                //     "@zingoindexerd[nym][TEST]: Response sent: {:?}.",
                 //     &response[..],
                 // );
 
@@ -163,7 +163,7 @@ impl NymServer {
 
 //                 // --- print request for testing
 //                 println!(
-//                     "@zingoproxyd[nym]: request received: {:?} - request length: {}",
+//                     "@zingoindexerd[nym]: request received: {:?} - request length: {}",
 //                     &request_vu8[..],
 //                     &request_vu8[..].len()
 //                 );
@@ -180,7 +180,7 @@ impl NymServer {
 
 //                 //print response for testing
 //                 println!(
-//                     "@zingoproxyd[nym]: response sent: {:?} - response length: {}",
+//                     "@zingoindexerd[nym]: response sent: {:?} - response length: {}",
 //                     &response_vu8[..],
 //                     &response_vu8[..].len()
 //                 );

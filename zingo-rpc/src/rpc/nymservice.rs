@@ -2,7 +2,7 @@
 
 use prost::Message;
 
-use crate::{primitives::client::ProxyClient, queue::request::ZingoProxyRequest};
+use crate::{primitives::client::ProxyClient, queue::request::ZingoIndexerRequest};
 
 #[cfg(not(feature = "nym_poc"))]
 use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;
@@ -14,10 +14,10 @@ impl ProxyClient {
     /// Processes gRPC requests coming from the nym server.
     pub async fn process_nym_request(
         &self,
-        request: &ZingoProxyRequest,
+        request: &ZingoIndexerRequest,
     ) -> Result<Vec<u8>, tonic::Status> {
         match request {
-            ZingoProxyRequest::NymServerRequest(_) => match request.method().as_str() {
+            ZingoIndexerRequest::NymServerRequest(_) => match request.method().as_str() {
                 "GetLightdInfo" => match prost::Message::decode(&request.body()[..]) {
                     Ok(input) => {
                         let tonic_request = tonic::Request::new(input);
@@ -75,7 +75,7 @@ impl ProxyClient {
                 "get_address_utxos" |
                 "get_address_utxos_stream" |
                 "ping" => {
-                    Err(tonic::Status::unimplemented("RPC not yet implemented over nym. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+                    Err(tonic::Status::unimplemented("RPC not yet implemented over nym. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
                     },
                 _ => Err(tonic::Status::invalid_argument("Incorrect Method String")),
             },

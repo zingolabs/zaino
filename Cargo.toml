@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "integration-tests",
-    "zingoproxy-testutils",
-    "zingo-proxyd",
+    "zingoindexer-testutils",
+    "zingo-indexerd",
     "zingo-rpc",
 ]
 

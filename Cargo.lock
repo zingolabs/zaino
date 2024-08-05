@@ -2556,7 +2556,7 @@ name = "integration-tests"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "zingoproxy-testutils",
+ "zingoindexer-testutils",
 ]
 
 [[package]]
@@ -7160,6 +7160,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "zingo-indexerd"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "http",
+ "nym-bin-common",
+ "nym-sdk",
+ "nym-sphinx-anonymous-replies",
+ "tokio",
+ "tonic",
+ "zcash_client_backend",
+ "zingo-netutils",
+ "zingo-rpc",
+]
+
+[[package]]
 name = "zingo-memo"
 version = "0.1.0"
 source = "git+https://github.com/zingolabs/zingolib.git?branch=nym_integration#f5eeb37c04d7b1b58f8c6189291ce73349cec471"
@@ -7187,22 +7203,6 @@ dependencies = [
  "tower",
  "webpki-roots 0.21.1",
  "zcash_client_backend",
-]
-
-[[package]]
-name = "zingo-proxyd"
-version = "0.1.0"
-dependencies = [
- "ctrlc",
- "http",
- "nym-bin-common",
- "nym-sdk",
- "nym-sphinx-anonymous-replies",
- "tokio",
- "tonic",
- "zcash_client_backend",
- "zingo-netutils",
- "zingo-rpc",
 ]
 
 [[package]]
@@ -7297,6 +7297,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zingoindexer-testutils"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "http",
+ "portpicker",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "zingo-indexerd",
+ "zingo-rpc",
+ "zingo-testutils",
+ "zingoconfig",
+ "zingolib",
+]
+
+[[package]]
 name = "zingolib"
 version = "0.2.0"
 source = "git+https://github.com/zingolabs/zingolib.git?branch=nym_integration#f5eeb37c04d7b1b58f8c6189291ce73349cec471"
@@ -7362,21 +7379,4 @@ dependencies = [
  "zingo-status",
  "zingo-testvectors",
  "zingoconfig",
-]
-
-[[package]]
-name = "zingoproxy-testutils"
-version = "0.1.0"
-dependencies = [
- "ctrlc",
- "http",
- "portpicker",
- "tempfile",
- "tokio",
- "tonic",
- "zingo-proxyd",
- "zingo-rpc",
- "zingo-testutils",
- "zingoconfig",
- "zingolib",
 ]

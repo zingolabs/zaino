@@ -1,4 +1,4 @@
-//! Zingo-Proxy daemon
+//! Zingo-Indexer daemon
 
 use std::{
     process,
@@ -7,14 +7,14 @@ use std::{
         Arc,
     },
 };
-use zingoproxylib::proxy::spawn_proxy;
+use zingoindexerlib::indexer::spawn_indexer;
 
 #[tokio::main]
 async fn main() {
     let online = Arc::new(AtomicBool::new(true));
     let online_ctrlc = online.clone();
     ctrlc::set_handler(move || {
-        println!("@zingoproxyd: Received Ctrl+C, exiting.");
+        println!("@zingoindexerd: Received Ctrl+C, exiting.");
         online_ctrlc.store(false, Ordering::SeqCst);
         process::exit(0);
     })
@@ -23,10 +23,10 @@ async fn main() {
     nym_bin_common::logging::setup_logging();
 
     #[allow(unused_mut)]
-    let mut proxy_port: u16 = 8080;
+    let mut indexer_port: u16 = 8080;
     #[cfg(feature = "nym_poc")]
     {
-        proxy_port = 8088;
+        indexer_port = 8088;
     }
 
     #[allow(unused_mut)]
@@ -38,8 +38,8 @@ async fn main() {
 
     let zcashd_port: u16 = 18232;
 
-    let (_handles, _nym_address) = spawn_proxy(
-        &proxy_port,
+    let (_handles, _nym_address) = spawn_indexer(
+        &indexer_port,
         &lwd_port,
         &zcashd_port,
         "/tmp/nym_server",

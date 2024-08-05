@@ -22,7 +22,7 @@ impl NymClient {
         .await?;
 
         let nym_addr = client.nym_address().to_string();
-        println!("@zingoproxyd[nym]: Nym server listening on: {nym_addr}.");
+        println!("@zingoindexerd[nym]: Nym server listening on: {nym_addr}.");
 
         Ok(Self(client))
     }

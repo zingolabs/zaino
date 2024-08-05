@@ -69,7 +69,7 @@ impl JsonRpcConnector {
     ///
     /// TODO: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     /// This is because the node's queue can become overloaded and stop servicing RPCs.
-    /// This functionality is weak and should be incorporated in Zingo-Proxy's queue mechanism [WIP] that handles various errors appropriately.
+    /// This functionality is weak and should be incorporated in Zingo-Indexer's queue mechanism [WIP] that handles various errors appropriately.
     pub async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
@@ -164,7 +164,7 @@ impl JsonRpcConnector {
     /// - `address_strings`: (object, example={"addresses": ["tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"]}) A JSON map with a single entry
     ///     - `addresses`: (array of strings) A list of base-58 encoded addresses.
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -227,7 +227,7 @@ impl JsonRpcConnector {
     /// method: post
     /// tags: blockchain
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_best_block_hash(
         &self,
     ) -> Result<BestBlockHashResponse, JsonRpcConnectorError> {
@@ -274,7 +274,7 @@ impl JsonRpcConnector {
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_subtrees_by_index(
         &self,
         pool: String,
@@ -355,7 +355,7 @@ impl JsonRpcConnector {
     ///
     /// - `addresses`: (array, required, example={\"addresses\": [\"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ\"]}) The addresses to get outputs from.
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -412,27 +412,27 @@ pub async fn test_node_and_return_uri(
         .map_err(JsonRpcConnectorError::InvalidUriError)?;
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
     for _ in 0..3 {
-        println!("@zingoproxyd: Trying connection on IPv4.");
+        println!("@zingoindexerd: Trying connection on IPv4.");
         match test_node_connection(ipv4_uri.clone(), user.clone(), password.clone()).await {
             Ok(_) => {
                 println!(
-                    "@zingoproxyd: Connected to node using IPv4 at address {}.",
+                    "@zingoindexerd: Connected to node using IPv4 at address {}.",
                     ipv4_uri
                 );
                 return Ok(ipv4_uri);
             }
             Err(e_ipv4) => {
-                eprintln!("@zingoproxyd: Failed to connect to node using IPv4 with error: {}\n@zingoproxyd: Trying connection on IPv6.", e_ipv4);
+                eprintln!("@zingoindexerd: Failed to connect to node using IPv4 with error: {}\n@zingoindexerd: Trying connection on IPv6.", e_ipv4);
                 match test_node_connection(ipv6_uri.clone(), user.clone(), password.clone()).await {
                     Ok(_) => {
                         println!(
-                            "@zingoproxyd: Connected to node using IPv6 at address {}.",
+                            "@zingoindexerd: Connected to node using IPv6 at address {}.",
                             ipv6_uri
                         );
                         return Ok(ipv6_uri);
                     }
                     Err(e_ipv6) => {
-                        eprintln!("@zingoproxyd: Failed to connect to node using IPv6 with error: {}.\n@zingoproxyd: Connection not established. Retrying..", e_ipv6);
+                        eprintln!("@zingoindexerd: Failed to connect to node using IPv6 with error: {}.\n@zingoindexerd: Connection not established. Retrying..", e_ipv6);
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     }
                 }
@@ -440,6 +440,6 @@ pub async fn test_node_and_return_uri(
         }
         interval.tick().await;
     }
-    eprintln!("@zingoproxyd: Could not establish connection with node. \n@zingoproxyd: Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \n@zingoproxyd: Exiting..");
+    eprintln!("@zingoindexerd: Could not establish connection with node. \n@zingoindexerd: Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \n@zingoindexerd: Exiting..");
     std::process::exit(1);
 }

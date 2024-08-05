@@ -2,7 +2,7 @@
 
 use crate::nym::error::NymError;
 
-/// Zingo-Proxy request errors.
+/// Zingo-Indexer request errors.
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
     /// Errors originating from incorrect enum types being called.

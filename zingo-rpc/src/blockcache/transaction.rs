@@ -655,7 +655,7 @@ impl TransactionData {
     }
 }
 
-/// Zingo-Proxy struct for a full zcash transaction.
+/// Zingo-Indexer struct for a full zcash transaction.
 #[derive(Debug)]
 pub struct FullTransaction {
     /// Full transaction data.
@@ -734,7 +734,7 @@ impl FullTransaction {
     pub fn to_compact(self, index: u64) -> Result<CompactTx, ParseError> {
         let hash = self.tx_id;
 
-        // NOTE: LightWalletD currently does not return a fee and is not currently priority here. Please open an Issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy) if you require this functionality.
+        // NOTE: LightWalletD currently does not return a fee and is not currently priority here. Please open an Issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer) if you require this functionality.
         let fee = 0;
 
         let spends = self

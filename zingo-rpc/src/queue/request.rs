@@ -107,20 +107,20 @@ pub struct GrpcServerRequest {
     request: GrpcRequest,
 }
 
-/// Zingo-Proxy request, used by request queue.
+/// Zingo-Indexer request, used by request queue.
 #[derive(Debug)]
-pub enum ZingoProxyRequest {
+pub enum ZingoIndexerRequest {
     /// Requests originating from the Nym server.
     NymServerRequest(NymServerRequest),
     /// Requests originating from the gRPC server.
     GrpcServerRequest(GrpcServerRequest),
 }
 
-impl ZingoProxyRequest {
-    /// Creates a ZingoProxyRequest from an encoded gRPC service call, recieved by the Nym server.
+impl ZingoIndexerRequest {
+    /// Creates a ZingoIndexerRequest from an encoded gRPC service call, recieved by the Nym server.
     pub fn new_from_nym(metadata: AnonymousSenderTag, bytes: &[u8]) -> Result<Self, RequestError> {
         let (id, method, body) = read_nym_request_data(bytes)?;
-        Ok(ZingoProxyRequest::NymServerRequest(NymServerRequest {
+        Ok(ZingoIndexerRequest::NymServerRequest(NymServerRequest {
             queuedata: QueueData::new(),
             request: NymRequest {
                 id,
@@ -131,11 +131,11 @@ impl ZingoProxyRequest {
         }))
     }
 
-    /// Creates a ZingoProxyRequest from a gRPC service call, recieved by the gRPC server.
+    /// Creates a ZingoIndexerRequest from a gRPC service call, recieved by the gRPC server.
     ///
     /// TODO: implement proper functionality along with queue.
     pub fn new_from_grpc(metadata: MetadataMap, bytes: &[u8]) -> Self {
-        ZingoProxyRequest::GrpcServerRequest(GrpcServerRequest {
+        ZingoIndexerRequest::GrpcServerRequest(GrpcServerRequest {
             queuedata: QueueData::new(),
             request: GrpcRequest {
                 id: 0,                      // TODO
@@ -149,56 +149,58 @@ impl ZingoProxyRequest {
     /// Increases the requeue attempts for the request.
     pub fn increase_requeues(&mut self) {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref mut req) => req.queuedata.increase_requeues(),
-            ZingoProxyRequest::GrpcServerRequest(ref mut req) => req.queuedata.increase_requeues(),
+            ZingoIndexerRequest::NymServerRequest(ref mut req) => req.queuedata.increase_requeues(),
+            ZingoIndexerRequest::GrpcServerRequest(ref mut req) => {
+                req.queuedata.increase_requeues()
+            }
         }
     }
 
     /// Returns the duration sunce the request was received.
     pub fn duration(&self) -> Result<std::time::Duration, RequestError> {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.queuedata.duration(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.queuedata.duration(),
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.queuedata.duration(),
+            ZingoIndexerRequest::GrpcServerRequest(ref req) => req.queuedata.duration(),
         }
     }
 
     /// Returns the number of times the request has been requeued.
     pub fn requeues(&self) -> u32 {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.queuedata.requeues(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.queuedata.requeues(),
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.queuedata.requeues(),
+            ZingoIndexerRequest::GrpcServerRequest(ref req) => req.queuedata.requeues(),
         }
     }
 
     /// Returns the client assigned id for this request, only used to construct response.
     pub fn client_id(&self) -> u64 {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.id,
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.id,
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.request.id,
+            ZingoIndexerRequest::GrpcServerRequest(ref req) => req.request.id,
         }
     }
 
     /// Returns the RPC being called by the request.
     pub fn method(&self) -> String {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.method.clone(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.method.clone(),
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.request.method.clone(),
+            ZingoIndexerRequest::GrpcServerRequest(ref req) => req.request.method.clone(),
         }
     }
 
     /// Returns request metadata including sender data.
     pub fn metadata(&self) -> RequestMetaData {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.metadata.clone(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.metadata.clone(),
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.request.metadata.clone(),
+            ZingoIndexerRequest::GrpcServerRequest(ref req) => req.request.metadata.clone(),
         }
     }
 
     /// Returns the number of times the request has been requeued.
     pub fn body(&self) -> Vec<u8> {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.request.body.clone(),
-            ZingoProxyRequest::GrpcServerRequest(ref req) => req.request.body.clone(),
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.request.body.clone(),
+            ZingoIndexerRequest::GrpcServerRequest(ref req) => req.request.body.clone(),
         }
     }
 }
