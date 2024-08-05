@@ -7215,6 +7215,7 @@ dependencies = [
  "base64 0.13.1",
  "byteorder",
  "bytes 1.6.0",
+ "crossbeam-channel",
  "futures",
  "hex 0.4.3",
  "http",

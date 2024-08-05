@@ -94,8 +94,8 @@ pub struct Worker {
     queue: mpsc::Receiver<ZingoProxyRequest>,
     /// Used to requeue requests.
     _requeue: mpsc::Sender<ZingoProxyRequest>,
-    /// Used to send responses to the nym_responder.
-    nym_responder: mpsc::Sender<(Vec<u8>, AnonymousSenderTag)>,
+    /// Used to send responses to the nym_dispatcher.
+    nym_response_queue: mpsc::Sender<(Vec<u8>, AnonymousSenderTag)>,
     /// gRPC client used for processing requests received over http.
     grpc_client: GrpcClient,
     /// Workers current status.
@@ -110,25 +110,25 @@ impl Worker {
         worker_id: usize,
         queue: mpsc::Receiver<ZingoProxyRequest>,
         _requeue: mpsc::Sender<ZingoProxyRequest>,
-        nym_responder: mpsc::Sender<(Vec<u8>, AnonymousSenderTag)>,
+        nym_response_queue: mpsc::Sender<(Vec<u8>, AnonymousSenderTag)>,
         lightwalletd_uri: Uri,
         zebrad_uri: Uri,
         online: Arc<AtomicBool>,
-    ) -> Result<Self, WorkerError> {
+    ) -> Self {
         let grpc_client = GrpcClient {
             lightwalletd_uri,
             zebrad_uri,
             online: online.clone(),
         };
-        Ok(Worker {
+        Worker {
             worker_id,
             queue,
             _requeue,
-            nym_responder,
+            nym_response_queue,
             grpc_client,
             status: WorkerStatus::new(StatusType::Spawning),
             online,
-        })
+        }
     }
 
     /// Starts queue worker service routine.
@@ -172,7 +172,7 @@ impl Worker {
                                     .process_nym_request(&request)
                                     .await {
                                     Ok(response) => {
-                                        if let Err(e) = self.nym_responder.send((response, request.get_request().metadata())).await {
+                                        if let Err(e) = self.nym_response_queue.send((response, request.get_request().metadata())).await {
                                             // TODO:: Handle this error!
                                             eprintln!("Failed to send response to nym responder: {}", e);
                                         }

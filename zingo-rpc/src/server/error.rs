@@ -5,6 +5,20 @@ use tokio::sync::mpsc::error::TrySendError;
 
 use crate::{nym::error::NymError, server::request::ZingoProxyRequest};
 
+/// Zingo-Proxy queue errors.
+#[derive(Debug, thiserror::Error)]
+pub enum QueueError<T> {
+    /// Returned when a requests is pushed to a full queue.
+    #[error("Queue Full")]
+    QueueFull(T),
+    /// Returned when a worker or dispatcher tries to receive from an empty queue.
+    #[error("Queue Empty")]
+    QueueEmpty,
+    /// Returned when a worker or dispatcher tries to receive from a closed queue.
+    #[error("Queue Disconnected")]
+    QueueClosed,
+}
+
 /// Zingo-Proxy request errors.
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {

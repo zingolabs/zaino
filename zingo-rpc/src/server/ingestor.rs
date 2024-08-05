@@ -7,11 +7,15 @@ use std::{
         Arc,
     },
 };
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::net::TcpListener;
 
 use crate::{
     nym::{client::NymClient, error::NymError},
-    server::{error::IngestorError, request::ZingoProxyRequest},
+    server::{
+        error::{IngestorError, QueueError},
+        queue::QueueSender,
+        request::ZingoProxyRequest,
+    },
 };
 
 /// Status of the worker.
@@ -28,7 +32,7 @@ pub struct TcpIngestor {
     /// Tcp Listener.
     ingestor: TcpListener,
     /// Used to send requests to the queue.
-    queue: mpsc::Sender<ZingoProxyRequest>,
+    queue: QueueSender<ZingoProxyRequest>,
     /// Represents the Online status of the gRPC server.
     online: Arc<AtomicBool>,
     /// Current status of the ingestor.
@@ -39,7 +43,7 @@ impl TcpIngestor {
     /// Creates a Tcp Ingestor.
     pub async fn spawn(
         listen_addr: SocketAddr,
-        queue: mpsc::Sender<ZingoProxyRequest>,
+        queue: QueueSender<ZingoProxyRequest>,
         online: Arc<AtomicBool>,
     ) -> Result<Self, IngestorError> {
         let listener = TcpListener::bind(listen_addr).await?;
@@ -54,9 +58,9 @@ impl TcpIngestor {
     /// Starts Tcp service.
     pub fn serve(mut self) -> tokio::task::JoinHandle<Result<(), IngestorError>> {
         tokio::task::spawn(async move {
-            // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
+            // NOTE: This interval may need to be changed or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-            // TODO Check self.status and wait on server / node if on hold.
+            // TODO Check blockcache sync status and wait on server / node if on hold.
             self.status = IngestorStatus::Listening;
             loop {
                 tokio::select! {
@@ -67,25 +71,31 @@ impl TcpIngestor {
                         }
                     }
                     incoming = self.ingestor.accept() => {
+                        if !self.check_online() {
+                            println!("Tcp ingestor shutting down.");
+                            return Ok(());
+                        }
                         match incoming {
                             Ok((stream, _)) => {
                                 if !self.check_online() {
                                     println!("Tcp ingestor shutting down.");
                                     return Ok(());
                                 }
-                                // TODO: Convert to use try_send().
-                                if let Err(e) = self.queue.send(ZingoProxyRequest::new_from_grpc(stream)).await {
-                                    // TODO:: Return queue full tonic status over tcpstream and close (that TcpStream..).
-                                    eprintln!("Failed to send connection: {}", e);
+                                match self.queue.try_send(ZingoProxyRequest::new_from_grpc(stream)) {
+                                    Ok(_) => {}
+                                    Err(QueueError::QueueFull(_request)) => {
+                                        eprintln!("Queue Full.");
+                                        // TODO: Return queue full tonic status over tcpstream and close (that TcpStream..).
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Queue Closed. Failed to send request to queue: {}", e);
+                                        // TODO: Handle queue closed error here.
+                                    }
                                 }
                             }
                             Err(e) => {
-                                // TODO: Handle error here (count errors and restart ingestor / proxy or initiate shotdown?)
                                 eprintln!("Failed to accept connection with client: {}", e);
-                                if !self.check_online() {
-                                    println!("Tcp ingestor shutting down.");
-                                    return Ok(());
-                                }
+                                // TODO: Handle failed connection errors here (count errors and restart ingestor / proxy or initiate shotdown?)
                                 continue;
                             }
                         }
@@ -115,7 +125,7 @@ pub struct NymIngestor {
     /// Nym Client
     ingestor: NymClient,
     /// Used to send requests to the queue.
-    queue: mpsc::Sender<ZingoProxyRequest>,
+    queue: QueueSender<ZingoProxyRequest>,
     /// Represents the Online status of the gRPC server.
     online: Arc<AtomicBool>,
     /// Current status of the ingestor.
@@ -126,7 +136,7 @@ impl NymIngestor {
     /// Creates a Nym Ingestor
     pub async fn spawn(
         nym_conf_path: &str,
-        queue: mpsc::Sender<ZingoProxyRequest>,
+        queue: QueueSender<ZingoProxyRequest>,
         online: Arc<AtomicBool>,
     ) -> Result<Self, IngestorError> {
         let listener = NymClient::spawn(&format!("{}/ingestor", nym_conf_path)).await?;
@@ -143,7 +153,7 @@ impl NymIngestor {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-            // TODO Check self.status and wait on server / node if on hold.
+            // TODO Check blockcache sync status and wait on server / node if on hold.
             self.status = IngestorStatus::Listening;
 
             loop {
@@ -161,7 +171,7 @@ impl NymIngestor {
                                     println!("Nym ingestor shutting down.");
                                     return Ok(());
                                 }
-                                // NOTE / TODO: POC server checked for empty emssages here (if request.is_empty()..). Could be required here.
+                                // NOTE / TODO: POC server checked for empty emssages here (if request.is_empty()). Could be required here...
                                 // TODO: Handle EmptyMessageError here.
                                 let request_vu8 = request
                                     .first()
@@ -174,10 +184,16 @@ impl NymIngestor {
                                 // TODO: Handle RequestError here.
                                 let zingo_proxy_request =
                                     ZingoProxyRequest::new_from_nym(return_recipient, request_vu8.as_ref())?;
-                                // TODO: Convert to use try_send().
-                                if let Err(e) = self.queue.send(zingo_proxy_request).await {
-                                    // TODO: Return queue full tonic status over nym mixnet.
-                                    eprintln!("Failed to send connection: {}", e);
+                                match self.queue.try_send(zingo_proxy_request) {
+                                    Ok(_) => {}
+                                    Err(QueueError::QueueFull(_request)) => {
+                                        eprintln!("Queue Full.");
+                                        // TODO: Return queue full tonic status over mixnet.
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Queue Closed. Failed to send request to queue: {}", e);
+                                        // TODO: Handle queue closed error here.
+                                    }
                                 }
                             }
                             None => {
