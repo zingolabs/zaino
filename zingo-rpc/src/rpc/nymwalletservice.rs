@@ -4,21 +4,54 @@
 
 use std::env;
 use tonic::{async_trait, Request, Response, Status};
+
+use crate::{
+    primitives::client::{NymClient, ProxyClient},
+    walletrpc::utils::{deserialize_response, serialize_request, write_nym_request_data},
+};
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
         compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
-        BlockRange, ChainSpec, Empty, Exclude, GetAddressUtxosArg, GetAddressUtxosReply,
+        BlockRange, ChainSpec, Duration, Empty, Exclude, GetAddressUtxosArg, GetAddressUtxosReply,
         GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
         SendResponse, SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
 
-use crate::{
-    define_grpc_passthrough,
-    primitives::{NymClient, ProxyClient},
-    walletrpc::utils::{deserialize_response, serialize_request, write_nym_request_data},
-};
+macro_rules! define_grpc_passthrough {
+    (fn
+        $name:ident(
+            &$self:ident$(,$($arg:ident: $argty:ty,)*)?
+        ) -> $ret:ty
+    ) => {
+        #[must_use]
+        #[allow(clippy::type_complexity, clippy::type_repetition_in_bounds)]
+        fn $name<'life0, 'async_trait>(&'life0 $self$($(, $arg: $argty)*)?) ->
+           ::core::pin::Pin<Box<
+                dyn ::core::future::Future<
+                    Output = ::core::result::Result<
+                        ::tonic::Response<$ret>,
+                        ::tonic::Status
+                >
+            > + ::core::marker::Send + 'async_trait
+        >>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            println!("@zingoproxyd: Received call of {}.", stringify!($name));
+            Box::pin(async {
+                ::zingo_netutils::GrpcConnector::new($self.lightwalletd_uri.clone())
+                    .get_client()
+                    .await
+                    .expect("Proxy server failed to create client")
+                    .$name($($($arg),*)?)
+                    .await
+            })
+        }
+    };
+}
 
 #[async_trait]
 impl CompactTxStreamer for ProxyClient {
@@ -86,11 +119,10 @@ impl CompactTxStreamer for ProxyClient {
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
-        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
         let response_data = client
             .nym_forward(recipient_address.as_str(), nym_request)
-            .await
-            .unwrap();
+            .await?;
         client.nym_close().await;
         // -- deserialize SendResponse
         let response: SendResponse = match deserialize_response(response_data.as_slice()).await {
@@ -225,11 +257,10 @@ impl CompactTxStreamer for ProxyClient {
         let args: Vec<String> = env::args().collect();
         let recipient_address: String = args[1].clone();
         let nym_conf_path = "/tmp/nym_client";
-        let mut client = NymClient::nym_spawn(nym_conf_path).await;
+        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
         let response_data = client
             .nym_forward(recipient_address.as_str(), nym_request)
-            .await
-            .unwrap();
+            .await?;
         client.nym_close().await;
         // -- deserialize LightdInfo
         let response: LightdInfo = match deserialize_response(response_data.as_slice()).await {
@@ -247,7 +278,7 @@ impl CompactTxStreamer for ProxyClient {
     define_grpc_passthrough!(
         fn ping(
             &self,
-            request: tonic::Request<zcash_client_backend::proto::service::Duration>,
+            request: tonic::Request<Duration>,
         ) -> PingResponse
     );
 

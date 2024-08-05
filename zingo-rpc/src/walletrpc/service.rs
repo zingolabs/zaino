@@ -2,29 +2,27 @@
 //!
 //! NOTE: Currently only send_transaction has been implemented over nym.
 
+use bytes::Bytes;
 use http::Uri;
 use http_body::Body;
-use zcash_client_backend::proto::compact_formats::{CompactBlock, CompactTx};
-use zcash_client_backend::proto::service::{
-    compact_tx_streamer_client::CompactTxStreamerClient, RawTransaction, SendResponse,
-};
-use zcash_client_backend::proto::service::{
-    Address, AddressList, Balance, BlockId, BlockRange, ChainSpec, Duration, Empty, Exclude,
-    GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg,
-    LightdInfo, PingResponse, SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
-};
-
-use bytes::Bytes;
 use std::error::Error as StdError;
 use tonic::{self, codec::CompressionEncoding, Status};
 use tonic::{service::interceptor::InterceptedService, transport::Endpoint};
 
 use crate::{
-    primitives::NymClient,
-    walletrpc::utils::{deserialize_response, serialize_request},
+    primitives::client::NymClient,
+    proto::{
+        compact_formats::{CompactBlock, CompactTx},
+        service::{
+            compact_tx_streamer_client::CompactTxStreamerClient, Address, AddressList, Balance,
+            BlockId, BlockRange, ChainSpec, Duration, Empty, Exclude, GetAddressUtxosArg,
+            GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo,
+            PingResponse, RawTransaction, SendResponse, SubtreeRoot, TransparentAddressBlockFilter,
+            TreeState, TxFilter,
+        },
+    },
+    walletrpc::utils::{deserialize_response, serialize_request, write_nym_request_data},
 };
-
-use super::utils::write_nym_request_data;
 
 /// Wrapper struct for the Nym enabled CompactTxStreamerClient.
 #[derive(Debug, Clone)]
@@ -240,8 +238,8 @@ where
                             }
                         };
                         let nym_conf_path = "/tmp/nym_client";
-                        let mut client = NymClient::nym_spawn(nym_conf_path).await;
-                        let response_data = client.nym_forward(addr, nym_request).await.unwrap();
+                        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
+                        let response_data = client.nym_forward(addr, nym_request).await?;
                         client.nym_close().await;
                         let response: SendResponse =
                             match deserialize_response(response_data.as_slice()).await {
@@ -428,8 +426,8 @@ where
                             }
                         };
                         let nym_conf_path = "/tmp/nym_client";
-                        let mut client = NymClient::nym_spawn(nym_conf_path).await;
-                        let response_data = client.nym_forward(addr, nym_request).await.unwrap();
+                        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
+                        let response_data = client.nym_forward(addr, nym_request).await?;
                         client.nym_close().await;
                         let response: LightdInfo =
                             match deserialize_response(response_data.as_slice()).await {

@@ -2,18 +2,18 @@
 
 use crate::{
     blockcache::{
+        error::{BlockCacheError, ParseError},
         transaction::FullTransaction,
         utils::{
             display_txids_to_server, read_bytes, read_i32, read_u32, read_zcash_script_i64,
-            ParseError, ParseFromSlice,
+            CompactSize, ParseFromSlice,
         },
     },
     jsonrpc::{connector::JsonRpcConnector, primitives::GetBlockResponse},
+    proto::compact_formats::{ChainMetadata, CompactBlock},
 };
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
-use zcash_client_backend::proto::compact_formats::{ChainMetadata, CompactBlock};
-use zcash_encoding::CompactSize;
 
 /// A block header, containing metadata about a block.
 ///
@@ -384,7 +384,7 @@ impl FullBlock {
 pub async fn get_block_from_node(
     zebra_uri: &http::Uri,
     height: &u32,
-) -> Result<CompactBlock, ParseError> {
+) -> Result<CompactBlock, BlockCacheError> {
     let zebrad_client = JsonRpcConnector::new(
         zebra_uri.clone(),
         Some("xxxxxx".to_string()),
@@ -410,9 +410,9 @@ pub async fn get_block_from_node(
                     time: _,
                     tx: _,
                     trees: _,
-                }) => Err(ParseError::InvalidData(
+                }) => Err(BlockCacheError::ParseError(ParseError::InvalidData(
                     "Received object block type, this should not be possible here.".to_string(),
-                )),
+                ))),
                 Ok(GetBlockResponse::Raw(block_hex)) => Ok(FullBlock::parse_to_compact(
                     block_hex.as_ref(),
                     Some(display_txids_to_server(tx)?),
@@ -422,9 +422,9 @@ pub async fn get_block_from_node(
                 Err(e) => Err(e.into()),
             }
         }
-        Ok(GetBlockResponse::Raw(_)) => Err(ParseError::InvalidData(
+        Ok(GetBlockResponse::Raw(_)) => Err(BlockCacheError::ParseError(ParseError::InvalidData(
             "Received raw block type, this should not be possible here.".to_string(),
-        )),
+        ))),
         Err(e) => Err(e.into()),
     }
 }

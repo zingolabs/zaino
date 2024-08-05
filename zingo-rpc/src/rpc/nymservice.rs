@@ -1,9 +1,14 @@
 //! Lightwallet service RPC Nym implementations.
 
 use prost::Message;
-use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamer;
 
-use crate::{primitives::ProxyClient, queue::request::ZingoProxyRequest};
+use crate::{primitives::client::ProxyClient, queue::request::ZingoProxyRequest};
+
+#[cfg(not(feature = "nym_poc"))]
+use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;
+
+#[cfg(feature = "nym_poc")]
+use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamer;
 
 impl ProxyClient {
     /// Processes gRPC requests coming from the nym server.

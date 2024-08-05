@@ -180,6 +180,8 @@ fn set_custom_drops(
                 );
             }
         }
+        // Assures tests fail on secondary thread panics.
+        assert!(false);
         std::process::exit(0);
     }));
 
@@ -203,6 +205,8 @@ fn set_custom_drops(
                     );
                 }
             }
+            // Assures tests fail on ctrlc exit.
+            assert!(false);
             std::process::exit(0);
         })
         .expect("Error setting Ctrl-C handler");
@@ -260,4 +264,59 @@ fn create_temp_conf_files(
     write_lightwalletd_yml(&conf_dir, lwd_port)?;
     write_zcash_conf(&conf_dir, rpcport)?;
     Ok(temp_dir)
+}
+
+/// Returns the zcash address of the Zingolib::lightclient.
+pub async fn get_zingo_address(
+    zingo_client: &zingolib::lightclient::LightClient,
+    pool: &str,
+) -> String {
+    zingolib::get_base_address!(zingo_client, pool)
+}
+
+/// Starts Zingolib::lightclients's mempool monitor.
+pub async fn start_zingo_mempool_monitor(zingo_client: &zingolib::lightclient::LightClient) {
+    let zingo_client_saved = zingo_client.export_save_buffer_async().await.unwrap();
+    let zingo_client_loaded = std::sync::Arc::new(
+        zingolib::lightclient::LightClient::read_wallet_from_buffer_async(
+            zingo_client.config(),
+            &zingo_client_saved[..],
+        )
+        .await
+        .unwrap(),
+    );
+    zingolib::lightclient::LightClient::start_mempool_monitor(zingo_client_loaded.clone());
+    // This seems to be long enough for the mempool monitor to kick in (from zingolib).
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+}
+
+/// Zingo-Proxy wrapper for Zingolib's Pool Enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyPool {
+    /// Orchard pool.
+    Orchard,
+    /// Sapling pool
+    Sapling,
+    /// Transparent poool.
+    Transparent,
+}
+
+impl From<ProxyPool> for zingolib::wallet::Pool {
+    fn from(test_pool: ProxyPool) -> Self {
+        match test_pool {
+            ProxyPool::Orchard => zingolib::wallet::Pool::Orchard,
+            ProxyPool::Sapling => zingolib::wallet::Pool::Sapling,
+            ProxyPool::Transparent => zingolib::wallet::Pool::Transparent,
+        }
+    }
+}
+
+impl From<zingolib::wallet::Pool> for ProxyPool {
+    fn from(pool: zingolib::wallet::Pool) -> Self {
+        match pool {
+            zingolib::wallet::Pool::Orchard => ProxyPool::Orchard,
+            zingolib::wallet::Pool::Sapling => ProxyPool::Sapling,
+            zingolib::wallet::Pool::Transparent => ProxyPool::Transparent,
+        }
+    }
 }

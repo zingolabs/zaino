@@ -3,6 +3,7 @@
 //! TODO: - Add GrpcServerError error type and rewrite functions to return <Result<(), GrpcServerError>>, propagating internal errors.
 //!       - Add user and password as fields of ProxyClient and use here.
 
+use http::Uri;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::{
@@ -10,10 +11,13 @@ use std::{
         Arc,
     },
 };
+use zingo_rpc::{jsonrpc::connector::test_node_and_return_uri, primitives::client::ProxyClient};
 
-use http::Uri;
+#[cfg(not(feature = "nym_poc"))]
+use zingo_rpc::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
+
+#[cfg(feature = "nym_poc")]
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zingo_rpc::{jsonrpc::connector::test_node_and_return_uri, primitives::ProxyClient};
 
 /// Configuration data for gRPC server.
 pub struct ProxyServer(pub ProxyClient);
