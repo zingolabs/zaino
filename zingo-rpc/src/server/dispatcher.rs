@@ -6,7 +6,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tokio::sync::mpsc;
 
 use crate::{
     nym::{client::NymClient, error::NymError},
@@ -15,12 +14,16 @@ use crate::{
 };
 
 /// Status of the worker.
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum DispatcherStatus {
     /// On hold, due to blockcache / node error.
     Inactive,
     /// Listening for new requests.
     Listening,
+    /// Running shutdown routine.
+    Closing,
+    /// Offline.
+    Offline,
 }
 
 /// Sends gRPC responses over Nym Mixnet.
@@ -65,14 +68,17 @@ impl NymDispatcher {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        if !self.check_online() {
-                            println!("Nym dispatcher shutting down.");
+                        if self.check_for_shutdown().await {
                             return Ok(());
                         }
                     }
                     incoming = self.response_queue.listen() => {
                         match incoming {
                             Ok(response) => {
+                                // NOTE: This may need to be removed / moved for scale use.
+                                if self.check_for_shutdown().await {
+                                    return Ok(());
+                                }
                                 if let Err(nym_e) = self.dispatcher
                                         .client
                                         .send_reply(response.1, response.0.clone())
@@ -95,8 +101,8 @@ impl NymDispatcher {
                                 }
                             }
                             Err(_e) => {
-                                //TODO: Handle this error here (return correct error type?)
                                 eprintln!("Response queue closed, nym dispatcher shutting down.");
+                                //TODO: Handle this error here (return correct error type?)
                                 return Ok(()); // Return Err!
                             }
                         }
@@ -106,9 +112,20 @@ impl NymDispatcher {
         })
     }
 
-    /// Ends the dispatcher.
-    pub async fn shutdown(self) {
-        todo!()
+    /// Checks indexers online status and ingestors internal status for closure signal.
+    pub async fn check_for_shutdown(&self) -> bool {
+        if let DispatcherStatus::Closing = self.status {
+            return true;
+        }
+        if !self.check_online() {
+            return true;
+        }
+        return false;
+    }
+
+    /// Sets the dispatcher to close gracefully.
+    pub async fn shutdown(&mut self) {
+        self.status = DispatcherStatus::Closing
     }
 
     /// Returns the dispatchers current status.

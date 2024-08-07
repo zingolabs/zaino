@@ -19,12 +19,16 @@ use crate::{
 };
 
 /// Status of the worker.
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum IngestorStatus {
     /// On hold, due to blockcache / node error.
     Inactive,
     /// Listening for new requests.
     Listening,
+    /// Running shutdown routine.
+    Closing,
+    /// Offline.
+    Offline,
 }
 
 /// Listens for incoming gRPC requests over HTTP.
@@ -56,7 +60,7 @@ impl TcpIngestor {
     }
 
     /// Starts Tcp service.
-    pub fn serve(mut self) -> tokio::task::JoinHandle<Result<(), IngestorError>> {
+    pub async fn serve(mut self) -> tokio::task::JoinHandle<Result<(), IngestorError>> {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be changed or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
@@ -65,22 +69,17 @@ impl TcpIngestor {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        if !self.check_online() {
-                            println!("Tcp ingestor shutting down.");
+                        if self.check_for_shutdown().await {
                             return Ok(());
                         }
                     }
                     incoming = self.ingestor.accept() => {
-                        if !self.check_online() {
-                            println!("Tcp ingestor shutting down.");
+                        // NOTE: This may need to be removed / moved for scale use.
+                        if self.check_for_shutdown().await {
                             return Ok(());
                         }
                         match incoming {
                             Ok((stream, _)) => {
-                                if !self.check_online() {
-                                    println!("Tcp ingestor shutting down.");
-                                    return Ok(());
-                                }
                                 match self.queue.try_send(ZingoProxyRequest::new_from_grpc(stream)) {
                                     Ok(_) => {}
                                     Err(QueueError::QueueFull(_request)) => {
@@ -96,7 +95,6 @@ impl TcpIngestor {
                             Err(e) => {
                                 eprintln!("Failed to accept connection with client: {}", e);
                                 // TODO: Handle failed connection errors here (count errors and restart ingestor / proxy or initiate shotdown?)
-                                continue;
                             }
                         }
                     }
@@ -105,9 +103,20 @@ impl TcpIngestor {
         })
     }
 
-    /// Ends the ingestor.
-    pub async fn shutdown(self) {
-        todo!()
+    /// Checks indexers online status and ingestors internal status for closure signal.
+    pub async fn check_for_shutdown(&self) -> bool {
+        if let IngestorStatus::Closing = self.status {
+            return true;
+        }
+        if !self.check_online() {
+            return true;
+        }
+        return false;
+    }
+
+    /// Sets the ingestor to close gracefully.
+    pub async fn shutdown(&mut self) {
+        self.status = IngestorStatus::Closing
     }
 
     /// Returns the ingestor current status.
@@ -159,18 +168,17 @@ impl NymIngestor {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        if !self.check_online() {
-                            println!("Nym ingestor shutting down.");
-                            return Ok(());
+                        if self.check_for_shutdown().await {
+                            return Ok(())
                         }
                     }
                     incoming = self.ingestor.client.wait_for_messages() => {
+                        // NOTE: This may need to be removed /moved for scale use.
+                        if self.check_for_shutdown().await {
+                            return Ok(())
+                        }
                         match incoming {
                             Some(request) => {
-                                if !self.check_online() {
-                                    println!("Nym ingestor shutting down.");
-                                    return Ok(());
-                                }
                                 // NOTE / TODO: POC server checked for empty emssages here (if request.is_empty()). Could be required here...
                                 // TODO: Handle EmptyMessageError here.
                                 let request_vu8 = request
@@ -197,12 +205,8 @@ impl NymIngestor {
                                 }
                             }
                             None => {
-                                // TODO: Error in nym client, handle error here (restart ingestor?).
                                 eprintln!("Failed to receive message from Nym network.");
-                                if !self.online.load(Ordering::SeqCst) {
-                                    println!("Nym ingestor shutting down.");
-                                    return Ok(());
-                                }
+                                // TODO: Error in nym client, handle error here (restart ingestor?).
                             }
                         }
                     }
@@ -211,9 +215,20 @@ impl NymIngestor {
         })
     }
 
-    /// Ends the ingestor.
-    pub async fn shutdown(self) {
-        todo!()
+    /// Checks indexers online status and ingestors internal status for closure signal.
+    pub async fn check_for_shutdown(&self) -> bool {
+        if let IngestorStatus::Closing = self.status {
+            return true;
+        }
+        if !self.check_online() {
+            return true;
+        }
+        return false;
+    }
+
+    /// Sets the ingestor to close gracefully.
+    pub async fn shutdown(&mut self) {
+        self.status = IngestorStatus::Closing
     }
 
     /// Returns the ingestor current status.

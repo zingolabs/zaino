@@ -64,4 +64,36 @@ pub enum WorkerError {
     /// Tonic transport error.
     #[error("Tonic transport error: {0}")]
     TonicTransportError(#[from] tonic::transport::Error),
+    /// Tokio join error.
+    #[error("Tokio join error: {0}")]
+    TokioJoinError(#[from] tokio::task::JoinError),
+    /// Worker Pool Full.
+    #[error("Worker Pool Full")]
+    WorkerPoolFull,
+    /// Worker Pool at idle.
+    #[error("Worker Pool a idle")]
+    WorkerPoolIdle,
+}
+
+/// Zingo-Proxy server errors.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerError {
+    /// Request based errors.
+    #[error("Request error: {0}")]
+    RequestError(#[from] RequestError),
+    /// Nym based errors.
+    #[error("Nym error: {0}")]
+    NymError(#[from] NymError),
+    /// Ingestor based errors.
+    #[error("Ingestor error: {0}")]
+    IngestorError(#[from] IngestorError),
+    /// Dispatcher based errors.
+    #[error("Dispatcher error: {0}")]
+    DispatcherError(#[from] DispatcherError),
+    /// Worker based errors.
+    #[error("Worker error: {0}")]
+    WorkerError(#[from] WorkerError),
+    /// Server configuration errors.
+    #[error("Server configuration error: {0}")]
+    ServerConfigError(String),
 }

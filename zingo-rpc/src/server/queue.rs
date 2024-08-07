@@ -11,6 +11,8 @@ use crate::server::error::QueueError;
 /// Queue with max length.
 #[derive(Debug, Clone)]
 pub struct Queue<T> {
+    /// Max number of messages allowed in the queue.
+    max_length: usize,
     /// Used to track current messages in the queue.
     message_count: Arc<AtomicUsize>,
     /// Queue sender.
@@ -26,6 +28,7 @@ impl<T> Queue<T> {
         let message_count = Arc::new(AtomicUsize::new(0));
 
         Queue {
+            max_length,
             message_count: message_count.clone(),
             queue_tx: QueueSender {
                 inner: queue_tx,
@@ -46,6 +49,11 @@ impl<T> Queue<T> {
     /// Returns a queue receiver.
     pub fn rx(&self) -> QueueReceiver<T> {
         self.queue_rx.clone()
+    }
+
+    /// Returns the max length of the queue.
+    pub fn max_length(&self) -> usize {
+        self.max_length
     }
 
     /// Returns the current length of the queue.
@@ -132,7 +140,7 @@ impl<T> QueueReceiver<T> {
                     return Ok(message);
                 }
                 Err(QueueError::QueueEmpty) => {
-                    interval.tick();
+                    interval.tick().await;
                     continue;
                 }
                 Err(e) => {
