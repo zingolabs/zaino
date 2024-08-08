@@ -1,7 +1,7 @@
 //! Zingo-Indexer implementation.
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     process,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,7 +12,7 @@ use std::{
 use http::Uri;
 use zingo_rpc::{
     jsonrpc::connector::test_node_and_return_uri,
-    server::{AtomicStatus, Server, ServerStatus},
+    server::{error::ServerError, AtomicStatus, Server, ServerStatus, StatusType},
 };
 
 use crate::{config::IndexerConfig, error::IndexerError};
@@ -44,10 +44,10 @@ impl IndexerStatus {
 
 /// Zingo-Indexer.
 pub struct Indexer {
-    /// Indexer onfuguration data.
+    /// Indexer configuration data.
     config: IndexerConfig,
     /// GRPC server.
-    server: Server,
+    server: Option<Server>,
     // Internal block cache.
     // block_cache: BlockCache,
     /// Indexers status.
@@ -57,6 +57,45 @@ pub struct Indexer {
 }
 
 impl Indexer {
+    /// Start an Indexer service.
+    ///
+    /// Currently only takes an IndexerConfig.
+    pub async fn start(config: IndexerConfig) -> Result<(), IndexerError> {
+        // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+
+        let online = Arc::new(AtomicBool::new(true));
+        set_ctrlc(online.clone());
+        nym_bin_common::logging::setup_logging();
+
+        startup_message();
+
+        println!("Launching Zingdexer!");
+        let mut indexer: Indexer = Indexer::new(config, online.clone()).await?;
+        let status = indexer.status.clone();
+
+        let server_handle = if let Some(server) = indexer.server.take() {
+            Some(server.serve().await)
+        } else {
+            return Err(IndexerError::MiscIndexerError(
+                "Server Missing! Fatal Error!.".to_string(),
+            ));
+        };
+
+        indexer.status.indexer_status.store(2);
+        loop {
+            indexer.status.load();
+            // printout();
+            if indexer.check_for_shutdown() {
+                status.indexer_status.store(4);
+                indexer.shutdown_components(server_handle).await;
+                status.indexer_status.store(5);
+                return Ok(());
+            }
+            interval.tick().await;
+        }
+    }
+
     /// Creates a new Indexer.
     ///
     /// Currently only takes an IndexerConfig.
@@ -79,20 +118,22 @@ impl Indexer {
         )
         .await?;
         status.indexer_status.store(0);
-        let server = Server::spawn(
-            config.tcp_active,
-            tcp_ingestor_listen_addr,
-            config.nym_active,
-            config.nym_conf_path.clone(),
-            lightwalletd_uri,
-            zebrad_uri,
-            config.max_queue_size,
-            config.max_worker_pool_size,
-            config.idle_worker_pool_size,
-            status.server_status.clone(),
-            online.clone(),
-        )
-        .await?;
+        let server = Some(
+            Server::spawn(
+                config.tcp_active,
+                tcp_ingestor_listen_addr,
+                config.nym_active,
+                config.nym_conf_path.clone(),
+                lightwalletd_uri,
+                zebrad_uri,
+                config.max_queue_size,
+                config.max_worker_pool_size,
+                config.idle_worker_pool_size,
+                status.server_status.clone(),
+                online.clone(),
+            )
+            .await?,
+        );
         Ok(Indexer {
             config,
             server,
@@ -101,37 +142,53 @@ impl Indexer {
         })
     }
 
-    /// Start an Indexer service.
-    ///
-    /// Currently only takes an IndexerConfig.
-    pub async fn start(config: IndexerConfig) -> Result<(), IndexerError> {
-        // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-
-        let online = Arc::new(AtomicBool::new(true));
-        set_ctrlc(online.clone());
-        nym_bin_common::logging::setup_logging();
-
-        startup_message();
-
-        println!("Launching Zingdexer!");
-        let indexer: Indexer = Indexer::new(config, online.clone()).await?;
-        let server_handle = indexer.server.serve().await;
-
-        indexer.status.indexer_status.store(2);
-        while online.load(Ordering::SeqCst) {
-            indexer.status.load();
-            //printout statuses
-            //check for shutdown
-            interval.tick().await;
+    /// Checks indexers online status and servers internal status for closure signal.
+    pub fn check_for_shutdown(&self) -> bool {
+        if self.status() >= 4 {
+            return true;
         }
-        Ok(())
+        if !self.check_online() {
+            return true;
+        }
+        false
     }
 
-    // /// Closes the Indexer Gracefully.
-    // pub async fn shutdown(&self) (
+    /// Sets the servers to close gracefully.
+    pub fn shutdown(&mut self) {
+        self.status.indexer_status.store(4)
+    }
 
-    // )
+    /// Sets the server's components to close gracefully.
+    async fn shutdown_components(
+        &mut self,
+        server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
+    ) {
+        if let Some(handle) = server_handle {
+            self.status.server_status.server_status.store(4);
+            handle.await.ok();
+        }
+    }
+
+    /// Returns the indexers current status usize.
+    pub fn status(&self) -> usize {
+        self.status.indexer_status.load()
+    }
+
+    /// Returns the indexers current statustype.
+    pub fn statustype(&self) -> StatusType {
+        StatusType::from(self.status())
+    }
+
+    /// Returns the status of the indexer and its parts.
+    pub fn statuses(&mut self) -> IndexerStatus {
+        self.status.load();
+        self.status.clone()
+    }
+
+    /// Check the online status on the indexer.
+    fn check_online(&self) -> bool {
+        self.online.load(Ordering::SeqCst)
+    }
 }
 
 fn set_ctrlc(online: Arc<AtomicBool>) {

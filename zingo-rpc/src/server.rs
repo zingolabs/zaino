@@ -104,7 +104,8 @@ impl From<AtomicStatus> for StatusType {
 /// Holds the status of the server and all its components.
 #[derive(Debug, Clone)]
 pub struct ServerStatus {
-    server_status: AtomicStatus,
+    /// Status of the Server.
+    pub server_status: AtomicStatus,
     tcp_ingestor_status: AtomicStatus,
     nym_ingestor_status: AtomicStatus,
     nym_dispatcher_status: AtomicStatus,
@@ -321,6 +322,7 @@ impl Server {
                 self.statuses();
                 // TODO: Implement check_statuses() and run here.
                 if self.check_for_shutdown().await {
+                    self.status.server_status.store(4);
                     let worker_handle_options: Vec<
                         Option<tokio::task::JoinHandle<Result<(), WorkerError>>>,
                     > = worker_handles.into_iter().map(Some).collect();
@@ -376,8 +378,6 @@ impl Server {
             self.status.nym_dispatcher_status.store(4);
             handle.await.ok();
         }
-        self.online
-            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Returns the servers current status usize.

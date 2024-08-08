@@ -17,4 +17,7 @@ pub enum IndexerError {
     /// HTTP related errors due to invalid URI.
     #[error("HTTP error: Invalid URI {0}")]
     HttpError(#[from] http::Error),
+    /// Custom indexor errors.
+    #[error("Misc indexer error: {0}")]
+    MiscIndexerError(String),
 }
