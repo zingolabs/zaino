@@ -1,13 +1,12 @@
 //! Holds the server worker implementation.
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 
 use http::Uri;
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
-use tokio::time::{Duration, Instant};
 use tonic::transport::Server;
 
 use crate::{
@@ -16,6 +15,7 @@ use crate::{
         error::{QueueError, WorkerError},
         queue::{QueueReceiver, QueueSender},
         request::ZingoProxyRequest,
+        AtomicStatus,
     },
 };
 
@@ -24,64 +24,6 @@ use crate::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 
 #[cfg(feature = "nym_poc")]
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-
-/// Status of the worker.
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum WorkerStatusType {
-    /// Running initial startup routine.
-    Spawning,
-    /// Processing requests from the queue.
-    Working,
-    /// Waiting for requests from the queue.
-    Standby,
-    /// Running shutdown routine.
-    Closing,
-}
-
-/// Wrapper for StatusType that also holds initiation time, used for standby monitoring.
-#[derive(Debug, Clone)]
-pub enum WorkerStatus {
-    /// Running initial startup routine.
-    Spawning(Instant),
-    /// Processing requests from the queue.
-    Working(Instant),
-    /// Waiting for requests from the queue.
-    Standby(Instant),
-    /// Running shutdown routine.
-    Closing(Instant),
-}
-
-impl WorkerStatus {
-    /// Create a new status with the current timestamp.
-    pub fn new(status: WorkerStatusType) -> WorkerStatus {
-        match status {
-            WorkerStatusType::Spawning => WorkerStatus::Spawning(Instant::now()),
-            WorkerStatusType::Working => WorkerStatus::Working(Instant::now()),
-            WorkerStatusType::Standby => WorkerStatus::Standby(Instant::now()),
-            WorkerStatusType::Closing => WorkerStatus::Closing(Instant::now()),
-        }
-    }
-
-    /// Return the current status type and the duration the worker has been in this status.
-    pub fn status(&self) -> (WorkerStatusType, Duration) {
-        match self {
-            WorkerStatus::Spawning(timestamp) => (WorkerStatusType::Spawning, timestamp.elapsed()),
-            WorkerStatus::Working(timestamp) => (WorkerStatusType::Working, timestamp.elapsed()),
-            WorkerStatus::Standby(timestamp) => (WorkerStatusType::Standby, timestamp.elapsed()),
-            WorkerStatus::Closing(timestamp) => (WorkerStatusType::Closing, timestamp.elapsed()),
-        }
-    }
-
-    /// Update the status to a new one, resetting the timestamp.
-    pub fn set(&mut self, new_status: WorkerStatusType) {
-        *self = match new_status {
-            WorkerStatusType::Spawning => WorkerStatus::Spawning(Instant::now()),
-            WorkerStatusType::Working => WorkerStatus::Working(Instant::now()),
-            WorkerStatusType::Standby => WorkerStatus::Standby(Instant::now()),
-            WorkerStatusType::Closing => WorkerStatus::Closing(Instant::now()),
-        }
-    }
-}
 
 /// A queue working is the entity that takes requests from the queue and processes them.
 ///
@@ -99,8 +41,10 @@ pub struct Worker {
     nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
     /// gRPC client used for processing requests received over http.
     grpc_client: GrpcClient,
-    /// Workers current status.
-    status: WorkerStatus,
+    // /// Workers current status, includes timestamp for despawning inactive workers..
+    // worker_status: WorkerStatus,
+    /// Thread safe worker status.
+    atomic_status: AtomicStatus,
     /// Represents the Online status of the Worker.
     pub online: Arc<AtomicBool>,
 }
@@ -114,6 +58,7 @@ impl Worker {
         nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
         lightwalletd_uri: Uri,
         zebrad_uri: Uri,
+        atomic_status: AtomicStatus,
         online: Arc<AtomicBool>,
     ) -> Self {
         let grpc_client = GrpcClient {
@@ -127,7 +72,7 @@ impl Worker {
             requeue,
             nym_response_queue,
             grpc_client,
-            status: WorkerStatus::new(WorkerStatusType::Spawning),
+            atomic_status,
             online,
         }
     }
@@ -141,7 +86,7 @@ impl Worker {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
             let svc = CompactTxStreamerServer::new(self.grpc_client.clone());
             // TODO: create tonic server here for use within loop.
-            self.status.set(WorkerStatusType::Standby);
+            self.atomic_status.store(1);
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -159,19 +104,20 @@ impl Worker {
                                             return Ok(());
                                         }
                                         Err(QueueError::QueueFull(_request)) => {
+                                            self.atomic_status.store(5);
                                             eprintln!("Request Queue Full. Failed to send response to queue.\nWorker shutting down.");
                                             // TODO: Handle this error! (cancel shutdown?).
                                             return Ok(());
                                         }
                                         Err(e) => {
-                                            self.status.set(WorkerStatusType::Closing);
+                                            self.atomic_status.store(5);
                                             eprintln!("Request Queue Closed. Failed to send response to queue: {}\nWorker shutting down.", e);
                                             // TODO: Handle queue closed error here. (return correct error?)
                                             return Ok(());
                                         }
                                     }
                                 } else {
-                                    self.status.set(WorkerStatusType::Working);
+                                    self.atomic_status.store(2);
                                     match request {
                                         ZingoProxyRequest::TcpServerRequest(request) => {
                                             Server::builder().add_service(svc.clone())
@@ -195,7 +141,7 @@ impl Worker {
                                                             // TODO: Handle this error! (open second nym responder?).
                                                         }
                                                         Err(e) => {
-                                                            self.status.set(WorkerStatusType::Closing);
+                                                            self.atomic_status.store(5);
                                                             eprintln!("Response Queue Closed. Failed to send response to queue: {}\nWorker shutting down.", e);
                                                             // TODO: Handle queue closed error here. (return correct error?)
                                                             return Ok(());
@@ -211,11 +157,11 @@ impl Worker {
                                             }
                                         }
                                     }
-                                    self.status.set(WorkerStatusType::Standby);
+                                    self.atomic_status.store(1);
                                 }
                             }
                             Err(_e) => {
-                                self.status.set(WorkerStatusType::Closing);
+                                self.atomic_status.store(5);
                                 eprintln!("Queue closed, worker shutting down.");
                                 // TODO: Handle queue closed error here. (return correct error?)
                                 return Ok(());
@@ -227,20 +173,23 @@ impl Worker {
         })
     }
 
-    /// Checks indexers online status and workers internal status for closure signal.
+    /// Checks for closure signals.
+    ///
+    /// Checks AtomicStatus for closure signal.
+    /// Checks (online) AtomicBool for fatal error signal.
     pub async fn check_for_shutdown(&self) -> bool {
-        if let WorkerStatus::Closing(_) = self.status {
+        if self.atomic_status() >= 4 {
             return true;
         }
         if !self.check_online() {
             return true;
         }
-        return false;
+        false
     }
 
     /// Sets the worker to close gracefully.
     pub async fn shutdown(&mut self) {
-        self.status.set(WorkerStatusType::Closing)
+        self.atomic_status.store(4)
     }
 
     /// Returns the worker's ID.
@@ -248,15 +197,22 @@ impl Worker {
         self.worker_id
     }
 
-    /// Returns the workers current status.
-    pub fn status(&self) -> (WorkerStatusType, Duration) {
-        self.status.status()
+    /// Loads the workers current atomic status.
+    pub fn atomic_status(&self) -> usize {
+        self.atomic_status.load()
     }
 
     /// Check the online status on the server.
     fn check_online(&self) -> bool {
         self.online.load(Ordering::SeqCst)
     }
+}
+
+/// Holds the status of the worker pool and its workers.
+#[derive(Debug, Clone)]
+pub struct WorkerPoolStatus {
+    workers: Arc<AtomicUsize>,
+    statuses: Vec<AtomicStatus>,
 }
 
 /// Dynamically sized pool of workers.
@@ -268,6 +224,8 @@ pub struct WorkerPool {
     idle_size: usize,
     /// Workers currently in the pool
     workers: Vec<Worker>,
+    /// Status of the workerpool and its workers.
+    status: WorkerPoolStatus,
     /// Represents the Online status of the WorkerPool.
     pub online: Arc<AtomicBool>,
 }
@@ -282,6 +240,7 @@ impl WorkerPool {
         nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
         lightwalletd_uri: Uri,
         zebrad_uri: Uri,
+        status: WorkerPoolStatus,
         online: Arc<AtomicBool>,
     ) -> Self {
         let mut workers: Vec<Worker> = Vec::with_capacity(max_size);
@@ -294,16 +253,18 @@ impl WorkerPool {
                     nym_response_queue.clone(),
                     lightwalletd_uri.clone(),
                     zebrad_uri.clone(),
+                    status.statuses[workers.len()].clone(),
                     online.clone(),
                 )
                 .await,
             );
         }
-
+        status.workers.store(idle_size, Ordering::SeqCst);
         WorkerPool {
             max_size,
             idle_size,
             workers,
+            status,
             online,
         }
     }
@@ -332,10 +293,12 @@ impl WorkerPool {
                     self.workers[0].nym_response_queue.clone(),
                     self.workers[0].grpc_client.lightwalletd_uri.clone(),
                     self.workers[0].grpc_client.zebrad_uri.clone(),
+                    self.status.statuses[self.workers.len()].clone(),
                     self.online.clone(),
                 )
                 .await,
             );
+            self.status.workers.fetch_add(1, Ordering::SeqCst);
             Ok(self.workers[self.workers.len()].clone().serve().await)
         }
     }
@@ -353,18 +316,24 @@ impl WorkerPool {
             match worker_handle.await {
                 Ok(worker) => match worker {
                     Ok(()) => {
+                        self.status.statuses[worker_index].store(5);
                         self.workers.pop();
+                        self.status.workers.fetch_sub(1, Ordering::SeqCst);
                         return Ok(());
                     }
                     Err(e) => {
+                        self.status.statuses[worker_index].store(6);
                         eprintln!("Worker returned error on shutdown: {}", e);
-                        // TODO: Handle the inner WorkerError
+                        // TODO: Handle the inner WorkerError. Return error.
+                        self.status.workers.fetch_sub(1, Ordering::SeqCst);
                         return Ok(());
                     }
                 },
                 Err(e) => {
+                    self.status.statuses[worker_index].store(6);
                     eprintln!("Worker returned error on shutdown: {}", e);
-                    // TODO: Handle the JoinError
+                    // TODO: Handle the JoinError. Return error.
+                    self.status.workers.fetch_sub(1, Ordering::SeqCst);
                     return Ok(());
                 }
             };
@@ -386,24 +355,13 @@ impl WorkerPool {
         self.workers.len()
     }
 
-    /// Returns the statuses of all the workers in the workerpool.
-    pub fn statuses(&self) -> Vec<(WorkerStatusType, Duration)> {
-        let mut worker_statuses = Vec::new();
-        for i in 0..self.workers.len() {
-            worker_statuses.push(self.workers[i].status())
+    /// Fetches and returns the status of the workerpool and its workers.
+    pub fn status(&self) -> WorkerPoolStatus {
+        self.status.workers.load(Ordering::SeqCst);
+        for i in 0..self.workers() {
+            self.status.statuses[i].load();
         }
-        worker_statuses
-    }
-
-    /// Returns the number of workers in Standby mode for 30 seconds or longer.
-    pub fn check_long_standby(&self) -> usize {
-        let statuses = self.statuses();
-        statuses
-            .iter()
-            .filter(|(status, duration)| {
-                *status == WorkerStatusType::Standby && *duration >= Duration::from_secs(30)
-            })
-            .count()
+        self.status.clone()
     }
 
     /// Shuts down all the workers in the pool.
@@ -417,16 +375,22 @@ impl WorkerPool {
                 match worker_handle.await {
                     Ok(worker) => match worker {
                         Ok(()) => {
+                            self.status.statuses[i].store(5);
                             self.workers.pop();
+                            self.status.workers.fetch_sub(1, Ordering::SeqCst);
                         }
                         Err(e) => {
+                            self.status.statuses[i].store(6);
                             eprintln!("Worker returned error on shutdown: {}", e);
                             // TODO: Handle the inner WorkerError
+                            self.status.workers.fetch_sub(1, Ordering::SeqCst);
                         }
                     },
                     Err(e) => {
+                        self.status.statuses[i].store(6);
                         eprintln!("Worker returned error on shutdown: {}", e);
                         // TODO: Handle the JoinError
+                        self.status.workers.fetch_sub(1, Ordering::SeqCst);
                     }
                 };
             }

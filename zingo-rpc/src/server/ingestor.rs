@@ -15,21 +15,9 @@ use crate::{
         error::{IngestorError, QueueError},
         queue::QueueSender,
         request::ZingoProxyRequest,
+        AtomicStatus, StatusType,
     },
 };
-
-/// Status of the worker.
-#[derive(Debug, PartialEq, Clone)]
-pub enum IngestorStatus {
-    /// On hold, due to blockcache / node error.
-    Inactive,
-    /// Listening for new requests.
-    Listening,
-    /// Running shutdown routine.
-    Closing,
-    /// Offline.
-    Offline,
-}
 
 /// Listens for incoming gRPC requests over HTTP.
 pub struct TcpIngestor {
@@ -37,10 +25,10 @@ pub struct TcpIngestor {
     ingestor: TcpListener,
     /// Used to send requests to the queue.
     queue: QueueSender<ZingoProxyRequest>,
+    /// Current status of the ingestor.
+    status: AtomicStatus,
     /// Represents the Online status of the gRPC server.
     online: Arc<AtomicBool>,
-    /// Current status of the ingestor.
-    status: IngestorStatus,
 }
 
 impl TcpIngestor {
@@ -48,14 +36,16 @@ impl TcpIngestor {
     pub async fn spawn(
         listen_addr: SocketAddr,
         queue: QueueSender<ZingoProxyRequest>,
+        status: AtomicStatus,
         online: Arc<AtomicBool>,
     ) -> Result<Self, IngestorError> {
+        status.store(0);
         let listener = TcpListener::bind(listen_addr).await?;
         Ok(TcpIngestor {
             ingestor: listener,
             queue,
             online,
-            status: IngestorStatus::Inactive,
+            status,
         })
     }
 
@@ -65,17 +55,19 @@ impl TcpIngestor {
             // NOTE: This interval may need to be changed or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
             // TODO Check blockcache sync status and wait on server / node if on hold.
-            self.status = IngestorStatus::Listening;
+            self.status.store(1);
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         if self.check_for_shutdown().await {
+                            self.status.store(5);
                             return Ok(());
                         }
                     }
                     incoming = self.ingestor.accept() => {
                         // NOTE: This may need to be removed / moved for scale use.
                         if self.check_for_shutdown().await {
+                            self.status.store(5);
                             return Ok(());
                         }
                         match incoming {
@@ -105,23 +97,28 @@ impl TcpIngestor {
 
     /// Checks indexers online status and ingestors internal status for closure signal.
     pub async fn check_for_shutdown(&self) -> bool {
-        if let IngestorStatus::Closing = self.status {
+        if self.status() >= 4 {
             return true;
         }
         if !self.check_online() {
             return true;
         }
-        return false;
+        false
     }
 
     /// Sets the ingestor to close gracefully.
     pub async fn shutdown(&mut self) {
-        self.status = IngestorStatus::Closing
+        self.status.store(4)
     }
 
-    /// Returns the ingestor current status.
-    pub fn status(&self) -> IngestorStatus {
-        self.status.clone()
+    /// Returns the ingestor current status usize.
+    pub fn status(&self) -> usize {
+        self.status.load()
+    }
+
+    /// Returns the ingestor current statustype.
+    pub fn statustype(&self) -> StatusType {
+        StatusType::from(self.status())
     }
 
     fn check_online(&self) -> bool {
@@ -135,10 +132,10 @@ pub struct NymIngestor {
     ingestor: NymClient,
     /// Used to send requests to the queue.
     queue: QueueSender<ZingoProxyRequest>,
+    /// Current status of the ingestor.
+    status: AtomicStatus,
     /// Represents the Online status of the gRPC server.
     online: Arc<AtomicBool>,
-    /// Current status of the ingestor.
-    status: IngestorStatus,
 }
 
 impl NymIngestor {
@@ -146,14 +143,17 @@ impl NymIngestor {
     pub async fn spawn(
         nym_conf_path: &str,
         queue: QueueSender<ZingoProxyRequest>,
+        status: AtomicStatus,
         online: Arc<AtomicBool>,
     ) -> Result<Self, IngestorError> {
+        status.store(0);
+        // TODO: HANDLE THESE ERRORS TO SMOOTH MIXNET CLIENT SPAWN PROCESS!
         let listener = NymClient::spawn(&format!("{}/ingestor", nym_conf_path)).await?;
         Ok(NymIngestor {
             ingestor: listener,
             queue,
             online,
-            status: IngestorStatus::Inactive,
+            status,
         })
     }
 
@@ -163,18 +163,19 @@ impl NymIngestor {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
             // TODO Check blockcache sync status and wait on server / node if on hold.
-            self.status = IngestorStatus::Listening;
-
+            self.status.store(1);
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         if self.check_for_shutdown().await {
+                            self.status.store(5);
                             return Ok(())
                         }
                     }
                     incoming = self.ingestor.client.wait_for_messages() => {
                         // NOTE: This may need to be removed /moved for scale use.
                         if self.check_for_shutdown().await {
+                            self.status.store(5);
                             return Ok(())
                         }
                         match incoming {
@@ -217,23 +218,28 @@ impl NymIngestor {
 
     /// Checks indexers online status and ingestors internal status for closure signal.
     pub async fn check_for_shutdown(&self) -> bool {
-        if let IngestorStatus::Closing = self.status {
+        if self.status() >= 4 {
             return true;
         }
         if !self.check_online() {
             return true;
         }
-        return false;
+        false
     }
 
     /// Sets the ingestor to close gracefully.
     pub async fn shutdown(&mut self) {
-        self.status = IngestorStatus::Closing
+        self.status.store(4)
     }
 
-    /// Returns the ingestor current status.
-    pub fn status(&self) -> IngestorStatus {
-        self.status.clone()
+    /// Returns the ingestor current status usize.
+    pub fn status(&self) -> usize {
+        self.status.load()
+    }
+
+    /// Returns the ingestor current statustype.
+    pub fn statustype(&self) -> StatusType {
+        StatusType::from(self.status())
     }
 
     fn check_online(&self) -> bool {

@@ -14,7 +14,7 @@ pub struct Queue<T> {
     /// Max number of messages allowed in the queue.
     max_length: usize,
     /// Used to track current messages in the queue.
-    message_count: Arc<AtomicUsize>,
+    queue_status: Arc<AtomicUsize>,
     /// Queue sender.
     queue_tx: QueueSender<T>,
     /// Queue receiver.
@@ -23,20 +23,19 @@ pub struct Queue<T> {
 
 impl<T> Queue<T> {
     /// Creates a new queue with a maximum size.
-    pub fn new(max_length: usize) -> Self {
+    pub fn new(max_length: usize, queue_status: Arc<AtomicUsize>) -> Self {
         let (queue_tx, queue_rx) = bounded(max_length);
-        let message_count = Arc::new(AtomicUsize::new(0));
-
+        queue_status.store(0, Ordering::SeqCst);
         Queue {
             max_length,
-            message_count: message_count.clone(),
+            queue_status: queue_status.clone(),
             queue_tx: QueueSender {
                 inner: queue_tx,
-                message_count: message_count.clone(),
+                queue_status: queue_status.clone(),
             },
             queue_rx: QueueReceiver {
                 inner: queue_rx,
-                message_count,
+                queue_status,
             },
         }
     }
@@ -58,7 +57,7 @@ impl<T> Queue<T> {
 
     /// Returns the current length of the queue.
     pub fn queue_length(&self) -> usize {
-        self.message_count.load(Ordering::SeqCst)
+        self.queue_status.load(Ordering::SeqCst)
     }
 }
 
@@ -68,14 +67,14 @@ pub struct QueueSender<T> {
     /// Crossbeam_Channel Sender.
     inner: Sender<T>,
     /// Used to track current messages in the queue.
-    message_count: Arc<AtomicUsize>,
+    queue_status: Arc<AtomicUsize>,
 }
 
 impl<T> Clone for QueueSender<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            message_count: Arc::clone(&self.message_count),
+            queue_status: Arc::clone(&self.queue_status),
         }
     }
 }
@@ -85,7 +84,7 @@ impl<T> QueueSender<T> {
     pub fn try_send(&self, message: T) -> Result<(), QueueError<T>> {
         match self.inner.try_send(message) {
             Ok(_) => {
-                self.message_count.fetch_add(1, Ordering::SeqCst);
+                self.queue_status.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
             Err(crossbeam_channel::TrySendError::Full(t)) => Err(QueueError::QueueFull(t)),
@@ -95,7 +94,7 @@ impl<T> QueueSender<T> {
 
     /// Returns the current length of the queue.
     pub fn queue_length(&self) -> usize {
-        self.message_count.load(Ordering::SeqCst)
+        self.queue_status.load(Ordering::SeqCst)
     }
 }
 
@@ -105,14 +104,14 @@ pub struct QueueReceiver<T> {
     /// Crossbeam_Channel Receiver.
     inner: Receiver<T>,
     /// Used to track current messages in the queue.
-    message_count: Arc<AtomicUsize>,
+    queue_status: Arc<AtomicUsize>,
 }
 
 impl<T> Clone for QueueReceiver<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            message_count: Arc::clone(&self.message_count),
+            queue_status: Arc::clone(&self.queue_status),
         }
     }
 }
@@ -122,7 +121,7 @@ impl<T> QueueReceiver<T> {
     pub fn try_recv(&self) -> Result<T, QueueError<T>> {
         match self.inner.try_recv() {
             Ok(message) => {
-                self.message_count.fetch_sub(1, Ordering::SeqCst);
+                self.queue_status.fetch_sub(1, Ordering::SeqCst);
                 Ok(message)
             }
             Err(crossbeam_channel::TryRecvError::Empty) => Err(QueueError::QueueEmpty),
@@ -152,6 +151,6 @@ impl<T> QueueReceiver<T> {
 
     /// Returns the current length of the queue.
     pub fn queue_length(&self) -> usize {
-        self.message_count.load(Ordering::SeqCst)
+        self.queue_status.load(Ordering::SeqCst)
     }
 }
