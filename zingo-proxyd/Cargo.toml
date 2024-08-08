@@ -39,6 +39,7 @@ nym-sphinx-anonymous-replies = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
 http = { workspace = true }
+thiserror = { workspace = true }
 
 # Miscellaneous Crate
 tower = { version = "0.4.13" }

@@ -41,8 +41,8 @@ pub struct AtomicStatus(Arc<AtomicUsize>);
 
 impl AtomicStatus {
     /// Creates a new AtomicStatus
-    pub fn new(status: usize) -> Self {
-        Self(Arc::new(AtomicUsize::new(status)))
+    pub fn new(status: u16) -> Self {
+        Self(Arc::new(AtomicUsize::new(status as usize)))
     }
 
     /// Loads the value held in the AtomicStatus
@@ -113,6 +113,33 @@ pub struct ServerStatus {
     nym_response_queue_status: Arc<AtomicUsize>,
 }
 
+impl ServerStatus {
+    /// Creates a ServerStatus.
+    pub fn new(max_workers: u16) -> Self {
+        ServerStatus {
+            server_status: AtomicStatus::new(5),
+            tcp_ingestor_status: AtomicStatus::new(5),
+            nym_ingestor_status: AtomicStatus::new(5),
+            nym_dispatcher_status: AtomicStatus::new(5),
+            workerpool_status: WorkerPoolStatus::new(max_workers),
+            request_queue_status: Arc::new(AtomicUsize::new(0)),
+            nym_response_queue_status: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Returns the ServerStatus.
+    pub fn load(&self) -> ServerStatus {
+        self.server_status.load();
+        self.tcp_ingestor_status.load();
+        self.nym_ingestor_status.load();
+        self.nym_dispatcher_status.load();
+        self.workerpool_status.load();
+        self.request_queue_status.load(Ordering::SeqCst);
+        self.nym_response_queue_status.load(Ordering::SeqCst);
+        self.clone()
+    }
+}
+
 /// LightWallet server capable of servicing clients over both http and nym.
 pub struct Server {
     /// Listens for incoming gRPC requests over HTTP.
@@ -139,12 +166,12 @@ impl Server {
         tcp_active: bool,
         tcp_ingestor_listen_addr: Option<SocketAddr>,
         nym_active: bool,
-        nym_conf_path: Option<&str>,
+        nym_conf_path: Option<String>,
         lightwalletd_uri: Uri,
         zebrad_uri: Uri,
-        max_queue_size: usize,
-        max_worker_pool_size: usize,
-        idle_worker_pool_size: usize,
+        max_queue_size: u16,
+        max_worker_pool_size: u16,
+        idle_worker_pool_size: u16,
         status: ServerStatus,
         online: Arc<AtomicBool>,
     ) -> Result<Self, ServerError> {
@@ -163,19 +190,22 @@ impl Server {
                 "NYM is active but no conf path provided.".to_string(),
             ));
         }
+        println!("Launching Server!\n");
         status.server_status.store(0);
         let request_queue: Queue<ZingoProxyRequest> =
-            Queue::new(max_queue_size, status.request_queue_status.clone());
+            Queue::new(max_queue_size as usize, status.request_queue_status.clone());
         status.request_queue_status.store(0, Ordering::SeqCst);
-        let nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)> =
-            Queue::new(max_queue_size, status.nym_response_queue_status.clone());
+        let nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)> = Queue::new(
+            max_queue_size as usize,
+            status.nym_response_queue_status.clone(),
+        );
         status.nym_response_queue_status.store(0, Ordering::SeqCst);
         let tcp_ingestor = if tcp_active {
+            println!("Launching TcpIngestor..");
             Some(
                 TcpIngestor::spawn(
-                    tcp_ingestor_listen_addr.expect(
-                        "tcp_ingestor_listen_addr returned none when used, after checks made.",
-                    ),
+                    tcp_ingestor_listen_addr
+                        .expect("tcp_ingestor_listen_addr returned none when used."),
                     request_queue.tx().clone(),
                     status.tcp_ingestor_status.clone(),
                     online.clone(),
@@ -185,35 +215,35 @@ impl Server {
         } else {
             None
         };
-        let nym_ingestor = if nym_active {
-            Some(
-                NymIngestor::spawn(
-                    nym_conf_path
-                        .expect("nym_conf_path returned none when used, after checks made."),
-                    request_queue.tx().clone(),
-                    status.nym_ingestor_status.clone(),
-                    online.clone(),
-                )
-                .await?,
+        let (nym_ingestor, nym_dispatcher) = if nym_active {
+            println!("Launching NymIngestor and Nymdispatcher..");
+            let nym_conf_path_string =
+                nym_conf_path.expect("nym_conf_path returned none when used.");
+            (
+                Some(
+                    NymIngestor::spawn(
+                        nym_conf_path_string.clone().as_str(),
+                        request_queue.tx().clone(),
+                        status.nym_ingestor_status.clone(),
+                        online.clone(),
+                    )
+                    .await?,
+                ),
+                Some(
+                    NymDispatcher::spawn(
+                        nym_conf_path_string.as_str(),
+                        nym_response_queue.rx().clone(),
+                        nym_response_queue.tx().clone(),
+                        status.nym_dispatcher_status.clone(),
+                        online.clone(),
+                    )
+                    .await?,
+                ),
             )
         } else {
-            None
+            (None, None)
         };
-        let nym_dispatcher = if nym_active {
-            Some(
-                NymDispatcher::spawn(
-                    nym_conf_path
-                        .expect("nym_conf_path returned none when used, after checks made."),
-                    nym_response_queue.rx().clone(),
-                    nym_response_queue.tx().clone(),
-                    status.nym_dispatcher_status.clone(),
-                    online.clone(),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+        println!("Launching WorkerPool..");
         let worker_pool = WorkerPool::spawn(
             max_worker_pool_size,
             idle_worker_pool_size,
@@ -265,7 +295,7 @@ impl Server {
             self.status.server_status.store(1);
             loop {
                 if self.request_queue.queue_length() >= (self.request_queue.max_length() / 2)
-                    && (self.worker_pool.workers() < self.worker_pool.max_size())
+                    && (self.worker_pool.workers() < self.worker_pool.max_size() as usize)
                 {
                     match self.worker_pool.push_worker().await {
                         Ok(handle) => {
@@ -276,7 +306,7 @@ impl Server {
                         }
                     }
                 } else if (self.request_queue.queue_length() <= 1)
-                    && (self.worker_pool.workers() > self.worker_pool.idle_size())
+                    && (self.worker_pool.workers() > self.worker_pool.idle_size() as usize)
                 {
                     let worker_index = self.worker_pool.workers() - 1;
                     let worker_handle = worker_handles.remove(worker_index);

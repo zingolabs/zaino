@@ -7199,6 +7199,7 @@ dependencies = [
  "nym-bin-common",
  "nym-sdk",
  "nym-sphinx-anonymous-replies",
+ "thiserror",
  "tokio",
  "tonic",
  "tower",

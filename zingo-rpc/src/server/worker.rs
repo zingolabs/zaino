@@ -215,13 +215,32 @@ pub struct WorkerPoolStatus {
     statuses: Vec<AtomicStatus>,
 }
 
+impl WorkerPoolStatus {
+    /// Creates a WorkerPoolStatus.
+    pub fn new(max_workers: u16) -> Self {
+        WorkerPoolStatus {
+            workers: Arc::new(AtomicUsize::new(0)),
+            statuses: vec![AtomicStatus::new(5); max_workers as usize],
+        }
+    }
+
+    /// Returns the WorkerPoolStatus.
+    pub fn load(&self) -> WorkerPoolStatus {
+        self.workers.load(Ordering::SeqCst);
+        for i in 0..self.statuses.len() {
+            self.statuses[i].load();
+        }
+        self.clone()
+    }
+}
+
 /// Dynamically sized pool of workers.
 #[derive(Debug, Clone)]
 pub struct WorkerPool {
     /// Maximun number of concurrent workers allowed.
-    max_size: usize,
+    max_size: u16,
     /// Minimum number of workers kept running on stanby.
-    idle_size: usize,
+    idle_size: u16,
     /// Workers currently in the pool
     workers: Vec<Worker>,
     /// Status of the workerpool and its workers.
@@ -233,8 +252,8 @@ pub struct WorkerPool {
 impl WorkerPool {
     /// Creates a new worker pool containing [idle_workers] workers.
     pub async fn spawn(
-        max_size: usize,
-        idle_size: usize,
+        max_size: u16,
+        idle_size: u16,
         queue: QueueReceiver<ZingoProxyRequest>,
         _requeue: QueueSender<ZingoProxyRequest>,
         nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
@@ -243,7 +262,7 @@ impl WorkerPool {
         status: WorkerPoolStatus,
         online: Arc<AtomicBool>,
     ) -> Self {
-        let mut workers: Vec<Worker> = Vec::with_capacity(max_size);
+        let mut workers: Vec<Worker> = Vec::with_capacity(max_size as usize);
         for _ in 0..idle_size {
             workers.push(
                 Worker::spawn(
@@ -259,7 +278,7 @@ impl WorkerPool {
                 .await,
             );
         }
-        status.workers.store(idle_size, Ordering::SeqCst);
+        status.workers.store(idle_size as usize, Ordering::SeqCst);
         WorkerPool {
             max_size,
             idle_size,
@@ -282,7 +301,7 @@ impl WorkerPool {
     pub async fn push_worker(
         &mut self,
     ) -> Result<tokio::task::JoinHandle<Result<(), WorkerError>>, WorkerError> {
-        if self.workers.len() >= self.max_size {
+        if self.workers.len() >= self.max_size as usize {
             Err(WorkerError::WorkerPoolFull)
         } else {
             self.workers.push(
@@ -308,7 +327,7 @@ impl WorkerPool {
         &mut self,
         worker_handle: tokio::task::JoinHandle<Result<(), WorkerError>>,
     ) -> Result<(), WorkerError> {
-        if self.workers.len() <= self.idle_size {
+        if self.workers.len() <= self.idle_size as usize {
             Err(WorkerError::WorkerPoolIdle)
         } else {
             let worker_index = self.workers.len() - 1;
@@ -341,12 +360,12 @@ impl WorkerPool {
     }
 
     /// Returns the max size of the pool
-    pub fn max_size(&self) -> usize {
+    pub fn max_size(&self) -> u16 {
         self.max_size
     }
 
     /// Returns the idle size of the pool
-    pub fn idle_size(&self) -> usize {
+    pub fn idle_size(&self) -> u16 {
         self.idle_size
     }
 
