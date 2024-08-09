@@ -1,5 +1,7 @@
 //! Holds the server ingestor (listener) implementations.
 
+use nym_sdk::mixnet::MixnetMessageSender;
+use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 use std::{
     net::SocketAddr,
     sync::{
@@ -13,7 +15,7 @@ use crate::{
     nym::{client::NymClient, error::NymError},
     server::{
         error::{IngestorError, QueueError},
-        queue::QueueSender,
+        queue::{QueueReceiver, QueueSender},
         request::ZingoProxyRequest,
         AtomicStatus, StatusType,
     },
@@ -133,6 +135,10 @@ pub struct NymIngestor {
     ingestor: NymClient,
     /// Used to send requests to the queue.
     queue: QueueSender<ZingoProxyRequest>,
+    /// Used to send requests to the queue.
+    response_queue: QueueReceiver<(Vec<u8>, AnonymousSenderTag)>,
+    /// Used to send requests to the queue.
+    response_requeue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
     /// Current status of the ingestor.
     status: AtomicStatus,
     /// Represents the Online status of the gRPC server.
@@ -144,6 +150,8 @@ impl NymIngestor {
     pub async fn spawn(
         nym_conf_path: &str,
         queue: QueueSender<ZingoProxyRequest>,
+        response_queue: QueueReceiver<(Vec<u8>, AnonymousSenderTag)>,
+        response_requeue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
         status: AtomicStatus,
         online: Arc<AtomicBool>,
     ) -> Result<Self, IngestorError> {
@@ -154,6 +162,8 @@ impl NymIngestor {
         Ok(NymIngestor {
             ingestor: listener,
             queue,
+            response_queue,
+            response_requeue,
             online,
             status,
         })
@@ -210,6 +220,45 @@ impl NymIngestor {
                             None => {
                                 eprintln!("Failed to receive message from Nym network.");
                                 // TODO: Error in nym client, handle error here (restart ingestor?).
+                            }
+                        }
+                    }
+                    outgoing = self.response_queue.listen() => {
+                        match outgoing {
+                            Ok(response) => {
+                                println!("[TEST] Dispatcher received response: {:?}", response);
+                                // NOTE: This may need to be removed / moved for scale use.
+                                if self.check_for_shutdown().await {
+                                    self.status.store(5);
+                                    return Ok(());
+                                }
+                                if let Err(nym_e) = self.ingestor
+                                        .client
+                                        .send_reply(response.1, response.0.clone())
+                                        .await.map_err(NymError::from) {
+                                    match self.response_requeue.try_send(response) {
+                                        Ok(_) => {
+                                            eprintln!("Failed to send response over nym: {}\nResponse requeued, restarting nym dispatcher.", nym_e);
+                                            // TODO: Handle error. Restart nym dispatcher.
+                                        }
+                                        Err(QueueError::QueueFull(_request)) => {
+                                            eprintln!("Failed to send response over nym: {}\nAnd failed to requeue response due to full response queue.\nFatal error! Restarting nym dispatcher.", nym_e);
+                                            // TODO: Handle queue full error here (start up second dispatcher?). Restart nym dispatcher
+                                        }
+                                        Err(_e) => {
+                                            eprintln!("Failed to send response over nym: {}\nAnd failed to requeue response due to the queue being closed.\nFatal error! Nym dispatcher shutting down..", nym_e);
+                                            // TODO: Handle queue closed error here. (return correct error type?)
+                                            self.status.store(6);
+                                            return Ok(()); //Return Err!
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_e) => {
+                                eprintln!("Response queue closed, nym dispatcher shutting down.");
+                                //TODO: Handle this error here (return correct error type?)
+                                self.status.store(6);
+                                return Ok(()); // Return Err!
                             }
                         }
                     }

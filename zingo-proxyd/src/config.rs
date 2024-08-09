@@ -16,11 +16,14 @@ pub struct IndexerConfig {
     /// Nym conf path used for micnet client conf.
     pub nym_conf_path: Option<String>,
     /// LightWalletD listen port [DEPRECATED].
-    ///
     /// Used by nym_poc and zingo-testutils.
     pub lightwalletd_port: u16,
     /// Full node / validator listen port.
     pub zebrad_port: u16,
+    /// Full node Username.
+    pub node_user: Option<String>,
+    /// full node Password.
+    pub node_password: Option<String>,
     /// Maximum requests allowed in the request queue.
     pub max_queue_size: u16,
     /// Maximum workers allowed in the worker pool
@@ -36,7 +39,7 @@ impl IndexerConfig {
     /// - Checks listen port is given is tcp is active.
     /// - Checks nym_conf_path is given if nym is active and holds a valid utf8 string.
     pub fn check_config(&self) -> Result<(), IndexerError> {
-        if !(self.tcp_active && self.nym_active) {
+        if (!self.tcp_active) && (!self.nym_active) {
             return Err(IndexerError::ConfigError(
                 "Cannot start server with no ingestors selected, at least one of either nym or tcp must be set to active in conf.".to_string(),
             ));
@@ -73,6 +76,8 @@ impl Default for IndexerConfig {
             nym_conf_path: Some("/tmp/indexer/nym".to_string()),
             lightwalletd_port: 9067,
             zebrad_port: 18232,
+            node_user: Some("xxxxxx".to_string()),
+            node_password: Some("xxxxxx".to_string()),
             max_queue_size: 256,
             max_worker_pool_size: 32,
             idle_worker_pool_size: 4,
@@ -87,9 +92,11 @@ impl Default for IndexerConfig {
             tcp_active: true,
             listen_port: Some(8088),
             nym_active: false,
-            nym_conf_path: Some("/tmp/indexer/nym_poc".to_string()),
+            nym_conf_path: None,
             lightwalletd_port: 8080,
             zebrad_port: 18232,
+            node_user: Some("xxxxxx".to_string()),
+            node_password: Some("xxxxxx".to_string()),
             max_queue_size: 256,
             max_worker_pool_size: 32,
             idle_worker_pool_size: 4,

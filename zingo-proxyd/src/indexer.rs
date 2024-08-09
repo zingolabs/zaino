@@ -113,8 +113,8 @@ impl Indexer {
         println!("Checking connection with node..");
         let zebrad_uri = test_node_and_return_uri(
             &config.zebrad_port,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
+            config.node_user.clone(),
+            config.node_password.clone(),
         )
         .await?;
         status.indexer_status.store(0);

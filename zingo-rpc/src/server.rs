@@ -10,7 +10,6 @@ use std::{
     },
 };
 
-pub mod dispatcher;
 pub mod error;
 pub mod ingestor;
 pub mod queue;
@@ -18,8 +17,8 @@ pub mod request;
 pub mod worker;
 
 use self::{
-    dispatcher::NymDispatcher,
-    error::{DispatcherError, IngestorError, ServerError, WorkerError},
+    // dispatcher::NymDispatcher,
+    error::{IngestorError, ServerError, WorkerError},
     ingestor::{NymIngestor, TcpIngestor},
     queue::Queue,
     request::ZingoProxyRequest,
@@ -157,10 +156,8 @@ impl ServerStatus {
 pub struct Server {
     /// Listens for incoming gRPC requests over HTTP.
     tcp_ingestor: Option<TcpIngestor>,
-    /// Listens for incoming gRPC requests over Nym Mixnet.
+    /// Listens for incoming gRPC requests over Nym Mixnet, also sends responses back to clients.
     nym_ingestor: Option<NymIngestor>,
-    /// Sends gRPC responses over Nym Mixnet.
-    nym_dispatcher: Option<NymDispatcher>,
     /// Dynamically sized pool of workers.
     worker_pool: WorkerPool,
     /// Request queue.
@@ -188,7 +185,7 @@ impl Server {
         status: ServerStatus,
         online: Arc<AtomicBool>,
     ) -> Result<Self, ServerError> {
-        if !(tcp_active && nym_active) {
+        if (!tcp_active) && (!nym_active) {
             return Err(ServerError::ServerConfigError(
                 "Cannot start server with no ingestors selected, at least one of either nym or tcp must be set to active in conf.".to_string(),
             ));
@@ -228,34 +225,25 @@ impl Server {
         } else {
             None
         };
-        let (nym_ingestor, nym_dispatcher) = if nym_active {
-            println!("Launching NymIngestor and Nymdispatcher..");
+        let nym_ingestor = if nym_active {
+            println!("Launching NymIngestor..");
             let nym_conf_path_string =
                 nym_conf_path.expect("nym_conf_path returned none when used.");
-            (
-                Some(
-                    NymIngestor::spawn(
-                        nym_conf_path_string.clone().as_str(),
-                        request_queue.tx().clone(),
-                        status.nym_ingestor_status.clone(),
-                        online.clone(),
-                    )
-                    .await?,
-                ),
-                Some(
-                    NymDispatcher::spawn(
-                        nym_conf_path_string.as_str(),
-                        nym_response_queue.rx().clone(),
-                        nym_response_queue.tx().clone(),
-                        status.nym_dispatcher_status.clone(),
-                        online.clone(),
-                    )
-                    .await?,
-                ),
+            Some(
+                NymIngestor::spawn(
+                    nym_conf_path_string.clone().as_str(),
+                    request_queue.tx().clone(),
+                    nym_response_queue.rx().clone(),
+                    nym_response_queue.tx().clone(),
+                    status.nym_ingestor_status.clone(),
+                    online.clone(),
+                )
+                .await?,
             )
         } else {
-            (None, None)
+            None
         };
+
         println!("Launching WorkerPool..");
         let worker_pool = WorkerPool::spawn(
             max_worker_pool_size,
@@ -272,7 +260,6 @@ impl Server {
         Ok(Server {
             tcp_ingestor,
             nym_ingestor,
-            nym_dispatcher,
             worker_pool,
             request_queue,
             nym_response_queue,
@@ -291,13 +278,9 @@ impl Server {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-            let mut nym_dispatcher_handle = None;
             let mut nym_ingestor_handle = None;
             let mut tcp_ingestor_handle = None;
             let mut worker_handles;
-            if let Some(dispatcher) = self.nym_dispatcher.take() {
-                nym_dispatcher_handle = Some(dispatcher.serve().await);
-            }
             if let Some(ingestor) = self.nym_ingestor.take() {
                 nym_ingestor_handle = Some(ingestor.serve().await);
             }
@@ -341,7 +324,6 @@ impl Server {
                     self.shutdown_components(
                         tcp_ingestor_handle,
                         nym_ingestor_handle,
-                        nym_dispatcher_handle,
                         worker_handle_options,
                     )
                     .await;
@@ -374,7 +356,7 @@ impl Server {
         &mut self,
         tcp_ingestor_handle: Option<tokio::task::JoinHandle<Result<(), IngestorError>>>,
         nym_ingestor_handle: Option<tokio::task::JoinHandle<Result<(), IngestorError>>>,
-        nym_dispatcher_handle: Option<tokio::task::JoinHandle<Result<(), DispatcherError>>>,
+        // nym_dispatcher_handle: Option<tokio::task::JoinHandle<Result<(), DispatcherError>>>,
         mut worker_handles: Vec<Option<tokio::task::JoinHandle<Result<(), WorkerError>>>>,
     ) {
         if let Some(handle) = tcp_ingestor_handle {
@@ -386,10 +368,6 @@ impl Server {
             handle.await.ok();
         }
         self.worker_pool.shutdown(&mut worker_handles).await;
-        if let Some(handle) = nym_dispatcher_handle {
-            self.status.nym_dispatcher_status.store(4);
-            handle.await.ok();
-        }
     }
 
     /// Returns the servers current status usize.
