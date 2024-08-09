@@ -41,6 +41,7 @@ impl TcpIngestor {
     ) -> Result<Self, IngestorError> {
         status.store(0);
         let listener = TcpListener::bind(listen_addr).await?;
+        println!("TcpIngestor listening at: {}.", listen_addr);
         Ok(TcpIngestor {
             ingestor: listener,
             queue,
@@ -50,7 +51,7 @@ impl TcpIngestor {
     }
 
     /// Starts Tcp service.
-    pub async fn serve(mut self) -> tokio::task::JoinHandle<Result<(), IngestorError>> {
+    pub async fn serve(self) -> tokio::task::JoinHandle<Result<(), IngestorError>> {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be changed or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
@@ -149,6 +150,7 @@ impl NymIngestor {
         status.store(0);
         // TODO: HANDLE THESE ERRORS TO SMOOTH MIXNET CLIENT SPAWN PROCESS!
         let listener = NymClient::spawn(&format!("{}/ingestor", nym_conf_path)).await?;
+        println!("NymIngestor listening at: {}.", listener.addr);
         Ok(NymIngestor {
             ingestor: listener,
             queue,

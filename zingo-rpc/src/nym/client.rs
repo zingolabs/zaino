@@ -29,10 +29,7 @@ impl NymClient {
         .build()?
         .connect_to_mixnet()
         .await?;
-
         let addr = client.nym_address().to_string();
-        println!("@zingoproxyd[nym]: Nym server listening on: {addr}.");
-
         Ok(Self { client, addr })
     }
 

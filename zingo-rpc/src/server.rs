@@ -54,6 +54,18 @@ impl AtomicStatus {
     pub fn store(&self, status: usize) {
         self.0.store(status, Ordering::SeqCst);
     }
+
+    // fn to_display(status: &AtomicStatus) -> ColoredString {
+    //     match StatusType::from(status.load()) {
+    //         StatusType::Spawning => "●".yellow(),
+    //         StatusType::Listening => "●".green(),
+    //         StatusType::Working => "●".blue(),
+    //         StatusType::Inactive => "●".red(),
+    //         StatusType::Closing => "●".magenta(),
+    //         StatusType::Offline => "●".white(),
+    //         StatusType::Error => "●".red().bold(),
+    //     }
+    // }
 }
 
 /// Status of the server.

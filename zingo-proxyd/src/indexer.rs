@@ -48,7 +48,7 @@ pub struct Indexer {
     config: IndexerConfig,
     /// GRPC server.
     server: Option<Server>,
-    // Internal block cache.
+    // /// Internal block cache.
     // block_cache: BlockCache,
     /// Indexers status.
     status: IndexerStatus,
@@ -85,7 +85,7 @@ impl Indexer {
         indexer.status.indexer_status.store(2);
         loop {
             indexer.status.load();
-            // printout();
+            // indexer.log_status();
             if indexer.check_for_shutdown() {
                 status.indexer_status.store(4);
                 indexer.shutdown_components(server_handle).await;
@@ -134,6 +134,7 @@ impl Indexer {
             )
             .await?,
         );
+        println!("Server Ready.");
         Ok(Indexer {
             config,
             server,

@@ -51,7 +51,7 @@ impl NymDispatcher {
     }
 
     /// Starts Nym service.
-    pub async fn serve(mut self) -> tokio::task::JoinHandle<Result<(), DispatcherError>> {
+    pub async fn serve(self) -> tokio::task::JoinHandle<Result<(), DispatcherError>> {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be changed or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));

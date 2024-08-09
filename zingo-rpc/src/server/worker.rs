@@ -80,7 +80,7 @@ impl Worker {
     /// Starts queue worker service routine.
     ///
     /// TODO: Add requeue logic for node errors.
-    pub async fn serve(mut self) -> tokio::task::JoinHandle<Result<(), WorkerError>> {
+    pub async fn serve(self) -> tokio::task::JoinHandle<Result<(), WorkerError>> {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));

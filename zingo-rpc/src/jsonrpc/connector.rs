@@ -413,21 +413,18 @@ pub async fn test_node_and_return_uri(
         .map_err(JsonRpcConnectorError::InvalidUriError)?;
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
     for _ in 0..3 {
-        println!("Trying connection on IPv4..");
         match test_node_connection(ipv4_uri.clone(), user.clone(), password.clone()).await {
             Ok(_) => {
                 println!("Connected to node using IPv4 at address {}.", ipv4_uri);
                 return Ok(ipv4_uri);
             }
-            Err(e_ipv4) => {
-                eprintln!("Failed to connect to node using IPv4 with error: {}\nTrying connection on IPv6..", e_ipv4);
+            Err(_e_ipv4) => {
                 match test_node_connection(ipv6_uri.clone(), user.clone(), password.clone()).await {
                     Ok(_) => {
                         println!("Connected to node using IPv6 at address {}.", ipv6_uri);
                         return Ok(ipv6_uri);
                     }
-                    Err(e_ipv6) => {
-                        eprintln!("Failed to connect to node using IPv6 with error: {}.\nConnection not established. Retrying..", e_ipv6);
+                    Err(_e_ipv6) => {
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     }
                 }
