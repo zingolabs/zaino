@@ -17,7 +17,6 @@ pub mod request;
 pub mod worker;
 
 use self::{
-    // dispatcher::NymDispatcher,
     error::{IngestorError, ServerError, WorkerError},
     ingestor::{NymIngestor, TcpIngestor},
     queue::Queue,

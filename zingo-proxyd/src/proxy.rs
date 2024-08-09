@@ -1,7 +1,4 @@
 //! Zingo-Proxy server implementation.
-//!
-//! TODO: - Add ProxyServerError error type and rewrite functions to return <Result<(), ProxyServerError>>, propagating internal errors.
-//!       - Update spawn_server and nym_spawn to return <Result<(), GrpcServerError>> and <Result<(), NymServerError>> and use here.
 
 use crate::{nym_server::NymServer, server::spawn_grpc_server};
 use zingo_rpc::{
@@ -12,24 +9,6 @@ use zingo_rpc::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-
-// /// Holds configuration data for ZingoProxyD.
-// pub struct ProxyConfig {
-// proxy_port: u16,
-// zebrad_port: u16,
-// nym_conf_path: String,
-// max_queue_size: usize,
-// max_workers: usize,
-// max_cache_mem: u16,
-// }
-
-// pub struct Proxy {
-// grpc_server: GrpcServer,*
-// nym_server: NymServer,*
-// state_engine,*
-// queue_manager,*
-// config: ProxyConfig,
-// }
 
 /// Launches test Zingo_Proxy server.
 pub async fn spawn_proxy(
@@ -47,7 +26,6 @@ pub async fn spawn_proxy(
 
     startup_message();
     println!("@zingoproxyd: Launching Zingo-Proxy!\n@zingoproxyd: Checking connection with node..");
-    // TODO Add user and password fields.
     let _zebrad_uri = test_node_and_return_uri(
         zebrad_port,
         Some("xxxxxx".to_string()),
@@ -73,15 +51,11 @@ pub async fn spawn_proxy(
     {
         println!("@zingoproxyd[nym]: Launching Nym Server..");
 
-        // let nym_server: NymServer = NymServer(NymClient::nym_spawn(nym_conf_path).await);
-        // nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
-        // let nym_proxy_handle = nym_server.serve(online).await;
         let nym_server = NymServer::spawn(nym_conf_path, online).await;
         nym_addr_out = Some(nym_server.nym_addr.clone());
         let nym_proxy_handle = nym_server.serve().await;
 
         handles.push(nym_proxy_handle);
-        // TODO: Add wait_on_nym_startup(nym_addr_out, online.clone()) function to test nym server.
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 

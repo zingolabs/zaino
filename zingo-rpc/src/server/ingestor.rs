@@ -236,6 +236,7 @@ impl NymIngestor {
                                         .client
                                         .send_reply(response.1, response.0.clone())
                                         .await.map_err(NymError::from) {
+                                    eprintln!("Failed to send response over Nym Mixnet: {}", nym_e);
                                     match self.response_requeue.try_send(response) {
                                         Ok(_) => {
                                             eprintln!("Failed to send response over nym: {}\nResponse requeued, restarting nym dispatcher.", nym_e);

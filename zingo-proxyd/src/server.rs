@@ -1,16 +1,4 @@
 //! gRPC server implementation.
-//!
-//! TODO: - Add GrpcServerError error type and rewrite functions to return <Result<(), GrpcServerError>>, propagating internal errors.
-//!       - Add user and password as fields of ProxyClient and use here.
-
-// use http::Uri;
-// use std::{
-//     net::{Ipv4Addr, SocketAddr},
-//     sync::{
-//         atomic::{AtomicBool, Ordering},
-//         Arc,
-//     },
-// };
 
 use http::Uri;
 use std::net::{Ipv4Addr, SocketAddr};
