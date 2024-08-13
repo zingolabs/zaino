@@ -78,7 +78,7 @@ impl Default for IndexerConfig {
             zebrad_port: 18232,
             node_user: Some("xxxxxx".to_string()),
             node_password: Some("xxxxxx".to_string()),
-            max_queue_size: 256,
+            max_queue_size: 1024,
             max_worker_pool_size: 32,
             idle_worker_pool_size: 4,
         }
@@ -97,7 +97,7 @@ impl Default for IndexerConfig {
             zebrad_port: 18232,
             node_user: Some("xxxxxx".to_string()),
             node_password: Some("xxxxxx".to_string()),
-            max_queue_size: 256,
+            max_queue_size: 1024,
             max_worker_pool_size: 32,
             idle_worker_pool_size: 4,
         }

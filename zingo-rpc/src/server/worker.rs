@@ -97,27 +97,7 @@ impl Worker {
                     incoming = self.queue.listen() => {
                         match incoming {
                             Ok(request) => {
-                                // NOTE: This may need to be removed / moved for scale use (possible it should be moved to after the request is serviced?).
-                                if self.check_for_shutdown().await {
-                                    match self.requeue.try_send(request) {
-                                        Ok(_) => {
-                                            return Ok(());
-                                        }
-                                        Err(QueueError::QueueFull(_request)) => {
-                                            self.atomic_status.store(5);
-                                            eprintln!("Request Queue Full. Failed to send response to queue.\nWorker shutting down.");
-                                            // TODO: Handle this error! (cancel shutdown?).
-                                            return Ok(());
-                                        }
-                                        Err(e) => {
-                                            self.atomic_status.store(5);
-                                            eprintln!("Request Queue Closed. Failed to send response to queue: {}\nWorker shutting down.", e);
-                                            // TODO: Handle queue closed error here. (return correct error?)
-                                            return Ok(());
-                                        }
-                                    }
-                                } else {
-                                    self.atomic_status.store(2);
+                                self.atomic_status.store(2);
                                     match request {
                                         ZingoProxyRequest::TcpServerRequest(request) => {
                                             Server::builder().add_service(svc.clone())
@@ -157,13 +137,18 @@ impl Worker {
                                             }
                                         }
                                     }
+                                // NOTE: This may need to be removed for scale use.
+                                if self.check_for_shutdown().await {
+                                    self.atomic_status.store(5);
+                                    return Ok(());
+                                } else {
                                     self.atomic_status.store(1);
                                 }
                             }
                             Err(_e) => {
                                 self.atomic_status.store(5);
                                 eprintln!("Queue closed, worker shutting down.");
-                                // TODO: Handle queue closed error here. (return correct error?)
+                                // TODO: Handle queue closed error here. (return correct error / undate status to correct err code.)
                                 return Ok(());
                             }
                         }
@@ -304,21 +289,22 @@ impl WorkerPool {
         if self.workers.len() >= self.max_size as usize {
             Err(WorkerError::WorkerPoolFull)
         } else {
+            let worker_index = self.workers();
             self.workers.push(
                 Worker::spawn(
-                    self.workers.len(),
+                    worker_index,
                     self.workers[0].queue.clone(),
                     self.workers[0].requeue.clone(),
                     self.workers[0].nym_response_queue.clone(),
                     self.workers[0].grpc_client.lightwalletd_uri.clone(),
                     self.workers[0].grpc_client.zebrad_uri.clone(),
-                    self.status.statuses[self.workers.len()].clone(),
+                    self.status.statuses[worker_index].clone(),
                     self.online.clone(),
                 )
                 .await,
             );
             self.status.workers.fetch_add(1, Ordering::SeqCst);
-            Ok(self.workers[self.workers.len()].clone().serve().await)
+            Ok(self.workers[worker_index].clone().serve().await)
         }
     }
 

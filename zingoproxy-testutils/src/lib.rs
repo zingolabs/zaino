@@ -16,8 +16,8 @@ pub struct TestManager {
     pub regtest_manager: zingo_testutils::regtest::RegtestManager,
     /// Zingolib regtest network.
     pub regtest_network: zingoconfig::RegtestNetwork,
-    /// Zingo-Proxy gRPC listen port.
-    pub proxy_port: u16,
+    /// Zingo-Indexer gRPC listen port.
+    pub indexer_port: u16,
     /// Zingo-Proxy Nym listen address.
     pub nym_addr: Option<String>,
     /// Zebrad/Zcashd JsonRpc listen port.
@@ -27,21 +27,21 @@ pub struct TestManager {
 }
 
 impl TestManager {
-    /// Launches a zingo regtest manager and zingo-proxy, created TempDir for configuration and log files.
+    /// Launches a zingo regtest manager and zingo-indexer, created TempDir for configuration and log files.
     pub async fn launch(
         online: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> (
         Self,
         zingo_testutils::regtest::ChildProcessHandler,
-        Vec<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
+        tokio::task::JoinHandle<Result<(), zingoproxylib::error::IndexerError>>,
     ) {
         let lwd_port = portpicker::pick_unused_port().expect("No ports free");
         let zebrad_port = portpicker::pick_unused_port().expect("No ports free");
-        let proxy_port = portpicker::pick_unused_port().expect("No ports free");
+        let indexer_port = portpicker::pick_unused_port().expect("No ports free");
 
         let temp_conf_dir = create_temp_conf_files(lwd_port, zebrad_port).unwrap();
         let temp_conf_path = temp_conf_dir.path().to_path_buf();
-        let nym_conf_path = temp_conf_path.join("nym");
+        let _nym_conf_path = temp_conf_path.join("nym");
 
         set_custom_drops(online.clone(), Some(temp_conf_path.clone()));
 
@@ -52,27 +52,40 @@ impl TestManager {
             .launch(true)
             .expect("Failed to start regtest services");
 
-        let (proxy_handler, nym_addr) = zingoproxylib::proxy::spawn_proxy(
-            &proxy_port,
-            &lwd_port,
-            &zebrad_port,
-            nym_conf_path.to_str().unwrap(),
-            online.clone(),
-        )
-        .await;
+        // TODO: This turns nym functionality off. for nym tests we will need to add option to include nym in test manager.
+        // - queue and workerpool sizes may need to be changed here.
+        let indexer_config = zingoproxylib::config::IndexerConfig {
+            tcp_active: true,
+            listen_port: Some(indexer_port),
+            nym_active: false,
+            nym_conf_path: None,
+            lightwalletd_port: lwd_port,
+            zebrad_port,
+            node_user: Some("xxxxxx".to_string()),
+            node_password: Some("xxxxxx".to_string()),
+            max_queue_size: 512,
+            max_worker_pool_size: 96,
+            idle_worker_pool_size: 48,
+        };
+        let indexer_handler =
+            zingoproxylib::indexer::Indexer::start_indexer_service(indexer_config, online.clone())
+                .await
+                .unwrap();
+        // NOTE: This is required to give the server time to launch, this is not used in production code but could be rewritten to improve testing efficiency.
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
         (
             TestManager {
                 temp_conf_dir,
                 regtest_manager,
                 regtest_network,
-                proxy_port,
-                nym_addr,
+                indexer_port,
+                nym_addr: None,
                 zebrad_port,
                 online,
             },
             regtest_handler,
-            proxy_handler,
+            indexer_handler,
         )
     }
 
@@ -80,7 +93,7 @@ impl TestManager {
     pub fn get_proxy_uri(&self) -> http::Uri {
         http::Uri::builder()
             .scheme("http")
-            .authority(format!("127.0.0.1:{0}", self.proxy_port))
+            .authority(format!("127.0.0.1:{0}", self.indexer_port))
             .path_and_query("")
             .build()
             .unwrap()

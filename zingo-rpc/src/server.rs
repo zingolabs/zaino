@@ -289,7 +289,7 @@ impl Server {
             worker_handles = self.worker_pool.clone().serve().await;
             self.status.server_status.store(1);
             loop {
-                if self.request_queue.queue_length() >= (self.request_queue.max_length() / 2)
+                if self.request_queue.queue_length() >= (self.request_queue.max_length() / 4)
                     && (self.worker_pool.workers() < self.worker_pool.max_size() as usize)
                 {
                     match self.worker_pool.push_worker().await {
@@ -355,7 +355,6 @@ impl Server {
         &mut self,
         tcp_ingestor_handle: Option<tokio::task::JoinHandle<Result<(), IngestorError>>>,
         nym_ingestor_handle: Option<tokio::task::JoinHandle<Result<(), IngestorError>>>,
-        // nym_dispatcher_handle: Option<tokio::task::JoinHandle<Result<(), DispatcherError>>>,
         mut worker_handles: Vec<Option<tokio::task::JoinHandle<Result<(), WorkerError>>>>,
     ) {
         if let Some(handle) = tcp_ingestor_handle {

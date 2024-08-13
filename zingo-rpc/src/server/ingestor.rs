@@ -76,7 +76,9 @@ impl TcpIngestor {
                         match incoming {
                             Ok((stream, _)) => {
                                 match self.queue.try_send(ZingoProxyRequest::new_from_grpc(stream)) {
-                                    Ok(_) => {}
+                                    Ok(_) => {
+                                        println!("[TEST] Requests in Queue: {}", self.queue.queue_length());
+                                    }
                                     Err(QueueError::QueueFull(_request)) => {
                                         eprintln!("Queue Full.");
                                         // TODO: Return queue full tonic status over tcpstream and close (that TcpStream..).

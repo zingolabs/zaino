@@ -17,6 +17,9 @@ pub enum IndexerError {
     /// HTTP related errors due to invalid URI.
     #[error("HTTP error: Invalid URI {0}")]
     HttpError(#[from] http::Error),
+    /// Returned from tokio joinhandles..
+    #[error("Join handle error: Invalid URI {0}")]
+    TokioJoinError(#[from] tokio::task::JoinError),
     /// Custom indexor errors.
     #[error("Misc indexer error: {0}")]
     MiscIndexerError(String),
