@@ -194,8 +194,7 @@ impl NymIngestor {
                         }
                         match incoming {
                             Some(request) => {
-                                // NOTE / TODO: POC server checked for empty emssages here (if request.is_empty()). Could be required here...
-                                // TODO: Handle EmptyMessageError here.
+                                // NOTE / TODO: POC server checked for empty messages here (if request.is_empty()). Could be required here...
                                 let request_vu8 = request
                                     .first()
                                     .map(|r| r.message.clone())

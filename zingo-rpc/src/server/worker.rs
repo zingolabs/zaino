@@ -41,8 +41,6 @@ pub struct Worker {
     nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
     /// gRPC client used for processing requests received over http.
     grpc_client: GrpcClient,
-    // /// Workers current status, includes timestamp for despawning inactive workers..
-    // worker_status: WorkerStatus,
     /// Thread safe worker status.
     atomic_status: AtomicStatus,
     /// Represents the Online status of the Worker.
@@ -83,7 +81,7 @@ impl Worker {
     pub async fn serve(self) -> tokio::task::JoinHandle<Result<(), WorkerError>> {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
             let svc = CompactTxStreamerServer::new(self.grpc_client.clone());
             // TODO: create tonic server here for use within loop.
             self.atomic_status.store(1);

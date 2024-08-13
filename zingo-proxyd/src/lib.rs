@@ -7,6 +7,3 @@
 pub mod config;
 pub mod error;
 pub mod indexer;
-pub mod nym_server;
-pub mod proxy;
-pub mod server;

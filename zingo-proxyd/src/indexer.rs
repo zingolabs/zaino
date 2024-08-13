@@ -57,41 +57,6 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    // /// Launches an Indexer service.
-    // ///
-    // /// Currently only takes an IndexerConfig.
-    // pub async fn start(config: IndexerConfig) -> Result<(), IndexerError> {
-    //     // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
-    //     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-    //     let online = Arc::new(AtomicBool::new(true));
-    //     set_ctrlc(online.clone());
-    //     if config.nym_active {
-    //         nym_bin_common::logging::setup_logging();
-    //     }
-    //     startup_message();
-    //     println!("Launching Zingdexer!");
-    //     let mut indexer: Indexer = Indexer::new(config, online.clone()).await?;
-    //     let server_handle = if let Some(server) = indexer.server.take() {
-    //         Some(server.serve().await)
-    //     } else {
-    //         return Err(IndexerError::MiscIndexerError(
-    //             "Server Missing! Fatal Error!.".to_string(),
-    //         ));
-    //     };
-    //     indexer.status.indexer_status.store(2);
-    //     loop {
-    //         indexer.status.load();
-    //         // indexer.log_status();
-    //         if indexer.check_for_shutdown() {
-    //             indexer.status.indexer_status.store(4);
-    //             indexer.shutdown_components(server_handle).await;
-    //             indexer.status.indexer_status.store(5);
-    //             return Ok(());
-    //         }
-    //         interval.tick().await;
-    //     }
-    // }
-
     /// Starts Indexer service.
     ///
     /// Currently only takes an IndexerConfig.
