@@ -16,7 +16,7 @@ use crate::{
     server::{
         error::{IngestorError, QueueError},
         queue::{QueueReceiver, QueueSender},
-        request::ZingoProxyRequest,
+        request::ZingoIndexerRequest,
         AtomicStatus, StatusType,
     },
 };
@@ -26,7 +26,7 @@ pub struct TcpIngestor {
     /// Tcp Listener.
     ingestor: TcpListener,
     /// Used to send requests to the queue.
-    queue: QueueSender<ZingoProxyRequest>,
+    queue: QueueSender<ZingoIndexerRequest>,
     /// Current status of the ingestor.
     status: AtomicStatus,
     /// Represents the Online status of the gRPC server.
@@ -37,7 +37,7 @@ impl TcpIngestor {
     /// Creates a Tcp Ingestor.
     pub async fn spawn(
         listen_addr: SocketAddr,
-        queue: QueueSender<ZingoProxyRequest>,
+        queue: QueueSender<ZingoIndexerRequest>,
         status: AtomicStatus,
         online: Arc<AtomicBool>,
     ) -> Result<Self, IngestorError> {
@@ -75,7 +75,7 @@ impl TcpIngestor {
                         }
                         match incoming {
                             Ok((stream, _)) => {
-                                match self.queue.try_send(ZingoProxyRequest::new_from_grpc(stream)) {
+                                match self.queue.try_send(ZingoIndexerRequest::new_from_grpc(stream)) {
                                     Ok(_) => {
                                         println!("[TEST] Requests in Queue: {}", self.queue.queue_length());
                                     }
@@ -136,7 +136,7 @@ pub struct NymIngestor {
     /// Nym Client
     ingestor: NymClient,
     /// Used to send requests to the queue.
-    queue: QueueSender<ZingoProxyRequest>,
+    queue: QueueSender<ZingoIndexerRequest>,
     /// Used to send requests to the queue.
     response_queue: QueueReceiver<(Vec<u8>, AnonymousSenderTag)>,
     /// Used to send requests to the queue.
@@ -151,7 +151,7 @@ impl NymIngestor {
     /// Creates a Nym Ingestor
     pub async fn spawn(
         nym_conf_path: &str,
-        queue: QueueSender<ZingoProxyRequest>,
+        queue: QueueSender<ZingoIndexerRequest>,
         response_queue: QueueReceiver<(Vec<u8>, AnonymousSenderTag)>,
         response_requeue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
         status: AtomicStatus,
@@ -205,7 +205,7 @@ impl NymIngestor {
                                     .ok_or_else(|| IngestorError::NymError(NymError::EmptyRecipientTagError))?;
                                 // TODO: Handle RequestError here.
                                 let zingo_proxy_request =
-                                    ZingoProxyRequest::new_from_nym(return_recipient, request_vu8.as_ref())?;
+                                    ZingoIndexerRequest::new_from_nym(return_recipient, request_vu8.as_ref())?;
                                 match self.queue.try_send(zingo_proxy_request) {
                                     Ok(_) => {}
                                     Err(QueueError::QueueFull(_request)) => {

@@ -1,6 +1,6 @@
-//! ZingoProxy and Zcash primitives.
+//! ZingoIndexer and Zcash primitives.
 //!
-//! This is not an exaustive source of zcash primitives, only what Zingo-Proxy and consuming wallets [ZngoLib] require for their functionality.
+//! This is not an exaustive source of zcash primitives, only what Zingo-Indexer and consuming wallets [ZngoLib] require for their functionality.
 
 pub mod address;
 pub mod block;

@@ -1,4 +1,4 @@
-//! Zingo-Proxy mempool state functionality.
+//! Zingo-Indexer mempool state functionality.
 
 use std::{collections::HashSet, time::SystemTime};
 use tokio::sync::{Mutex, RwLock};
@@ -12,7 +12,7 @@ use crate::{
 pub struct Mempool {
     /// Txids currently in the mempool.
     txids: RwLock<Vec<String>>,
-    /// Txids that have already been added to Zingo-Proxy's mempool.
+    /// Txids that have already been added to Zingo-Indexer's mempool.
     txids_seen: Mutex<HashSet<String>>,
     /// System time when the mempool was last updated.
     last_sync_time: Mutex<SystemTime>,

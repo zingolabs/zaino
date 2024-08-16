@@ -1,7 +1,7 @@
 [package]
 name = "zingo-rpc"
 version = "0.1.0"
-description = "Crate containing the Zingo-Proxy LightWallet server library."
+description = "Crate containing the Zingo-Indexer LightWallet server library."
 edition = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
@@ -16,7 +16,7 @@ nym_poc = ["zingo-netutils", "zcash_client_backend"]
 #
 # Only used in original nym_poc code, to be removed with creation of nym enhanced zingolib build. 
 #
-# Not to be used in production code as zingo-rpc will become a dep of zingolib and zingo-proxy now builds its onw CompactTxStreamer.
+# Not to be used in production code as zingo-rpc will become a dep of zingolib and zingo-indexer now builds its onw CompactTxStreamer.
 zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration", optional = true }
 zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"], optional = true }
 

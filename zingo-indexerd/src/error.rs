@@ -2,7 +2,7 @@
 
 use zingo_rpc::{jsonrpc::error::JsonRpcConnectorError, server::error::ServerError};
 
-/// Zingo-Proxy server errors.
+/// Zingo-Indexer errors.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     /// Server based errors.

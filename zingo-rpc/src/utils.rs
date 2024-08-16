@@ -1,6 +1,6 @@
 //! Utility functions for Zingo-RPC.
 
-/// Zingo-Proxy build info.
+/// Zingo-Indexer build info.
 pub struct BuildInfo {
     /// Git commit hash.
     pub commit_hash: String,
@@ -10,11 +10,11 @@ pub struct BuildInfo {
     pub build_date: String,
     /// Build user.
     pub build_user: String,
-    /// Zingo-Proxy version.
+    /// Zingo-Indexer version.
     pub version: String,
 }
 
-/// Returns build info for Zingo-Proxy.
+/// Returns build info for Zingo-Indexer.
 pub fn get_build_info() -> BuildInfo {
     BuildInfo {
         commit_hash: env!("GIT_COMMIT").to_string(),

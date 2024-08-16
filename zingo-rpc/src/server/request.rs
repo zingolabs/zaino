@@ -113,20 +113,20 @@ impl TcpServerRequest {
     }
 }
 
-/// Zingo-Proxy request, used by request queue.
+/// Zingo-Indexer request, used by request queue.
 #[derive(Debug)]
-pub enum ZingoProxyRequest {
+pub enum ZingoIndexerRequest {
     /// Requests originating from the Nym server.
     NymServerRequest(NymServerRequest),
     /// Requests originating from the gRPC server.
     TcpServerRequest(TcpServerRequest),
 }
 
-impl ZingoProxyRequest {
-    /// Creates a ZingoProxyRequest from an encoded gRPC service call, recieved by the Nym server.
+impl ZingoIndexerRequest {
+    /// Creates a ZingoIndexerRequest from an encoded gRPC service call, recieved by the Nym server.
     pub fn new_from_nym(metadata: AnonymousSenderTag, bytes: &[u8]) -> Result<Self, RequestError> {
         let (id, method, body) = read_nym_request_data(bytes)?;
-        Ok(ZingoProxyRequest::NymServerRequest(NymServerRequest {
+        Ok(ZingoIndexerRequest::NymServerRequest(NymServerRequest {
             queuedata: QueueData::new(),
             request: NymRequest {
                 id,
@@ -137,11 +137,11 @@ impl ZingoProxyRequest {
         }))
     }
 
-    /// Creates a ZingoProxyRequest from a gRPC service call, recieved by the gRPC server.
+    /// Creates a ZingoIndexerRequest from a gRPC service call, recieved by the gRPC server.
     ///
     /// TODO: implement proper functionality along with queue.
     pub fn new_from_grpc(stream: TcpStream) -> Self {
-        ZingoProxyRequest::TcpServerRequest(TcpServerRequest {
+        ZingoIndexerRequest::TcpServerRequest(TcpServerRequest {
             queuedata: QueueData::new(),
             request: TcpRequest(stream),
         })
@@ -150,24 +150,24 @@ impl ZingoProxyRequest {
     /// Increases the requeue attempts for the request.
     pub fn increase_requeues(&mut self) {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref mut req) => req.queuedata.increase_requeues(),
-            ZingoProxyRequest::TcpServerRequest(ref mut req) => req.queuedata.increase_requeues(),
+            ZingoIndexerRequest::NymServerRequest(ref mut req) => req.queuedata.increase_requeues(),
+            ZingoIndexerRequest::TcpServerRequest(ref mut req) => req.queuedata.increase_requeues(),
         }
     }
 
     /// Returns the duration sunce the request was received.
     pub fn duration(&self) -> Result<std::time::Duration, RequestError> {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.queuedata.duration(),
-            ZingoProxyRequest::TcpServerRequest(ref req) => req.queuedata.duration(),
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.queuedata.duration(),
+            ZingoIndexerRequest::TcpServerRequest(ref req) => req.queuedata.duration(),
         }
     }
 
     /// Returns the number of times the request has been requeued.
     pub fn requeues(&self) -> u32 {
         match self {
-            ZingoProxyRequest::NymServerRequest(ref req) => req.queuedata.requeues(),
-            ZingoProxyRequest::TcpServerRequest(ref req) => req.queuedata.requeues(),
+            ZingoIndexerRequest::NymServerRequest(ref req) => req.queuedata.requeues(),
+            ZingoIndexerRequest::TcpServerRequest(ref req) => req.queuedata.requeues(),
         }
     }
 }

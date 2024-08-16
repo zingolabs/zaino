@@ -206,7 +206,7 @@ pub struct FullBlockHeader {
     pub cached_hash: Vec<u8>,
 }
 
-/// Zingo-Proxy Block.
+/// Zingo-Indexer Block.
 #[derive(Debug)]
 pub struct FullBlock {
     /// The block header, containing block metadata.

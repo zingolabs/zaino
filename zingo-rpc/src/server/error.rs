@@ -3,9 +3,9 @@
 use std::io;
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::{nym::error::NymError, server::request::ZingoProxyRequest};
+use crate::{nym::error::NymError, server::request::ZingoIndexerRequest};
 
-/// Zingo-Proxy queue errors.
+/// Zingo-Indexer queue errors.
 #[derive(Debug, thiserror::Error)]
 pub enum QueueError<T> {
     /// Returned when a requests is pushed to a full queue.
@@ -19,7 +19,7 @@ pub enum QueueError<T> {
     QueueClosed,
 }
 
-/// Zingo-Proxy request errors.
+/// Zingo-Indexer request errors.
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
     /// Errors originating from incorrect enum types being called.
@@ -33,7 +33,7 @@ pub enum RequestError {
     NymError(#[from] NymError),
 }
 
-/// Zingo-Proxy ingestor errors.
+/// Zingo-Indexer ingestor errors.
 #[derive(Debug, thiserror::Error)]
 pub enum IngestorError {
     /// Request based errors.
@@ -47,10 +47,10 @@ pub enum IngestorError {
     ClientConnectionError(#[from] io::Error),
     /// Error from failing to send new request to the queue.
     #[error("Failed to send request to the queue: {0}")]
-    QueuePushError(#[from] TrySendError<ZingoProxyRequest>),
+    QueuePushError(#[from] TrySendError<ZingoIndexerRequest>),
 }
 
-/// Zingo-Proxy worker errors.
+/// Zingo-Indexer worker errors.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
     /// Tonic transport error.
@@ -67,7 +67,7 @@ pub enum WorkerError {
     WorkerPoolIdle,
 }
 
-/// Zingo-Proxy server errors.
+/// Zingo-Indexer server errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     /// Request based errors.

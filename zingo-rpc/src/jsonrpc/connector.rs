@@ -70,7 +70,7 @@ impl JsonRpcConnector {
     ///
     /// TODO: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     /// This is because the node's queue can become overloaded and stop servicing RPCs.
-    /// This functionality is weak and should be incorporated in Zingo-Proxy's queue mechanism [WIP] that handles various errors appropriately.
+    /// This functionality is weak and should be incorporated in Zingo-Indexer's queue mechanism [WIP] that handles various errors appropriately.
     pub async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
@@ -165,7 +165,7 @@ impl JsonRpcConnector {
     /// - `address_strings`: (object, example={"addresses": ["tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ"]}) A JSON map with a single entry
     ///     - `addresses`: (array of strings) A list of base-58 encoded addresses.
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -228,7 +228,7 @@ impl JsonRpcConnector {
     /// method: post
     /// tags: blockchain
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_best_block_hash(
         &self,
     ) -> Result<BestBlockHashResponse, JsonRpcConnectorError> {
@@ -275,7 +275,7 @@ impl JsonRpcConnector {
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_subtrees_by_index(
         &self,
         pool: String,
@@ -356,7 +356,7 @@ impl JsonRpcConnector {
     ///
     /// - `addresses`: (array, required, example={\"addresses\": [\"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ\"]}) The addresses to get outputs from.
     ///
-    /// NOTE: Currently unused by Zingo-Proxy and untested!
+    /// NOTE: Currently unused by Zingo-Indexer and untested!
     pub async fn get_address_utxos(
         &self,
         addresses: Vec<String>,

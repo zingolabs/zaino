@@ -1,7 +1,7 @@
 [package]
-name = "zingoproxy-testutils"
+name = "zingoindexer-testutils"
 version = "0.1.0"
-description = "Crate containing Zingo-Proxy test specific functionality."
+description = "Crate containing Zingo-Indexer test specific functionality."
 edition = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
@@ -13,7 +13,7 @@ nym_poc = []
 
 [dependencies]
 zingo-rpc = { path = "../zingo-rpc" }
-zingo-proxyd = { path = "../zingo-proxyd" }
+zingo-indexerd = { path = "../zingo-indexerd" }
 
 # ZingoLib
 zingo-testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }

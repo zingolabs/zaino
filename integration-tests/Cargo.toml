@@ -1,7 +1,7 @@
 [package]
 name = "integration-tests"
 version = "0.1.0"
-description = "Crate containing Zingo-Proxy 'Wallet-to-Node' tests."
+description = "Crate containing Zingo-Indexer 'Wallet-to-Node' tests."
 edition = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
@@ -13,7 +13,7 @@ repository = { workspace = true }
 nym_poc = []
 
 [dependencies]
-zingoproxy-testutils = { path = "../zingoproxy-testutils" }
+zingoindexer-testutils = { path = "../zingoindexer-testutils" }
 
 # Miscellaneous Workspace
 tokio = { workspace = true }

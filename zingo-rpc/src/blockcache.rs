@@ -1,4 +1,4 @@
-//! Zingo-Proxy Block Cache and Mempool State Engine.
+//! Zingo-Indexer Block Cache and Mempool State Engine.
 
 pub mod block;
 pub mod error;

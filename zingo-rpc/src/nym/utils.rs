@@ -1,4 +1,4 @@
-//! Utility functions for Nym-Proxy
+//! Utility functions for Nym-Mixnet
 
 use crate::{
     blockcache::{

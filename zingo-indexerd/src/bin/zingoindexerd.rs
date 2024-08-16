@@ -1,6 +1,6 @@
 //! Zingo-Indexer daemon
 
-use zingoproxylib::{config::IndexerConfig, indexer::Indexer};
+use zingoindexerlib::{config::IndexerConfig, indexer::Indexer};
 
 #[tokio::main]
 async fn main() {

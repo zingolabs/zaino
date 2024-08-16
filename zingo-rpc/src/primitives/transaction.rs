@@ -22,7 +22,7 @@ pub struct BlockCommitmentTreeSize {
     pub orchard: CommitmentTreeSize,
 }
 
-/// Zingo-Proxy commitment tree structure replicating functionality in Zebra.
+/// Zingo-Indexer commitment tree structure replicating functionality in Zebra.
 ///
 /// A wrapper that contains either an Orchard or Sapling note commitment tree.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -31,7 +31,7 @@ pub struct CommitmentTreestate {
     pub final_state: String,
 }
 
-/// Zingo-Proxy sapling treestate.
+/// Zingo-Indexer sapling treestate.
 ///
 /// A treestate that is included in the [`z_gettreestate`][1] RPC response.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -40,7 +40,7 @@ pub struct SaplingTreestate {
     pub commitments: CommitmentTreestate,
 }
 
-/// Zingo-Proxy orchard treestate.
+/// Zingo-Indexer orchard treestate.
 ///
 /// A treestate that is included in the [`z_gettreestate`][1] RPC response.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -70,7 +70,7 @@ impl std::fmt::Debug for SerializedTransaction {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let data_hex = hex::encode(&self.bytes);
 
-        f.debug_tuple("ProxySerializedTransaction")
+        f.debug_tuple("SerializedTransaction")
             .field(&data_hex)
             .finish()
     }
@@ -249,7 +249,7 @@ pub struct SubtreeRpcData {
 }
 
 impl SubtreeRpcData {
-    /// Returns new instance of ProxySubtreeRpcData
+    /// Returns new instance of SubtreeRpcData
     pub fn new(root: String, height: ChainHeight) -> Self {
         Self { root, height }
     }
@@ -260,7 +260,7 @@ impl serde::Serialize for SubtreeRpcData {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("ProxySubtreeRpcData", 2)?;
+        let mut state = serializer.serialize_struct("SubtreeRpcData", 2)?;
         state.serialize_field("root", &self.root)?;
         state.serialize_field("height", &self.height)?;
         state.end()
@@ -311,7 +311,7 @@ impl hex::FromHex for SubtreeRpcData {
     }
 }
 
-/// Zingo-Proxy encoding of a Bitcoin script.
+/// Zingo-Indexer encoding of a Bitcoin script.
 ///
 /// *** UNTESTED - TEST BEFORE USE ***
 #[derive(Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]

@@ -1,4 +1,4 @@
-//! Zingo-Proxy client server.
+//! Zingo-Indexer gRPC server.
 
 use http::Uri;
 use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
@@ -20,7 +20,7 @@ use self::{
     error::{IngestorError, ServerError, WorkerError},
     ingestor::{NymIngestor, TcpIngestor},
     queue::Queue,
-    request::ZingoProxyRequest,
+    request::ZingoIndexerRequest,
     worker::{WorkerPool, WorkerPoolStatus},
 };
 
@@ -148,7 +148,7 @@ pub struct Server {
     /// Dynamically sized pool of workers.
     worker_pool: WorkerPool,
     /// Request queue.
-    request_queue: Queue<ZingoProxyRequest>,
+    request_queue: Queue<ZingoIndexerRequest>,
     /// Nym response queue.
     nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)>,
     /// Servers current status.
@@ -189,7 +189,7 @@ impl Server {
         }
         println!("Launching Server!\n");
         status.server_status.store(0);
-        let request_queue: Queue<ZingoProxyRequest> =
+        let request_queue: Queue<ZingoIndexerRequest> =
             Queue::new(max_queue_size as usize, status.request_queue_status.clone());
         status.request_queue_status.store(0, Ordering::SeqCst);
         let nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)> = Queue::new(

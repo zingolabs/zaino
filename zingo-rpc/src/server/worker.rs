@@ -14,7 +14,7 @@ use crate::{
     server::{
         error::{QueueError, WorkerError},
         queue::{QueueReceiver, QueueSender},
-        request::ZingoProxyRequest,
+        request::ZingoIndexerRequest,
         AtomicStatus,
     },
 };
@@ -34,9 +34,9 @@ pub struct Worker {
     /// Worker ID.
     worker_id: usize,
     /// Used to pop requests from the queue
-    queue: QueueReceiver<ZingoProxyRequest>,
+    queue: QueueReceiver<ZingoIndexerRequest>,
     /// Used to requeue requests.
-    requeue: QueueSender<ZingoProxyRequest>,
+    requeue: QueueSender<ZingoIndexerRequest>,
     /// Used to send responses to the nym_dispatcher.
     nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
     /// gRPC client used for processing requests received over http.
@@ -51,8 +51,8 @@ impl Worker {
     /// Creates a new queue worker.
     pub async fn spawn(
         worker_id: usize,
-        queue: QueueReceiver<ZingoProxyRequest>,
-        requeue: QueueSender<ZingoProxyRequest>,
+        queue: QueueReceiver<ZingoIndexerRequest>,
+        requeue: QueueSender<ZingoIndexerRequest>,
         nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
         lightwalletd_uri: Uri,
         zebrad_uri: Uri,
@@ -97,7 +97,7 @@ impl Worker {
                             Ok(request) => {
                                 self.atomic_status.store(2);
                                     match request {
-                                        ZingoProxyRequest::TcpServerRequest(request) => {
+                                        ZingoIndexerRequest::TcpServerRequest(request) => {
                                             Server::builder().add_service(svc.clone())
                                                 .serve_with_incoming( async_stream::stream! {
                                                     yield Ok::<_, std::io::Error>(
@@ -107,7 +107,7 @@ impl Worker {
                                             )
                                             .await?;
                                         }
-                                        ZingoProxyRequest::NymServerRequest(request) => {
+                                        ZingoIndexerRequest::NymServerRequest(request) => {
                                             match self.grpc_client
                                                 .process_nym_request(&request)
                                                 .await {
@@ -237,8 +237,8 @@ impl WorkerPool {
     pub async fn spawn(
         max_size: u16,
         idle_size: u16,
-        queue: QueueReceiver<ZingoProxyRequest>,
-        _requeue: QueueSender<ZingoProxyRequest>,
+        queue: QueueReceiver<ZingoIndexerRequest>,
+        _requeue: QueueSender<ZingoIndexerRequest>,
         nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
         lightwalletd_uri: Uri,
         zebrad_uri: Uri,

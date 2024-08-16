@@ -74,7 +74,7 @@ impl GrpcClient {
                 "get_address_utxos" |
                 "get_address_utxos_stream" |
                 "ping" => {
-                    Err(tonic::Status::unimplemented("RPC not yet implemented over nym. If you require this RPC please open an issue or PR at the Zingo-Proxy github (https://github.com/zingolabs/zingo-proxy)."))
+                    Err(tonic::Status::unimplemented("RPC not yet implemented over nym. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
                     },
                 _ => Err(tonic::Status::invalid_argument("Incorrect Method String")),
             }
