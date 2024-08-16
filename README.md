@@ -15,7 +15,7 @@ zingodisclosure@proton.me
 Will eventually hold the rust implementations of the LightWallet Service and Darkside RPCs, along with the wallet-side and server-side Nym-powered implementations.
 
 # Zingo-IndexerD
-A gRPC server
+A gRPC server capable of servicing clients both over http and over the nym mixnet. currently only send_transaction and get_lightd_info have been implemented over nym.
 
 Under the "nym_poc" feature flag Zingo-IndexerD can also act as a Nym powered proxy, running between zcash wallets and Zingo-IndexerD, capable of sending zcash transactions over the Nym Mixnet. 
 Note: The wallet-side nym service RPC implementations are moving to CompactTxStreamerClient for easier consumption by wallets. Functionality under the "nym_poc" feature flag will be removed once a working example has been implemented directly in zingolib.
