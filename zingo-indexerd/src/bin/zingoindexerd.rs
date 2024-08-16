@@ -1,8 +1,24 @@
 //! Zingo-Indexer daemon
 
-use zingoindexerlib::{config::IndexerConfig, indexer::Indexer};
+use clap::Parser;
+use std::path::PathBuf;
+use zingoindexerlib::{config::load_config, indexer::Indexer};
+
+#[derive(Parser, Debug)]
+#[command(name = "zindexer", about = "A server for Zingo-Indexer")]
+struct Args {
+    /// Path to the configuration file
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() {
-    Indexer::start(IndexerConfig::default()).await.unwrap();
+    Indexer::start(load_config(
+        &Args::parse()
+            .config
+            .unwrap_or_else(|| PathBuf::from("./zingo-indexerd/zindexer.toml")),
+    ))
+    .await
+    .unwrap();
 }

@@ -1,11 +1,10 @@
 //! Zingo-Indexer config.
 
+use crate::error::IndexerError;
 use std::path::Path;
 
-use crate::error::IndexerError;
-
 /// Config information required for Zingo-Indexer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct IndexerConfig {
     /// Sets the TcpIngestor's status.
     pub tcp_active: bool,
@@ -102,4 +101,29 @@ impl Default for IndexerConfig {
             idle_worker_pool_size: 4,
         }
     }
+}
+
+/// Attempts to load config data from a toml file at the specified path.
+pub fn load_config(file_path: &std::path::PathBuf) -> IndexerConfig {
+    let mut config = IndexerConfig::default();
+
+    if let Ok(contents) = std::fs::read_to_string(file_path) {
+        if let Ok(parsed_config) = toml::from_str::<IndexerConfig>(&contents) {
+            config = IndexerConfig {
+                tcp_active: parsed_config.tcp_active,
+                listen_port: parsed_config.listen_port.or(config.listen_port),
+                nym_active: parsed_config.nym_active,
+                nym_conf_path: parsed_config.nym_conf_path.or(config.nym_conf_path),
+                lightwalletd_port: parsed_config.lightwalletd_port,
+                zebrad_port: parsed_config.zebrad_port,
+                node_user: parsed_config.node_user.or(config.node_user),
+                node_password: parsed_config.node_password.or(config.node_password),
+                max_queue_size: parsed_config.max_queue_size,
+                max_worker_pool_size: parsed_config.max_worker_pool_size,
+                idle_worker_pool_size: parsed_config.idle_worker_pool_size,
+            };
+        }
+    }
+
+    config
 }
