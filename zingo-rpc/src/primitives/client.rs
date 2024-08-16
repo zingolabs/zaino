@@ -1,4 +1,4 @@
-//! Holds primitive structs for ZingoProxy network clients.
+//! Holds primitive structs for ZingoIndexer network clients.
 
 use nym_sdk::mixnet::MixnetClient;
 use std::sync::{atomic::AtomicBool, Arc};

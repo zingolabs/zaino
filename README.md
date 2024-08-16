@@ -1,8 +1,10 @@
-# Zingo-Proxy
-A rust implemented, nym enhanced, lightwalletd for Zcash.
+# Zingo-Indexer
+A rust implemented, nym enhanced, indexer for Zcash.
 
 A note to developers/consumers/contributers: The end goal is not an exact one-to-one port of all existing lwd functionaliy.
 We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet.
+
+The zingo-indexer is intended to provide all necessary funtionality for clients, including "standalone" (formerly "light") clients/wallets and integrated (formerly "full") client/wallets.
 
 # Security Vulnerability Disclosure
 If you believe you have discovered a security issue, please contact us at:
@@ -12,18 +14,18 @@ zingodisclosure@proton.me
 # Zingo-RPC
 Will eventually hold the rust implementations of the LightWallet Service and Darkside RPCs, along with the wallet-side and server-side Nym Service implementations.
 
-# Zingo-ProxyD
-Currently a lightweight gRPC server for testing and development. Zingo-ProxyD also has a basic nym server, currently only receives send_transaction and get_lightd_info commands send over the mixnet. 
+# Zingo-IndexerD
+Currently a lightweight gRPC server for testing and development. Zingo-IndexerD also has a basic nym server, currently only receives send_transaction and get_lightd_info commands send over the mixnet. 
 This should not be used to run mainnet nodes in its current form as it lacks the queueing and error checking logic necessary.
 
-Under the "nym_poc" feature flag Zingo-ProxyD can also act as a Nym powered proxy between zcash wallets and Zingo-ProxyD, capable of sending zcash transactions over the Nym Mixnet. 
+Under the "nym_poc" feature flag Zingo-IndexerD can also act as a Nym powered indexer between zcash wallets and Zingo-IndexerD, capable of sending zcash transactions over the Nym Mixnet. 
 Note: The wallet-side nym service RPC implementations are moving to CompactTxStreamerClient for easier consumption by wallets. Functionality under the "nym_poc" feature flag will be removed once a working example has been implemented directly in zingolib.
 
 This is the POC and initial work on enabling zcash infrastructure to use the nym mixnet.
 
 [Nym_POC](./docs/nym_poc.pdf) shows the current state of this work ands our vision for the future. 
 
-Our plan is to first enable wallets to send and recieve transactions via a nym powered proxy between wallets and a lightwalletd/zebrad before looking at the wider zcash ecosystem.
+Our plan is to first enable wallets to send and receive transactions via a nym powered indexer between wallets and a lightwalletd/zebrad before looking at the wider zcash ecosystem.
 
 
 # Dependencies
@@ -35,11 +37,11 @@ Our plan is to first enable wallets to send and recieve transactions via a nym p
 
 # Testing
 - To run tests:
-1) Simlink or copy compiled `zcashd`, `zcash-cli` and `lightwalletd` binaries to `$ zingo-proxy/zingo-testutils/test_binaries/bins/`
+1) Simlink or copy compiled `zcashd`, `zcash-cli` and `lightwalletd` binaries to `$ zingo-indexer/zingo-testutils/test_binaries/bins/`
 3) Run `$ cargo nextest run` or `$ cargo test`
 
-# zingoproxyd
-- To run zingo-cli through zingo-proxy, connecting to lightwalletd/zebrad locally:
+# zingoindexerd
+- To run zingo-cli through zingo-indexer, connecting to lightwalletd/zebrad locally:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 3) Run `$ cargo run`
 

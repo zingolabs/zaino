@@ -1,4 +1,4 @@
-//! Utility functions for Zingo-Proxy Testing.
+//! Utility functions for Zingo-Indexer Testing.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -7,7 +7,7 @@ use std::io::Write;
 
 static CTRL_C_ONCE: std::sync::Once = std::sync::Once::new();
 
-/// Configuration data for Zingo-Proxy Tests.
+/// Configuration data for Zingo-Indexer Tests.
 pub struct TestManager {
     /// Temporary Directory for nym, zcashd and lightwalletd configuration and regtest data.
     pub temp_conf_dir: tempfile::TempDir,
@@ -16,18 +16,18 @@ pub struct TestManager {
     pub regtest_manager: zingo_testutils::regtest::RegtestManager,
     /// Zingolib regtest network.
     pub regtest_network: zingoconfig::RegtestNetwork,
-    /// Zingo-Proxy gRPC listen port.
-    pub proxy_port: u16,
-    /// Zingo-Proxy Nym listen address.
+    /// Zingo-Indexer gRPC listen port.
+    pub indexer_port: u16,
+    /// Zingo-Indexer Nym listen address.
     pub nym_addr: Option<String>,
     /// Zebrad/Zcashd JsonRpc listen port.
     pub zebrad_port: u16,
-    /// Online status of Zingo-Proxy.
+    /// Online status of Zingo-Indexer.
     pub online: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TestManager {
-    /// Launches a zingo regtest manager and zingo-proxy, created TempDir for configuration and log files.
+    /// Launches a zingo regtest manager and zingo-indexer, created TempDir for configuration and log files.
     pub async fn launch(
         online: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> (
@@ -37,7 +37,7 @@ impl TestManager {
     ) {
         let lwd_port = portpicker::pick_unused_port().expect("No ports free");
         let zebrad_port = portpicker::pick_unused_port().expect("No ports free");
-        let proxy_port = portpicker::pick_unused_port().expect("No ports free");
+        let indexer_port = portpicker::pick_unused_port().expect("No ports free");
 
         let temp_conf_dir = create_temp_conf_files(lwd_port, zebrad_port).unwrap();
         let temp_conf_path = temp_conf_dir.path().to_path_buf();
@@ -52,8 +52,8 @@ impl TestManager {
             .launch(true)
             .expect("Failed to start regtest services");
 
-        let (proxy_handler, nym_addr) = zingoproxylib::proxy::spawn_proxy(
-            &proxy_port,
+        let (indexer_handler, nym_addr) = zingoindexerlib::indexer::spawn_indexer(
+            &indexer_port,
             &lwd_port,
             &zebrad_port,
             nym_conf_path.to_str().unwrap(),
@@ -66,21 +66,21 @@ impl TestManager {
                 temp_conf_dir,
                 regtest_manager,
                 regtest_network,
-                proxy_port,
+                indexer_port,
                 nym_addr,
                 zebrad_port,
                 online,
             },
             regtest_handler,
-            proxy_handler,
+            indexer_handler,
         )
     }
 
-    /// Returns zingo-proxy listen address.
-    pub fn get_proxy_uri(&self) -> http::Uri {
+    /// Returns zingo-indexer listen address.
+    pub fn get_indexer_uri(&self) -> http::Uri {
         http::Uri::builder()
             .scheme("http")
-            .authority(format!("127.0.0.1:{0}", self.proxy_port))
+            .authority(format!("127.0.0.1:{0}", self.indexer_port))
             .path_and_query("")
             .build()
             .unwrap()
@@ -100,7 +100,7 @@ impl TestManager {
     /// Builds aand returns Zingolib lightclient.
     pub async fn build_lightclient(&self) -> zingolib::lightclient::LightClient {
         let mut client_builder = zingo_testutils::scenarios::setup::ClientBuilder::new(
-            self.get_proxy_uri(),
+            self.get_indexer_uri(),
             self.temp_conf_dir.path().to_path_buf(),
         );
         client_builder
@@ -127,7 +127,7 @@ pub async fn drop_test_manager(
     if let Some(ref path) = temp_conf_path {
         if let Err(e) = std::fs::remove_dir_all(path) {
             eprintln!(
-                "@zingoproxyd: Failed to delete temporary regtest configuration directory: {:?}.",
+                "@zingoindexerd: Failed to delete temporary regtest configuration directory: {:?}.",
                 e
             );
         }
@@ -135,7 +135,7 @@ pub async fn drop_test_manager(
     if let Some(ref path) = Some(temp_wallet_path) {
         if let Err(e) = std::fs::remove_dir_all(path) {
             eprintln!(
-                "@zingoproxyd: Failed to delete temporary directory: {:?}.",
+                "@zingoindexerd: Failed to delete temporary directory: {:?}.",
                 e
             );
         }
@@ -167,7 +167,7 @@ fn set_custom_drops(
         if let Some(ref path) = temp_conf_path_panic {
             if let Err(e) = std::fs::remove_dir_all(path) {
                 eprintln!(
-                    "@zingoproxyd: Failed to delete temporary regtest config directory: {:?}.",
+                    "@zingoindexerd: Failed to delete temporary regtest config directory: {:?}.",
                     e
                 );
             }
@@ -175,7 +175,7 @@ fn set_custom_drops(
         if let Some(ref path) = temp_wallet_path_panic {
             if let Err(e) = std::fs::remove_dir_all(path) {
                 eprintln!(
-                    "@zingoproxyd: Failed to delete temporary wallet directory: {:?}.",
+                    "@zingoindexerd: Failed to delete temporary wallet directory: {:?}.",
                     e
                 );
             }
@@ -187,12 +187,12 @@ fn set_custom_drops(
 
     CTRL_C_ONCE.call_once(|| {
         ctrlc::set_handler(move || {
-            println!("@zingoproxyd: Received Ctrl+C, exiting.");
+            println!("@zingoindexerd: Received Ctrl+C, exiting.");
             online_ctrlc.store(false, std::sync::atomic::Ordering::SeqCst);
             if let Some(ref path) = temp_conf_path_ctrlc {
                 if let Err(e) = std::fs::remove_dir_all(path) {
                     eprintln!(
-                        "@zingoproxyd: Failed to delete temporary regtest config directory: {:?}.",
+                        "@zingoindexerd: Failed to delete temporary regtest config directory: {:?}.",
                         e
                     );
                 }
@@ -200,7 +200,7 @@ fn set_custom_drops(
             if let Some(ref path) = temp_wallet_path_ctrlc {
                 if let Err(e) = std::fs::remove_dir_all(path) {
                     eprintln!(
-                        "@zingoproxyd: Failed to delete temporary wallet directory: {:?}.",
+                        "@zingoindexerd: Failed to delete temporary wallet directory: {:?}.",
                         e
                     );
                 }
@@ -257,7 +257,7 @@ fn create_temp_conf_files(
     rpcport: u16,
 ) -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     let temp_dir = tempfile::Builder::new()
-        .prefix("zingoproxytest")
+        .prefix("zingoindexertest")
         .tempdir()?;
     let conf_dir = temp_dir.path().join("conf");
     std::fs::create_dir(&conf_dir)?;
@@ -290,7 +290,7 @@ pub async fn start_zingo_mempool_monitor(zingo_client: &zingolib::lightclient::L
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 }
 
-/// Zingo-Proxy wrapper for Zingolib's Pool Enum.
+/// Zingo-Indexer wrapper for Zingolib's Pool Enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyPool {
     /// Orchard pool.

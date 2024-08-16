@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "integration-tests",
-    "zingoproxy-testutils",
-    "zingo-proxyd",
+    "zingoindexer-testutils",
+    "zingo-indexerd",
     "zingo-rpc",
 ]
 
@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-authors = ["Zingolabs Viridian"]
+authors = ["Zingo Lab Cyan"]
 repository = "https://github.com/zingolabs"
 homepage = "https://www.zingolabs.org/"
 edition = "2021"
