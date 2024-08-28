@@ -1,7 +1,7 @@
 # Zingo-Indexer
 A rust implemented, nym enhanced, indexer for Zcash.
 
-A note to developers/consumers/contributers: The end goal is not an exact one-to-one port of all existing lwd functionaliy.
+A note to developers/consumers/contributers: The end goal is not an exact one-to-one port of all existing lwd functionality.
 We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet.
 
 The zingo-indexer is intended to provide all necessary funtionality for clients, including "standalone" (formerly "light") clients/wallets and integrated (formerly "full") client/wallets.
