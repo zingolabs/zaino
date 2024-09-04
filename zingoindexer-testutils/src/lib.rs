@@ -33,7 +33,7 @@ impl TestManager {
     ) -> (
         Self,
         zingo_testutils::regtest::ChildProcessHandler,
-        Vec<tokio::task::JoinHandle<Result<(), tonic::transport::Error>>>,
+        tokio::task::JoinHandle<Result<(), zingoindexerlib::error::IndexerError>>,
     ) {
         let lwd_port = portpicker::pick_unused_port().expect("No ports free");
         let zebrad_port = portpicker::pick_unused_port().expect("No ports free");
@@ -41,7 +41,7 @@ impl TestManager {
 
         let temp_conf_dir = create_temp_conf_files(lwd_port, zebrad_port).unwrap();
         let temp_conf_path = temp_conf_dir.path().to_path_buf();
-        let nym_conf_path = temp_conf_path.join("nym");
+        let _nym_conf_path = temp_conf_path.join("nym");
 
         set_custom_drops(online.clone(), Some(temp_conf_path.clone()));
 
@@ -52,22 +52,36 @@ impl TestManager {
             .launch(true)
             .expect("Failed to start regtest services");
 
-        let (indexer_handler, nym_addr) = zingoindexerlib::indexer::spawn_indexer(
-            &indexer_port,
-            &lwd_port,
-            &zebrad_port,
-            nym_conf_path.to_str().unwrap(),
+        // TODO: This turns nym functionality off. for nym tests we will need to add option to include nym in test manager.
+        // - queue and workerpool sizes may need to be changed here.
+        let indexer_config = zingoindexerlib::config::IndexerConfig {
+            tcp_active: true,
+            listen_port: Some(indexer_port),
+            nym_active: false,
+            nym_conf_path: None,
+            lightwalletd_port: lwd_port,
+            zebrad_port,
+            node_user: Some("xxxxxx".to_string()),
+            node_password: Some("xxxxxx".to_string()),
+            max_queue_size: 512,
+            max_worker_pool_size: 96,
+            idle_worker_pool_size: 48,
+        };
+        let indexer_handler = zingoindexerlib::indexer::Indexer::start_indexer_service(
+            indexer_config,
             online.clone(),
         )
-        .await;
-
+        .await
+        .unwrap();
+        // NOTE: This is required to give the server time to launch, this is not used in production code but could be rewritten to improve testing efficiency.
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         (
             TestManager {
                 temp_conf_dir,
                 regtest_manager,
                 regtest_network,
                 indexer_port,
-                nym_addr,
+                nym_addr: None,
                 zebrad_port,
                 online,
             },
@@ -292,7 +306,7 @@ pub async fn start_zingo_mempool_monitor(zingo_client: &zingolib::lightclient::L
 
 /// Zingo-Indexer wrapper for Zingolib's Pool Enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProxyPool {
+pub enum Pool {
     /// Orchard pool.
     Orchard,
     /// Sapling pool
@@ -301,22 +315,22 @@ pub enum ProxyPool {
     Transparent,
 }
 
-impl From<ProxyPool> for zingolib::wallet::Pool {
-    fn from(test_pool: ProxyPool) -> Self {
+impl From<Pool> for zingolib::wallet::Pool {
+    fn from(test_pool: Pool) -> Self {
         match test_pool {
-            ProxyPool::Orchard => zingolib::wallet::Pool::Orchard,
-            ProxyPool::Sapling => zingolib::wallet::Pool::Sapling,
-            ProxyPool::Transparent => zingolib::wallet::Pool::Transparent,
+            Pool::Orchard => zingolib::wallet::Pool::Orchard,
+            Pool::Sapling => zingolib::wallet::Pool::Sapling,
+            Pool::Transparent => zingolib::wallet::Pool::Transparent,
         }
     }
 }
 
-impl From<zingolib::wallet::Pool> for ProxyPool {
+impl From<zingolib::wallet::Pool> for Pool {
     fn from(pool: zingolib::wallet::Pool) -> Self {
         match pool {
-            zingolib::wallet::Pool::Orchard => ProxyPool::Orchard,
-            zingolib::wallet::Pool::Sapling => ProxyPool::Sapling,
-            zingolib::wallet::Pool::Transparent => ProxyPool::Transparent,
+            zingolib::wallet::Pool::Orchard => Pool::Orchard,
+            zingolib::wallet::Pool::Sapling => Pool::Sapling,
+            zingolib::wallet::Pool::Transparent => Pool::Transparent,
         }
     }
 }

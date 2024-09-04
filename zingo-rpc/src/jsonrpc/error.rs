@@ -40,7 +40,7 @@ impl JsonRpcConnectorError {
 
     /// Maps JsonRpcConnectorError to tonic::Status
     pub fn to_grpc_status(&self) -> tonic::Status {
-        eprintln!("@zingoindexerd: Error occurred: {}.", self);
+        eprintln!("Error occurred: {}.", self);
 
         match self {
             JsonRpcConnectorError::SerdeJsonError(_) => {

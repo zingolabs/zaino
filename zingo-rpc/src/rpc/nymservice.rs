@@ -2,7 +2,7 @@
 
 use prost::Message;
 
-use crate::{primitives::client::ProxyClient, queue::request::ZingoIndexerRequest};
+use crate::{rpc::GrpcClient, server::request::NymServerRequest};
 
 #[cfg(not(feature = "nym_poc"))]
 use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;
@@ -10,15 +10,14 @@ use crate::proto::service::compact_tx_streamer_server::CompactTxStreamer;
 #[cfg(feature = "nym_poc")]
 use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxStreamer;
 
-impl ProxyClient {
+impl GrpcClient {
     /// Processes gRPC requests coming from the nym server.
     pub async fn process_nym_request(
         &self,
-        request: &ZingoIndexerRequest,
+        request: &NymServerRequest,
     ) -> Result<Vec<u8>, tonic::Status> {
-        match request {
-            ZingoIndexerRequest::NymServerRequest(_) => match request.method().as_str() {
-                "GetLightdInfo" => match prost::Message::decode(&request.body()[..]) {
+        match request.get_request().method().as_str() {
+                "GetLightdInfo" => match prost::Message::decode(&request.get_request().body()[..]) {
                     Ok(input) => {
                         let tonic_request = tonic::Request::new(input);
                         let tonic_response = self.get_lightd_info(tonic_request)
@@ -38,7 +37,7 @@ impl ProxyClient {
                         e
                     ))),
                 },
-                "SendTransaction" => match prost::Message::decode(&request.body()[..]) {
+                "SendTransaction" => match prost::Message::decode(&request.get_request().body()[..]) {
                     Ok(input) => {
                         let tonic_request = tonic::Request::new(input);
                         let tonic_response = self.send_transaction(tonic_request)
@@ -78,8 +77,6 @@ impl ProxyClient {
                     Err(tonic::Status::unimplemented("RPC not yet implemented over nym. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
                     },
                 _ => Err(tonic::Status::invalid_argument("Incorrect Method String")),
-            },
-            _ => Err(tonic::Status::invalid_argument("Incorrect Request Type")),
-        }
+            }
     }
 }

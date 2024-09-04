@@ -1,4 +1,4 @@
-//! Hold error types for zingoProxy primitives and related functionality.
+//! Hold error types for Zingo-Indexer primitives and related functionality.
 
 /// A serialization error.
 #[derive(thiserror::Error, Debug)]

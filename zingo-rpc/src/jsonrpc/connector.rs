@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::jsonrpc::{
     error::JsonRpcConnectorError,
-    primitives::{
+    response::{
         BestBlockHashResponse, GetBalanceResponse, GetBlockResponse, GetBlockchainInfoResponse,
         GetInfoResponse, GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse,
         GetUtxosResponse, SendTransactionResponse, TxidsResponse,
@@ -42,6 +42,7 @@ struct RpcError {
 }
 
 /// JsonRPC Client config data.
+#[derive(Debug)]
 pub struct JsonRpcConnector {
     uri: http::Uri,
     id_counter: AtomicI32,
@@ -412,27 +413,18 @@ pub async fn test_node_and_return_uri(
         .map_err(JsonRpcConnectorError::InvalidUriError)?;
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
     for _ in 0..3 {
-        println!("@zingoindexerd: Trying connection on IPv4.");
         match test_node_connection(ipv4_uri.clone(), user.clone(), password.clone()).await {
             Ok(_) => {
-                println!(
-                    "@zingoindexerd: Connected to node using IPv4 at address {}.",
-                    ipv4_uri
-                );
+                println!("Connected to node using IPv4 at address {}.", ipv4_uri);
                 return Ok(ipv4_uri);
             }
-            Err(e_ipv4) => {
-                eprintln!("@zingoindexerd: Failed to connect to node using IPv4 with error: {}\n@zingoindexerd: Trying connection on IPv6.", e_ipv4);
+            Err(_e_ipv4) => {
                 match test_node_connection(ipv6_uri.clone(), user.clone(), password.clone()).await {
                     Ok(_) => {
-                        println!(
-                            "@zingoindexerd: Connected to node using IPv6 at address {}.",
-                            ipv6_uri
-                        );
+                        println!("Connected to node using IPv6 at address {}.", ipv6_uri);
                         return Ok(ipv6_uri);
                     }
-                    Err(e_ipv6) => {
-                        eprintln!("@zingoindexerd: Failed to connect to node using IPv6 with error: {}.\n@zingoindexerd: Connection not established. Retrying..", e_ipv6);
+                    Err(_e_ipv6) => {
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     }
                 }
@@ -440,6 +432,6 @@ pub async fn test_node_and_return_uri(
         }
         interval.tick().await;
     }
-    eprintln!("@zingoindexerd: Could not establish connection with node. \n@zingoindexerd: Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \n@zingoindexerd: Exiting..");
+    eprintln!("Could not establish connection with node. \nPlease check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \nExiting..");
     std::process::exit(1);
 }

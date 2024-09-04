@@ -10,7 +10,7 @@ use tonic::{self, codec::CompressionEncoding, Status};
 use tonic::{service::interceptor::InterceptedService, transport::Endpoint};
 
 use crate::{
-    primitives::client::NymClient,
+    nym::client::NymClient,
     proto::{
         compact_formats::{CompactBlock, CompactTx},
         service::{
@@ -238,9 +238,9 @@ where
                             }
                         };
                         let nym_conf_path = "/tmp/nym_client";
-                        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
-                        let response_data = client.nym_forward(addr, nym_request).await?;
-                        client.nym_close().await;
+                        let mut client = NymClient::spawn(nym_conf_path).await?;
+                        let response_data = client.send(addr, nym_request).await?;
+                        client.close().await;
                         let response: SendResponse =
                             match deserialize_response(response_data.as_slice()).await {
                                 Ok(res) => res,
@@ -426,9 +426,9 @@ where
                             }
                         };
                         let nym_conf_path = "/tmp/nym_client";
-                        let mut client = NymClient::nym_spawn(nym_conf_path).await?;
-                        let response_data = client.nym_forward(addr, nym_request).await?;
-                        client.nym_close().await;
+                        let mut client = NymClient::spawn(nym_conf_path).await?;
+                        let response_data = client.send(addr, nym_request).await?;
+                        client.close().await;
                         let response: LightdInfo =
                             match deserialize_response(response_data.as_slice()).await {
                                 Ok(res) => res,

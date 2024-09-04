@@ -1,185 +1,245 @@
-//! Zingo-Indexer server implementation.
-//!
-//! TODO: - Add ProxyServerError error type and rewrite functions to return <Result<(), ProxyServerError>>, propagating internal errors.
-//!       - Update spawn_server and nym_spawn to return <Result<(), GrpcServerError>> and <Result<(), NymServerError>> and use here.
+//! Zingo-Indexer implementation.
 
-use crate::{nym_server::NymServer, server::spawn_grpc_server};
-use zingo_rpc::{
-    jsonrpc::connector::test_node_and_return_uri,
-    proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, Empty},
+use std::{
+    net::SocketAddr,
+    process,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::task::JoinHandle;
+use http::Uri;
+use zingo_rpc::{
+    jsonrpc::connector::test_node_and_return_uri,
+    server::{error::ServerError, AtomicStatus, Server, ServerStatus, StatusType},
+};
 
-/// Launches test Zingo_Proxy server.
-pub async fn spawn_indexer(
-    indexer_port: &u16,
-    lwd_port: &u16,
-    zebrad_port: &u16,
-    nym_conf_path: &str,
-    online: Arc<AtomicBool>,
-) -> (
-    Vec<JoinHandle<Result<(), tonic::transport::Error>>>,
-    Option<String>,
-) {
-    let mut handles = vec![];
-    let nym_addr_out: Option<String>;
+use crate::{config::IndexerConfig, error::IndexerError};
 
-    startup_message();
-    println!(
-        "@zingoindexerd: Launching Zingo-Indexer!\n@zingoindexerd: Checking connection with node.."
-    );
-    // TODO Add user and password fields.
-    let _zebrad_uri = test_node_and_return_uri(
-        zebrad_port,
-        Some("xxxxxx".to_string()),
-        Some("xxxxxx".to_string()),
-    )
-    .await
-    .unwrap();
-
-    println!("@zingoindexerd: Launching gRPC Server..");
-    let indexer_handle =
-        spawn_grpc_server(indexer_port, lwd_port, zebrad_port, online.clone()).await;
-    handles.push(indexer_handle);
-
-    #[cfg(not(feature = "nym_poc"))]
-    {
-        wait_on_grpc_startup(indexer_port, online.clone()).await;
-    }
-    #[cfg(feature = "nym_poc")]
-    {
-        wait_on_grpc_startup(lwd_port, online.clone()).await;
-    }
-
-    #[cfg(not(feature = "nym_poc"))]
-    {
-        println!("@zingoindexerd[nym]: Launching Nym Server..");
-
-        // let nym_server: NymServer = NymServer(NymClient::nym_spawn(nym_conf_path).await);
-        // nym_addr_out = Some(nym_server.0 .0.nym_address().to_string());
-        // let nym_indexer_handle = nym_server.serve(online).await;
-        let nym_server = NymServer::new(nym_conf_path, online).await;
-        nym_addr_out = Some(nym_server.nym_addr.clone());
-        let nym_indexer_handle = nym_server.serve().await;
-
-        handles.push(nym_indexer_handle);
-        // TODO: Add wait_on_nym_startup(nym_addr_out, online.clone()) function to test nym server.
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    }
-
-    #[cfg(feature = "nym_poc")]
-    {
-        nym_addr_out = None;
-    }
-    (handles, nym_addr_out)
+/// Holds the status of the server and all its components.
+#[derive(Debug, Clone)]
+pub struct IndexerStatus {
+    indexer_status: AtomicStatus,
+    server_status: ServerStatus,
+    // block_cache_status: BlockCacheStatus,
 }
 
-/// Closes test Zingo-Indexer servers currently active.
-pub async fn close_indexer(online: Arc<AtomicBool>) {
-    online.store(false, Ordering::SeqCst);
-}
-
-/// Tries to connect to the gRPC server and retruns if connection established. Shuts down with error message if connection with server cannot be established after 3 attempts.
-async fn wait_on_grpc_startup(indexer_port: &u16, online: Arc<AtomicBool>) {
-    let indexer_uri = http::Uri::builder()
-        .scheme("http")
-        .authority(format!("localhost:{indexer_port}"))
-        .path_and_query("/")
-        .build()
-        .unwrap();
-    let mut attempts = 0;
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-    interval.tick().await;
-    while attempts < 3 {
-        match CompactTxStreamerClient::connect(indexer_uri.clone()).await {
-            Ok(mut client) => match client.get_lightd_info(tonic::Request::new(Empty {})).await {
-                Ok(_) => {
-                    return;
-                }
-                Err(e) => {
-                    println!(
-                        "@zingoindexerd: GRPC server connection attempt {} failed with error: {}. Re",
-                        attempts + 1,
-                        e
-                    );
-                }
-            },
-            Err(e) => {
-                println!(
-                    "@zingoindexerd: GRPC server attempt {} failed to connect with error: {}",
-                    attempts + 1,
-                    e
-                );
-            }
+impl IndexerStatus {
+    /// Creates a new IndexerStatus.
+    pub fn new(max_workers: u16) -> Self {
+        IndexerStatus {
+            indexer_status: AtomicStatus::new(5),
+            server_status: ServerStatus::new(max_workers),
         }
-        attempts += 1;
-        interval.tick().await;
     }
-    println!("@zingoindexerd: Failed to start gRPC server, please check system config. Exiting Zingo-Indexer...");
-    online.store(false, Ordering::SeqCst);
-    std::process::exit(1);
+
+    /// Returns the IndexerStatus.
+    pub fn load(&self) -> IndexerStatus {
+        self.indexer_status.load();
+        self.server_status.load();
+        self.clone()
+    }
+}
+
+/// Zingo-Indexer.
+pub struct Indexer {
+    /// Indexer configuration data.
+    _config: IndexerConfig,
+    /// GRPC server.
+    server: Option<Server>,
+    // /// Internal block cache.
+    // block_cache: BlockCache,
+    /// Indexers status.
+    status: IndexerStatus,
+    /// Online status of the indexer.
+    online: Arc<AtomicBool>,
+}
+
+impl Indexer {
+    /// Starts Indexer service.
+    ///
+    /// Currently only takes an IndexerConfig.
+    pub async fn start(config: IndexerConfig) -> Result<(), IndexerError> {
+        let online = Arc::new(AtomicBool::new(true));
+        set_ctrlc(online.clone());
+        startup_message();
+        self::Indexer::start_indexer_service(config, online)
+            .await?
+            .await?
+    }
+
+    /// Launches an Indexer service.
+    ///
+    /// Spawns an indexer service in a new task.
+    pub async fn start_indexer_service(
+        config: IndexerConfig,
+        online: Arc<AtomicBool>,
+    ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
+        // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+        if config.nym_active {
+            nym_bin_common::logging::setup_logging();
+        }
+        println!("Launching Zingdexer!");
+        let mut indexer: Indexer = Indexer::new(config, online.clone()).await?;
+        Ok(tokio::task::spawn(async move {
+            let server_handle = if let Some(server) = indexer.server.take() {
+                Some(server.serve().await)
+            } else {
+                return Err(IndexerError::MiscIndexerError(
+                    "Server Missing! Fatal Error!.".to_string(),
+                ));
+            };
+
+            indexer.status.indexer_status.store(2);
+            loop {
+                indexer.status.load();
+                // indexer.log_status();
+                if indexer.check_for_shutdown() {
+                    indexer.status.indexer_status.store(4);
+                    indexer.shutdown_components(server_handle).await;
+                    indexer.status.indexer_status.store(5);
+                    return Ok(());
+                }
+                interval.tick().await;
+            }
+        }))
+    }
+
+    /// Creates a new Indexer.
+    ///
+    /// Currently only takes an IndexerConfig.
+    async fn new(config: IndexerConfig, online: Arc<AtomicBool>) -> Result<Self, IndexerError> {
+        config.check_config()?;
+        let status = IndexerStatus::new(config.max_worker_pool_size);
+        let tcp_ingestor_listen_addr: Option<SocketAddr> = config
+            .listen_port
+            .map(|port| SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port));
+        let lightwalletd_uri = Uri::builder()
+            .scheme("http")
+            .authority(format!("localhost:{}", config.lightwalletd_port))
+            .path_and_query("/")
+            .build()?;
+        println!("Checking connection with node..");
+        let zebrad_uri = test_node_and_return_uri(
+            &config.zebrad_port,
+            config.node_user.clone(),
+            config.node_password.clone(),
+        )
+        .await?;
+        status.indexer_status.store(0);
+        let server = Some(
+            Server::spawn(
+                config.tcp_active,
+                tcp_ingestor_listen_addr,
+                config.nym_active,
+                config.nym_conf_path.clone(),
+                lightwalletd_uri,
+                zebrad_uri,
+                config.max_queue_size,
+                config.max_worker_pool_size,
+                config.idle_worker_pool_size,
+                status.server_status.clone(),
+                online.clone(),
+            )
+            .await?,
+        );
+        println!("Server Ready.");
+        Ok(Indexer {
+            _config: config,
+            server,
+            status,
+            online,
+        })
+    }
+
+    /// Checks indexers online status and servers internal status for closure signal.
+    fn check_for_shutdown(&self) -> bool {
+        if self.status() >= 4 {
+            return true;
+        }
+        if !self.check_online() {
+            return true;
+        }
+        false
+    }
+
+    /// Sets the servers to close gracefully.
+    pub fn shutdown(&mut self) {
+        self.status.indexer_status.store(4)
+    }
+
+    /// Sets the server's components to close gracefully.
+    async fn shutdown_components(
+        &mut self,
+        server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
+    ) {
+        if let Some(handle) = server_handle {
+            self.status.server_status.server_status.store(4);
+            handle.await.ok();
+        }
+    }
+
+    /// Returns the indexers current status usize.
+    pub fn status(&self) -> usize {
+        self.status.indexer_status.load()
+    }
+
+    /// Returns the indexers current statustype.
+    pub fn statustype(&self) -> StatusType {
+        StatusType::from(self.status())
+    }
+
+    /// Returns the status of the indexer and its parts.
+    pub fn statuses(&mut self) -> IndexerStatus {
+        self.status.load();
+        self.status.clone()
+    }
+
+    /// Check the online status on the indexer.
+    fn check_online(&self) -> bool {
+        self.online.load(Ordering::SeqCst)
+    }
+}
+
+fn set_ctrlc(online: Arc<AtomicBool>) {
+    ctrlc::set_handler(move || {
+        online.store(false, Ordering::SeqCst);
+        process::exit(0);
+    })
+    .expect("Error setting Ctrl-C handler");
 }
 
 fn startup_message() {
     let welcome_message = r#"
-@@@@@@@@@@@@@@@&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&@@@@@@@@@
-@@@@@@@@@@@@@&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&@@@@@@@
-@@@@@@@@@&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&@@%(**/#@@@&&&&&&&&&&&&@@@
-@@@@@@&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&@&.         /@&&&&&&&&&&&&&@
-@@@&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&&@@            (@&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&@@.           (@&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&@@,    .    %@&&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&@@%@@#&@@&&&&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&@@&&&&&&&&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&%%&&&&&&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&#  %&%%%%&&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&(      /@%%%%&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%@&#      %@@&%%%%&&&&&&&&&&
-&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%#####################%%%%%%%%%%%%%%%%%%%%%&      %&%%%%%%%%&&&&&&&&
-&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%##################################%%%%%%%%%%%%%%&&      %&%%%%%%%%%%&&&&&&
-&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%###########################################%%%%%%%%@&#&      %&%%%%%%%%%%%&&&&&
-&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%############################################%%&@@&%#(((((@      %&%%%%%%%%%%%%%&&&
-&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%#############################%&@@@@@&%%##(((((((((((((((((((@      %&%%%%%%%%%%%%%%&&
-&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%#%###%@@@@@&%########%&@&%#((((((((((((((((((((((((((((((((((((@      #&%%%%%%%%%%%%%%%&
-&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%###%@#       .&@@@@@&(((((((((((((((((((((((((((((((((((((((((((#%%%@&&&%%%%%%%%%%%%%%%%%
-&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%###@&          ,*@%((((((((((((((((((((((((((((((((((((((((((((((((((@%%%%%%%%%%%%%%%%%%%%
-&&&%%%%%%%%%%%%%%%%%%%%%%%%%####%@/            %@(((((((((((((((((((((((((((((((((((((((((((((((((%&%%%%%%%%%%%%%%%%%%%%
-&&&%%%%%%%%%%%%%%%%%%%%%%%%%#####&@.          *@#((((((((((((((((((((((((((((((((((((((((((((((((#@%%%%%%%%%%%%%%%%%%%%%
-&&%%%%%%%%%%%%%%%%%%%%%%%%#######@@@&.      *@&((((((((((((((((((((((((((((((((((((((((((((((((((&%%%%%%%%%%%%%%%%%%%%%%
-%&%%%%%%%%%%%%%%%%%%%%%%%%#####%@@%(((#&&&%#((((((((((((((((((((((((((((((((((((((((((((((((((((&%##%%%%%%%%%%%%%%%%%%%%
-&%%%%%%%%%%%%%%%%%%%%%%%%#####%@(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((&%####%%%%%%%%%%%%%%%%%%%
-&%%%%%%%%%%%%%%%%%%%%%%%%####&%(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((&%#####%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%###%@((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((@%######%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%##%@(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((&&########%%%%%%%%%%%%%%%%%%%
-&%%%%%%%%%%%%%%%%%%%%%%%#%@((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((#&##########%%%%%%%%%%%%%%%%%%%
-&%%%%%%%%%%%%%%%%%%%%%%%%@(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((#@############%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%@#(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((%@#############%%%%%%%%%%%%%%%%%%%%
-&&%%%%%%%%%%%%%%%%%%%%%&&((((((((((((((((((((((((((((((((((((((((((((((((((((((((((&&################%%%%%%%%%%%%%%%%%%%
-&&%%%%%%%%%%%%%%%%%%%%%@((((((((((((((((((((((((((((((((((((((((((((((((((((((((%@#################%%%%%%%%%%%%%%%%%%%%%
-&&&%%%%%%%%%%%%%%%%%%%@%(((((((((((((((((((((((((((((((((((((((((((((((((((((%@%##################%%%%%%%%%%%%%%%%%%%%%%
-&&&%%%%%%%%%%%%%%%%%%%@(((((((((((((((((((((((((((((((((((((((((((((((((((&&#####################%%%%%%%%%%%%%%%%%%%%%%%
-&&&&&%%%%%%%%%%%%%%%%&%(((((((((((((((((((((((((((((((((((((((((((((((%@%######################%%%%%%%%%%%%%%%%%%%%%%%%%
-&&&&&&%%%%%%%%%%%%%%%@#(((((((((((((((((((((((((((((((((((((((((((%@&#########################%%%%%%%%%%%%%%%%%%%%%%%%%%
-&&&&&&%%%%%%%%%%%%%%%@(((((((((((((((((((((((((((((((((((((((#&@%###########################%%%%%%%%%%%%%%%%%%%%%%%%%%%&
-&&&&&&&&%%%%%%%%%%%%&@((((((((((((((((((((((((((((((((((#&@&#############################%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&
-&&&&&&&&&%%%%%%%%%%%&%((((((((((((((((((((((((((((#&@&%###############################%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&
-&&&&&&&&&&%%%%%%%&@@@&@@@%((((((((((((((((((#&@&%%##################################%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&
-&&&&&&&&&&&&%%&@(         #@#((((((((#&@&%%%%%%###############################%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&
-&&&&&&&&&&&&&&@.           *@%&@@&%%%%%%%%%%%%%%%%%%%%%%%#%#%####%%##%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&
-&&&&&&&&&&&&&&@            .@&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&
-&&&&&&&&&&&&&&@&          .@@%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&@@#,   ,#@@%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&&&&&&
-&&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%&&&&&&&&&&&&&&&&&&
-Thank you for using ZingoLabs ZingoIndexerD!
-- Donate to us at https://free2z.cash/zingolabs.
-- Submit any security conserns to us at zingodisclosure@proton.me.
+       ░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░▒▒░░░░░       
+       ░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████▓░▒▒▒░░       
+       ░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████▓▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▓▓▒▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒██▓▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒██▓▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓███▓██▓▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▒▓▓▓▓▒███▓░▒▓▓████████████████▓▓▒▒▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▓▓▓▓▒▓████▓▓███████████████████▓▒▓▓▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▓▓▓▓▓▒▒▓▓▓▓████████████████████▓▒▓▓▓▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▓▓▓▓▓█████████████████████████▓▒▓▓▓▓▓▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▓▓▓▒▓█████████████████████████▓▓▓▓▓▓▓▓▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▓▓▓████████████████████████▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▓▒███████████████████████▒▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▓███████████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▓███████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒▒▒▓██████████▓▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒███▓▒▓▓▓▓▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▓████▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒       
+       ▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒       
+            Thank you for using ZingoLabs Zingdexer!     
 
-****** Please note ZingoIndexerD is currently in development and should not be used to run mainnet nodes. ******
+       - Donate to us at https://free2z.cash/zingolabs.
+       - Submit any security conserns to us at zingodisclosure@proton.me.
 
-****** Currently LightwalletD is required for full functionality. ******
+****** Please note Zingdexer is currently in development and should not be used to run mainnet nodes. ******
     "#;
     println!("{}", welcome_message);
 }

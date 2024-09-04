@@ -6,10 +6,9 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
     blockcache::{block::get_block_from_node, mempool::Mempool},
-    jsonrpc::{connector::JsonRpcConnector, primitives::GetTransactionResponse},
+    jsonrpc::{connector::JsonRpcConnector, response::GetTransactionResponse},
     primitives::{
         chain::{ConsensusBranchId, ConsensusBranchIdHex},
-        client::ProxyClient,
         height::ChainHeight,
     },
     proto::{
@@ -22,6 +21,7 @@ use crate::{
             TreeState, TxFilter,
         },
     },
+    rpc::GrpcClient,
     utils::get_build_info,
 };
 
@@ -87,7 +87,7 @@ impl futures::Stream for CompactBlockStream {
     }
 }
 
-impl CompactTxStreamer for ProxyClient {
+impl CompactTxStreamer for GrpcClient {
     /// Return the height of the tip of the best chain.
     fn get_latest_block<'life0, 'async_trait>(
         &'life0 self,
@@ -904,7 +904,7 @@ impl CompactTxStreamer for ProxyClient {
         Self: 'async_trait,
     {
         println!("@zingoindexerd: Received call of get_lightd_info.");
-        // TODO: Add user and password as fields of ProxyClient and use here.
+        // TODO: Add user and password as fields of GrpcClient and use here.
         // TODO: Return Nym_Address in get_lightd_info response, for use by wallets.
         Box::pin(async {
             let zebrad_client = JsonRpcConnector::new(

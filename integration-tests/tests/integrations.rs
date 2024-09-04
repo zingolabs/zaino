@@ -1,11 +1,11 @@
-//! Integration tests for zingo-Proxy.
+//! Integration tests for zingo-Indexer.
 //! Currently uses ZCashD as ZebraD has not yet implemented Regtest Mode.
 
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
 use zingoindexer_testutils::{
-    drop_test_manager, get_zingo_address, start_zingo_mempool_monitor, ProxyPool, TestManager,
+    drop_test_manager, get_zingo_address, start_zingo_mempool_monitor, Pool, TestManager,
 };
 
 mod wallet_basic {
@@ -203,7 +203,7 @@ mod wallet_basic {
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
 
         zingo_client
-            .do_shield(&[ProxyPool::Sapling.into()], None)
+            .do_shield(&[Pool::Sapling.into()], None)
             .await
             .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
@@ -247,7 +247,7 @@ mod wallet_basic {
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
         zingo_client
-            .do_shield(&[ProxyPool::Transparent.into()], None)
+            .do_shield(&[Pool::Transparent.into()], None)
             .await
             .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
@@ -300,10 +300,7 @@ mod wallet_basic {
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
         zingo_client
-            .do_shield(
-                &[ProxyPool::Sapling.into(), ProxyPool::Transparent.into()],
-                None,
-            )
+            .do_shield(&[Pool::Sapling.into(), Pool::Transparent.into()], None)
             .await
             .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
