@@ -53,3 +53,6 @@ The walletside Nym implementations are moving to ease wallet integration but the
 From zingolib: [get_lightd_info and send_transaction commands sent with this build will be sent over the mixnet]
 6) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8088" --data-dir ~/wallets/testnet_wallet`
 
+Note:
+Configuration data can be set using a .toml file (an example zindexer.toml is given in zingo-indexer/zindexer.toml) and can be set at runtime using the --config arg:
+- Run `$ cargo run --config zingo-indexerd/zindexer.toml`

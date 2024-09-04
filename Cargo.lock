@@ -7163,14 +7163,17 @@ dependencies = [
 name = "zingo-indexerd"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "ctrlc",
  "http",
  "hyper",
  "nym-bin-common",
  "nym-sdk",
  "nym-sphinx-anonymous-replies",
+ "serde",
  "thiserror",
  "tokio",
+ "toml 0.5.11",
  "tonic",
  "tower",
  "zcash_client_backend",
