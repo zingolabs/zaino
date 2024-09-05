@@ -71,7 +71,7 @@ impl JsonRpcConnector {
     /// TODO: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     /// This is because the node's queue can become overloaded and stop servicing RPCs.
     /// This functionality is weak and should be incorporated in Zingo-Indexer's queue mechanism [WIP] that handles various errors appropriately.
-    pub async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
+    async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: T,
@@ -367,7 +367,7 @@ impl JsonRpcConnector {
 }
 
 /// Tests connection with zebrad / zebrad.
-pub async fn test_node_connection(
+async fn test_node_connection(
     uri: Uri,
     user: Option<String>,
     password: Option<String>,

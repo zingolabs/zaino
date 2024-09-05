@@ -110,7 +110,7 @@ impl TcpIngestor {
     }
 
     /// Sets the ingestor to close gracefully.
-    pub(crate) async fn shutdown(&mut self) {
+    pub(crate) async fn _shutdown(&mut self) {
         self.status.store(4)
     }
 
@@ -120,7 +120,7 @@ impl TcpIngestor {
     }
 
     /// Returns the ingestor current statustype.
-    pub(crate) fn statustype(&self) -> StatusType {
+    pub(crate) fn _statustype(&self) -> StatusType {
         StatusType::from(self.status())
     }
 
@@ -279,7 +279,7 @@ impl NymIngestor {
     }
 
     /// Sets the ingestor to close gracefully.
-    pub(crate) async fn shutdown(&mut self) {
+    pub(crate) async fn _shutdown(&mut self) {
         self.status.store(4)
     }
 
@@ -289,7 +289,7 @@ impl NymIngestor {
     }
 
     /// Returns the ingestor current statustype.
-    pub(crate) fn statustype(&self) -> StatusType {
+    pub(crate) fn _statustype(&self) -> StatusType {
         StatusType::from(self.status())
     }
 

@@ -32,7 +32,7 @@ use zcash_client_backend::proto::service::compact_tx_streamer_server::CompactTxS
 #[derive(Debug, Clone)]
 pub(crate) struct Worker {
     /// Worker ID.
-    worker_id: usize,
+    _worker_id: usize,
     /// Used to pop requests from the queue
     queue: QueueReceiver<ZingoIndexerRequest>,
     /// Used to requeue requests.
@@ -50,7 +50,7 @@ pub(crate) struct Worker {
 impl Worker {
     /// Creates a new queue worker.
     pub(crate) async fn spawn(
-        worker_id: usize,
+        _worker_id: usize,
         queue: QueueReceiver<ZingoIndexerRequest>,
         requeue: QueueSender<ZingoIndexerRequest>,
         nym_response_queue: QueueSender<(Vec<u8>, AnonymousSenderTag)>,
@@ -65,7 +65,7 @@ impl Worker {
             online: online.clone(),
         };
         Worker {
-            worker_id,
+            _worker_id,
             queue,
             requeue,
             nym_response_queue,
@@ -176,8 +176,8 @@ impl Worker {
     }
 
     /// Returns the worker's ID.
-    pub(crate) fn id(&self) -> usize {
-        self.worker_id
+    pub(crate) fn _id(&self) -> usize {
+        self._worker_id
     }
 
     /// Loads the workers current atomic status.

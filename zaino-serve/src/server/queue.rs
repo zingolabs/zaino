@@ -149,7 +149,7 @@ impl<T> QueueReceiver<T> {
     }
 
     /// Returns the current length of the queue.
-    pub(crate) fn queue_length(&self) -> usize {
+    pub(crate) fn _queue_length(&self) -> usize {
         self.queue_status.load(Ordering::SeqCst)
     }
 }
