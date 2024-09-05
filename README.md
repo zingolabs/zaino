@@ -3,7 +3,7 @@ A(n eventual) rust implemented, nym enhanced, indexer and lightwallet service fo
 
 Zaino is intended to provide all necessary funtionality for clients, including "standalone" (formerly "light") clients/wallets and integrated (formerly "full") client/wallets to access both the finalized chain and non-finalized best chain and the mempool, held by a Zebrad full validator.
 
-*A note to developers/consumers/contributers: The end goal is not an exact one-to-one port of all existing lwd functionaliy. We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet.
+*A note to developers/consumers/contributers: The end goal is not an exact one-to-one port of all existing lwd functionality. We currently plan to hold the Service and Darkside RPC implementations, along with a Nym counterpart to the service RPCs for sending and recieving currency over the Nym Mixnet.
 
 # Security Vulnerability Disclosure
 If you believe you have discovered a security issue, please contact us at:
