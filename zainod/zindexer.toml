@@ -1,0 +1,34 @@
+# Configuration for Zaino
+
+# Sets the TcpIngestor's status (true or false)
+tcp_active = true
+
+# Optional TcpIngestors listen port (use None or specify a port number)
+listen_port = 8137
+
+# Sets the NymIngestor's and NymDispatchers status (true or false)
+nym_active = true
+
+# Optional Nym conf path used for micnet client conf
+nym_conf_path = "/tmp/indexer/nym"
+
+# LightWalletD listen port [DEPRECATED]
+lightwalletd_port = 9067
+
+# Full node / validator listen port
+zebrad_port = 18232
+
+# Optional full node Username
+node_user = "xxxxxx"
+
+# Optional full node Password
+node_password = "xxxxxx"
+
+# Maximum requests allowed in the request queue
+max_queue_size = 1024
+
+# Maximum workers allowed in the worker pool
+max_worker_pool_size = 64
+
+# Minimum number of workers held in the worker pool when idle
+idle_worker_pool_size = 4

@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-use zingoindexer_testutils::{
+use zaino_testutils::{
     drop_test_manager, get_zingo_address, start_zingo_mempool_monitor, Pool, TestManager,
 };
 

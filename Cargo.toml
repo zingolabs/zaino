@@ -1,9 +1,15 @@
+# Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
     "integration-tests",
-    "zingoindexer-testutils",
-    "zingo-indexerd",
-    "zingo-rpc",
+    "zaino-testutils",
+    "zainod",
+    "zaino-serve",
+    "zaino-wallet",
+    "zaino-nym",
+    "zaino-state",
+    "zaino-fetch",
+    "zaino-proto",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -23,17 +29,10 @@ nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
-# nym-sdk = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
-# nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
-# nym-bin-common = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
-# nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", tag = "nym-binaries-v2024.7-doubledecker" }
 
 # Miscellaneous
-tokio = { version = "1.37.0", features = ["full"] } # { version = "1.38.1", features = ["full"] }
+tokio = { version = "1.37.0", features = ["full"] } # { version = "1.38", features = ["full"] }
 tonic = "0.10.2" # "0.12"
 http = "0.2.4" # "1.1"
-thiserror = "1.0.59" # "1.0.62"
+thiserror = "1.0.59" # "1.0"
 
-# [patch.crates-io]
-# incrementalmerkletree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "337f59179eda51261e9ddfc6b18e8fb84ea277c9" }
-# shardtree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "337f59179eda51261e9ddfc6b18e8fb84ea277c9" }

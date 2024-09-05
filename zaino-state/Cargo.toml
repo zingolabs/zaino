@@ -1,0 +1,27 @@
+[package]
+name = "zaino-state"
+version = "0.1.0"
+description = "A mempool and chain-fetching service built on top of zebra's ReadStateService and TrustedChainSync."
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[features]
+# NOTE: Deprecated
+nym_poc = ["zingo-netutils", "zcash_client_backend"]
+
+[dependencies]
+# Zinglib and LibRustZcash:
+#
+# Only used in original nym_poc code, to be removed with creation of nym enhanced zingolib build. 
+#
+# Not to be used in production code as zingo-rpc will become a dep of zingolib and zingo-indexer now builds its onw CompactTxStreamer.
+zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration", optional = true }
+zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"], optional = true }
+
+# Miscellaneous Workspace
+tokio = { workspace = true, features = ["full"] }
+thiserror = { workspace = true }
+
+# Miscellaneous Crate

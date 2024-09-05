@@ -1,0 +1,31 @@
+[package]
+name = "zaino-testutils"
+version = "0.1.0"
+description = "Crate containing Zaino test specific functionality."
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[features]
+# NOTE: Deprecated
+nym_poc = []
+
+[dependencies]
+zaino-fetch = { path = "../zaino-fetch" }
+zainod = { path = "../zainod" }
+
+# ZingoLib
+zingo-testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+
+# Miscellaneous Workspace
+tokio = { workspace = true }
+tonic = { workspace = true }
+http = { workspace = true }
+
+# Miscellaneous Crate
+ctrlc = "3.2.1"
+tempfile = "3.2.0"
+portpicker = "0.1.1"
