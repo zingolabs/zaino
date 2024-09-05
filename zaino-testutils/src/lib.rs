@@ -139,17 +139,14 @@ pub async fn drop_test_manager(
     if let Some(ref path) = temp_conf_path {
         if let Err(e) = std::fs::remove_dir_all(path) {
             eprintln!(
-                "@zingoindexerd: Failed to delete temporary regtest configuration directory: {:?}.",
+                "Failed to delete temporary regtest configuration directory: {:?}.",
                 e
             );
         }
     }
     if let Some(ref path) = Some(temp_wallet_path) {
         if let Err(e) = std::fs::remove_dir_all(path) {
-            eprintln!(
-                "@zingoindexerd: Failed to delete temporary directory: {:?}.",
-                e
-            );
+            eprintln!("Failed to delete temporary directory: {:?}.", e);
         }
     }
 }
@@ -179,17 +176,14 @@ fn set_custom_drops(
         if let Some(ref path) = temp_conf_path_panic {
             if let Err(e) = std::fs::remove_dir_all(path) {
                 eprintln!(
-                    "@zingoindexerd: Failed to delete temporary regtest config directory: {:?}.",
+                    "Failed to delete temporary regtest config directory: {:?}.",
                     e
                 );
             }
         }
         if let Some(ref path) = temp_wallet_path_panic {
             if let Err(e) = std::fs::remove_dir_all(path) {
-                eprintln!(
-                    "@zingoindexerd: Failed to delete temporary wallet directory: {:?}.",
-                    e
-                );
+                eprintln!("Failed to delete temporary wallet directory: {:?}.", e);
             }
         }
         // Assures tests fail on secondary thread panics.
@@ -199,22 +193,19 @@ fn set_custom_drops(
 
     CTRL_C_ONCE.call_once(|| {
         ctrlc::set_handler(move || {
-            println!("@zingoindexerd: Received Ctrl+C, exiting.");
+            println!("Received Ctrl+C, exiting.");
             online_ctrlc.store(false, std::sync::atomic::Ordering::SeqCst);
             if let Some(ref path) = temp_conf_path_ctrlc {
                 if let Err(e) = std::fs::remove_dir_all(path) {
                     eprintln!(
-                        "@zingoindexerd: Failed to delete temporary regtest config directory: {:?}.",
+                        "Failed to delete temporary regtest config directory: {:?}.",
                         e
                     );
                 }
             }
             if let Some(ref path) = temp_wallet_path_ctrlc {
                 if let Err(e) = std::fs::remove_dir_all(path) {
-                    eprintln!(
-                        "@zingoindexerd: Failed to delete temporary wallet directory: {:?}.",
-                        e
-                    );
+                    eprintln!("Failed to delete temporary wallet directory: {:?}.", e);
                 }
             }
             // Assures tests fail on ctrlc exit.

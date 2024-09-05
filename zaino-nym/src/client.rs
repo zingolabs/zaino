@@ -1,6 +1,4 @@
 //! Nym client functionality.
-//!
-//! TODO: - Add NymClientError error type and rewrite functions to return <Result<(), NymClientError>>.
 
 use nym_sdk::mixnet::{
     MixnetClient, MixnetClientBuilder, MixnetMessageSender, Recipient, ReconstructedMessage,

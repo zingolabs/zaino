@@ -236,7 +236,7 @@ fn startup_message() {
        ▒▒▒▒▒▒▒███▓▒▓▓▓▓▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒       
        ▒▒▒▒▒▒▓████▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒       
        ▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒       
-            Thank you for using ZingoLabs Zingdexer!     
+              Thank you for using ZingoLabs Zaino!     
 
        - Donate to us at https://free2z.cash/zingolabs.
        - Submit any security conserns to us at zingodisclosure@proton.me.

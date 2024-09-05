@@ -102,7 +102,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_latest_block.");
+        println!("[TEST] Received call of get_latest_block.");
         Box::pin(async {
             let blockchain_info = JsonRpcConnector::new(
                 self.zebrad_uri.clone(),
@@ -144,7 +144,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_block.");
+        println!("[TEST] Received call of get_block.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_block not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -169,7 +169,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_block_nullifiers.");
+        println!("[TEST] Received call of get_block_nullifiers.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_block_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -201,7 +201,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_block_range.");
+        println!("[TEST] Received call of get_block_range.");
         let zebrad_uri = self.zebrad_uri.clone();
         Box::pin(async move {
             let blockrange = request.into_inner();
@@ -216,16 +216,13 @@ impl CompactTxStreamer for GrpcClient {
             if start > end {
                 (start, end) = (end, start);
             }
-            println!(
-                "@zingoindexertest: Fetching blocks in range: {}-{}.",
-                start, end
-            );
+            println!("[TEST] Fetching blocks in range: {}-{}.", start, end);
             let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
             tokio::spawn(async move {
                 // NOTE: This timeout is so slow due to the blockcache not being implemented. This should be reduced to 30s once functionality is in place.
                 let timeout = timeout(std::time::Duration::from_secs(120), async {
                     for height in (start..=end).rev() {
-                        println!("@zingoindexertest: Fetching block at height: {}.", height);
+                        println!("[TEST] Fetching block at height: {}.", height);
                         let compact_block = get_block_from_node(&zebrad_uri, &height).await;
                         match compact_block {
                             Ok(block) => {
@@ -290,7 +287,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_block_range_nullifiers.");
+        println!("[TEST] Received call of get_block_range_nullifiers.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_block_range_nullifiers not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -312,7 +309,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_transaction.");
+        println!("[TEST] Received call of get_transaction.");
         Box::pin(async {
             let hash = request.into_inner().hash;
             if hash.len() == 32 {
@@ -367,7 +364,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of send_transaction.");
+        println!("[TEST] Received call of send_transaction.");
         Box::pin(async {
             let hex_tx = hex::encode(request.into_inner().data);
             let tx_output = JsonRpcConnector::new(
@@ -410,7 +407,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_taddress_txids.");
+        println!("[TEST] Received call of get_taddress_txids.");
         Box::pin(async move {
             let block_filter = request.into_inner();
             let address = block_filter.address;
@@ -514,7 +511,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_taddress_balance.");
+        println!("[TEST] Received call of get_taddress_balance.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_taddress_balance not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -538,7 +535,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_taddress_balance_stream.");
+        println!("[TEST] Received call of get_taddress_balance_stream.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_taddress_balance_stream not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -578,7 +575,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_mempool_tx.");
+        println!("[TEST] Received call of get_mempool_tx.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_mempool_tx not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -611,7 +608,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_mempool_stream.");
+        println!("[TEST] Received call of get_mempool_stream.");
         Box::pin(async {
             let zebrad_client = JsonRpcConnector::new(
                 self.zebrad_uri.clone(),
@@ -736,7 +733,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_tree_state.");
+        println!("[TEST] Received call of get_tree_state.");
         Box::pin(async {
             let block_id = request.into_inner();
             let hash_or_height = if block_id.height != 0 {
@@ -790,7 +787,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_latest_tree_state.");
+        println!("[TEST] Received call of get_latest_tree_state.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_latest_tree_state not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -823,7 +820,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_subtree_roots.");
+        println!("[TEST] Received call of get_subtree_roots.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_subtree_roots not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -849,7 +846,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_address_utxos.");
+        println!("[TEST] Received call of get_address_utxos.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_address_utxos not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -879,7 +876,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_address_utxos_stream.");
+        println!("[TEST] Received call of get_address_utxos_stream.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("get_address_utxos_stream not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
@@ -901,7 +898,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of get_lightd_info.");
+        println!("[TEST] Received call of get_lightd_info.");
         // TODO: Add user and password as fields of GrpcClient and use here.
         // TODO: Return Nym_Address in get_lightd_info response, for use by wallets.
         Box::pin(async {
@@ -977,7 +974,7 @@ impl CompactTxStreamer for GrpcClient {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        println!("@zingoindexerd: Received call of ping.");
+        println!("[TEST] Received call of ping.");
         Box::pin(async {
             Err(tonic::Status::unimplemented("ping not yet implemented. If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."))
         })
