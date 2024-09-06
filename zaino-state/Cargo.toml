@@ -1,0 +1,13 @@
+[package]
+name = "zaino-state"
+version = "0.1.0"
+description = "A mempool and chain-fetching service built on top of zebra's ReadStateService and TrustedChainSync."
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+# Miscellaneous Workspace
+tokio = { workspace = true, features = ["full"] }
+thiserror = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "zaino-nym"
+version = "0.1.0"
+description = "Crate containing the NymClient and related functionality."
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+zaino-fetch = { path = "../zaino-fetch" }
+
+# NymSdk
+nym-sdk = { workspace = true }
+nym-sphinx-addressing = { workspace = true }
+
+# # Miscellaneous Workspace
+tonic = { workspace = true }
+thiserror = { workspace = true }

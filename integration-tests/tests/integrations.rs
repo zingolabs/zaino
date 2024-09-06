@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-use zingoindexer_testutils::{
+use zaino_testutils::{
     drop_test_manager, get_zingo_address, start_zingo_mempool_monitor, Pool, TestManager,
 };
 
@@ -19,10 +19,7 @@ mod wallet_basic {
         let zingo_client = test_manager.build_lightclient().await;
 
         let lightd_info = zingo_client.do_info().await;
-        println!(
-            "@zingoindexertest: Lightd_info response:\n{:#?}.",
-            lightd_info
-        );
+        println!("[TEST LOG] Lightd_info response:\n{:#?}.", lightd_info);
 
         drop_test_manager(
             Some(test_manager.temp_conf_dir.path().to_path_buf()),
@@ -53,7 +50,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.orchard_balance.unwrap(), 1_875_000_000);
 
         drop_test_manager(
@@ -85,7 +82,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
 
         drop_test_manager(
@@ -117,7 +114,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
         drop_test_manager(
@@ -165,7 +162,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.orchard_balance.unwrap(), 2_499_500_000);
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
@@ -199,7 +196,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
 
         zingo_client
@@ -210,7 +207,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.sapling_balance.unwrap(), 0);
         assert_eq!(balance.orchard_balance.unwrap(), 2_500_000_000);
 
@@ -243,7 +240,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
         zingo_client
@@ -254,7 +251,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.transparent_balance.unwrap(), 0);
         assert_eq!(balance.orchard_balance.unwrap(), 2_500_000_000);
 
@@ -295,7 +292,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
@@ -307,7 +304,7 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.sapling_balance.unwrap(), 0);
         assert_eq!(balance.transparent_balance.unwrap(), 0);
         assert_eq!(balance.orchard_balance.unwrap(), 2_500_000_000);
@@ -359,11 +356,11 @@ mod wallet_basic {
             .unwrap();
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
 
-        println!("@zingoindexertest: syncing full batch.");
+        println!("[TEST LOG] syncing full batch.");
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.orchard_balance.unwrap(), 76_874_500_000);
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
@@ -405,13 +402,13 @@ mod wallet_basic {
         start_zingo_mempool_monitor(&zingo_client).await;
 
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.unverified_sapling_balance.unwrap(), 500_000);
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
         let balance = zingo_client.do_balance().await;
-        println!("@zingoindexertest: zingo_client balance: \n{:#?}.", balance);
+        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.verified_sapling_balance.unwrap(), 500_000);
 
         drop_test_manager(

@@ -1,0 +1,47 @@
+[package]
+name = "zaino-serve"
+version = "0.1.0"
+description = "Crate containing Zingo's gRPC server implementation."
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[features]
+# NOTE: Deprecated
+nym_poc = ["zingo-netutils", "zcash_client_backend"]
+
+[dependencies]
+# Zinglib and LibRustZcash:
+#
+# Only used in original nym_poc code, to be removed with creation of nym enhanced zingolib build. 
+#
+# Not to be used in production code as zingo-rpc will become a dep of zingolib and zingo-indexer now builds its onw CompactTxStreamer.
+zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration", optional = true }
+zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", branch = "nym_integration", features = ["lightwalletd-tonic"], optional = true }
+
+zaino-proto = { path = "../zaino-proto" }
+zaino-fetch = { path = "../zaino-fetch" }
+zaino-nym = { path = "../zaino-nym" }
+zaino-wallet = { path = "../zaino-wallet" }
+
+# NymSdk
+nym-sdk = { workspace = true }
+nym-sphinx-anonymous-replies = { workspace = true }
+
+# Miscellaneous Workspace
+tokio = { workspace = true, features = ["full"] }
+tonic = { workspace = true }
+http = { workspace = true }
+thiserror = { workspace = true }
+
+# Miscellaneous Crate
+prost = "0.12" # "0.13"
+hex = { version = "0.4.3", features = ["serde"] }
+tokio-stream = "0.1"
+futures = "0.3.30"
+async-stream = "0.3"
+crossbeam-channel = "0.5"
+
+[build-dependencies]
+whoami = "1.0" # "1.5"

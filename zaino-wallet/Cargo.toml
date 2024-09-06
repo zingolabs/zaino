@@ -1,0 +1,27 @@
+[package]
+name = "zaino-wallet"
+version = "0.1.0"
+description = "Crate containing Zingo's client-side, nym-enhanced, LightWallet RPC Implementations."
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+zaino-proto = { path = "../zaino-proto" }
+zaino-fetch = { path = "../zaino-fetch" }
+zaino-nym = { path = "../zaino-nym" }
+
+# NymSdk
+nym-sdk = { workspace = true }
+nym-sphinx-addressing = { workspace = true }
+nym-sphinx-anonymous-replies = { workspace = true }
+
+# Miscellaneous Workspace
+tonic = { workspace = true }
+http = { workspace = true }
+
+# Miscellaneous Crate
+prost = "0.12" # "0.13"
+bytes = "1.1" # "1.6"
+http-body = "0.4.4" # "1.0"

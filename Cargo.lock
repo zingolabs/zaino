@@ -2556,7 +2556,7 @@ name = "integration-tests"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "zingoindexer-testutils",
+ "zaino-testutils",
 ]
 
 [[package]]
@@ -6996,6 +6996,131 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "213b7324336b53d2414b2db8537e56544d981803139155afa84f76eeebb7a546"
 
 [[package]]
+name = "zaino-fetch"
+version = "0.1.0"
+dependencies = [
+ "base64 0.13.1",
+ "byteorder",
+ "hex 0.4.3",
+ "http",
+ "hyper",
+ "hyper-tls",
+ "indexmap 2.2.6",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "zaino-proto",
+]
+
+[[package]]
+name = "zaino-nym"
+version = "0.1.0"
+dependencies = [
+ "nym-sdk",
+ "nym-sphinx-addressing",
+ "thiserror",
+ "tonic",
+ "zaino-fetch",
+]
+
+[[package]]
+name = "zaino-proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-build",
+ "which",
+]
+
+[[package]]
+name = "zaino-serve"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "crossbeam-channel",
+ "futures",
+ "hex 0.4.3",
+ "http",
+ "nym-sdk",
+ "nym-sphinx-anonymous-replies",
+ "prost",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "whoami",
+ "zaino-fetch",
+ "zaino-nym",
+ "zaino-proto",
+ "zaino-wallet",
+ "zcash_client_backend",
+ "zingo-netutils",
+]
+
+[[package]]
+name = "zaino-state"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "zaino-testutils"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "http",
+ "portpicker",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "zaino-fetch",
+ "zainod",
+ "zingo-testutils",
+ "zingoconfig",
+ "zingolib",
+]
+
+[[package]]
+name = "zaino-wallet"
+version = "0.1.0"
+dependencies = [
+ "bytes 1.6.0",
+ "http",
+ "http-body",
+ "nym-sdk",
+ "nym-sphinx-addressing",
+ "nym-sphinx-anonymous-replies",
+ "prost",
+ "tonic",
+ "zaino-fetch",
+ "zaino-nym",
+ "zaino-proto",
+]
+
+[[package]]
+name = "zainod"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ctrlc",
+ "http",
+ "nym-bin-common",
+ "serde",
+ "thiserror",
+ "tokio",
+ "toml 0.5.11",
+ "zaino-fetch",
+ "zaino-serve",
+]
+
+[[package]]
 name = "zcash_address"
 version = "0.3.0"
 source = "git+https://github.com/zingolabs/librustzcash.git?branch=nym_integration#1bd3be4a113760f5dd355ad7074de649d141e313"
@@ -7160,28 +7285,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zingo-indexerd"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ctrlc",
- "http",
- "hyper",
- "nym-bin-common",
- "nym-sdk",
- "nym-sphinx-anonymous-replies",
- "serde",
- "thiserror",
- "tokio",
- "toml 0.5.11",
- "tonic",
- "tower",
- "zcash_client_backend",
- "zingo-netutils",
- "zingo-rpc",
-]
-
-[[package]]
 name = "zingo-memo"
 version = "0.1.0"
 source = "git+https://github.com/zingolabs/zingolib.git?branch=nym_integration#f5eeb37c04d7b1b58f8c6189291ce73349cec471"
@@ -7209,41 +7312,6 @@ dependencies = [
  "tower",
  "webpki-roots 0.21.1",
  "zcash_client_backend",
-]
-
-[[package]]
-name = "zingo-rpc"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "base64 0.13.1",
- "byteorder",
- "bytes 1.6.0",
- "crossbeam-channel",
- "futures",
- "hex 0.4.3",
- "http",
- "http-body",
- "hyper",
- "hyper-tls",
- "indexmap 2.2.6",
- "nym-sdk",
- "nym-sphinx-addressing",
- "nym-sphinx-anonymous-replies",
- "prost",
- "serde",
- "serde_json",
- "sha2 0.10.8",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-build",
- "tower",
- "which",
- "whoami",
- "zcash_client_backend",
- "zingo-netutils",
 ]
 
 [[package]]
@@ -7302,23 +7370,6 @@ dependencies = [
  "log4rs",
  "zcash_address",
  "zcash_primitives",
-]
-
-[[package]]
-name = "zingoindexer-testutils"
-version = "0.1.0"
-dependencies = [
- "ctrlc",
- "http",
- "portpicker",
- "tempfile",
- "tokio",
- "tonic",
- "zingo-indexerd",
- "zingo-rpc",
- "zingo-testutils",
- "zingoconfig",
- "zingolib",
 ]
 
 [[package]]
