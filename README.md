@@ -58,7 +58,7 @@ Holds tonic generated code for the lightwallet service RPCs and compact formats.
 3) Run `$ cargo nextest run` or `$ cargo test`
 
 # Running ZainoD
-- To run zingo-cli through Zebroid, connecting to zebrad locally: [in seperate terminals]
+- To run zingo-cli through Zaino, connecting to zebrad locally: [in seperate terminals]
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
 3) Run `$ cargo run`
 
