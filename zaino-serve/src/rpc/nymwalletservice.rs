@@ -2,11 +2,11 @@
 //!
 //! NOTE: DEPRICATED.
 
+use crate::rpc::GrpcClient;
 use std::env;
 use tonic::{async_trait, Request, Response, Status};
-use crate::rpc::GrpcClient;
-use zaino_nym:::client::NymClient;
-use zaino_wallet::utils::{deserialize_response, serialize_request, write_nym_request_data}
+use zaino_nym::client::NymClient;
+use zaino_wallet::utils::{deserialize_response, serialize_request, write_nym_request_data};
 use zcash_client_backend::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{
