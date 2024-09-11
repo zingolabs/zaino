@@ -1,0 +1,38 @@
+name: Cargo checkmate
+
+on: [workflow_call]
+
+jobs:
+  cache-checkmate:
+    name: Cache checkmate
+    runs-on: ubuntu-22.04
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: taiki-e/cache-cargo-install-action@v1
+        with:
+          tool: cargo-checkmate
+
+  cargo-checkmate:
+    name: Cargo checkmate
+    strategy:
+      matrix:
+        phase: [build, check, clippy, doc, format]
+    needs: cache-checkmate
+    runs-on: ubuntu-22.04
+    if: github.event.pull_request.draft == false
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: taiki-e/cache-cargo-install-action@v1
+        with:
+          tool: cargo-checkmate
+
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install protoc
+        run: sudo apt-get install protobuf-compiler
+
+      - name: Run cargo checkmate
+        run: cargo-checkmate run ${{ matrix.phase }}
+

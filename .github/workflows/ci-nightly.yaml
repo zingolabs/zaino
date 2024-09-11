@@ -1,0 +1,53 @@
+name: CI (Nightly)
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  cargo-checkmate:
+    uses: ./.github/workflows/cargo-checkmate.yaml
+
+  reject-trailing-whitespace:
+    name: Reject trailing whitespace
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Reject trailing whitespace
+        run: ./utils/trailing-whitespace.sh reject
+
+  test:
+    uses: ./.github/workflows/test.yaml
+
+  create-timestamp:
+    uses: zingolabs/zingo-mobile/.github/workflows/create-timestamp.yaml@dev
+
+  create-cache-key:
+    uses: zingolabs/zingo-mobile/.github/workflows/create-cache-key.yaml@dev
+
+  build-android:
+    strategy:
+      matrix:
+        arch: [ x86_64, x86, arm64-v8a, armeabi-v7a ]
+      fail-fast: false
+    uses: zingolabs/zingo-mobile/.github/workflows/build.yaml@dev
+    needs: create-cache-key
+    with:
+      cache-key: ${{ needs.create-cache-key.outputs.cache-key }}
+      arch: ${{ matrix.arch }}
+
+  integration-test-android:
+    strategy:
+      matrix:
+        abi: [ x86_64, x86, arm64-v8a, armeabi-v7a ]
+      fail-fast: false
+    uses: zingolabs/zingo-mobile/.github/workflows/integration-test.yaml@dev
+    needs: [ create-timestamp, create-cache-key, build-android ]
+    with:
+      timestamp: ${{ needs.create-timestamp.outputs.timestamp }}
+      cache-key: ${{ needs.create-cache-key.outputs.cache-key }}
+      abi: ${{ matrix.abi }}
+

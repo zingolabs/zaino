@@ -1,0 +1,42 @@
+name: Coverage (Weekly)
+
+on:
+  schedule:
+    - cron: '30 8 * * 0'
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-22.04
+    env:
+      RUSTFLAGS: -D warnings
+    container:
+      image: zingodevops/ci-build:002
+      options: --security-opt seccomp=unconfined
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Symlink lightwalletd and zcash binaries
+        run: ln -s /usr/bin/lightwalletd /usr/bin/zcashd /usr/bin/zcash-cli ./libtonode-tests/regtest/bin/
+
+      - name: Symlink zcash parameters
+        run: ln -s /root/.zcash-params /github/home
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate code coverage
+        uses: actions-rs/cargo@v1
+        with:
+          command: tarpaulin
+          args: --all-features --verbose --workspace --avoid-cfg-tarpaulin --skip-clean --release --timeout 3000 --out xml
+
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./cobertura.xml
+          fail_ci_if_error: true
+
