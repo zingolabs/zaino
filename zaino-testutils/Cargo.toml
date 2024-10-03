@@ -16,8 +16,8 @@ zaino-fetch = { path = "../zaino-fetch" }
 zainod = { path = "../zainod" }
 
 # ZingoLib
-# zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_001" }
-zingolib = { git = "https://github.com/idky137/zingolib.git", branch = "update_dep_for_zaino" }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_001" }
+# zingolib = { git = "https://github.com/idky137/zingolib.git", branch = "update_dep_for_zaino" }
 
 # Miscellaneous Workspace
 tokio = { workspace = true }

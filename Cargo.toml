@@ -29,6 +29,10 @@ nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
+# nym-sdk = { git = "https://github.com/idky137/nym", branch = "zaino_dep_fix" }
+# nym-sphinx-addressing = { git = "https://github.com/idky137/nym", branch = "zaino_dep_fix" }
+# nym-bin-common = { git = "https://github.com/idky137/nym", branch = "zaino_dep_fix" }
+# nym-sphinx-anonymous-replies = { git = "https://github.com/idky137/nym", branch = "zaino_dep_fix" }
 
 # Miscellaneous
 tokio = { version = "1.37.0", features = ["full"] } # { version = "1.38", features = ["full"] }
