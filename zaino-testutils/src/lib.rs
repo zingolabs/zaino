@@ -186,8 +186,11 @@ fn set_custom_drops(
                 eprintln!("Failed to delete temporary wallet directory: {:?}.", e);
             }
         }
-        // Assures tests fail on secondary thread panics.
-        assert!(false);
+        // Ensures tests fail on secondary thread panics.
+        #[allow(clippy::assertions_on_constants)]
+        {
+            assert!(false);
+        }
         std::process::exit(0);
     }));
 
@@ -208,8 +211,11 @@ fn set_custom_drops(
                     eprintln!("Failed to delete temporary wallet directory: {:?}.", e);
                 }
             }
-            // Assures tests fail on ctrlc exit.
-            assert!(false);
+            // Ensures tests fail on ctrlc exit.
+            #[allow(clippy::assertions_on_constants)]
+            {
+                assert!(false);
+            }
             std::process::exit(0);
         })
         .expect("Error setting Ctrl-C handler");

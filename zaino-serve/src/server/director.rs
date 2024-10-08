@@ -79,6 +79,7 @@ pub struct Server {
 
 impl Server {
     /// Spawns a new Server.
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
         tcp_active: bool,
         tcp_ingestor_listen_addr: Option<SocketAddr>,

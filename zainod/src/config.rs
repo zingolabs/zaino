@@ -54,12 +54,10 @@ impl IndexerConfig {
                     "Invalid nym conf path syntax or non-UTF-8 characters in path.".to_string(),
                 ));
             }
-        } else {
-            if self.nym_active {
-                return Err(IndexerError::ConfigError(
-                    "NYM is active but no conf path provided.".to_string(),
-                ));
-            }
+        } else if self.nym_active {
+            return Err(IndexerError::ConfigError(
+                "NYM is active but no conf path provided.".to_string(),
+            ));
         }
         Ok(())
     }

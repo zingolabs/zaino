@@ -49,6 +49,7 @@ pub(crate) struct Worker {
 
 impl Worker {
     /// Creates a new queue worker.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         _worker_id: usize,
         queue: QueueReceiver<ZingoIndexerRequest>,
@@ -234,6 +235,7 @@ pub(crate) struct WorkerPool {
 
 impl WorkerPool {
     /// Creates a new worker pool containing [idle_workers] workers.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         max_size: u16,
         idle_size: u16,
@@ -322,14 +324,14 @@ impl WorkerPool {
                         self.status.statuses[worker_index].store(5);
                         self.workers.pop();
                         self.status.workers.fetch_sub(1, Ordering::SeqCst);
-                        return Ok(());
+                        Ok(())
                     }
                     Err(e) => {
                         self.status.statuses[worker_index].store(6);
                         eprintln!("Worker returned error on shutdown: {}", e);
                         // TODO: Handle the inner WorkerError. Return error.
                         self.status.workers.fetch_sub(1, Ordering::SeqCst);
-                        return Ok(());
+                        Ok(())
                     }
                 },
                 Err(e) => {
@@ -337,9 +339,9 @@ impl WorkerPool {
                     eprintln!("Worker returned error on shutdown: {}", e);
                     // TODO: Handle the JoinError. Return error.
                     self.status.workers.fetch_sub(1, Ordering::SeqCst);
-                    return Ok(());
+                    Ok(())
                 }
-            };
+            }
         }
     }
 
@@ -370,7 +372,7 @@ impl WorkerPool {
     /// Shuts down all the workers in the pool.
     pub(crate) async fn shutdown(
         &mut self,
-        worker_handles: &mut Vec<Option<tokio::task::JoinHandle<Result<(), WorkerError>>>>,
+        worker_handles: &mut [Option<tokio::task::JoinHandle<Result<(), WorkerError>>>],
     ) {
         for i in (0..self.workers.len()).rev() {
             self.workers[i].shutdown().await;
