@@ -2,12 +2,12 @@
 
 use std::sync::{atomic::AtomicBool, Arc};
 
-#[cfg(feature = "nym_poc")]
-pub mod nymwalletservice;
-#[cfg(not(feature = "nym_poc"))]
+// #[cfg(feature = "nym_poc")]
+// pub mod nymwalletservice;
+// #[cfg(not(feature = "nym_poc"))]
 pub mod service;
 
-pub mod nymservice;
+// pub mod nymservice;
 
 #[derive(Debug, Clone)]
 /// Configuration data for gRPC server.

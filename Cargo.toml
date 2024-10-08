@@ -5,8 +5,8 @@ members = [
     "zaino-testutils",
     "zainod",
     "zaino-serve",
-    "zaino-wallet",
-    "zaino-nym",
+    # "zaino-wallet",
+    # "zaino-nym",
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
@@ -24,11 +24,12 @@ license = "Apache-2.0"
 
 
 [workspace.dependencies]
+# Temporarily removed until dependency conflic can be resolved.
 # NymSdk
-nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
-nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
-nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
-nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
+# nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
+# nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
+# nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
+# nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
 
 # Miscellaneous
 tokio = { version = "1.37.0", features = ["full"] } # { version = "1.38", features = ["full"] }

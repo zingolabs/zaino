@@ -1,7 +1,7 @@
 //! Zingo-Indexer gRPC server.
 
 use http::Uri;
-use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
+// use nym_sphinx_anonymous_replies::requests::AnonymousSenderTag;
 use std::{
     net::SocketAddr,
     sync::{
@@ -12,7 +12,7 @@ use std::{
 
 use crate::server::{
     error::{IngestorError, ServerError, WorkerError},
-    ingestor::{NymIngestor, TcpIngestor},
+    ingestor::TcpIngestor,
     queue::Queue,
     request::ZingoIndexerRequest,
     worker::{WorkerPool, WorkerPoolStatus},
@@ -63,14 +63,14 @@ impl ServerStatus {
 pub struct Server {
     /// Listens for incoming gRPC requests over HTTP.
     tcp_ingestor: Option<TcpIngestor>,
-    /// Listens for incoming gRPC requests over Nym Mixnet, also sends responses back to clients.
-    nym_ingestor: Option<NymIngestor>,
+    // /// Listens for incoming gRPC requests over Nym Mixnet, also sends responses back to clients.
+    // nym_ingestor: Option<NymIngestor>,
     /// Dynamically sized pool of workers.
     worker_pool: WorkerPool,
     /// Request queue.
     request_queue: Queue<ZingoIndexerRequest>,
-    /// Nym response queue.
-    nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)>,
+    // /// Nym response queue.
+    // nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)>,
     /// Servers current status.
     status: ServerStatus,
     /// Represents the Online status of the Server.
@@ -113,10 +113,10 @@ impl Server {
         let request_queue: Queue<ZingoIndexerRequest> =
             Queue::new(max_queue_size as usize, status.request_queue_status.clone());
         status.request_queue_status.store(0, Ordering::SeqCst);
-        let nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)> = Queue::new(
-            max_queue_size as usize,
-            status.nym_response_queue_status.clone(),
-        );
+        // let nym_response_queue: Queue<(Vec<u8>, AnonymousSenderTag)> = Queue::new(
+        //     max_queue_size as usize,
+        //     status.nym_response_queue_status.clone(),
+        // );
         status.nym_response_queue_status.store(0, Ordering::SeqCst);
         let tcp_ingestor = if tcp_active {
             println!("Launching TcpIngestor..");
@@ -133,24 +133,24 @@ impl Server {
         } else {
             None
         };
-        let nym_ingestor = if nym_active {
-            println!("Launching NymIngestor..");
-            let nym_conf_path_string =
-                nym_conf_path.expect("nym_conf_path returned none when used.");
-            Some(
-                NymIngestor::spawn(
-                    nym_conf_path_string.clone().as_str(),
-                    request_queue.tx().clone(),
-                    nym_response_queue.rx().clone(),
-                    nym_response_queue.tx().clone(),
-                    status.nym_ingestor_status.clone(),
-                    online.clone(),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+        // let nym_ingestor = if nym_active {
+        //     println!("Launching NymIngestor..");
+        //     let nym_conf_path_string =
+        //         nym_conf_path.expect("nym_conf_path returned none when used.");
+        //     Some(
+        //         NymIngestor::spawn(
+        //             nym_conf_path_string.clone().as_str(),
+        //             request_queue.tx().clone(),
+        //             nym_response_queue.rx().clone(),
+        //             nym_response_queue.tx().clone(),
+        //             status.nym_ingestor_status.clone(),
+        //             online.clone(),
+        //         )
+        //         .await?,
+        //     )
+        // } else {
+        //     None
+        // };
 
         println!("Launching WorkerPool..");
         let worker_pool = WorkerPool::spawn(
@@ -158,7 +158,7 @@ impl Server {
             idle_worker_pool_size,
             request_queue.rx().clone(),
             request_queue.tx().clone(),
-            nym_response_queue.tx().clone(),
+            // nym_response_queue.tx().clone(),
             lightwalletd_uri,
             zebrad_uri,
             status.workerpool_status.clone(),
@@ -167,10 +167,10 @@ impl Server {
         .await;
         Ok(Server {
             tcp_ingestor,
-            nym_ingestor,
+            // nym_ingestor,
             worker_pool,
             request_queue,
-            nym_response_queue,
+            // nym_response_queue,
             status: status.clone(),
             online,
         })
@@ -186,12 +186,12 @@ impl Server {
         tokio::task::spawn(async move {
             // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-            let mut nym_ingestor_handle = None;
+            // let mut nym_ingestor_handle = None;
             let mut tcp_ingestor_handle = None;
             let mut worker_handles;
-            if let Some(ingestor) = self.nym_ingestor.take() {
-                nym_ingestor_handle = Some(ingestor.serve().await);
-            }
+            // if let Some(ingestor) = self.nym_ingestor.take() {
+            //     nym_ingestor_handle = Some(ingestor.serve().await);
+            // }
             if let Some(ingestor) = self.tcp_ingestor.take() {
                 tcp_ingestor_handle = Some(ingestor.serve().await);
             }
@@ -231,7 +231,7 @@ impl Server {
                     > = worker_handles.into_iter().map(Some).collect();
                     self.shutdown_components(
                         tcp_ingestor_handle,
-                        nym_ingestor_handle,
+                        None, // nym_ingestor_handle,
                         worker_handle_options,
                     )
                     .await;
@@ -296,9 +296,9 @@ impl Server {
         self.status
             .request_queue_status
             .store(self.request_queue.queue_length(), Ordering::SeqCst);
-        self.status
-            .nym_response_queue_status
-            .store(self.nym_response_queue.queue_length(), Ordering::SeqCst);
+        // self.status
+        //     .nym_response_queue_status
+        //     .store(self.nym_response_queue.queue_length(), Ordering::SeqCst);
         self.worker_pool.status();
         self.status.clone()
     }

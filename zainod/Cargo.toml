@@ -23,8 +23,9 @@ nym_poc = []
 zaino-fetch = { path = "../zaino-fetch" }
 zaino-serve = { path = "../zaino-serve" }
 
+# Temporarily removed until dependency conflic can be resolved.
 # NymSdk
-nym-bin-common = { workspace = true }
+# nym-bin-common = { workspace = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
