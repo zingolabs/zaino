@@ -26,6 +26,6 @@ tonic = { workspace = true }
 http = { workspace = true }
 
 # Miscellaneous Crate
-ctrlc = "3.2.1"
-tempfile = "3.2.0"
-portpicker = "0.1.1"
+ctrlc = "3.2"
+tempfile = "3.2"
+portpicker = "0.1"

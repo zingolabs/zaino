@@ -45,4 +45,4 @@ async-stream = "0.3"
 crossbeam-channel = "0.5"
 
 [build-dependencies]
-whoami = "1.0" # "1.5"
+whoami = "1.5"

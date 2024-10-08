@@ -20,11 +20,11 @@ thiserror = { workspace = true }
 prost = "0.12" # "0.13"
 reqwest = "0.12"
 url = "2.5"
-serde_json = { version = "1.0.117", features = ["preserve_order"] } # { version = "1.0", features = ["preserve_order"] } # The preserve_order feature in serde_jsonn is a dependency of jsonrpc-core
-serde = { version = "1.0.201", features = ["derive"] } # { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] } # The preserve_order feature in serde_jsonn is a dependency of jsonrpc-core
+serde = { version = "1.0", features = ["derive"] }
 hex = { version = "0.4.3", features = ["serde"] }
 indexmap = { version = "2.2.6", features = ["serde"] }
-base64 = "0.13.0" # "0.22"
-byteorder = "1" # "1.5"
+base64 = "0.22"
+byteorder = "1.5"
 sha2 = "0.10"
 
