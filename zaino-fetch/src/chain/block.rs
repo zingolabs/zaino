@@ -390,7 +390,7 @@ pub async fn get_block_from_node(
         Some("xxxxxx".to_string()),
         Some("xxxxxx".to_string()),
     )
-    .await;
+    .await?;
     let block_1 = zebrad_client.get_block(height.to_string(), Some(1)).await;
     match block_1 {
         Ok(GetBlockResponse::Object {

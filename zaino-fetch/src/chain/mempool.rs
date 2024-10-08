@@ -4,8 +4,7 @@ use std::{collections::HashSet, time::SystemTime};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    chain::error::MempoolError, jsonrpc::connector::JsonRpcConnector,
-    primitives::block::BlockHash,
+    chain::error::MempoolError, jsonrpc::connector::JsonRpcConnector, primitives::block::BlockHash,
 };
 
 /// Mempool state information.
@@ -58,7 +57,7 @@ impl Mempool {
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
         )
-        .await
+        .await?
         .get_raw_mempool()
         .await?
         .transactions;
@@ -90,7 +89,7 @@ impl Mempool {
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
         )
-        .await
+        .await?
         .get_blockchain_info()
         .await?
         .best_block_hash;
