@@ -5,7 +5,9 @@
 
 use std::sync::{atomic::AtomicBool, Arc};
 use zaino_testutils::{
-    drop_test_manager, get_zingo_address, start_zingo_mempool_monitor, Pool, TestManager,
+    drop_test_manager,
+    zingo_lightclient::{get_address, quick_send, start_mempool_monitor},
+    TestManager,
 };
 
 mod wallet_basic {
@@ -38,14 +40,13 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "unified").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "unified").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -70,14 +71,12 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "sapling").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -102,14 +101,16 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "transparent").await,
+        quick_send(
+            &zingo_client,
+            vec![(
+                &get_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
-            )])
-            .await
-            .unwrap();
+            )],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -134,30 +135,28 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(2).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "unified").await,
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "unified").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(
+                &get_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
-            )])
-            .await
-            .unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "sapling").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "transparent").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+            )],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -184,14 +183,12 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "sapling").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -199,10 +196,7 @@ mod wallet_basic {
         println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
 
-        zingo_client
-            .do_shield(&[Pool::Sapling.into()], None)
-            .await
-            .unwrap();
+        zingo_client.quick_shield().await.unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -228,14 +222,16 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "transparent").await,
+        quick_send(
+            &zingo_client,
+            vec![(
+                &get_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
-            )])
-            .await
-            .unwrap();
+            )],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -243,10 +239,7 @@ mod wallet_basic {
         println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
-        zingo_client
-            .do_shield(&[Pool::Transparent.into()], None)
-            .await
-            .unwrap();
+        zingo_client.quick_shield().await.unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -272,22 +265,22 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "sapling").await,
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(
+                &get_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
-            )])
-            .await
-            .unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "transparent").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+            )],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -296,10 +289,7 @@ mod wallet_basic {
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
-        zingo_client
-            .do_shield(&[Pool::Sapling.into(), Pool::Transparent.into()], None)
-            .await
-            .unwrap();
+        zingo_client.quick_shield().await.unwrap();
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
@@ -328,32 +318,30 @@ mod wallet_basic {
         zingo_client.do_sync(false).await.unwrap();
 
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "unified").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "unified").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "sapling").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "transparent").await,
+        quick_send(
+            &zingo_client,
+            vec![(
+                &get_address(&zingo_client, "transparent").await,
                 250_000,
                 None,
-            )])
-            .await
-            .unwrap();
+            )],
+        )
+        .await
+        .unwrap();
         test_manager.regtest_manager.generate_n_blocks(30).unwrap();
 
         println!("[TEST LOG] syncing full batch.");
@@ -382,24 +370,20 @@ mod wallet_basic {
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "sapling").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
-        zingo_client
-            .do_send(vec![(
-                &get_zingo_address(&zingo_client, "sapling").await,
-                250_000,
-                None,
-            )])
-            .await
-            .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
+        quick_send(
+            &zingo_client,
+            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
+        )
+        .await
+        .unwrap();
 
-        start_zingo_mempool_monitor(&zingo_client).await;
+        start_mempool_monitor(&zingo_client).await;
 
         let balance = zingo_client.do_balance().await;
         println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
