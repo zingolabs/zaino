@@ -31,7 +31,7 @@ nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }
 nym-sphinx-anonymous-replies = { git = "https://github.com/nymtech/nym", branch = "master" }
 
 # Miscellaneous
-tokio = { version = "=1.37.0", features = ["full"] } # { version = "1.38", features = ["full"] }
+tokio = { version = "1.37.0", features = ["full"] } # { version = "1.38", features = ["full"] }
 tonic = "0.10.2" # "0.12"
 http = "0.2.4" # "1.1"
 thiserror = "1.0.59" # "1.0"
