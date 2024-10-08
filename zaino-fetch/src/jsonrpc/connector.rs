@@ -5,6 +5,7 @@
 use http::Uri;
 use hyper::{http, Body, Client, Request};
 use hyper_tls::HttpsConnector;
+// use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicI32, Ordering};
