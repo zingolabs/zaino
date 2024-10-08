@@ -10,7 +10,7 @@ If you believe you have discovered a security issue, please contact us at:
 
 zingodisclosure@proton.me
 
-# ZainoD [WIP]
+# ZainoD
 The Zaino Indexer service.
 
 Under the "nym_poc" feature flag ZainoD can also act as a Nym powered proxy, running between zcash wallets and Zingo-IndexerD, capable of sending zcash transactions over the Nym Mixnet. 
@@ -18,25 +18,25 @@ Note: The wallet-side nym service RPC implementations are moving to CompactTxStr
 
 This is the POC and initial work on enabling zcash infrastructure to use the nym mixnet.
 
-# Zaino-Serve [WIP]
+# Zaino-Serve
 Holds a gRPC server capable of servicing clients over both https and the nym mixnet.
 
 Also holds the rust implementations of the LightWallet Service (CompactTxStreamerServer) and (eventually) Darkside RPCs (DarksideTxStremerServer).
 
 * Currently only send_transaction and get_lightd_info are implemented over nym.
 
-# Zaino-Wallet [WIP]
+# Zaino-Wallet [*Temporarily Removed due to Nym Dependency Conflict]
 Holds the nym-enhanced, wallet-side rust implementations of the LightWallet Service RPCs (NymTxStreamerClient).
 
 * Currently only send_transaction and get_lightd_info are implemented over nym.
 
-# Zaino-State [UNIMPLEMENTED]
+# Zaino-State
 A mempool and chain-fetching service built on top of zebra's ReadStateService and TrustedChainSync, exosed as a library for direct consumption by full node wallets.
 
-# Zaino-Fetch [WIP]
+# Zaino-Fetch
 A mempool-fetching, chain-fetching and transaction submission service that uses zebra's RPC interface. Used primarily as a backup and legacy option for backwards compatibility.
 
-# Zaino-Nym
+# Zaino-Nym [*Temporarily Removed due to Nym Dependency Conflict]
 Holds backend nym functionality used by Zaino.
 
 # Zaino-Proto
@@ -65,7 +65,7 @@ Holds tonic generated code for the lightwallet service RPCs and compact formats.
 From #PATH_TO/zingolib:
 4) Run `$ cargo run --release --package zingo-cli -- --chain "testnet" --server "127.0.0.1:8080" --data-dir ~/wallets/test_wallet`
 
-# Nym POC
+# Nym POC [*Temporarily Removed due to Nym Dependency Conflict]
 The walletside Nym implementations are moving to ease wallet integration but the POC walletside nym server is still available under the "nym_poc" feature flag.
 - To run the POC [in seperate terminals]:
 1) Run `$ zebrad --config #PATH_TO_ZINGO_PROXY/zebrad.toml start`
