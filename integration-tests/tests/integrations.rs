@@ -227,21 +227,22 @@ mod wallet_basic {
         test_manager.regtest_manager.generate_n_blocks(2).unwrap();
         zingo_client.do_sync(false).await.unwrap();
 
-        test_manager.regtest_manager.generate_n_blocks(30).unwrap();
+        test_manager.regtest_manager.generate_n_blocks(5).unwrap();
         quick_send(
             &zingo_client,
             vec![(&get_address(&zingo_client, "unified").await, 250_000, None)],
         )
         .await
         .unwrap();
-        test_manager.regtest_manager.generate_n_blocks(30).unwrap();
+        test_manager.regtest_manager.generate_n_blocks(15).unwrap();
         quick_send(
             &zingo_client,
             vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
         )
         .await
         .unwrap();
-        test_manager.regtest_manager.generate_n_blocks(30).unwrap();
+
+        test_manager.regtest_manager.generate_n_blocks(15).unwrap();
         quick_send(
             &zingo_client,
             vec![(
@@ -252,14 +253,14 @@ mod wallet_basic {
         )
         .await
         .unwrap();
-        test_manager.regtest_manager.generate_n_blocks(30).unwrap();
+        test_manager.regtest_manager.generate_n_blocks(70).unwrap();
 
         println!("[TEST LOG] syncing full batch.");
         zingo_client.do_sync(false).await.unwrap();
 
         let balance = zingo_client.do_balance().await;
         println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.orchard_balance.unwrap(), 76_874_500_000);
+        assert_eq!(balance.orchard_balance.unwrap(), 67_499_500_000);
         assert_eq!(balance.sapling_balance.unwrap(), 250_000);
         assert_eq!(balance.transparent_balance.unwrap(), 250_000);
 
