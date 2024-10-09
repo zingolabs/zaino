@@ -314,34 +314,3 @@ pub mod zingo_lightclient {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
-
-// /// Zingo-Indexer wrapper for Zingolib's Pool Enum.
-// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// pub enum Pool {
-//     /// Orchard pool.
-//     Orchard,
-//     /// Sapling pool
-//     Sapling,
-//     /// Transparent poool.
-//     Transparent,
-// }
-
-// impl From<Pool> for zingolib::wallet::Pool {
-//     fn from(test_pool: Pool) -> Self {
-//         match test_pool {
-//             Pool::Orchard => zingolib::wallet::Pool::Orchard,
-//             Pool::Sapling => zingolib::wallet::Pool::Sapling,
-//             Pool::Transparent => zingolib::wallet::Pool::Transparent,
-//         }
-//     }
-// }
-
-// impl From<zingolib::wallet::Pool> for Pool {
-//     fn from(pool: zingolib::wallet::Pool) -> Self {
-//         match pool {
-//             zingolib::wallet::Pool::Orchard => Pool::Orchard,
-//             zingolib::wallet::Pool::Sapling => Pool::Sapling,
-//             zingolib::wallet::Pool::Transparent => Pool::Transparent,
-//         }
-//     }
-// }

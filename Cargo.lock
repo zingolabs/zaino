@@ -534,7 +534,7 @@ dependencies = [
 [[package]]
 name = "build_utils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_001#b34f0b5326dca4a6c5422a4b4451af3ad7da7e3a"
+source = "git+https://github.com/idky137/zingolib.git?branch=zaino_temp_dep#8d0aef179ef02fe9b686bc282d5091d8721d1727"
 
 [[package]]
 name = "bumpalo"
@@ -4493,7 +4493,7 @@ dependencies = [
 [[package]]
 name = "zingo-memo"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_001#b34f0b5326dca4a6c5422a4b4451af3ad7da7e3a"
+source = "git+https://github.com/idky137/zingolib.git?branch=zaino_temp_dep#8d0aef179ef02fe9b686bc282d5091d8721d1727"
 dependencies = [
  "zcash_address",
  "zcash_client_backend",
@@ -4505,7 +4505,7 @@ dependencies = [
 [[package]]
 name = "zingo-netutils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_001#b34f0b5326dca4a6c5422a4b4451af3ad7da7e3a"
+source = "git+https://github.com/idky137/zingolib.git?branch=zaino_temp_dep#8d0aef179ef02fe9b686bc282d5091d8721d1727"
 dependencies = [
  "http 1.1.0",
  "http-body 1.0.1",
@@ -4526,7 +4526,7 @@ dependencies = [
 [[package]]
 name = "zingo-status"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_001#b34f0b5326dca4a6c5422a4b4451af3ad7da7e3a"
+source = "git+https://github.com/idky137/zingolib.git?branch=zaino_temp_dep#8d0aef179ef02fe9b686bc282d5091d8721d1727"
 dependencies = [
  "zcash_primitives",
 ]
@@ -4534,7 +4534,7 @@ dependencies = [
 [[package]]
 name = "zingo-sync"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_001#b34f0b5326dca4a6c5422a4b4451af3ad7da7e3a"
+source = "git+https://github.com/idky137/zingolib.git?branch=zaino_temp_dep#8d0aef179ef02fe9b686bc282d5091d8721d1727"
 dependencies = [
  "crossbeam-channel",
  "futures",
@@ -4558,7 +4558,7 @@ dependencies = [
 [[package]]
 name = "zingolib"
 version = "0.2.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_001#b34f0b5326dca4a6c5422a4b4451af3ad7da7e3a"
+source = "git+https://github.com/idky137/zingolib.git?branch=zaino_temp_dep#8d0aef179ef02fe9b686bc282d5091d8721d1727"
 dependencies = [
  "append-only-vec",
  "base58",

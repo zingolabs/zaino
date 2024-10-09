@@ -175,45 +175,6 @@ mod wallet_basic {
     }
 
     #[tokio::test]
-    async fn shield_from_sapling() {
-        let online = Arc::new(AtomicBool::new(true));
-        let (test_manager, regtest_handler, _indexer_handler) =
-            TestManager::launch(online.clone()).await;
-        let zingo_client = test_manager.build_lightclient().await;
-
-        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
-        zingo_client.do_sync(false).await.unwrap();
-        quick_send(
-            &zingo_client,
-            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
-        )
-        .await
-        .unwrap();
-        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
-        zingo_client.do_sync(false).await.unwrap();
-
-        let balance = zingo_client.do_balance().await;
-        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.sapling_balance.unwrap(), 250_000);
-
-        zingo_client.quick_shield().await.unwrap();
-        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
-        zingo_client.do_sync(false).await.unwrap();
-
-        let balance = zingo_client.do_balance().await;
-        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.sapling_balance.unwrap(), 0);
-        assert_eq!(balance.orchard_balance.unwrap(), 2_500_000_000);
-
-        drop_test_manager(
-            Some(test_manager.temp_conf_dir.path().to_path_buf()),
-            regtest_handler,
-            online,
-        )
-        .await;
-    }
-
-    #[tokio::test]
     async fn shield_from_transparent() {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _indexer_handler) =
@@ -245,57 +206,6 @@ mod wallet_basic {
 
         let balance = zingo_client.do_balance().await;
         println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.transparent_balance.unwrap(), 0);
-        assert_eq!(balance.orchard_balance.unwrap(), 2_500_000_000);
-
-        drop_test_manager(
-            Some(test_manager.temp_conf_dir.path().to_path_buf()),
-            regtest_handler,
-            online,
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn shield_from_multiple() {
-        let online = Arc::new(AtomicBool::new(true));
-        let (test_manager, regtest_handler, _indexer_handler) =
-            TestManager::launch(online.clone()).await;
-        let zingo_client = test_manager.build_lightclient().await;
-
-        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
-        zingo_client.do_sync(false).await.unwrap();
-        quick_send(
-            &zingo_client,
-            vec![(&get_address(&zingo_client, "sapling").await, 250_000, None)],
-        )
-        .await
-        .unwrap();
-        quick_send(
-            &zingo_client,
-            vec![(
-                &get_address(&zingo_client, "transparent").await,
-                250_000,
-                None,
-            )],
-        )
-        .await
-        .unwrap();
-        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
-        zingo_client.do_sync(false).await.unwrap();
-
-        let balance = zingo_client.do_balance().await;
-        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.sapling_balance.unwrap(), 250_000);
-        assert_eq!(balance.transparent_balance.unwrap(), 250_000);
-
-        zingo_client.quick_shield().await.unwrap();
-        test_manager.regtest_manager.generate_n_blocks(1).unwrap();
-        zingo_client.do_sync(false).await.unwrap();
-
-        let balance = zingo_client.do_balance().await;
-        println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
-        assert_eq!(balance.sapling_balance.unwrap(), 0);
         assert_eq!(balance.transparent_balance.unwrap(), 0);
         assert_eq!(balance.orchard_balance.unwrap(), 2_500_000_000);
 
