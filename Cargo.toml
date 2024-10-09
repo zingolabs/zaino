@@ -33,7 +33,7 @@ license = "Apache-2.0"
 
 # Miscellaneous
 tokio = { version = "1.38", features = ["full"] }
-tonic = "0.10" # "0.12
+tonic = "0.12"
 http = "1.1"
 thiserror = "1.0"
 

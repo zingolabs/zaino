@@ -21,7 +21,7 @@ pub(crate) mod worker;
 /// - [4: Closing].
 /// - [>=5: Offline].
 /// - [>=6: Error].
-/// TODO: Define error code spec.
+///   TODO: Define error code spec.
 #[derive(Debug, Clone)]
 pub struct AtomicStatus(Arc<AtomicUsize>);
 
