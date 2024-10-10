@@ -616,7 +616,7 @@ impl CompactTxStreamer for GrpcClient {
                 Some("xxxxxx".to_string()),
             )
             .await?;
-
+            let mempool_height = (zebrad_client.get_blockchain_info().await?.blocks.0) + 1;
             let zebrad_uri = self.zebrad_uri.clone();
             let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
             tokio::spawn(async move {
@@ -637,12 +637,12 @@ impl CompactTxStreamer for GrpcClient {
                                     match zebrad_client
                                         .get_raw_transaction(txid.clone(), Some(1))
                                         .await {
-                                        Ok(GetTransactionResponse::Object { hex, height, .. }) => {
+                                        Ok(GetTransactionResponse::Object { hex, height: _, .. }) => {
                                             txid_index += 1;
                                             if channel_tx
                                                 .send(Ok(RawTransaction {
                                                     data: hex.bytes,
-                                                    height: height as u64,
+                                                    height: mempool_height as u64,
                                                 }))
                                                 .await
                                                 .is_err()
