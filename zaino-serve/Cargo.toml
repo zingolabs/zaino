@@ -22,12 +22,13 @@ zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", 
 
 zaino-proto = { path = "../zaino-proto" }
 zaino-fetch = { path = "../zaino-fetch" }
-zaino-nym = { path = "../zaino-nym" }
-zaino-wallet = { path = "../zaino-wallet" }
 
+# Temporarily removed until dependency conflic can be resolved.
+# zaino-nym = { path = "../zaino-nym" }
+# zaino-wallet = { path = "../zaino-wallet" }
 # NymSdk
-nym-sdk = { workspace = true }
-nym-sphinx-anonymous-replies = { workspace = true }
+# nym-sdk = { workspace = true }
+# nym-sphinx-anonymous-replies = { workspace = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }

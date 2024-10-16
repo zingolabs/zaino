@@ -80,9 +80,9 @@ impl Indexer {
     ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
         // NOTE: This interval may need to be reduced or removed / moved once scale testing begins.
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
-        if config.nym_active {
-            nym_bin_common::logging::setup_logging();
-        }
+        // if config.nym_active {
+        //     nym_bin_common::logging::setup_logging();
+        // }
         println!("Launching Zingdexer!");
         let mut indexer: Indexer = Indexer::new(config, online.clone()).await?;
         Ok(tokio::task::spawn(async move {
