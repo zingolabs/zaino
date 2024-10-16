@@ -109,7 +109,7 @@ impl CompactTxStreamer for GrpcClient {
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
             )
-            .await
+            .await?
             .get_blockchain_info()
             .await
             .map_err(|e| e.to_grpc_status())?;
@@ -320,7 +320,7 @@ impl CompactTxStreamer for GrpcClient {
                     Some("xxxxxx".to_string()),
                     Some("xxxxxx".to_string()),
                 )
-                .await
+                .await?
                 .get_raw_transaction(hash_hex, Some(1))
                 .await
                 .map_err(|e| e.to_grpc_status())?;
@@ -372,7 +372,7 @@ impl CompactTxStreamer for GrpcClient {
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
             )
-            .await
+            .await?
             .send_raw_transaction(hex_tx)
             .await
             .map_err(|e| e.to_grpc_status())?;
@@ -428,7 +428,7 @@ impl CompactTxStreamer for GrpcClient {
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
             )
-            .await;
+            .await?;
             let txids = zebrad_client
                 .get_address_txids(vec![address], start, end)
                 .await
@@ -615,7 +615,7 @@ impl CompactTxStreamer for GrpcClient {
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
             )
-            .await;
+            .await?;
 
             let zebrad_uri = self.zebrad_uri.clone();
             let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
@@ -747,7 +747,7 @@ impl CompactTxStreamer for GrpcClient {
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
             )
-            .await;
+            .await?;
 
             // TODO: This is slow. Chain, along with other blockchain info should be saved on startup and used here [blockcache?].
             let chain = zebrad_client
@@ -907,7 +907,7 @@ impl CompactTxStreamer for GrpcClient {
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
             )
-            .await;
+            .await?;
 
             let zebra_info = zebrad_client
                 .get_info()

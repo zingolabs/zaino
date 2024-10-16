@@ -18,10 +18,10 @@ thiserror = { workspace = true }
 
 # Miscellaneous Crate
 prost = "0.12" # "0.13"
-hyper = { version = "0.14.28", features = ["full"] } # { version = "1.4", features = ["full"] }
+reqwest = "0.12"
+url = "2.5"
 serde_json = { version = "1.0.117", features = ["preserve_order"] } # { version = "1.0", features = ["preserve_order"] } # The preserve_order feature in serde_jsonn is a dependency of jsonrpc-core
 serde = { version = "1.0.201", features = ["derive"] } # { version = "1.0", features = ["derive"] }
-hyper-tls = "0.5" # "0.6"
 hex = { version = "0.4.3", features = ["serde"] }
 indexmap = { version = "2.2.6", features = ["serde"] }
 base64 = "0.13.0" # "0.22"

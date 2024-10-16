@@ -66,7 +66,7 @@ impl FromHex for SerializedBlock {
     type Error = hex::FromHexError;
 
     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        hex::decode(hex).map(|bytes| SerializedBlock::from(bytes))
+        hex::decode(hex).map(SerializedBlock::from)
     }
 }
 

@@ -11,9 +11,9 @@ pub enum JsonRpcConnectorError {
     #[error("Serialization/Deserialization Error: {0}")]
     SerdeJsonError(#[from] serde_json::Error),
 
-    /// HTTP Request Errors.
+    /// Reqwest Based Errors.
     #[error("HTTP Request Error: {0}")]
-    HyperError(#[from] hyper::Error),
+    ReqwestError(#[from] reqwest::Error),
 
     ///HTTP Errors.
     #[error("HTTP Error: {0}")]
@@ -22,6 +22,10 @@ pub enum JsonRpcConnectorError {
     /// Invalid URI Errors.
     #[error("Invalid URI: {0}")]
     InvalidUriError(#[from] http::uri::InvalidUri),
+
+    /// Invalid URL Errors.
+    #[error("Invalid URL: {0}")]
+    InvalidUrlError(#[from] url::ParseError),
 
     /// UTF-8 Conversion Errors.
     #[error("UTF-8 Conversion Error")]
@@ -46,7 +50,7 @@ impl JsonRpcConnectorError {
             JsonRpcConnectorError::SerdeJsonError(_) => {
                 tonic::Status::invalid_argument(self.to_string())
             }
-            JsonRpcConnectorError::HyperError(_) => tonic::Status::unavailable(self.to_string()),
+            JsonRpcConnectorError::ReqwestError(_) => tonic::Status::unavailable(self.to_string()),
             JsonRpcConnectorError::HttpError(_) => tonic::Status::internal(self.to_string()),
             _ => tonic::Status::internal(self.to_string()),
         }

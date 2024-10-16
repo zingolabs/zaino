@@ -252,10 +252,10 @@ where
                         Ok(tonic::Response::new(response))
                     }
                     Err(e) => {
-                        return Err(Status::invalid_argument(format!(
+                        Err(Status::invalid_argument(format!(
                             "Failed to parse nym address: {}",
                             e
-                        )));
+                        )))
                     }
                 }
             }
@@ -440,10 +440,10 @@ where
                         Ok(tonic::Response::new(response))
                     }
                     Err(e) => {
-                        return Err(Status::invalid_argument(format!(
+                        Err(Status::invalid_argument(format!(
                             "Failed to parse nym address: {}",
                             e
-                        )));
+                        )))
                     }
                 }
             }

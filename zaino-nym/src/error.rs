@@ -39,10 +39,10 @@ impl From<NymError> for tonic::Status {
                 tonic::Status::internal(format!("Connection error: {}", e))
             }
             NymError::EmptyMessageError => {
-                tonic::Status::internal(format!("Empty message received from nym mixnet"))
+                tonic::Status::internal("Empty message received from nym mixnet".to_string())
             }
             NymError::EmptyRecipientTagError => {
-                tonic::Status::internal(format!("No AnonSenderTag received from nym mixnet"))
+                tonic::Status::internal("No AnonSenderTag received from nym mixnet".to_string())
             }
         }
     }
