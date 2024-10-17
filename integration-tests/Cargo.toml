@@ -14,6 +14,7 @@ nym_poc = []
 
 [dependencies]
 zaino-testutils = { path = "../zaino-testutils" }
+zingolib = { workspace = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true }

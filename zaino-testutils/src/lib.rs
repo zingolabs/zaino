@@ -286,18 +286,6 @@ pub mod zingo_lightclient {
         zingolib::get_base_address_macro!(zingo_client, pool)
     }
 
-    /// Sends funds to address given, handles proposals internally.
-    ///
-    /// recievers should be in the form vec![Address, Amount, Option<Memo>]
-    pub async fn quick_send(
-        zingo_client: &zingolib::lightclient::LightClient,
-        receivers: Vec<(&str, u64, Option<&str>)>,
-    ) -> Result<String, zingolib::lightclient::send::send_with_proposal::QuickSendError> {
-        zingolib::testutils::lightclient::from_inputs::quick_send(zingo_client, receivers)
-            .await
-            .map(|tx_ids| tx_ids.into_iter().next().unwrap().to_string())
-    }
-
     /// Starts Zingolib::lightclients's mempool monitor.
     pub async fn start_mempool_monitor(zingo_client: &zingolib::lightclient::LightClient) {
         let zingo_client_saved = zingo_client.export_save_buffer_async().await.unwrap();
