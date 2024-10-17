@@ -13,9 +13,9 @@ pub struct TestManager {
     pub temp_conf_dir: tempfile::TempDir,
     // std::path::PathBuf,
     /// Zingolib regtest manager.
-    pub regtest_manager: zingo_testutils::regtest::RegtestManager,
+    pub regtest_manager: zingolib::testutils::regtest::RegtestManager,
     /// Zingolib regtest network.
-    pub regtest_network: zingoconfig::RegtestNetwork,
+    pub regtest_network: zingolib::config::RegtestNetwork,
     /// Zingo-Indexer gRPC listen port.
     pub indexer_port: u16,
     /// Zingo-Indexer Nym listen address.
@@ -32,7 +32,7 @@ impl TestManager {
         online: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> (
         Self,
-        zingo_testutils::regtest::ChildProcessHandler,
+        zingolib::testutils::regtest::ChildProcessHandler,
         tokio::task::JoinHandle<Result<(), zainodlib::error::IndexerError>>,
     ) {
         let lwd_port = portpicker::pick_unused_port().expect("No ports free");
@@ -45,9 +45,10 @@ impl TestManager {
 
         set_custom_drops(online.clone(), Some(temp_conf_path.clone()));
 
-        let regtest_network = zingoconfig::RegtestNetwork::new(1, 1, 1, 1, 1, 1);
+        let regtest_network = zingolib::config::RegtestNetwork::new(1, 1, 1, 1, 1, 1);
 
-        let regtest_manager = zingo_testutils::regtest::RegtestManager::new(temp_conf_path.clone());
+        let regtest_manager =
+            zingolib::testutils::regtest::RegtestManager::new(temp_conf_path.clone());
         let regtest_handler = regtest_manager
             .launch(true)
             .expect("Failed to start regtest services");
@@ -111,7 +112,7 @@ impl TestManager {
 
     /// Builds aand returns Zingolib lightclient.
     pub async fn build_lightclient(&self) -> zingolib::lightclient::LightClient {
-        let mut client_builder = zingo_testutils::scenarios::setup::ClientBuilder::new(
+        let mut client_builder = zingolib::testutils::scenarios::setup::ClientBuilder::new(
             self.get_indexer_uri(),
             self.temp_conf_dir.path().to_path_buf(),
         );
@@ -124,7 +125,7 @@ impl TestManager {
 /// Closes test manager child processes, optionally cleans configuration and log files for test.
 pub async fn drop_test_manager(
     temp_conf_path: Option<std::path::PathBuf>,
-    child_process_handler: zingo_testutils::regtest::ChildProcessHandler,
+    child_process_handler: zingolib::testutils::regtest::ChildProcessHandler,
     online: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     online.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -275,57 +276,41 @@ fn create_temp_conf_files(
     Ok(temp_dir)
 }
 
-/// Returns the zcash address of the Zingolib::lightclient.
-pub async fn get_zingo_address(
-    zingo_client: &zingolib::lightclient::LightClient,
-    pool: &str,
-) -> String {
-    zingolib::get_base_address!(zingo_client, pool)
-}
-
-/// Starts Zingolib::lightclients's mempool monitor.
-pub async fn start_zingo_mempool_monitor(zingo_client: &zingolib::lightclient::LightClient) {
-    let zingo_client_saved = zingo_client.export_save_buffer_async().await.unwrap();
-    let zingo_client_loaded = std::sync::Arc::new(
-        zingolib::lightclient::LightClient::read_wallet_from_buffer_async(
-            zingo_client.config(),
-            &zingo_client_saved[..],
-        )
-        .await
-        .unwrap(),
-    );
-    zingolib::lightclient::LightClient::start_mempool_monitor(zingo_client_loaded.clone());
-    // This seems to be long enough for the mempool monitor to kick in (from zingolib).
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-}
-
-/// Zingo-Indexer wrapper for Zingolib's Pool Enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pool {
-    /// Orchard pool.
-    Orchard,
-    /// Sapling pool
-    Sapling,
-    /// Transparent poool.
-    Transparent,
-}
-
-impl From<Pool> for zingolib::wallet::Pool {
-    fn from(test_pool: Pool) -> Self {
-        match test_pool {
-            Pool::Orchard => zingolib::wallet::Pool::Orchard,
-            Pool::Sapling => zingolib::wallet::Pool::Sapling,
-            Pool::Transparent => zingolib::wallet::Pool::Transparent,
-        }
+/// Contains zingolib::lightclient functionality used for zaino testing.
+pub mod zingo_lightclient {
+    /// Returns the zcash address of the Zingolib::lightclient.
+    pub async fn get_address(
+        zingo_client: &zingolib::lightclient::LightClient,
+        pool: &str,
+    ) -> String {
+        zingolib::get_base_address_macro!(zingo_client, pool)
     }
-}
 
-impl From<zingolib::wallet::Pool> for Pool {
-    fn from(pool: zingolib::wallet::Pool) -> Self {
-        match pool {
-            zingolib::wallet::Pool::Orchard => Pool::Orchard,
-            zingolib::wallet::Pool::Sapling => Pool::Sapling,
-            zingolib::wallet::Pool::Transparent => Pool::Transparent,
-        }
+    /// Sends funds to address given, handles proposals internally.
+    ///
+    /// recievers should be in the form vec![Address, Amount, Option<Memo>]
+    pub async fn quick_send(
+        zingo_client: &zingolib::lightclient::LightClient,
+        receivers: Vec<(&str, u64, Option<&str>)>,
+    ) -> Result<String, zingolib::lightclient::send::send_with_proposal::QuickSendError> {
+        zingolib::testutils::lightclient::from_inputs::quick_send(zingo_client, receivers)
+            .await
+            .map(|tx_ids| tx_ids.into_iter().next().unwrap().to_string())
+    }
+
+    /// Starts Zingolib::lightclients's mempool monitor.
+    pub async fn start_mempool_monitor(zingo_client: &zingolib::lightclient::LightClient) {
+        let zingo_client_saved = zingo_client.export_save_buffer_async().await.unwrap();
+        let zingo_client_loaded = std::sync::Arc::new(
+            zingolib::lightclient::LightClient::read_wallet_from_buffer_async(
+                zingo_client.config(),
+                &zingo_client_saved[..],
+            )
+            .await
+            .unwrap(),
+        );
+        zingolib::lightclient::LightClient::start_mempool_monitor(zingo_client_loaded.clone());
+        // This seems to be long enough for the mempool monitor to kick in (from zingolib).
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }

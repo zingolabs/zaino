@@ -16,9 +16,10 @@ zaino-fetch = { path = "../zaino-fetch" }
 zainod = { path = "../zainod" }
 
 # ZingoLib
-zingo-testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
-zingoconfig = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "nym_integration" }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_002_091024_95e5b0d8f9d5ee0485c6141533da2f727aeafae2", features = ["zaino-test"] }
+# zingolib = { git = "https://github.com/idky137/zingolib.git", branch = "zaino_temp_dep", features = ["zaino-test"] }
+# zingolib = { path = "../../zingolib/zingolib", features = ["zaino-test"] }
+
 
 # Miscellaneous Workspace
 tokio = { workspace = true }
@@ -26,6 +27,6 @@ tonic = { workspace = true }
 http = { workspace = true }
 
 # Miscellaneous Crate
-ctrlc = "3.2.1"
-tempfile = "3.2.0"
-portpicker = "0.1.1"
+ctrlc = "3.2"
+tempfile = "3.2"
+portpicker = "0.1"
