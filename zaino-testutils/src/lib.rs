@@ -285,20 +285,4 @@ pub mod zingo_lightclient {
     ) -> String {
         zingolib::get_base_address_macro!(zingo_client, pool)
     }
-
-    /// Starts Zingolib::lightclients's mempool monitor.
-    pub async fn start_mempool_monitor(zingo_client: &zingolib::lightclient::LightClient) {
-        let zingo_client_saved = zingo_client.export_save_buffer_async().await.unwrap();
-        let zingo_client_loaded = std::sync::Arc::new(
-            zingolib::lightclient::LightClient::read_wallet_from_buffer_async(
-                zingo_client.config(),
-                &zingo_client_saved[..],
-            )
-            .await
-            .unwrap(),
-        );
-        zingolib::lightclient::LightClient::start_mempool_monitor(zingo_client_loaded.clone());
-        // This seems to be long enough for the mempool monitor to kick in (from zingolib).
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    }
 }
