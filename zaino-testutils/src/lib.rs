@@ -223,10 +223,7 @@ fn set_custom_drops(
     })
 }
 
-fn write_lightwalletd_yml(
-    dir: &std::path::Path,
-    bind_addr_port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn write_lightwalletd_yml(dir: &std::path::Path, bind_addr_port: u16) -> std::io::Result<()> {
     let file_path = dir.join("lightwalletd.yml");
     let mut file = std::fs::File::create(file_path)?;
     writeln!(file, "grpc-bind-addr: 127.0.0.1:{}", bind_addr_port)?;
@@ -237,7 +234,7 @@ fn write_lightwalletd_yml(
     Ok(())
 }
 
-fn write_zcash_conf(dir: &std::path::Path, rpcport: u16) -> Result<(), Box<dyn std::error::Error>> {
+fn write_zcash_conf(dir: &std::path::Path, rpcport: u16) -> std::io::Result<()> {
     let file_path = dir.join("zcash.conf");
     let mut file = std::fs::File::create(file_path)?;
     writeln!(file, "regtest=1")?;
@@ -262,10 +259,7 @@ fn write_zcash_conf(dir: &std::path::Path, rpcport: u16) -> Result<(), Box<dyn s
     Ok(())
 }
 
-fn create_temp_conf_files(
-    lwd_port: u16,
-    rpcport: u16,
-) -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+fn create_temp_conf_files(lwd_port: u16, rpcport: u16) -> std::io::Result<tempfile::TempDir> {
     let temp_dir = tempfile::Builder::new()
         .prefix("zingoindexertest")
         .tempdir()?;

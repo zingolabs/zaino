@@ -6,7 +6,7 @@ use zaino_fetch::chain::{error::ParseError, utils::CompactSize};
 /// Serialises gRPC request to a buffer.
 pub async fn serialize_request<T: prost::Message>(
     request: &T,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> std::io::Result<Vec<u8>> {
     let mut buf = Vec::new();
     request.encode(&mut buf)?;
     Ok(buf)
