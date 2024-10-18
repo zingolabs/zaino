@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [stable, dev]
+  workflow_dispatch:
+
+jobs:
+  cargo-checkmate:
+    uses: ./.github/workflows/cargo-checkmate.yaml
+
+  reject-trailing-whitespace:
+    name: Reject trailing whitespace
+    runs-on: ubuntu-22.04
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Reject trailing whitespace
+        run: ./utils/trailing-whitespace.sh reject
+
+  run-doc-tests:
+    name: Run doc tests
+    runs-on: ubuntu-22.04
+    if: github.event.pull_request.draft == false
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install protoc
+        run: sudo apt-get install protobuf-compiler
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run doc tests
+        run: cargo test --doc
+
+  test:
+    uses: ./.github/workflows/test.yaml
+    with:
+      nextest-flags: "-E 'not test(slow)'"
