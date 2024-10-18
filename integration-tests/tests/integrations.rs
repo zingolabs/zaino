@@ -4,14 +4,10 @@
 #![forbid(unsafe_code)]
 
 use std::sync::{atomic::AtomicBool, Arc};
-use zaino_testutils::{
-    drop_test_manager,
-    zingo_lightclient::{get_address, start_mempool_monitor},
-    TestManager,
-};
+use zaino_testutils::{drop_test_manager, zingo_lightclient::get_address, TestManager};
 
 mod wallet_basic {
-    use zingolib::testutils::lightclient::from_inputs;
+    use zingolib::{lightclient::LightClient, testutils::lightclient::from_inputs};
 
     use super::*;
 
@@ -279,7 +275,7 @@ mod wallet_basic {
         let online = Arc::new(AtomicBool::new(true));
         let (test_manager, regtest_handler, _indexer_handler) =
             TestManager::launch(online.clone()).await;
-        let zingo_client = test_manager.build_lightclient().await;
+        let zingo_client = Arc::new(test_manager.build_lightclient().await);
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
         zingo_client.do_sync(false).await.unwrap();
@@ -296,14 +292,16 @@ mod wallet_basic {
         .await
         .unwrap();
 
-        start_mempool_monitor(&zingo_client).await;
+        zingo_client.clear_state().await;
+        LightClient::start_mempool_monitor(zingo_client.clone());
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         let balance = zingo_client.do_balance().await;
         println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.unverified_sapling_balance.unwrap(), 500_000);
 
         test_manager.regtest_manager.generate_n_blocks(1).unwrap();
-        zingo_client.do_sync(false).await.unwrap();
+        zingo_client.do_rescan().await.unwrap();
         let balance = zingo_client.do_balance().await;
         println!("[TEST LOG] zingo_client balance: \n{:#?}.", balance);
         assert_eq!(balance.verified_sapling_balance.unwrap(), 500_000);
