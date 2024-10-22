@@ -4,23 +4,23 @@ use crate::primitives::height::ChainHeight;
 use hex::ToHex;
 use std::fmt;
 
-/// An enum describing the kind of network, whether it's the production mainnet or a testnet.
-// Note: The order of these variants is important for correct bincode (de)serialization
-//       of history trees in the db format.
-#[derive(
-    Copy, Clone, Default, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub enum NetworkKind {
-    /// The production mainnet.
-    #[default]
-    Mainnet,
+// /// An enum describing the kind of network, whether it's the production mainnet or a testnet.
+// // Note: The order of these variants is important for correct bincode (de)serialization
+// //       of history trees in the db format.
+// #[derive(
+//     Copy, Clone, Default, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+// )]
+// pub enum NetworkKind {
+//     /// The production mainnet.
+//     #[default]
+//     Mainnet,
 
-    /// A test network.
-    Testnet,
+//     /// A test network.
+//     Testnet,
 
-    /// Regtest mode.
-    Regtest,
-}
+//     /// Regtest mode.
+//     Regtest,
+// }
 
 /// The Consensus Branch Id, used to bind transactions and blocks to a
 /// particular network upgrade.

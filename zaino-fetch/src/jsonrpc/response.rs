@@ -4,13 +4,11 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 
 use crate::primitives::{
-    address::TransparentAddress,
-    block::{BlockHash, SerializedBlock},
+    block::SerializedBlock,
     chain::{ConsensusBranchIdHex, NetworkUpgradeInfo, TipConsensusBranch},
-    height::ChainHeight,
     transaction::{
         BlockCommitmentTreeSize, CommitmentTreestate, NoteCommitmentSubtreeIndex, OrchardTreestate,
-        SaplingTreestate, SerializedTransaction, SubtreeRpcData, TransactionHash, ZcashScript,
+        SaplingTreestate, SerializedTransaction, SubtreeRpcData, ZcashScript,
     },
 };
 
@@ -34,17 +32,17 @@ pub struct GetBlockchainInfoResponse {
     pub chain: String,
 
     /// The current number of blocks processed in the server, numeric
-    pub blocks: ChainHeight,
+    pub blocks: zebra_chain::block::Height,
 
     /// The hash of the currently best block, in big-endian order, hex-encoded
     #[serde(rename = "bestblockhash", with = "hex")]
-    pub best_block_hash: BlockHash,
+    pub best_block_hash: zebra_chain::block::Hash,
 
     /// If syncing, the estimated height of the chain, else the current best height, numeric.
     ///
     /// In Zebra, this is always the height estimate, so it might be a little inaccurate.
     #[serde(rename = "estimatedheight")]
-    pub estimated_height: ChainHeight,
+    pub estimated_height: zebra_chain::block::Height,
 
     /// Status of network upgrades
     pub upgrades: IndexMap<ConsensusBranchIdHex, NetworkUpgradeInfo>,
@@ -66,7 +64,7 @@ pub struct GetBalanceResponse {
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::send_raw_transaction`].
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct SendTransactionResponse(#[serde(with = "hex")] pub TransactionHash);
+pub struct SendTransactionResponse(#[serde(with = "hex")] pub zebra_chain::transaction::Hash);
 
 /// Response to a `getbestblockhash` and `getblockhash` RPC request.
 ///
@@ -75,11 +73,11 @@ pub struct SendTransactionResponse(#[serde(with = "hex")] pub TransactionHash);
 /// Also see the notes for the [`Rpc::get_best_block_hash`] and `get_block_hash` methods.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
-pub struct GetBlockHash(#[serde(with = "hex")] pub BlockHash);
+pub struct GetBlockHash(#[serde(with = "hex")] pub zebra_chain::block::Hash);
 
 impl Default for GetBlockHash {
     fn default() -> Self {
-        GetBlockHash(BlockHash([0; 32]))
+        GetBlockHash(zebra_chain::block::Hash([0; 32]))
     }
 }
 
@@ -102,7 +100,7 @@ pub enum GetBlockResponse {
 
         /// The height of the requested block.
         #[serde(skip_serializing_if = "Option::is_none")]
-        height: Option<ChainHeight>,
+        height: Option<zebra_chain::block::Height>,
 
         /// The height of the requested block.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,7 +119,7 @@ pub enum GetBlockResponse {
 /// This is used for the output parameter of [`JsonRpcConnector::get_best_block_hash`].
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
-pub struct BestBlockHashResponse(#[serde(with = "hex")] pub BlockHash);
+pub struct BestBlockHashResponse(#[serde(with = "hex")] pub zebra_chain::block::Hash);
 
 /// Vec of transaction ids, as a JSON array.
 ///
@@ -306,11 +304,11 @@ pub struct GetSubtreesResponse {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetUtxosResponse {
     /// The transparent address, base58check encoded
-    pub address: TransparentAddress,
+    pub address: zebra_chain::transparent::Address,
 
     /// The output txid, in big-endian order, hex-encoded
     #[serde(with = "hex")]
-    pub txid: TransactionHash,
+    pub txid: zebra_chain::transaction::Hash,
 
     /// The transparent output index, numeric
     #[serde(rename = "outputIndex")]
@@ -324,5 +322,5 @@ pub struct GetUtxosResponse {
     pub satoshis: u64,
 
     /// The block height, numeric.
-    pub height: ChainHeight,
+    pub height: zebra_chain::block::Height,
 }
