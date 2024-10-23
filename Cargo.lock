@@ -4354,7 +4354,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "0.2.41-beta.15"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "futures",
  "futures-core",
@@ -4370,7 +4370,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.41-beta.15"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -5509,7 +5509,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "1.0.0-beta.39"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "bitflags 2.6.0",
  "bitflags-serde-legacy",
@@ -5563,7 +5563,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "1.0.0-beta.39"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -5599,7 +5599,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "1.0.0-beta.39"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "bitflags 2.6.0",
  "byteorder",
@@ -5635,7 +5635,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "1.0.0-beta.39"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "color-eyre",
  "jsonrpc-core",
@@ -5648,7 +5648,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "1.0.0-beta.39"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "chrono",
  "futures",
@@ -5674,7 +5674,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "1.0.0-beta.39"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "thiserror",
  "zcash_script",
@@ -5684,7 +5684,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "1.0.0-beta.39"
-source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#687b1dccf2b2cfe27301ad46e3fb8dff5eb8f3de"
+source = "git+https://github.com/idky137/zebra.git?branch=zaino_dep_changes#449c6652de4a6d9000a77f649aa28847e6eeadff"
 dependencies = [
  "bincode",
  "chrono",
