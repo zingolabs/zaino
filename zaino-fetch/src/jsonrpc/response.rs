@@ -1,10 +1,4 @@
-//! Request and response types for jsonRPC client.
-
-use hex::FromHex;
-use indexmap::IndexMap;
-use serde::Deserialize;
-
-use crate::primitives::transaction::{NoteCommitmentSubtreeIndex, SubtreeRpcData, ZcashScript};
+//! Response types for jsonRPC client.
 
 /// Response to a `getinfo` RPC request.
 ///
@@ -39,8 +33,10 @@ pub struct GetBlockchainInfoResponse {
     pub estimated_height: zebra_chain::block::Height,
 
     /// Status of network upgrades
-    pub upgrades:
-        IndexMap<zebra_rpc::methods::ConsensusBranchIdHex, zebra_rpc::methods::NetworkUpgradeInfo>,
+    pub upgrades: indexmap::IndexMap<
+        zebra_rpc::methods::ConsensusBranchIdHex,
+        zebra_rpc::methods::NetworkUpgradeInfo,
+    >,
 
     /// Branch IDs of the current and upcoming consensus rules
     pub consensus: zebra_rpc::methods::TipConsensusBranch,
@@ -84,6 +80,14 @@ pub struct SerializedBlock {
     inner: zebra_chain::block::SerializedBlock,
 }
 
+impl std::ops::Deref for SerializedBlock {
+    type Target = zebra_chain::block::SerializedBlock;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl AsRef<[u8]> for SerializedBlock {
     fn as_ref(&self) -> &[u8] {
         self.inner.as_ref()
@@ -101,6 +105,14 @@ impl From<Vec<u8>> for SerializedBlock {
 impl From<zebra_chain::block::SerializedBlock> for SerializedBlock {
     fn from(inner: zebra_chain::block::SerializedBlock) -> Self {
         SerializedBlock { inner }
+    }
+}
+
+impl hex::FromHex for SerializedBlock {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        hex::decode(hex).map(SerializedBlock::from)
     }
 }
 
@@ -128,14 +140,6 @@ impl<'de> serde::Deserialize<'de> for SerializedBlock {
         }
 
         deserializer.deserialize_str(HexVisitor)
-    }
-}
-
-impl FromHex for SerializedBlock {
-    type Error = hex::FromHexError;
-
-    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        hex::decode(hex).map(SerializedBlock::from)
     }
 }
 
@@ -188,7 +192,7 @@ pub struct TxidsResponse {
     pub transactions: Vec<String>,
 }
 
-impl<'de> Deserialize<'de> for TxidsResponse {
+impl<'de> serde::Deserialize<'de> for TxidsResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -230,7 +234,7 @@ pub struct GetTreestateResponse {
     pub orchard: zebra_rpc::methods::trees::Treestate<String>,
 }
 
-impl<'de> Deserialize<'de> for GetTreestateResponse {
+impl<'de> serde::Deserialize<'de> for GetTreestateResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -273,25 +277,17 @@ impl<'de> Deserialize<'de> for GetTreestateResponse {
 /// Stores bytes that are guaranteed to be deserializable into a [`Transaction`].
 ///
 /// Sorts in lexicographic order of the transaction's serialized data.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SerializedTransaction {
     /// Transaction bytes.
     pub inner: zebra_chain::transaction::SerializedTransaction,
 }
 
-impl std::fmt::Display for SerializedTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&hex::encode(&self.inner))
-    }
-}
+impl std::ops::Deref for SerializedTransaction {
+    type Target = zebra_chain::transaction::SerializedTransaction;
 
-impl std::fmt::Debug for SerializedTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let data_hex = hex::encode(&self.inner);
-
-        f.debug_tuple("SerializedTransaction")
-            .field(&data_hex)
-            .finish()
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
@@ -315,6 +311,16 @@ impl From<zebra_chain::transaction::SerializedTransaction> for SerializedTransac
     }
 }
 
+impl hex::FromHex for SerializedTransaction {
+    type Error = <Vec<u8> as hex::FromHex>::Error;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = <Vec<u8>>::from_hex(hex)?;
+
+        Ok(bytes.into())
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for SerializedTransaction {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -329,16 +335,6 @@ impl<'de> serde::Deserialize<'de> for SerializedTransaction {
         } else {
             Err(serde::de::Error::custom("expected a hex string"))
         }
-    }
-}
-
-impl hex::FromHex for SerializedTransaction {
-    type Error = <Vec<u8> as hex::FromHex>::Error;
-
-    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        let bytes = <Vec<u8>>::from_hex(hex)?;
-
-        Ok(bytes.into())
     }
 }
 
@@ -363,7 +359,7 @@ pub enum GetTransactionResponse {
     },
 }
 
-impl<'de> Deserialize<'de> for GetTransactionResponse {
+impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -405,6 +401,83 @@ impl<'de> Deserialize<'de> for GetTransactionResponse {
 /// *** THE FOLLOWING CODE IS CURRENTLY UNUSED BY ZINGO-PROXY AND UNTESTED! ***
 /// ***                           TEST BEFORE USE                           ***
 
+/// Wrapper struct for a zebra SubtreeRpcData.
+///
+/// *** UNTESTED - TEST BEFORE USE ***
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SubtreeRpcData {
+    /// A subtree data type that can hold Sapling or Orchard subtree roots.
+    pub inner: zebra_rpc::methods::trees::SubtreeRpcData,
+}
+
+impl std::ops::Deref for SubtreeRpcData {
+    type Target = zebra_rpc::methods::trees::SubtreeRpcData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<zebra_rpc::methods::trees::SubtreeRpcData> for SubtreeRpcData {
+    fn from(inner: zebra_rpc::methods::trees::SubtreeRpcData) -> Self {
+        SubtreeRpcData { inner }
+    }
+}
+
+impl hex::FromHex for SubtreeRpcData {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let hex_str = std::str::from_utf8(hex.as_ref())
+            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
+
+        if hex_str.len() < 8 {
+            return Err(hex::FromHexError::OddLength);
+        }
+
+        let root_end_index = hex_str.len() - 8;
+        let (root_hex, height_hex) = hex_str.split_at(root_end_index);
+
+        let root = root_hex.to_string();
+        let height = u32::from_str_radix(height_hex, 16)
+            .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '�', index: 0 })?;
+
+        Ok(SubtreeRpcData {
+            inner: zebra_rpc::methods::trees::SubtreeRpcData {
+                root,
+                end_height: zebra_chain::block::Height(height),
+            },
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SubtreeRpcData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let hex_str = String::deserialize(deserializer)?;
+
+        if hex_str.len() < 8 {
+            return Err(serde::de::Error::custom("Hex string is too short"));
+        }
+
+        let root_end_index = hex_str.len() - 8;
+        let (root_hex, height_hex) = hex_str.split_at(root_end_index);
+
+        let root = root_hex.to_string();
+        let height = u32::from_str_radix(height_hex, 16)
+            .map_err(|_| serde::de::Error::custom("Failed to parse height"))?;
+
+        Ok(SubtreeRpcData {
+            inner: zebra_rpc::methods::trees::SubtreeRpcData {
+                root,
+                end_height: zebra_chain::block::Height(height),
+            },
+        })
+    }
+}
+
 /// Contains the Sapling or Orchard pool label, the index of the first subtree in the list,
 /// and a list of subtree roots and end heights.
 ///
@@ -417,13 +490,79 @@ pub struct GetSubtreesResponse {
     pub pool: String,
 
     /// The index of the first subtree.
-    pub start_index: NoteCommitmentSubtreeIndex,
+    pub start_index: zebra_chain::subtree::NoteCommitmentSubtreeIndex,
 
     /// A sequential list of complete subtrees, in `index` order.
     ///
     /// The generic subtree root type is a hex-encoded Sapling or Orchard subtree root string.
     // #[serde(skip_serializing_if = "Vec::is_empty")]
     pub subtrees: Vec<SubtreeRpcData>,
+}
+
+/// Wrapper struct for a zebra Scrypt.
+///
+/// *** UNTESTED - TEST BEFORE USE ***
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize)]
+pub struct Script {
+    /// # Correctness
+    ///
+    /// Consensus-critical serialization uses [`ZcashSerialize`].
+    /// [`serde`]-based hex serialization must only be used for RPCs and testing.
+    pub inner: zebra_chain::transparent::Script,
+}
+
+impl std::ops::Deref for Script {
+    type Target = zebra_chain::transparent::Script;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl AsRef<[u8]> for Script {
+    fn as_ref(&self) -> &[u8] {
+        self.inner.as_raw_bytes()
+    }
+}
+
+impl From<Vec<u8>> for Script {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            inner: zebra_chain::transparent::Script::new(bytes.as_ref()),
+        }
+    }
+}
+
+impl From<zebra_chain::transparent::Script> for Script {
+    fn from(inner: zebra_chain::transparent::Script) -> Self {
+        Script { inner }
+    }
+}
+
+impl hex::FromHex for Script {
+    type Error = <Vec<u8> as hex::FromHex>::Error;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = Vec::from_hex(hex)?;
+        let inner = zebra_chain::transparent::Script::new(&bytes);
+        Ok(Script { inner })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Script {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        if let Some(hex_str) = v.as_str() {
+            let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
+            let inner = zebra_chain::transparent::Script::new(&bytes);
+            Ok(Script { inner })
+        } else {
+            Err(serde::de::Error::custom("expected a hex string"))
+        }
+    }
 }
 
 /// This is used for the output parameter of [`JsonRpcConnector::get_address_utxos`].
@@ -444,7 +583,7 @@ pub struct GetUtxosResponse {
 
     /// The transparent output script, hex encoded
     #[serde(with = "hex")]
-    pub script: ZcashScript,
+    pub script: Script,
 
     /// The amount of zatoshis in the transparent output
     pub satoshis: u64,
