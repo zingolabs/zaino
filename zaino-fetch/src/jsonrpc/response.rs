@@ -1,15 +1,11 @@
 //! Request and response types for jsonRPC client.
 
+use hex::{FromHex, ToHex};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use crate::primitives::{
-    block::SerializedBlock,
-    chain::{ConsensusBranchIdHex, NetworkUpgradeInfo, TipConsensusBranch},
-    transaction::{
-        BlockCommitmentTreeSize, CommitmentTreestate, NoteCommitmentSubtreeIndex, OrchardTreestate,
-        SaplingTreestate, SerializedTransaction, SubtreeRpcData, ZcashScript,
-    },
+use crate::primitives::transaction::{
+    NoteCommitmentSubtreeIndex, SerializedTransaction, SubtreeRpcData, ZcashScript,
 };
 
 /// Response to a `getinfo` RPC request.
@@ -45,10 +41,11 @@ pub struct GetBlockchainInfoResponse {
     pub estimated_height: zebra_chain::block::Height,
 
     /// Status of network upgrades
-    pub upgrades: IndexMap<ConsensusBranchIdHex, NetworkUpgradeInfo>,
+    pub upgrades:
+        IndexMap<zebra_rpc::methods::ConsensusBranchIdHex, zebra_rpc::methods::NetworkUpgradeInfo>,
 
     /// Branch IDs of the current and upcoming consensus rules
-    pub consensus: TipConsensusBranch,
+    pub consensus: zebra_rpc::methods::TipConsensusBranch,
 }
 
 /// The transparent balance of a set of addresses.
@@ -81,6 +78,79 @@ impl Default for GetBlockHash {
     }
 }
 
+/// A wrapper struct for a zebra serialized block.
+///
+/// Stores bytes that are guaranteed to be deserializable into a [`Block`].
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SerializedBlock {
+    inner: zebra_chain::block::SerializedBlock,
+}
+
+impl AsRef<[u8]> for SerializedBlock {
+    fn as_ref(&self) -> &[u8] {
+        self.inner.as_ref()
+    }
+}
+
+impl From<Vec<u8>> for SerializedBlock {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            inner: zebra_chain::block::SerializedBlock::new(bytes),
+        }
+    }
+}
+
+impl From<zebra_chain::block::SerializedBlock> for SerializedBlock {
+    fn from(inner: zebra_chain::block::SerializedBlock) -> Self {
+        SerializedBlock { inner }
+    }
+}
+
+impl serde::Serialize for SerializedBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let hex_string = self.as_ref().encode_hex::<String>();
+        serializer.serialize_str(&hex_string)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SerializedBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct HexVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for HexVisitor {
+            type Value = SerializedBlock;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                formatter.write_str("a hex-encoded string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let bytes = hex::decode(value).map_err(serde::de::Error::custom)?;
+                Ok(SerializedBlock::from(bytes))
+            }
+        }
+
+        deserializer.deserialize_str(HexVisitor)
+    }
+}
+
+impl FromHex for SerializedBlock {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        hex::decode(hex).map(SerializedBlock::from)
+    }
+}
+
 /// Contains the hex-encoded hash of the sent transaction.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_block`].
@@ -110,7 +180,7 @@ pub enum GetBlockResponse {
         tx: Vec<String>,
 
         /// Information about the note commitment trees.
-        trees: BlockCommitmentTreeSize,
+        trees: zebra_rpc::methods::GetBlockTrees,
     },
 }
 
@@ -166,10 +236,10 @@ pub struct GetTreestateResponse {
     pub time: u32,
 
     /// A treestate containing a Sapling note commitment tree, hex-encoded.
-    pub sapling: SaplingTreestate,
+    pub sapling: zebra_rpc::methods::trees::Treestate<String>,
 
     /// A treestate containing an Orchard note commitment tree, hex-encoded.
-    pub orchard: OrchardTreestate,
+    pub orchard: zebra_rpc::methods::trees::Treestate<String>,
 }
 
 impl<'de> Deserialize<'de> for GetTreestateResponse {
@@ -200,16 +270,12 @@ impl<'de> Deserialize<'de> for GetTreestateResponse {
             height,
             hash,
             time,
-            sapling: SaplingTreestate {
-                commitments: CommitmentTreestate {
-                    final_state: sapling_final_state,
-                },
-            },
-            orchard: OrchardTreestate {
-                commitments: CommitmentTreestate {
-                    final_state: orchard_final_state,
-                },
-            },
+            sapling: zebra_rpc::methods::trees::Treestate::new(
+                zebra_rpc::methods::trees::Commitments::new(sapling_final_state),
+            ),
+            orchard: zebra_rpc::methods::trees::Treestate::new(
+                zebra_rpc::methods::trees::Commitments::new(orchard_final_state),
+            ),
         })
     }
 }

@@ -416,8 +416,8 @@ pub async fn get_block_from_node(
                 Ok(GetBlockResponse::Raw(block_hex)) => Ok(FullBlock::parse_to_compact(
                     block_hex.as_ref(),
                     Some(display_txids_to_server(tx)?),
-                    trees.sapling.size as u32,
-                    trees.orchard.size as u32,
+                    trees.sapling() as u32,
+                    trees.orchard() as u32,
                 )?),
                 Err(e) => Err(e.into()),
             }
