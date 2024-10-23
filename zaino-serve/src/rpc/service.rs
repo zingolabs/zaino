@@ -927,8 +927,9 @@ impl CompactTxStreamer for GrpcClient {
             let sapling_activation_height = blockchain_info
                 .upgrades
                 .get(&sapling_id)
-                .map(|sapling_json| sapling_json.into_parts().1)
-                .unwrap_or(zebra_chain::block::Height(1));
+                .map_or(zebra_chain::block::Height(1), |sapling_json| {
+                    sapling_json.into_parts().1
+                });
 
             let consensus_branch_id = zebra_chain::parameters::ConsensusBranchId::from(
                 blockchain_info.consensus.into_parts().0,
