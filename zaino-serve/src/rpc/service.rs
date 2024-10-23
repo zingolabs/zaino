@@ -333,7 +333,7 @@ impl CompactTxStreamer for GrpcClient {
                 })?;
 
                 Ok(tonic::Response::new(RawTransaction {
-                    data: hex.bytes,
+                    data: hex.as_ref().to_vec(),
                     height,
                 }))
             } else {
@@ -439,7 +439,7 @@ impl CompactTxStreamer for GrpcClient {
                             Ok(GetTransactionResponse::Object { hex, height, .. }) => {
                                 if channel_tx
                                     .send(Ok(RawTransaction {
-                                        data: hex.bytes,
+                                        data: hex.as_ref().to_vec(),
                                         height: height as u64,
                                     }))
                                     .await
@@ -637,7 +637,7 @@ impl CompactTxStreamer for GrpcClient {
                                             txid_index += 1;
                                             if channel_tx
                                                 .send(Ok(RawTransaction {
-                                                    data: hex.bytes,
+                                                    data: hex.as_ref().to_vec(),
                                                     height: mempool_height as u64,
                                                 }))
                                                 .await

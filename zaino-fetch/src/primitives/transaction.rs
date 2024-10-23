@@ -1,237 +1,237 @@
 //! Hold primitives relating to zcash transactions.
 
-use crate::primitives::{error::SerializationError, height::ChainHeight};
+use crate::primitives::height::ChainHeight;
 use hex::ToHex;
 use serde::ser::SerializeStruct;
 use std::fmt;
 
-/// Zcash note commitment tree information.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct CommitmentTreeSize {
-    /// Commitment tree size.
-    pub size: u64,
-}
+// /// Zcash note commitment tree information.
+// #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+// pub struct CommitmentTreeSize {
+//     /// Commitment tree size.
+//     pub size: u64,
+// }
 
-/// Information about the note commitment trees.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct BlockCommitmentTreeSize {
-    /// Sapling commitment tree size.
-    pub sapling: CommitmentTreeSize,
-    /// Orchard commitment tree size.
-    pub orchard: CommitmentTreeSize,
-}
+// /// Information about the note commitment trees.
+// #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+// pub struct BlockCommitmentTreeSize {
+//     /// Sapling commitment tree size.
+//     pub sapling: CommitmentTreeSize,
+//     /// Orchard commitment tree size.
+//     pub orchard: CommitmentTreeSize,
+// }
 
-/// Zingo-Indexer commitment tree structure replicating functionality in Zebra.
-///
-/// A wrapper that contains either an Orchard or Sapling note commitment tree.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct CommitmentTreestate {
-    /// Commitment tree state
-    pub final_state: String,
-}
+// /// Zingo-Indexer commitment tree structure replicating functionality in Zebra.
+// ///
+// /// A wrapper that contains either an Orchard or Sapling note commitment tree.
+// #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+// pub struct CommitmentTreestate {
+//     /// Commitment tree state
+//     pub final_state: String,
+// }
 
-/// Zingo-Indexer sapling treestate.
-///
-/// A treestate that is included in the [`z_gettreestate`][1] RPC response.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct SaplingTreestate {
-    /// Sapling note commitment tree.
-    pub commitments: CommitmentTreestate,
-}
+// /// Zingo-Indexer sapling treestate.
+// ///
+// /// A treestate that is included in the [`z_gettreestate`][1] RPC response.
+// #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+// pub struct SaplingTreestate {
+//     /// Sapling note commitment tree.
+//     pub commitments: CommitmentTreestate,
+// }
 
-/// Zingo-Indexer orchard treestate.
-///
-/// A treestate that is included in the [`z_gettreestate`][1] RPC response.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct OrchardTreestate {
-    /// Sapling note commitment tree.
-    pub commitments: CommitmentTreestate,
-}
+// /// Zingo-Indexer orchard treestate.
+// ///
+// /// A treestate that is included in the [`z_gettreestate`][1] RPC response.
+// #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+// pub struct OrchardTreestate {
+//     /// Sapling note commitment tree.
+//     pub commitments: CommitmentTreestate,
+// }
 
-/// A serialized transaction.
-///
-/// Stores bytes that are guaranteed to be deserializable into a [`Transaction`].
-///
-/// Sorts in lexicographic order of the transaction's serialized data.
-#[derive(Clone, Eq, PartialEq, serde::Serialize)]
-pub struct SerializedTransaction {
-    /// Transaction bytes.
-    pub bytes: Vec<u8>,
-}
+// /// A serialized transaction.
+// ///
+// /// Stores bytes that are guaranteed to be deserializable into a [`Transaction`].
+// ///
+// /// Sorts in lexicographic order of the transaction's serialized data.
+// #[derive(Clone, Eq, PartialEq, serde::Serialize)]
+// pub struct SerializedTransaction {
+//     /// Transaction bytes.
+//     pub bytes: Vec<u8>,
+// }
 
-impl std::fmt::Display for SerializedTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&hex::encode(&self.bytes))
-    }
-}
+// impl std::fmt::Display for SerializedTransaction {
+//     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+//         f.write_str(&hex::encode(&self.bytes))
+//     }
+// }
 
-impl std::fmt::Debug for SerializedTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let data_hex = hex::encode(&self.bytes);
+// impl std::fmt::Debug for SerializedTransaction {
+//     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+//         let data_hex = hex::encode(&self.bytes);
 
-        f.debug_tuple("SerializedTransaction")
-            .field(&data_hex)
-            .finish()
-    }
-}
+//         f.debug_tuple("SerializedTransaction")
+//             .field(&data_hex)
+//             .finish()
+//     }
+// }
 
-impl AsRef<[u8]> for SerializedTransaction {
-    fn as_ref(&self) -> &[u8] {
-        self.bytes.as_ref()
-    }
-}
+// impl AsRef<[u8]> for SerializedTransaction {
+//     fn as_ref(&self) -> &[u8] {
+//         self.bytes.as_ref()
+//     }
+// }
 
-impl From<Vec<u8>> for SerializedTransaction {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self { bytes }
-    }
-}
+// impl From<Vec<u8>> for SerializedTransaction {
+//     fn from(bytes: Vec<u8>) -> Self {
+//         Self { bytes }
+//     }
+// }
 
-impl hex::FromHex for SerializedTransaction {
-    type Error = <Vec<u8> as hex::FromHex>::Error;
+// impl hex::FromHex for SerializedTransaction {
+//     type Error = <Vec<u8> as hex::FromHex>::Error;
 
-    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        let bytes = <Vec<u8>>::from_hex(hex)?;
+//     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+//         let bytes = <Vec<u8>>::from_hex(hex)?;
 
-        Ok(bytes.into())
-    }
-}
+//         Ok(bytes.into())
+//     }
+// }
 
-impl<'de> serde::Deserialize<'de> for SerializedTransaction {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let v = serde_json::Value::deserialize(deserializer)?;
-        if let Some(hex_str) = v.as_str() {
-            let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
-            Ok(SerializedTransaction { bytes })
-        } else {
-            Err(serde::de::Error::custom("expected a hex string"))
-        }
-    }
-}
+// impl<'de> serde::Deserialize<'de> for SerializedTransaction {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: serde::Deserializer<'de>,
+//     {
+//         let v = serde_json::Value::deserialize(deserializer)?;
+//         if let Some(hex_str) = v.as_str() {
+//             let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
+//             Ok(SerializedTransaction { bytes })
+//         } else {
+//             Err(serde::de::Error::custom("expected a hex string"))
+//         }
+//     }
+// }
 
-/// A transaction ID, which uniquely identifies mined v5 transactions,
-/// and all v1-v4 transactions.
-///
-/// Note: Zebra displays transaction and block hashes in big-endian byte-order,
-/// following the u256 convention set by Bitcoin and zcashd.
-///
-/// "The transaction ID of a version 4 or earlier transaction is the SHA-256d hash
-/// of the transaction encoding in the pre-v5 format described above.
-///
-/// The transaction ID of a version 5 transaction is as defined in [ZIP-244]."
-/// [Spec: Transaction Identifiers]
-///
-/// [ZIP-244]: https://zips.z.cash/zip-0244
-/// [Spec: Transaction Identifiers]: https://zips.z.cash/protocol/protocol.pdf#txnidentifiers
-///
-/// Taken from zebra-chain for consistency
-#[derive(
-    Copy, Clone, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize, Hash,
-)]
-pub struct TransactionHash(pub [u8; 32]);
+// /// A transaction ID, which uniquely identifies mined v5 transactions,
+// /// and all v1-v4 transactions.
+// ///
+// /// Note: Zebra displays transaction and block hashes in big-endian byte-order,
+// /// following the u256 convention set by Bitcoin and zcashd.
+// ///
+// /// "The transaction ID of a version 4 or earlier transaction is the SHA-256d hash
+// /// of the transaction encoding in the pre-v5 format described above.
+// ///
+// /// The transaction ID of a version 5 transaction is as defined in [ZIP-244]."
+// /// [Spec: Transaction Identifiers]
+// ///
+// /// [ZIP-244]: https://zips.z.cash/zip-0244
+// /// [Spec: Transaction Identifiers]: https://zips.z.cash/protocol/protocol.pdf#txnidentifiers
+// ///
+// /// Taken from zebra-chain for consistency
+// #[derive(
+//     Copy, Clone, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize, Hash,
+// )]
+// pub struct TransactionHash(pub [u8; 32]);
 
-impl From<[u8; 32]> for TransactionHash {
-    fn from(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
+// impl From<[u8; 32]> for TransactionHash {
+//     fn from(bytes: [u8; 32]) -> Self {
+//         Self(bytes)
+//     }
+// }
 
-impl From<TransactionHash> for [u8; 32] {
-    fn from(hash: TransactionHash) -> Self {
-        hash.0
-    }
-}
+// impl From<TransactionHash> for [u8; 32] {
+//     fn from(hash: TransactionHash) -> Self {
+//         hash.0
+//     }
+// }
 
-impl From<&TransactionHash> for [u8; 32] {
-    fn from(hash: &TransactionHash) -> Self {
-        (*hash).into()
-    }
-}
+// impl From<&TransactionHash> for [u8; 32] {
+//     fn from(hash: &TransactionHash) -> Self {
+//         (*hash).into()
+//     }
+// }
 
-impl TransactionHash {
-    /// Return the hash bytes in big-endian byte-order suitable for printing out byte by byte.
-    ///
-    /// Zebra displays transaction and block hashes in big-endian byte-order,
-    /// following the u256 convention set by Bitcoin and zcashd.
-    pub fn bytes_in_display_order(&self) -> [u8; 32] {
-        let mut reversed_bytes = self.0;
-        reversed_bytes.reverse();
-        reversed_bytes
-    }
+// impl TransactionHash {
+//     /// Return the hash bytes in big-endian byte-order suitable for printing out byte by byte.
+//     ///
+//     /// Zebra displays transaction and block hashes in big-endian byte-order,
+//     /// following the u256 convention set by Bitcoin and zcashd.
+//     pub fn bytes_in_display_order(&self) -> [u8; 32] {
+//         let mut reversed_bytes = self.0;
+//         reversed_bytes.reverse();
+//         reversed_bytes
+//     }
 
-    /// Convert bytes in big-endian byte-order into a [`transaction::Hash`](crate::transaction::Hash).
-    ///
-    /// Zebra displays transaction and block hashes in big-endian byte-order,
-    /// following the u256 convention set by Bitcoin and zcashd.
-    pub fn from_bytes_in_display_order(bytes_in_display_order: &[u8; 32]) -> TransactionHash {
-        let mut internal_byte_order = *bytes_in_display_order;
-        internal_byte_order.reverse();
+//     /// Convert bytes in big-endian byte-order into a [`transaction::Hash`](crate::transaction::Hash).
+//     ///
+//     /// Zebra displays transaction and block hashes in big-endian byte-order,
+//     /// following the u256 convention set by Bitcoin and zcashd.
+//     pub fn from_bytes_in_display_order(bytes_in_display_order: &[u8; 32]) -> TransactionHash {
+//         let mut internal_byte_order = *bytes_in_display_order;
+//         internal_byte_order.reverse();
 
-        TransactionHash(internal_byte_order)
-    }
-}
+//         TransactionHash(internal_byte_order)
+//     }
+// }
 
-impl ToHex for &TransactionHash {
-    fn encode_hex<T: FromIterator<char>>(&self) -> T {
-        self.bytes_in_display_order().encode_hex()
-    }
+// impl ToHex for &TransactionHash {
+//     fn encode_hex<T: FromIterator<char>>(&self) -> T {
+//         self.bytes_in_display_order().encode_hex()
+//     }
 
-    fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
-        self.bytes_in_display_order().encode_hex_upper()
-    }
-}
+//     fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
+//         self.bytes_in_display_order().encode_hex_upper()
+//     }
+// }
 
-impl ToHex for TransactionHash {
-    fn encode_hex<T: FromIterator<char>>(&self) -> T {
-        (&self).encode_hex()
-    }
+// impl ToHex for TransactionHash {
+//     fn encode_hex<T: FromIterator<char>>(&self) -> T {
+//         (&self).encode_hex()
+//     }
 
-    fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
-        (&self).encode_hex_upper()
-    }
-}
+//     fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
+//         (&self).encode_hex_upper()
+//     }
+// }
 
-impl hex::FromHex for TransactionHash {
-    type Error = <[u8; 32] as hex::FromHex>::Error;
+// impl hex::FromHex for TransactionHash {
+//     type Error = <[u8; 32] as hex::FromHex>::Error;
 
-    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        let mut hash = <[u8; 32]>::from_hex(hex)?;
-        hash.reverse();
+//     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+//         let mut hash = <[u8; 32]>::from_hex(hex)?;
+//         hash.reverse();
 
-        Ok(hash.into())
-    }
-}
+//         Ok(hash.into())
+//     }
+// }
 
-impl fmt::Display for TransactionHash {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.encode_hex::<String>())
-    }
-}
+// impl fmt::Display for TransactionHash {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         f.write_str(&self.encode_hex::<String>())
+//     }
+// }
 
-impl fmt::Debug for TransactionHash {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_tuple("transaction::Hash")
-            .field(&self.encode_hex::<String>())
-            .finish()
-    }
-}
+// impl fmt::Debug for TransactionHash {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         f.debug_tuple("transaction::Hash")
+//             .field(&self.encode_hex::<String>())
+//             .finish()
+//     }
+// }
 
-impl std::str::FromStr for TransactionHash {
-    type Err = SerializationError;
+// impl std::str::FromStr for TransactionHash {
+//     type Err = SerializationError;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut bytes = [0; 32];
-        if hex::decode_to_slice(s, &mut bytes[..]).is_err() {
-            Err(SerializationError::Parse("hex decoding error"))
-        } else {
-            bytes.reverse();
-            Ok(TransactionHash(bytes))
-        }
-    }
-}
+//     fn from_str(s: &str) -> Result<Self, Self::Err> {
+//         let mut bytes = [0; 32];
+//         if hex::decode_to_slice(s, &mut bytes[..]).is_err() {
+//             Err(SerializationError::Parse("hex decoding error"))
+//         } else {
+//             bytes.reverse();
+//             Ok(TransactionHash(bytes))
+//         }
+//     }
+// }
 
 /// *** THE FOLLOWING CODE IS CURRENTLY UNUSED BY ZINGO-PROXY AND UNTESTED! ***
 /// ***                           TEST BEFORE USE                           ***

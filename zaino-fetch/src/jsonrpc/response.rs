@@ -1,12 +1,10 @@
 //! Request and response types for jsonRPC client.
 
-use hex::{FromHex, ToHex};
+use hex::FromHex;
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use crate::primitives::transaction::{
-    NoteCommitmentSubtreeIndex, SerializedTransaction, SubtreeRpcData, ZcashScript,
-};
+use crate::primitives::transaction::{NoteCommitmentSubtreeIndex, SubtreeRpcData, ZcashScript};
 
 /// Response to a `getinfo` RPC request.
 ///
@@ -95,7 +93,7 @@ impl AsRef<[u8]> for SerializedBlock {
 impl From<Vec<u8>> for SerializedBlock {
     fn from(bytes: Vec<u8>) -> Self {
         Self {
-            inner: zebra_chain::block::SerializedBlock::new(bytes),
+            inner: zebra_chain::block::SerializedBlock::from(bytes),
         }
     }
 }
@@ -103,16 +101,6 @@ impl From<Vec<u8>> for SerializedBlock {
 impl From<zebra_chain::block::SerializedBlock> for SerializedBlock {
     fn from(inner: zebra_chain::block::SerializedBlock) -> Self {
         SerializedBlock { inner }
-    }
-}
-
-impl serde::Serialize for SerializedBlock {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let hex_string = self.as_ref().encode_hex::<String>();
-        serializer.serialize_str(&hex_string)
     }
 }
 
@@ -277,6 +265,80 @@ impl<'de> Deserialize<'de> for GetTreestateResponse {
                 zebra_rpc::methods::trees::Commitments::new(orchard_final_state),
             ),
         })
+    }
+}
+
+/// A wrapper struct for a zebra serialized transaction.
+///
+/// Stores bytes that are guaranteed to be deserializable into a [`Transaction`].
+///
+/// Sorts in lexicographic order of the transaction's serialized data.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SerializedTransaction {
+    /// Transaction bytes.
+    pub inner: zebra_chain::transaction::SerializedTransaction,
+}
+
+impl std::fmt::Display for SerializedTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&hex::encode(&self.inner))
+    }
+}
+
+impl std::fmt::Debug for SerializedTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let data_hex = hex::encode(&self.inner);
+
+        f.debug_tuple("SerializedTransaction")
+            .field(&data_hex)
+            .finish()
+    }
+}
+
+impl AsRef<[u8]> for SerializedTransaction {
+    fn as_ref(&self) -> &[u8] {
+        self.inner.as_ref()
+    }
+}
+
+impl From<Vec<u8>> for SerializedTransaction {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            inner: zebra_chain::transaction::SerializedTransaction::from(bytes),
+        }
+    }
+}
+
+impl From<zebra_chain::transaction::SerializedTransaction> for SerializedTransaction {
+    fn from(inner: zebra_chain::transaction::SerializedTransaction) -> Self {
+        SerializedTransaction { inner }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SerializedTransaction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        if let Some(hex_str) = v.as_str() {
+            let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
+            Ok(SerializedTransaction {
+                inner: zebra_chain::transaction::SerializedTransaction::from(bytes),
+            })
+        } else {
+            Err(serde::de::Error::custom("expected a hex string"))
+        }
+    }
+}
+
+impl hex::FromHex for SerializedTransaction {
+    type Error = <Vec<u8> as hex::FromHex>::Error;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = <Vec<u8>>::from_hex(hex)?;
+
+        Ok(bytes.into())
     }
 }
 
