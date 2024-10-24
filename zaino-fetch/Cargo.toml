@@ -10,6 +10,13 @@ repository = { workspace = true }
 [dependencies]
 zaino-proto = { path = "../zaino-proto" }
 
+# Librustzcash
+zcash_protocol = { workspace = true }
+
+# Zebra
+zebra-chain = { workspace = true }
+zebra-rpc = { workspace = true }
+
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }

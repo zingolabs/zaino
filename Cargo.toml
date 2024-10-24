@@ -25,10 +25,19 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # Zingolabs
+#
+# NOTE: This may have to move to Zaino-testutils once Nym code is reintroduced and Zaino-Wallet becomes a dependency of zingolib.
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_002_091024_95e5b0d8f9d5ee0485c6141533da2f727aeafae2", features = ["zaino-test"] }
 
-# Temporarily removed until dependency conflic can be resolved.
-# NymSdk
+# Librustzcash
+zcash_protocol = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zcash_client_sqlite-0.11.2_plus_zingolabs_changes-1-g7ad60b5d5-2-g121371a08" }
+
+# Zebra
+zebra-chain = { git = "https://github.com/idky137/zebra.git", branch = "zaino_dep_changes" }
+zebra-rpc = { git = "https://github.com/idky137/zebra.git", branch = "zaino_dep_changes" }
+
+# Temporarily removed until dependency conflict can be resolved.
+# Nym
 # nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
 # nym-sphinx-addressing = { git = "https://github.com/nymtech/nym", branch = "master" }
 # nym-bin-common = { git = "https://github.com/nymtech/nym", branch = "master" }

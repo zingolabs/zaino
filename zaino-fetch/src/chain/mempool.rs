@@ -3,9 +3,7 @@
 use std::{collections::HashSet, time::SystemTime};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::{
-    chain::error::MempoolError, jsonrpc::connector::JsonRpcConnector, primitives::block::BlockHash,
-};
+use crate::{chain::error::MempoolError, jsonrpc::connector::JsonRpcConnector};
 
 /// Mempool state information.
 pub struct Mempool {
@@ -16,7 +14,7 @@ pub struct Mempool {
     /// System time when the mempool was last updated.
     last_sync_time: Mutex<SystemTime>,
     /// Blockchain data, used to check when a new block has been mined.
-    best_block_hash: RwLock<Option<BlockHash>>,
+    best_block_hash: RwLock<Option<zebra_chain::block::Hash>>,
 }
 
 impl Default for Mempool {
@@ -122,7 +120,9 @@ impl Mempool {
     }
 
     /// Returns the hash of the block currently in the mempool.
-    pub async fn get_best_block_hash(&self) -> Result<Option<BlockHash>, MempoolError> {
+    pub async fn get_best_block_hash(
+        &self,
+    ) -> Result<Option<zebra_chain::block::Hash>, MempoolError> {
         let best_block_hash = self.best_block_hash.read().await;
         Ok(*best_block_hash)
     }

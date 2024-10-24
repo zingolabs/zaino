@@ -24,6 +24,10 @@ zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", 
 zaino-proto = { path = "../zaino-proto" }
 zaino-fetch = { path = "../zaino-fetch" }
 
+# Zebra
+zebra-chain = { workspace = true }
+zebra-rpc = { workspace = true }
+
 # Temporarily removed until dependency conflic can be resolved.
 # zaino-nym = { path = "../zaino-nym" }
 # zaino-wallet = { path = "../zaino-wallet" }

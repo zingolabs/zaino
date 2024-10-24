@@ -7,4 +7,3 @@
 
 pub mod chain;
 pub mod jsonrpc;
-pub mod primitives;

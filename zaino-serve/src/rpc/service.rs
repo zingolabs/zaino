@@ -8,10 +8,6 @@ use crate::{rpc::GrpcClient, utils::get_build_info};
 use zaino_fetch::{
     chain::{block::get_block_from_node, mempool::Mempool},
     jsonrpc::{connector::JsonRpcConnector, response::GetTransactionResponse},
-    primitives::{
-        chain::{ConsensusBranchId, ConsensusBranchIdHex},
-        height::ChainHeight,
-    },
 };
 use zaino_proto::proto::{
     compact_formats::{CompactBlock, CompactTx},
@@ -337,7 +333,7 @@ impl CompactTxStreamer for GrpcClient {
                 })?;
 
                 Ok(tonic::Response::new(RawTransaction {
-                    data: hex.bytes,
+                    data: hex.as_ref().to_vec(),
                     height,
                 }))
             } else {
@@ -443,7 +439,7 @@ impl CompactTxStreamer for GrpcClient {
                             Ok(GetTransactionResponse::Object { hex, height, .. }) => {
                                 if channel_tx
                                     .send(Ok(RawTransaction {
-                                        data: hex.bytes,
+                                        data: hex.as_ref().to_vec(),
                                         height: height as u64,
                                     }))
                                     .await
@@ -641,7 +637,7 @@ impl CompactTxStreamer for GrpcClient {
                                             txid_index += 1;
                                             if channel_tx
                                                 .send(Ok(RawTransaction {
-                                                    data: hex.bytes,
+                                                    data: hex.as_ref().to_vec(),
                                                     height: mempool_height as u64,
                                                 }))
                                                 .await
@@ -764,8 +760,8 @@ impl CompactTxStreamer for GrpcClient {
                 height: treestate.height as u64,
                 hash: treestate.hash.to_string(),
                 time: treestate.time,
-                sapling_tree: treestate.sapling.commitments.final_state.to_string(),
-                orchard_tree: treestate.orchard.commitments.final_state.to_string(),
+                sapling_tree: treestate.sapling.inner().inner().clone(),
+                orchard_tree: treestate.orchard.inner().inner().clone(),
             }))
         })
     }
@@ -917,31 +913,36 @@ impl CompactTxStreamer for GrpcClient {
                 .get_blockchain_info()
                 .await
                 .map_err(|e| e.to_grpc_status())?;
-
-            let sapling_id_str = "76b809bb";
-            let sapling_id = ConsensusBranchIdHex(
-                ConsensusBranchId::from_hex(sapling_id_str).map_err(|_e| {
-                    tonic::Status::internal(
-                        "Internal Error - Consesnsus Branch ID hex conversion failed",
-                    )
-                })?,
-            );
-            let sapling_height = blockchain_info
-                .upgrades
-                .get(&sapling_id)
-                .map_or(ChainHeight(1), |sapling_json| {
-                    sapling_json.activation_height
-                });
-
             let build_info = get_build_info();
 
-            let lightd_info = LightdInfo {
+            let sapling_id = zebra_rpc::methods::ConsensusBranchIdHex::new(
+                zebra_chain::parameters::ConsensusBranchId::from_hex("76b809bb")
+                    .map_err(|_e| {
+                        tonic::Status::internal(
+                            "Internal Error - Consesnsus Branch ID hex conversion failed",
+                        )
+                    })?
+                    .into(),
+            );
+            let sapling_activation_height = blockchain_info
+                .upgrades
+                .get(&sapling_id)
+                .map_or(zebra_chain::block::Height(1), |sapling_json| {
+                    sapling_json.into_parts().1
+                });
+
+            let consensus_branch_id = zebra_chain::parameters::ConsensusBranchId::from(
+                blockchain_info.consensus.into_parts().0,
+            )
+            .to_string();
+
+            Ok(tonic::Response::new(LightdInfo {
                 version: build_info.version,
-                vendor: "ZingoLabs ZingoIndexerD".to_string(),
+                vendor: "ZingoLabs ZainoD".to_string(),
                 taddr_support: true,
                 chain_name: blockchain_info.chain,
-                sapling_activation_height: sapling_height.0 as u64,
-                consensus_branch_id: blockchain_info.consensus.chain_tip.0.to_string(),
+                sapling_activation_height: sapling_activation_height.0 as u64,
+                consensus_branch_id,
                 block_height: blockchain_info.blocks.0 as u64,
                 git_commit: build_info.commit_hash,
                 branch: build_info.branch,
@@ -950,9 +951,7 @@ impl CompactTxStreamer for GrpcClient {
                 estimated_height: blockchain_info.estimated_height.0 as u64,
                 zcashd_build: zebra_info.build,
                 zcashd_subversion: zebra_info.subversion,
-            };
-
-            Ok(tonic::Response::new(lightd_info))
+            }))
         })
     }
 
