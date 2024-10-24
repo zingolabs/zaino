@@ -448,6 +448,6 @@ pub async fn test_node_and_return_uri(
         }
         interval.tick().await;
     }
-    eprintln!("Could not establish connection with node. \nPlease check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \nExiting..");
+    eprintln!("Error: Could not establish connection with node. \nPlease check config and confirm node is listening at the correct address and the correct authorisation details have been entered. \nExiting..");
     std::process::exit(1);
 }
