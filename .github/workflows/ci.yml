@@ -11,24 +11,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+      
       - name: Cache Rust dependencies
         uses: actions/cache@v3
+        id: cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v1-
 
       - name: Fetch dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
         run: cargo fetch
 
       - name: Quick compilation check
         run: cargo check --all-targets
 
       - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
         run: cargo build --all-targets
 
   # Uncomment this when tests are passing
@@ -117,7 +126,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/zainod
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
