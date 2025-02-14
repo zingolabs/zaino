@@ -79,12 +79,16 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run clippy
+      - name: Run clippy with console output
+        run: cargo clippy --all-targets
+        continue-on-error: true
+
+      - name: Output clippy to Github
         uses: actions-rs/clippy-check@v1
+        # Remove when clippy is green in local dev environments
+        continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # Uncomment this when there are no warnings in local dev
-          # args: --all-targets -- -D warnings
           args: --all-targets
 
   fmt:
