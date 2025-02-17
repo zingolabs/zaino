@@ -88,6 +88,8 @@ pub struct FetchServiceConfig {
     /// Disables FinalisedState.
     /// Used for testing.
     pub no_db: bool,
+    /// Zcash donation UA address
+    pub donation_address: String,
 }
 
 impl FetchServiceConfig {
@@ -108,6 +110,7 @@ impl FetchServiceConfig {
         network: zebra_chain::parameters::Network,
         no_sync: bool,
         no_db: bool,
+        donation_address: String,
     ) -> Self {
         FetchServiceConfig {
             validator_rpc_address,
@@ -125,6 +128,7 @@ impl FetchServiceConfig {
             network,
             no_sync,
             no_db,
+            donation_address,
         }
     }
 }

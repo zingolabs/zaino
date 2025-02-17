@@ -1181,6 +1181,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "equihash"
+version = "0.2.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
+dependencies = [
+ "blake2b_simd",
+ "byteorder",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,6 +1219,14 @@ dependencies = [
 name = "f4jumble"
 version = "0.1.0"
 source = "git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2#db6efd6a2fdac955c7eb6929a043d19d9e451429"
+dependencies = [
+ "blake2b_simd",
+]
+
+[[package]]
+name = "f4jumble"
+version = "0.1.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
 dependencies = [
  "blake2b_simd",
 ]
@@ -5410,7 +5427,7 @@ dependencies = [
  "tracing",
  "url",
  "zaino-proto",
- "zcash_protocol 0.4.0",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
  "zebra-rpc 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
  "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
@@ -5502,8 +5519,8 @@ dependencies = [
  "zaino-fetch",
  "zaino-state",
  "zainod",
- "zcash_client_backend",
- "zcash_protocol 0.4.0",
+ "zcash_client_backend 0.14.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
  "zingo-infra-testutils",
  "zingolib",
@@ -5536,9 +5553,21 @@ source = "git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sql
 dependencies = [
  "bech32 0.9.1",
  "bs58",
- "f4jumble 0.1.0",
- "zcash_encoding 0.2.1",
- "zcash_protocol 0.4.0",
+ "f4jumble 0.1.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+]
+
+[[package]]
+name = "zcash_address"
+version = "0.6.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
+dependencies = [
+ "bech32 0.9.1",
+ "bs58",
+ "f4jumble 0.1.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_protocol 0.4.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
 ]
 
 [[package]]
@@ -5590,20 +5619,70 @@ dependencies = [
  "tonic-build",
  "tracing",
  "which",
- "zcash_address 0.6.0",
- "zcash_encoding 0.2.1",
- "zcash_keys",
+ "zcash_address 0.6.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_keys 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_note_encryption",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
- "zcash_protocol 0.4.0",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zip32",
- "zip321",
+ "zip321 0.2.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+]
+
+[[package]]
+name = "zcash_client_backend"
+version = "0.14.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
+dependencies = [
+ "base64 0.22.1",
+ "bech32 0.9.1",
+ "bls12_381",
+ "bs58",
+ "crossbeam-channel",
+ "document-features",
+ "group",
+ "hex",
+ "hyper-util",
+ "incrementalmerkletree",
+ "memuse",
+ "nom",
+ "nonempty",
+ "percent-encoding",
+ "prost",
+ "rand_core 0.6.4",
+ "rayon",
+ "sapling-crypto",
+ "secrecy",
+ "shardtree",
+ "subtle",
+ "time",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "which",
+ "zcash_address 0.6.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_keys 0.4.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_note_encryption",
+ "zcash_primitives 0.19.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_protocol 0.4.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zip32",
+ "zip321 0.2.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
 ]
 
 [[package]]
 name = "zcash_encoding"
 version = "0.2.1"
 source = "git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2#db6efd6a2fdac955c7eb6929a043d19d9e451429"
+dependencies = [
+ "byteorder",
+ "nonempty",
+]
+
+[[package]]
+name = "zcash_encoding"
+version = "0.2.1"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
 dependencies = [
  "byteorder",
  "nonempty",
@@ -5651,10 +5730,35 @@ dependencies = [
  "secrecy",
  "subtle",
  "tracing",
- "zcash_address 0.6.0",
- "zcash_encoding 0.2.1",
+ "zcash_address 0.6.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
- "zcash_protocol 0.4.0",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zip32",
+]
+
+[[package]]
+name = "zcash_keys"
+version = "0.4.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
+dependencies = [
+ "bech32 0.9.1",
+ "blake2b_simd",
+ "bls12_381",
+ "bs58",
+ "document-features",
+ "group",
+ "memuse",
+ "nonempty",
+ "rand_core 0.6.4",
+ "sapling-crypto",
+ "secrecy",
+ "subtle",
+ "tracing",
+ "zcash_address 0.6.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_primitives 0.19.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_protocol 0.4.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
  "zip32",
 ]
 
@@ -5740,10 +5844,45 @@ dependencies = [
  "sha2",
  "subtle",
  "tracing",
- "zcash_address 0.6.0",
- "zcash_encoding 0.2.1",
+ "zcash_address 0.6.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_note_encryption",
- "zcash_protocol 0.4.0",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_spec",
+ "zip32",
+]
+
+[[package]]
+name = "zcash_primitives"
+version = "0.19.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
+dependencies = [
+ "aes",
+ "blake2b_simd",
+ "bs58",
+ "byteorder",
+ "document-features",
+ "equihash 0.2.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "ff",
+ "fpe",
+ "group",
+ "hex",
+ "incrementalmerkletree",
+ "jubjub",
+ "memuse",
+ "nonempty",
+ "orchard",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "redjubjub",
+ "sapling-crypto",
+ "sha2",
+ "subtle",
+ "tracing",
+ "zcash_address 0.6.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_note_encryption",
+ "zcash_protocol 0.4.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
  "zcash_spec",
  "zip32",
 ]
@@ -5797,6 +5936,15 @@ dependencies = [
 name = "zcash_protocol"
 version = "0.4.0"
 source = "git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2#db6efd6a2fdac955c7eb6929a043d19d9e451429"
+dependencies = [
+ "document-features",
+ "memuse",
+]
+
+[[package]]
+name = "zcash_protocol"
+version = "0.4.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
 dependencies = [
  "document-features",
  "memuse",
@@ -6370,7 +6518,7 @@ dependencies = [
  "tokio",
  "tracing",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
- "zcash_protocol 0.4.0",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
  "zebra-node-services 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
  "zebra-rpc 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
@@ -6388,9 +6536,9 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tracing-subscriber",
- "zcash_client_backend",
+ "zcash_client_backend 0.14.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
- "zcash_protocol 0.4.0",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zingo-infra-services",
  "zingo-netutils",
  "zingolib",
@@ -6401,10 +6549,10 @@ name = "zingo-memo"
 version = "0.1.0"
 source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_004#f9f3e5f6da261ec6b7bd1282905534fdc328cb41"
 dependencies = [
- "zcash_address 0.6.0",
- "zcash_client_backend",
- "zcash_encoding 0.2.1",
- "zcash_keys",
+ "zcash_address 0.6.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_client_backend 0.14.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_keys 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
 ]
 
@@ -6425,7 +6573,7 @@ dependencies = [
  "tonic",
  "tower 0.5.2",
  "webpki-roots 0.25.4",
- "zcash_client_backend",
+ "zcash_client_backend 0.14.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
 ]
 
 [[package]]
@@ -6456,9 +6604,9 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
- "zcash_address 0.6.0",
- "zcash_client_backend",
- "zcash_keys",
+ "zcash_address 0.6.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_client_backend 0.14.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_keys 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_note_encryption",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zingo-memo",
@@ -6523,10 +6671,10 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing-subscriber",
- "zcash_address 0.6.0",
- "zcash_client_backend",
- "zcash_encoding 0.2.1",
- "zcash_keys",
+ "zcash_address 0.6.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_client_backend 0.14.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_encoding 0.2.1 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_keys 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_note_encryption",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_proofs 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
@@ -6557,8 +6705,20 @@ dependencies = [
  "base64 0.22.1",
  "nom",
  "percent-encoding",
- "zcash_address 0.6.0",
- "zcash_protocol 0.4.0",
+ "zcash_address 0.6.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+ "zcash_protocol 0.4.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+]
+
+[[package]]
+name = "zip321"
+version = "0.2.0"
+source = "git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin#39bc39ee597afbaafb9cda3d7f6c25189bc66c99"
+dependencies = [
+ "base64 0.22.1",
+ "nom",
+ "percent-encoding",
+ "zcash_address 0.6.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
+ "zcash_protocol 0.4.0 (git+https://github.com/zecrocks/librustzcash_zl.git?branch=zaino_pin)",
 ]
 
 [[package]]

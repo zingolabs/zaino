@@ -101,3 +101,7 @@ no_db = false
 #
  no_state = false
 
+# Specify a Zcash donation UA address
+#
+# This is publicly shared with users to allow them to donate Zcash to support your Zaino instance.
+donation_address = ""

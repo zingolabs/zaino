@@ -86,6 +86,9 @@ impl Indexer {
         set_ctrlc(indexer_status.clone());
         startup_message();
         info!("Starting Zaino..");
+        if !config.donation_address.is_empty() {
+            info!("Instance donation address: {}", config.donation_address);
+        }
         Indexer::spawn(config, indexer_status).await?.await??;
         Ok(())
     }
@@ -128,6 +131,7 @@ impl Indexer {
                 config.get_network()?,
                 config.no_sync,
                 config.no_db,
+                config.donation_address,
             ),
             status.service_status.clone(),
         )
@@ -266,7 +270,7 @@ fn startup_message() {
               Thank you for using ZingoLabs Zaino!
 
        - Donate to us at https://free2z.cash/zingolabs.
-       - Submit any security conserns to us at zingodisclosure@proton.me.
+       - Submit any security concerns to us at zingodisclosure@proton.me.
 
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
     "#;

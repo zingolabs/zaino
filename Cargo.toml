@@ -27,7 +27,7 @@ version = "0.1.1"
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_004", features = [ "test-elevation" ] }
 
 # Librustzcash
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2", features = [ "lightwalletd-tonic" ] }
+zcash_client_backend = { git = "https://github.com/zecrocks/librustzcash_zl.git", branch = "zaino_pin", features = [ "lightwalletd-tonic" ] }
 zcash_protocol = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2" }
 
 
