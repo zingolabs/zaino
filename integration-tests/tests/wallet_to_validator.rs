@@ -60,9 +60,11 @@ mod wallet_basic {
 
         if validator == "zebrad" {
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
         };
 
@@ -77,6 +79,7 @@ mod wallet_basic {
         .await
         .unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.recipient.do_sync(true).await.unwrap();
 
         assert_eq!(
@@ -115,9 +118,11 @@ mod wallet_basic {
 
         if validator == "zebrad" {
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
         };
 
@@ -132,6 +137,7 @@ mod wallet_basic {
         .await
         .unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.recipient.do_sync(true).await.unwrap();
 
         assert_eq!(
@@ -171,9 +177,11 @@ mod wallet_basic {
 
         if validator == "zebrad" {
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
         };
 
@@ -189,6 +197,7 @@ mod wallet_basic {
         .unwrap();
 
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let fetch_service = zaino_fetch::jsonrpc::connector::JsonRpcConnector::new_with_basic_auth(
             test_node_and_return_url(
@@ -222,7 +231,17 @@ mod wallet_basic {
 
         dbg!(unfinalised_transactions.clone());
 
-        test_manager.local_net.generate_blocks(99).await.unwrap();
+        // Generate blocks
+        //
+        // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
+        //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
+        for height in 1..=99 {
+            dbg!("Generating block at height: {}", height);
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         println!("\n\nFetching Tx From Finalized Chain!\n");
 
@@ -275,20 +294,25 @@ mod wallet_basic {
             .expect("Clients are not initialized");
 
         test_manager.local_net.generate_blocks(2).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
 
         // "Create" 3 orchard notes in faucet.
         if validator == "zebrad" {
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
         };
 
@@ -323,7 +347,17 @@ mod wallet_basic {
         .await
         .unwrap();
 
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // Generate blocks
+        //
+        // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
+        //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
+        for height in 1..=100 {
+            dbg!("Generating block at height: {}", height);
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.recipient.do_sync(true).await.unwrap();
 
         assert_eq!(
@@ -380,9 +414,11 @@ mod wallet_basic {
 
         if validator == "zebrad" {
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
         };
 
@@ -397,7 +433,17 @@ mod wallet_basic {
         .await
         .unwrap();
 
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // Generate blocks
+        //
+        // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
+        //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
+        for height in 1..=100 {
+            dbg!("Generating block at height: {}", height);
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         clients.recipient.do_sync(true).await.unwrap();
 
         assert_eq!(
@@ -412,6 +458,7 @@ mod wallet_basic {
 
         clients.recipient.quick_shield().await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.recipient.do_sync(true).await.unwrap();
 
         assert_eq!(
@@ -449,16 +496,20 @@ mod wallet_basic {
         let recipient_client = Arc::new(clients.recipient);
 
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
 
         if validator == "zebrad" {
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(100).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
             test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
         };
 
@@ -528,22 +579,6 @@ mod wallet_basic {
                 .await
         );
 
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-
-        println!("\n\nFetching Mined Tx 1!\n");
-        let _transaction_1 = dbg!(
-            fetch_service
-                .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
-                .await
-        );
-
-        println!("\n\nFetching Mined Tx 2!\n");
-        let _transaction_2 = dbg!(
-            fetch_service
-                .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
-                .await
-        );
-
         assert_eq!(
             recipient_client
                 .do_balance()
@@ -562,7 +597,21 @@ mod wallet_basic {
         );
 
         test_manager.local_net.generate_blocks(1).await.unwrap();
-        recipient_client.do_rescan().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        println!("\n\nFetching Mined Tx 1!\n");
+        let _transaction_1 = dbg!(
+            fetch_service
+                .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
+                .await
+        );
+
+        println!("\n\nFetching Mined Tx 2!\n");
+        let _transaction_2 = dbg!(
+            fetch_service
+                .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
+                .await
+        );
 
         assert_eq!(
             recipient_client

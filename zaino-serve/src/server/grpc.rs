@@ -34,9 +34,8 @@ impl TonicServer {
     pub async fn spawn(
         service_subscriber: IndexerSubscriber<FetchServiceSubscriber>,
         server_config: GrpcConfig,
-        status: AtomicStatus,
     ) -> Result<Self, ServerError> {
-        status.store(StatusType::Spawning as usize);
+        let status = AtomicStatus::new(StatusType::Spawning.into());
 
         let svc = CompactTxStreamerServer::new(GrpcClient {
             service_subscriber: service_subscriber.clone(),
@@ -78,7 +77,7 @@ impl TonicServer {
     }
 
     /// Sets the servers to close gracefully.
-    pub async fn shutdown(&mut self) {
+    pub async fn close(&mut self) {
         self.status.store(StatusType::Closing as usize);
 
         if let Some(handle) = self.server_handle.take() {

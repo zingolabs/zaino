@@ -172,7 +172,6 @@ impl NonFinalisedState {
                         }
                     }
                 }
-
                 non_finalised_state.status.store(StatusType::Ready.into());
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }

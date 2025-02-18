@@ -28,4 +28,7 @@ pub enum IndexerError {
     /// Custom indexor errors.
     #[error("Misc indexer error: {0}")]
     MiscIndexerError(String),
+    /// Zaino restart signal.
+    #[error("Restart Zaino")]
+    Restart,
 }

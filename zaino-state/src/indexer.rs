@@ -18,7 +18,7 @@ use zebra_rpc::methods::{
 };
 
 use crate::{
-    status::{AtomicStatus, StatusType},
+    status::StatusType,
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
@@ -41,12 +41,9 @@ where
     Service: ZcashService,
 {
     /// Creates a new `IndexerService` using the provided `config`.
-    pub async fn spawn(
-        config: Service::Config,
-        status: AtomicStatus,
-    ) -> Result<Self, Service::Error> {
+    pub async fn spawn(config: Service::Config) -> Result<Self, Service::Error> {
         Ok(IndexerService {
-            service: Service::spawn(config, status).await?,
+            service: Service::spawn(config).await?,
         })
     }
 
@@ -74,7 +71,7 @@ pub trait ZcashService: Sized {
     type Config: Clone;
 
     /// Spawns a [`Service`].
-    async fn spawn(config: Self::Config, status: AtomicStatus) -> Result<Self, Self::Error>;
+    async fn spawn(config: Self::Config) -> Result<Self, Self::Error>;
 
     /// Returns a [`ServiceSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
