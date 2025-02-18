@@ -12,8 +12,6 @@ use std::{
 };
 use tempfile::TempDir;
 use tracing_subscriber::EnvFilter;
-use zaino_state::status::StatusType;
-use zainodlib::indexer::IndexerStatus;
 
 /// Path for zcashd binary.
 pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
@@ -289,8 +287,6 @@ pub struct TestManager {
     pub zaino_grpc_listen_address: Option<SocketAddr>,
     /// Zingolib lightclients.
     pub clients: Option<Clients>,
-    /// Online status of Zingo-Indexer.
-    pub indexer_status: IndexerStatus,
 }
 
 use zingo_infra_testutils::services;
@@ -362,8 +358,6 @@ impl TestManager {
         let data_dir = local_net.data_dir().path().to_path_buf();
         let db_path = data_dir.join("zaino");
 
-        let indexer_status = IndexerStatus::new();
-
         // Launch Zaino:
         let (zaino_grpc_listen_address, zaino_handle) = if enable_zaino {
             let zaino_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
@@ -389,7 +383,7 @@ impl TestManager {
                 no_db: zaino_no_db,
                 no_state: false,
             };
-            let handle = zainodlib::indexer::Indexer::spawn(indexer_config, indexer_status.clone())
+            let handle = zainodlib::indexer::Indexer::spawn(indexer_config)
                 .await
                 .unwrap();
 
@@ -427,41 +421,22 @@ impl TestManager {
             zaino_handle,
             zaino_grpc_listen_address,
             clients,
-            indexer_status,
         })
     }
 
     /// Closes the TestManager.
     pub async fn close(&mut self) {
-        self.indexer_status
-            .grpc_server_status
-            .store(StatusType::Closing.into());
-        self.indexer_status
-            .service_status
-            .store(StatusType::Closing.into());
-        self.indexer_status
-            .indexer_status
-            .store(StatusType::Closing.into());
-
-        if let Some(zaino_handle) = self.zaino_handle.take() {
-            if let Err(e) = zaino_handle.await {
-                eprintln!("Error awaiting zaino_handle: {:?}", e);
-            }
+        if let Some(handle) = self.zaino_handle.take() {
+            handle.abort();
         }
     }
 }
 
 impl Drop for TestManager {
     fn drop(&mut self) {
-        self.indexer_status
-            .grpc_server_status
-            .store(StatusType::Closing.into());
-        self.indexer_status
-            .service_status
-            .store(StatusType::Closing.into());
-        self.indexer_status
-            .indexer_status
-            .store(StatusType::Closing.into());
+        if let Some(handle) = &self.zaino_handle {
+            handle.abort();
+        };
     }
 }
 
@@ -707,6 +682,7 @@ mod tests {
             .expect("Clients are not initialized");
 
         test_manager.local_net.generate_blocks(100).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
         dbg!(clients.faucet.do_balance().await);
 
@@ -730,6 +706,7 @@ mod tests {
         // *Send all transparent funds to own orchard address.
         clients.faucet.quick_shield().await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
         dbg!(clients.faucet.do_balance().await);
 
@@ -752,6 +729,7 @@ mod tests {
         .unwrap();
 
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.recipient.do_sync(true).await.unwrap();
         dbg!(clients.recipient.do_balance().await);
 
@@ -810,6 +788,7 @@ mod tests {
         .unwrap();
 
         test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.recipient.do_sync(true).await.unwrap();
         dbg!(clients.recipient.do_balance().await);
 

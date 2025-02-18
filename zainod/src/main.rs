@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use zainodlib::{config::load_config, indexer::Indexer};
+use zainodlib::{config::load_config, error::IndexerError, indexer::Indexer};
 
 #[derive(Parser, Debug)]
 #[command(name = "Zaino", about = "The Zcash Indexing Service", version)]
@@ -37,8 +37,35 @@ async fn main() {
         .config
         .unwrap_or_else(|| PathBuf::from("./zainod/zindexer.toml"));
 
-    match Indexer::start(load_config(&config_path).unwrap()).await {
-        Ok(_) => info!("Zaino Indexer started successfully."),
-        Err(e) => error!(error = ?e, "Failed to start Zaino Indexer"),
+    loop {
+        match Indexer::start(load_config(&config_path).unwrap()).await {
+            Ok(joinhandle_result) => {
+                info!("Zaino Indexer started successfully.");
+                match joinhandle_result.await {
+                    Ok(indexer_result) => match indexer_result {
+                        Ok(()) => {
+                            info!("Exiting Zaino successfully.");
+                            break;
+                        }
+                        Err(IndexerError::Restart) => {
+                            error!("Zaino encountered critical error, restarting.");
+                            continue;
+                        }
+                        Err(e) => {
+                            error!("Exiting Zaino with error: {}", e);
+                            break;
+                        }
+                    },
+                    Err(e) => {
+                        error!("Zaino exited early with error: {}", e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Zaino failed to start with error: {}", e);
+                break;
+            }
+        }
     }
 }

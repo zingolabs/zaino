@@ -127,4 +127,28 @@ impl StatusType {
 
         format!("{}{}{}", color_code, symbol, "\x1b[0m")
     }
+
+    /// Look at two statuses, and return the more
+    /// 'severe' of the two statuses
+    pub fn combine(self, other: StatusType) -> StatusType {
+        match (self, other) {
+            // If either is Closing, return Closing.
+            (StatusType::Closing, _) | (_, StatusType::Closing) => StatusType::Closing,
+            // If either is Offline or CriticalError, return CriticalError.
+            (StatusType::Offline, _)
+            | (_, StatusType::Offline)
+            | (StatusType::CriticalError, _)
+            | (_, StatusType::CriticalError) => StatusType::CriticalError,
+            // If either is RecoverableError, return RecoverableError.
+            (StatusType::RecoverableError, _) | (_, StatusType::RecoverableError) => {
+                StatusType::RecoverableError
+            }
+            // If either is Spawning, return Spawning.
+            (StatusType::Spawning, _) | (_, StatusType::Spawning) => StatusType::Spawning,
+            // If either is Syncing, return Syncing.
+            (StatusType::Syncing, _) | (_, StatusType::Syncing) => StatusType::Syncing,
+            // Otherwise, return Ready.
+            _ => StatusType::Ready,
+        }
+    }
 }

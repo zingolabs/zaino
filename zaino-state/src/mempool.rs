@@ -81,7 +81,6 @@ impl Mempool {
                     break;
                 }
                 Err(e) => {
-                    mempool.status.store(StatusType::Spawning.into());
                     mempool.state.notify(mempool.status.clone().into());
                     warn!("{e}");
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -96,7 +95,13 @@ impl Mempool {
     }
 
     async fn serve(&self) -> Result<tokio::task::JoinHandle<()>, MempoolError> {
-        let mempool = self.clone();
+        let mempool = Self {
+            fetcher: self.fetcher.clone(),
+            state: self.state.clone(),
+            sync_task_handle: None,
+            status: self.status.clone(),
+        };
+
         let state = self.state.clone();
         let status = self.status.clone();
         status.store(StatusType::Spawning.into());
@@ -216,17 +221,6 @@ impl Drop for Mempool {
         self.state.notify(StatusType::Closing);
         if let Some(handle) = self.sync_task_handle.take() {
             handle.abort();
-        }
-    }
-}
-
-impl Clone for Mempool {
-    fn clone(&self) -> Self {
-        Self {
-            fetcher: self.fetcher.clone(),
-            state: self.state.clone(),
-            sync_task_handle: None,
-            status: self.status.clone(),
         }
     }
 }

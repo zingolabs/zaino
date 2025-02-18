@@ -34,7 +34,7 @@ use crate::{
     indexer::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService},
     local_cache::{BlockCache, BlockCacheSubscriber},
     mempool::{Mempool, MempoolSubscriber},
-    status::{AtomicStatus, StatusType},
+    status::StatusType,
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
@@ -62,8 +62,6 @@ pub struct FetchService {
     data: ServiceMetadata,
     /// StateService config data.
     config: FetchServiceConfig,
-    /// Thread-safe status indicator.
-    status: AtomicStatus,
 }
 
 #[async_trait]
@@ -72,13 +70,8 @@ impl ZcashService for FetchService {
     type Subscriber = FetchServiceSubscriber;
     type Config = FetchServiceConfig;
     /// Initializes a new StateService instance and starts sync process.
-    async fn spawn(
-        config: FetchServiceConfig,
-        status: AtomicStatus,
-    ) -> Result<Self, FetchServiceError> {
+    async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!("Launching Chain Fetch Service..");
-        let status = status.clone();
-        status.store(StatusType::Spawning.into());
 
         let fetcher = JsonRpcConnector::new_from_config_parts(
             config.validator_cookie_auth,
@@ -101,16 +94,19 @@ impl ZcashService for FetchService {
 
         let mempool = Mempool::spawn(&fetcher, None).await?;
 
-        status.store(StatusType::Ready.into());
-
-        Ok(Self {
+        let fetch_service = Self {
             fetcher,
             block_cache,
             mempool,
             data,
             config,
-            status,
-        })
+        };
+
+        while fetch_service.status() != StatusType::Ready {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        Ok(fetch_service)
     }
 
     /// Returns a [`FetchServiceSubscriber`].
@@ -121,18 +117,21 @@ impl ZcashService for FetchService {
             mempool: self.mempool.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
-            status: self.status.clone(),
         })
     }
 
     /// Fetches the current status
     fn status(&self) -> StatusType {
-        self.status.load().into()
+        let mempool_status = self.mempool.status();
+        let block_cache_status = self.block_cache.status();
+
+        mempool_status.combine(block_cache_status)
     }
 
     /// Shuts down the StateService.
     fn close(&mut self) {
         self.mempool.close();
+        self.block_cache.close();
     }
 }
 
@@ -157,14 +156,15 @@ pub struct FetchServiceSubscriber {
     data: ServiceMetadata,
     /// StateService config data.
     config: FetchServiceConfig,
-    /// Thread-safe status indicator.
-    status: AtomicStatus,
 }
 
 impl FetchServiceSubscriber {
     /// Fetches the current status
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        let mempool_status = self.mempool.status();
+        let block_cache_status = self.block_cache.status();
+
+        mempool_status.combine(block_cache_status)
     }
 }
 
@@ -1745,30 +1745,27 @@ mod tests {
         .await
         .unwrap();
 
-        let fetch_service = FetchService::spawn(
-            FetchServiceConfig::new(
-                test_manager.zebrad_rpc_listen_address,
-                false,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                test_manager
-                    .local_net
-                    .data_dir()
-                    .path()
-                    .to_path_buf()
-                    .join("zaino"),
-                None,
-                Network::new_regtest(Some(1), Some(1)),
-                true,
-                true,
-            ),
-            AtomicStatus::new(StatusType::Spawning.into()),
-        )
+        let fetch_service = FetchService::spawn(FetchServiceConfig::new(
+            test_manager.zebrad_rpc_listen_address,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            test_manager
+                .local_net
+                .data_dir()
+                .path()
+                .to_path_buf()
+                .join("zaino"),
+            None,
+            Network::new_regtest(Some(1), Some(1)),
+            true,
+            true,
+        ))
         .await
         .unwrap();
         let subscriber = fetch_service.get_subscriber().inner();
