@@ -9,8 +9,8 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
-zaino-fetch = { path = "../zaino-fetch" }
-zaino-proto = { path = "../zaino-proto" }
+zaino-fetch = { workspace = true }
+zaino-proto = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
@@ -42,7 +42,7 @@ jsonrpc-core = { workspace = true }
 prost = { workspace = true }
 
 [dev-dependencies]
-zaino-testutils = { path = "../zaino-testutils" }
+zaino-testutils = { workspace = true }
 zingo-infra-services = { workspace = true }
 
 # ZingoLib

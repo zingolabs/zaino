@@ -559,7 +559,7 @@ dependencies = [
 [[package]]
 name = "build_utils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_004#f9f3e5f6da261ec6b7bd1282905534fdc328cb41"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_005#965e81228d3a1d99b76c1e3c71202d8fdbbd41dc"
 
 [[package]]
 name = "bumpalo"
@@ -1056,7 +1056,16 @@ version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
 dependencies = [
- "dirs-sys",
+ "dirs-sys 0.4.1",
+]
+
+[[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys 0.5.0",
 ]
 
 [[package]]
@@ -1067,8 +1076,20 @@ checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
 dependencies = [
  "libc",
  "option-ext",
- "redox_users",
+ "redox_users 0.4.6",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users 0.5.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2086,6 +2107,15 @@ name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
@@ -3411,6 +3441,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd6f9d3d47bdd2ad6945c5015a226ec6155d0bcdfd8f7cd29f86b71f8de99d2b"
+dependencies = [
+ "getrandom 0.2.15",
+ "libredox",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "regex"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4246,6 +4287,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "testvectors"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_005#965e81228d3a1d99b76c1e3c71202d8fdbbd41dc"
+dependencies = [
+ "bip0039",
+ "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4564,8 +4614,8 @@ dependencies = [
 
 [[package]]
 name = "tower-batch-control"
-version = "0.2.41-beta.20"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "0.2.41-beta.21"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "futures",
  "futures-core",
@@ -4591,8 +4641,8 @@ dependencies = [
 
 [[package]]
 name = "tower-fallback"
-version = "0.2.41-beta.20"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "0.2.41-beta.21"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -5411,9 +5461,9 @@ dependencies = [
  "url",
  "zaino-proto",
  "zcash_protocol 0.4.0",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-rpc 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
+ "zebra-rpc 1.0.0-beta.44",
+ "zebra-state 1.0.0-beta.44",
 ]
 
 [[package]]
@@ -5445,9 +5495,9 @@ dependencies = [
  "zaino-fetch",
  "zaino-proto",
  "zaino-state",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-rpc 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
+ "zebra-rpc 1.0.0-beta.44",
+ "zebra-state 1.0.0-beta.44",
 ]
 
 [[package]]
@@ -5478,9 +5528,9 @@ dependencies = [
  "zaino-fetch",
  "zaino-proto",
  "zaino-testutils",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-rpc 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
+ "zebra-rpc 1.0.0-beta.44",
+ "zebra-state 1.0.0-beta.44",
  "zingo-infra-services",
  "zingolib",
 ]
@@ -5494,6 +5544,7 @@ dependencies = [
  "once_cell",
  "portpicker",
  "tempfile",
+ "testvectors",
  "tokio",
  "tonic",
  "tracing",
@@ -5504,7 +5555,7 @@ dependencies = [
  "zainod",
  "zcash_client_backend",
  "zcash_protocol 0.4.0",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
  "zingo-infra-testutils",
  "zingolib",
 ]
@@ -5526,7 +5577,7 @@ dependencies = [
  "zaino-fetch",
  "zaino-serve",
  "zaino-state",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
 ]
 
 [[package]]
@@ -5847,7 +5898,7 @@ dependencies = [
  "bs58",
  "byteorder",
  "chrono",
- "dirs",
+ "dirs 5.0.1",
  "ed25519-zebra",
  "equihash 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
@@ -5891,8 +5942,8 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "1.0.0-beta.44"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "1.0.0-beta.45"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "bitflags 2.8.0",
  "bitflags-serde-legacy",
@@ -5903,7 +5954,7 @@ dependencies = [
  "bs58",
  "byteorder",
  "chrono",
- "dirs",
+ "dirs 6.0.0",
  "ed25519-zebra",
  "equihash 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
@@ -5912,7 +5963,7 @@ dependencies = [
  "hex",
  "humantime",
  "incrementalmerkletree",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "jubjub",
  "lazy_static",
  "num-integer",
@@ -5969,22 +6020,22 @@ dependencies = [
  "thiserror 2.0.11",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control 0.2.41-beta.20 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "tower-fallback 0.2.41-beta.20 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "tower-batch-control 0.2.41-beta.20",
+ "tower-fallback 0.2.41-beta.20",
  "tracing",
  "tracing-futures",
  "wagyu-zcash-parameters",
  "zcash_proofs 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-node-services 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-script 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
+ "zebra-node-services 1.0.0-beta.44",
+ "zebra-script 1.0.0-beta.44",
+ "zebra-state 1.0.0-beta.44",
 ]
 
 [[package]]
 name = "zebra-consensus"
-version = "1.0.0-beta.44"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "1.0.0-beta.45"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6005,16 +6056,16 @@ dependencies = [
  "thiserror 2.0.11",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control 0.2.41-beta.20 (git+https://github.com/ZcashFoundation/zebra.git)",
- "tower-fallback 0.2.41-beta.20 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "tower-batch-control 0.2.41-beta.21",
+ "tower-fallback 0.2.41-beta.21",
  "tracing",
  "tracing-futures",
  "wagyu-zcash-parameters",
  "zcash_proofs 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-node-services 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-script 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "zebra-chain 1.0.0-beta.45",
+ "zebra-node-services 1.0.0-beta.45",
+ "zebra-script 1.0.0-beta.45",
+ "zebra-state 1.0.0-beta.45",
 ]
 
 [[package]]
@@ -6026,7 +6077,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "chrono",
- "dirs",
+ "dirs 5.0.1",
  "futures",
  "hex",
  "humantime-serde",
@@ -6050,24 +6101,24 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-futures",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
 ]
 
 [[package]]
 name = "zebra-network"
-version = "1.0.0-beta.44"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "1.0.0-beta.45"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "bitflags 2.8.0",
  "byteorder",
  "bytes",
  "chrono",
- "dirs",
+ "dirs 6.0.0",
  "futures",
  "hex",
  "humantime-serde",
  "indexmap 2.7.1",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "lazy_static",
  "metrics",
  "num-integer",
@@ -6086,7 +6137,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-futures",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "zebra-chain 1.0.0-beta.45",
 ]
 
 [[package]]
@@ -6100,13 +6151,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
 ]
 
 [[package]]
 name = "zebra-node-services"
-version = "1.0.0-beta.44"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "1.0.0-beta.45"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6114,7 +6165,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "zebra-chain 1.0.0-beta.45",
 ]
 
 [[package]]
@@ -6141,18 +6192,18 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "zcash_primitives 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-consensus 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-network 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-node-services 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-script 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
+ "zebra-consensus 1.0.0-beta.44",
+ "zebra-network 1.0.0-beta.44",
+ "zebra-node-services 1.0.0-beta.44",
+ "zebra-script 1.0.0-beta.44",
+ "zebra-state 1.0.0-beta.44",
 ]
 
 [[package]]
 name = "zebra-rpc"
-version = "1.0.0-beta.44"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "1.0.0-beta.45"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6167,6 +6218,7 @@ dependencies = [
  "jsonrpsee-types",
  "nix",
  "rand 0.8.5",
+ "semver",
  "serde",
  "serde_json",
  "tokio",
@@ -6174,12 +6226,12 @@ dependencies = [
  "tracing",
  "zcash_address 0.6.2",
  "zcash_primitives 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-consensus 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-network 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-node-services 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-script 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-state 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "zebra-chain 1.0.0-beta.45",
+ "zebra-consensus 1.0.0-beta.45",
+ "zebra-network 1.0.0-beta.45",
+ "zebra-node-services 1.0.0-beta.45",
+ "zebra-script 1.0.0-beta.45",
+ "zebra-state 1.0.0-beta.45",
 ]
 
 [[package]]
@@ -6189,17 +6241,17 @@ source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#0dcc4205e
 dependencies = [
  "thiserror 2.0.11",
  "zcash_script",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
 ]
 
 [[package]]
 name = "zebra-script"
-version = "1.0.0-beta.44"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "1.0.0-beta.45"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "thiserror 2.0.11",
  "zcash_script",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "zebra-chain 1.0.0-beta.45",
 ]
 
 [[package]]
@@ -6210,7 +6262,7 @@ dependencies = [
  "bincode",
  "chrono",
  "crossbeam-channel",
- "dirs",
+ "dirs 5.0.1",
  "futures",
  "hex",
  "hex-literal",
@@ -6232,25 +6284,25 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "tracing",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.44",
 ]
 
 [[package]]
 name = "zebra-state"
-version = "1.0.0-beta.44"
-source = "git+https://github.com/ZcashFoundation/zebra.git#0dcc4205ee1758daf2475ffc5609a94e4f5acc05"
+version = "1.0.0-beta.45"
+source = "git+https://github.com/ZcashFoundation/zebra.git#1e9f021784ea9e0f5df17b4e778b2df93fb5e68f"
 dependencies = [
  "bincode",
  "chrono",
  "crossbeam-channel",
- "dirs",
+ "dirs 6.0.0",
  "futures",
  "hex",
  "hex-literal",
  "human_bytes",
  "humantime-serde",
  "indexmap 2.7.1",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "lazy_static",
  "metrics",
  "mset",
@@ -6265,7 +6317,7 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "tracing",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "zebra-chain 1.0.0-beta.45",
 ]
 
 [[package]]
@@ -6353,9 +6405,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zingo-infra-fetcher"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=f6db556d1a6d3efc59c7805446e9e230b2a688d6#f6db556d1a6d3efc59c7805446e9e230b2a688d6"
+dependencies = [
+ "hex",
+ "reqwest",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "zingo-infra-services"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git#18cce79116589ce88b24310a18ad88e3e3023d7c"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=f6db556d1a6d3efc59c7805446e9e230b2a688d6#f6db556d1a6d3efc59c7805446e9e230b2a688d6"
 dependencies = [
  "getset",
  "hex",
@@ -6371,19 +6434,21 @@ dependencies = [
  "tracing",
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
  "zcash_protocol 0.4.0",
- "zebra-chain 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-node-services 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
- "zebra-rpc 1.0.0-beta.44 (git+https://github.com/ZcashFoundation/zebra.git)",
+ "zebra-chain 1.0.0-beta.45",
+ "zebra-node-services 1.0.0-beta.45",
+ "zebra-rpc 1.0.0-beta.45",
+ "zingo-infra-fetcher",
 ]
 
 [[package]]
 name = "zingo-infra-testutils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git#18cce79116589ce88b24310a18ad88e3e3023d7c"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=f6db556d1a6d3efc59c7805446e9e230b2a688d6#f6db556d1a6d3efc59c7805446e9e230b2a688d6"
 dependencies = [
  "http",
  "portpicker",
  "tempfile",
+ "testvectors",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -6399,7 +6464,7 @@ dependencies = [
 [[package]]
 name = "zingo-memo"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_004#f9f3e5f6da261ec6b7bd1282905534fdc328cb41"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_005#965e81228d3a1d99b76c1e3c71202d8fdbbd41dc"
 dependencies = [
  "zcash_address 0.6.0",
  "zcash_client_backend",
@@ -6411,7 +6476,7 @@ dependencies = [
 [[package]]
 name = "zingo-netutils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_004#f9f3e5f6da261ec6b7bd1282905534fdc328cb41"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_005#965e81228d3a1d99b76c1e3c71202d8fdbbd41dc"
 dependencies = [
  "http",
  "http-body",
@@ -6431,7 +6496,7 @@ dependencies = [
 [[package]]
 name = "zingo-status"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_004#f9f3e5f6da261ec6b7bd1282905534fdc328cb41"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_005#965e81228d3a1d99b76c1e3c71202d8fdbbd41dc"
 dependencies = [
  "zcash_primitives 0.19.0 (git+https://github.com/zingolabs/librustzcash.git?tag=zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2)",
 ]
@@ -6439,7 +6504,7 @@ dependencies = [
 [[package]]
 name = "zingo-sync"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_004#f9f3e5f6da261ec6b7bd1282905534fdc328cb41"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_005#965e81228d3a1d99b76c1e3c71202d8fdbbd41dc"
 dependencies = [
  "base58",
  "crossbeam-channel",
@@ -6470,7 +6535,7 @@ dependencies = [
 [[package]]
 name = "zingolib"
 version = "0.2.0"
-source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_004#f9f3e5f6da261ec6b7bd1282905534fdc328cb41"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=zaino_dep_005#965e81228d3a1d99b76c1e3c71202d8fdbbd41dc"
 dependencies = [
  "append-only-vec",
  "base58",
@@ -6484,7 +6549,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "chrono",
- "dirs",
+ "dirs 5.0.1",
  "enum_dispatch",
  "ff",
  "futures",
@@ -6519,6 +6584,7 @@ dependencies = [
  "tempdir",
  "tempfile",
  "test-case",
+ "testvectors",
  "thiserror 1.0.69",
  "tokio",
  "tonic",

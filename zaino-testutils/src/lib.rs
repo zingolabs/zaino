@@ -11,6 +11,7 @@ use std::{
     str::FromStr,
 };
 use tempfile::TempDir;
+use testvectors::REG_O_ADDR_FROM_ABANDONART;
 use tracing_subscriber::EnvFilter;
 
 /// Path for zcashd binary.
@@ -336,7 +337,7 @@ impl TestManager {
                     zcash_cli_bin: ZCASH_CLI_BIN.clone(),
                     rpc_listen_port: Some(zebrad_rpc_listen_port),
                     activation_heights: services::network::ActivationHeights::default(),
-                    miner_address: Some(zingolib::testvectors::REG_O_ADDR_FROM_ABANDONART),
+                    miner_address: Some(REG_O_ADDR_FROM_ABANDONART),
                     chain_cache,
                 };
                 ValidatorConfig::ZcashdConfig(cfg)
