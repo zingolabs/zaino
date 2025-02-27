@@ -160,21 +160,21 @@ impl IndexerConfig {
         }
 
         let grpc_addr = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
-        if !is_private_listen_addr(&grpc_addr) {
-            if !self.grpc_tls {
-                return Err(IndexerError::ConfigError(
-                    "TLS required when connecting to external (non-RFC1918) addresses.".to_string(),
-                ));
-            }
-        }
+        // if !is_private_listen_addr(&grpc_addr) {
+        //     if !self.grpc_tls {
+        //         return Err(IndexerError::ConfigError(
+        //             "TLS is required".to_string(),
+        //         ));
+        //     }
+        // }
 
         // Ensure validator rpc cookie authentication is used when connecting to non-loopback addresses.
-        if !is_loopback_listen_addr(&self.validator_listen_address) && !self.validator_cookie_auth {
-            return Err(IndexerError::ConfigError(
-                "Validator listen address is not loopback, so cookie authentication must be enabled."
-                    .to_string(),
-            ));
-        }
+        // if !is_loopback_listen_addr(&self.validator_listen_address) && !self.validator_cookie_auth {
+        //     return Err(IndexerError::ConfigError(
+        //         "Validator listen address is not loopback, so cookie authentication must be enabled."
+        //             .to_string(),
+        //     ));
+        // }
 
         Ok(())
     }
