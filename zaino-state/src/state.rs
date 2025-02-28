@@ -1382,7 +1382,7 @@ mod tests {
     ) -> (TestManager, StateService) {
         let test_manager = TestManager::launch(
             "zebrad",
-            Some(zingo_infra_services::network::Network::Testnet),
+            Some(zingo_infra_services::network::Network::Regtest),
             ZEBRAD_CHAIN_CACHE_DIR.clone(),
             enable_zaino,
             zaino_no_sync,
@@ -1407,7 +1407,7 @@ mod tests {
             None,
             None,
             None,
-            Network::new_default_testnet(),
+            Network::new_regtest(Some(1), Some(1)),
         ))
         .await
         .unwrap();
@@ -1777,7 +1777,7 @@ mod tests {
     #[tokio::test]
     async fn state_service_regtest_get_block_object() {
         let (mut test_manager, state_service) =
-            create_test_manager_and_state_service(false, true, true, false).await;
+            create_test_manager_and_state_service(true, true, true, false).await;
         let fetch_service = zaino_fetch::jsonrpc::connector::JsonRpcConnector::new_with_basic_auth(
             test_node_and_return_url(
                 test_manager.zebrad_rpc_listen_address,
