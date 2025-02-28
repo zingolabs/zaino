@@ -1713,7 +1713,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 mod tests {
     use super::*;
     use zaino_fetch::jsonrpc::connector::test_node_and_return_url;
-    use zaino_testutils::{TestManager, ZCASHD_CHAIN_CACHE_BIN, ZEBRAD_CHAIN_CACHE_BIN};
+    use zaino_testutils::{TestManager, ZCASHD_CHAIN_CACHE_DIR, ZEBRAD_CHAIN_CACHE_DIR};
     use zebra_chain::parameters::Network;
     use zingo_infra_services::validator::Validator;
 
@@ -1724,7 +1724,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_fetch_service_zcashd_regtest_with_cache() {
-        launch_fetch_service("zcashd", ZCASHD_CHAIN_CACHE_BIN.clone()).await;
+        launch_fetch_service("zcashd", ZCASHD_CHAIN_CACHE_DIR.clone()).await;
     }
 
     #[tokio::test]
@@ -1734,7 +1734,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_fetch_service_zebrad_regtest_with_cache() {
-        launch_fetch_service("zebrad", ZEBRAD_CHAIN_CACHE_BIN.clone()).await;
+        launch_fetch_service("zebrad", ZEBRAD_CHAIN_CACHE_DIR.clone()).await;
     }
 
     async fn create_test_manager_and_fetch_service(

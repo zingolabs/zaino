@@ -1371,7 +1371,7 @@ mod tests {
     use futures::stream::StreamExt;
     use zaino_fetch::jsonrpc::connector::test_node_and_return_url;
     use zaino_proto::proto::service::BlockId;
-    use zaino_testutils::{TestManager, ZEBRAD_CHAIN_CACHE_BIN, ZEBRAD_TESTNET_CACHE_BIN};
+    use zaino_testutils::{TestManager, ZEBRAD_CHAIN_CACHE_DIR};
     use zebra_chain::parameters::Network;
     use zingo_infra_services::validator::Validator;
     async fn create_test_manager_and_state_service(
@@ -1383,7 +1383,7 @@ mod tests {
         let test_manager = TestManager::launch(
             "zebrad",
             Some(zingo_infra_services::network::Network::Testnet),
-            ZEBRAD_TESTNET_CACHE_BIN.clone(),
+            ZEBRAD_CHAIN_CACHE_DIR.clone(),
             enable_zaino,
             zaino_no_sync,
             zaino_no_db,
@@ -1455,7 +1455,7 @@ mod tests {
         let mut test_manager = TestManager::launch(
             "zebrad",
             None,
-            ZEBRAD_CHAIN_CACHE_BIN.clone(),
+            ZEBRAD_CHAIN_CACHE_DIR.clone(),
             false,
             true,
             true,
@@ -1498,7 +1498,7 @@ mod tests {
         let mut test_manager = TestManager::launch(
             "zebrad",
             None,
-            ZEBRAD_CHAIN_CACHE_BIN.clone(),
+            ZEBRAD_CHAIN_CACHE_DIR.clone(),
             false,
             true,
             true,
@@ -1562,7 +1562,7 @@ mod tests {
         let mut test_manager = TestManager::launch(
             "zebrad",
             None,
-            ZEBRAD_CHAIN_CACHE_BIN.clone(),
+            ZEBRAD_CHAIN_CACHE_DIR.clone(),
             false,
             true,
             true,

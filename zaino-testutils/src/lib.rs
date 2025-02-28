@@ -50,21 +50,21 @@ pub static ZAINOD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
 });
 
 /// Path for zcashd chain cache.
-pub static ZCASHD_CHAIN_CACHE_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZCASHD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     workspace_root_path.pop();
     Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests"))
 });
 
 /// Path for zebrad chain cache.
-pub static ZEBRAD_CHAIN_CACHE_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     workspace_root_path.pop();
     Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests_large"))
 });
 
 /// Path for the Zebra chain cache in the user's home directory.
-pub static ZEBRAD_TESTNET_CACHE_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let home_path = PathBuf::from(std::env::var("HOME").unwrap());
     Some(home_path.join(".cache/zebra"))
 });
@@ -508,7 +508,7 @@ mod tests {
         let mut test_manager = TestManager::launch(
             "zebrad",
             None,
-            ZEBRAD_CHAIN_CACHE_BIN.clone(),
+            ZEBRAD_CHAIN_CACHE_DIR.clone(),
             false,
             true,
             true,
@@ -528,7 +528,7 @@ mod tests {
         let mut test_manager = TestManager::launch(
             "zcashd",
             None,
-            ZCASHD_CHAIN_CACHE_BIN.clone(),
+            ZCASHD_CHAIN_CACHE_DIR.clone(),
             false,
             true,
             true,
@@ -811,7 +811,7 @@ mod tests {
         let mut test_manager = TestManager::launch(
             "zebrad",
             Some(services::network::Network::Testnet),
-            ZEBRAD_TESTNET_CACHE_BIN.clone(),
+            ZEBRAD_TESTNET_CACHE_DIR.clone(),
             true,
             true,
             true,
