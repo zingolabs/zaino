@@ -532,7 +532,7 @@ impl FinalisedState {
                 self.heights_to_hashes,
                 &height_key,
                 &hash_key,
-                lmdb::WriteFlags::NO_OVERWRITE,
+                lmdb::WriteFlags::empty(),
             )
             .is_err()
             || txn
@@ -540,7 +540,7 @@ impl FinalisedState {
                     self.hashes_to_blocks,
                     &hash_key,
                     &block_value,
-                    lmdb::WriteFlags::NO_OVERWRITE,
+                    lmdb::WriteFlags::empty(),
                 )
                 .is_err()
         {
