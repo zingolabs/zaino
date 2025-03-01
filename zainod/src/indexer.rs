@@ -39,8 +39,10 @@ impl Indexer {
         config: IndexerConfig,
     ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
         config.check_config()?;
-        if !config.donation_address.is_empty() {
-            info!("Instance donation address: {}", config.donation_address);
+        if let Some(donation_address) = &config.donation_address {
+            if !donation_address.is_empty() {
+                info!("Instance donation address: {}", donation_address);
+            }
         }
         info!("Checking connection with node..");
         let zebrad_uri = test_node_and_return_url(

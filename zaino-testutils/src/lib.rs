@@ -383,7 +383,7 @@ impl TestManager {
                 no_sync: zaino_no_sync,
                 no_db: zaino_no_db,
                 no_state: false,
-                donation_address: "".to_string(),
+                donation_address: None,
             };
             let handle = zainodlib::indexer::Indexer::spawn(indexer_config)
                 .await

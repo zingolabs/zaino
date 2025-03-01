@@ -1684,7 +1684,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             estimated_height: blockchain_info.estimated_height().0 as u64,
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
-            donation_address: self.config.donation_address.clone(),
+            donation_address: self.config.donation_address.clone().unwrap_or_default(),
         })
     }
 
@@ -1766,7 +1766,7 @@ mod tests {
             Network::new_regtest(Some(1), Some(1)),
             true,
             true,
-            "".to_string(),
+            None,
         ))
         .await
         .unwrap();

@@ -89,7 +89,7 @@ pub struct FetchServiceConfig {
     /// Used for testing.
     pub no_db: bool,
     /// Zcash donation UA address
-    pub donation_address: String,
+    pub donation_address: Option<String>,
 }
 
 impl FetchServiceConfig {
@@ -110,7 +110,7 @@ impl FetchServiceConfig {
         network: zebra_chain::parameters::Network,
         no_sync: bool,
         no_db: bool,
-        donation_address: String,
+        donation_address: Option<String>,
     ) -> Self {
         FetchServiceConfig {
             validator_rpc_address,

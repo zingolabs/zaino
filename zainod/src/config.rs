@@ -93,7 +93,7 @@ pub struct IndexerConfig {
     /// NOTE: Currently unimplemented as will require either a Tonic backend or a JsonRPC server.
     pub no_state: bool,
     /// Zcash donation UA address
-    pub donation_address: String,
+    pub donation_address: Option<String>,
 }
 
 impl IndexerConfig {
@@ -214,7 +214,7 @@ impl Default for IndexerConfig {
             no_sync: false,
             no_db: false,
             no_state: false,
-            donation_address: "".to_string(),
+            donation_address: None,
         }
     }
 }
@@ -412,7 +412,13 @@ pub fn load_config(file_path: &std::path::PathBuf) -> Result<IndexerConfig, Inde
         parse_field_or_warn_and_default!(parsed_config, no_sync, Boolean, default_config, Some);
         parse_field_or_warn_and_default!(parsed_config, no_db, Boolean, default_config, Some);
         parse_field_or_warn_and_default!(parsed_config, no_state, Boolean, default_config, Some);
-        parse_field_or_warn_and_default!(parsed_config, donation_address, String, default_config, Some);
+        parse_field_or_warn_and_default!(
+            parsed_config,
+            donation_address,
+            String,
+            default_config,
+            |v| Some(Some(v))
+        );
 
         let config = IndexerConfig {
             grpc_listen_address,
