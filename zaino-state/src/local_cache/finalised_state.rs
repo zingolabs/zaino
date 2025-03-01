@@ -527,22 +527,21 @@ impl FinalisedState {
         let block_value = serde_json::to_vec(&DbCompactBlock(compact_block))?;
 
         let mut txn = self.database.begin_rw_txn()?;
-        if txn
-            .put(
-                self.heights_to_hashes,
-                &height_key,
+
+        if dbg!(txn.put(
+            self.heights_to_hashes,
+            &height_key,
+            &hash_key,
+            lmdb::WriteFlags::empty(),
+        ))
+        .is_err()
+            || dbg!(txn.put(
+                self.hashes_to_blocks,
                 &hash_key,
+                &block_value,
                 lmdb::WriteFlags::empty(),
-            )
+            ))
             .is_err()
-            || txn
-                .put(
-                    self.hashes_to_blocks,
-                    &hash_key,
-                    &block_value,
-                    lmdb::WriteFlags::empty(),
-                )
-                .is_err()
         {
             txn.abort();
             return Err(FinalisedStateError::Custom(
