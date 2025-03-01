@@ -27,6 +27,7 @@ pub struct StateServiceConfig {
 
 impl StateServiceConfig {
     /// Returns a new instance of [`StateServiceConfig`].
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         validator_config: zebra_state::Config,
         validator_rpc_address: std::net::SocketAddr,

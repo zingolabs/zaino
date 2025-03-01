@@ -180,6 +180,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// # Notes
     ///
+    /// TODO: [Issue #221](https://github.com/zingolabs/zaino/issues/221)
+    /// Eleven fields have been added to this type, since this comment
+    /// was written. Investigate whether there is field-parity between us and
+    /// zcashd, or if fields are still missing from some implementations
     /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
     /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
@@ -187,10 +191,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// Some fields from the zcashd reference are missing from Zebra's [`GetInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
-        Ok(GetInfo::from_parts(
-            self.data.zebra_build(),
-            self.data.zebra_subversion(),
-        ))
+        Ok(self.fetcher.get_info().await?.into())
     }
 
     /// Returns blockchain state information, as a [`GetBlockChainInfo`] JSON struct.
@@ -204,7 +205,18 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error> {
-        Ok(self.fetcher.get_blockchain_info().await?.into())
+        Ok(self
+            .fetcher
+            .get_blockchain_info()
+            .await?
+            .try_into()
+            .map_err(|_e| {
+                FetchServiceError::SerializationError(
+                    zebra_chain::serialization::SerializationError::Parse(
+                        "chainwork not hex-encoded integer",
+                    ),
+                )
+            })?)
     }
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.

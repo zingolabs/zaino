@@ -22,14 +22,14 @@ use tower::Service;
 
 use zaino_fetch::jsonrpc::connector::{JsonRpcConnector, RpcError};
 use zaino_fetch::jsonrpc::response::TxidsResponse;
+use zaino_proto::proto::compact_formats::ChainMetadata;
 use zaino_proto::proto::compact_formats::{
-    ChainMetadata, CompactBlock, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend,
-    CompactTx,
+    CompactBlock, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
 };
 use zaino_proto::proto::service::BlockRange;
 
 use zebra_chain::{
-    block::{Height, SerializedBlock},
+    block::{Header, Height, SerializedBlock},
     chain_tip::{ChainTip, NetworkChainTipHeightEstimator},
     parameters::{ConsensusBranchId, Network, NetworkUpgrade},
     serialization::{ZcashDeserialize, ZcashSerialize},
@@ -38,9 +38,10 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     methods::{
+        chain_tip_difficulty,
         hex_data::HexData,
         trees::{GetSubtrees, GetTreestate, SubtreeRpcData},
-        types::ValuePoolBalance,
+        types::Balance,
         AddressBalance, AddressStrings, ConsensusBranchIdHex, GetAddressTxIdsRequest,
         GetAddressUtxos, GetBlock, GetBlockChainInfo, GetBlockHash, GetBlockHeader,
         GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetInfo, GetRawTransaction,
@@ -218,10 +219,13 @@ impl ZcashIndexer for StateService {
     type Error = StateServiceError;
 
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
-        Ok(GetInfo::from_parts(
-            self.data.zebra_build(),
-            self.data.zebra_subversion(),
-        ))
+        // A number of these fields are difficult to access from the state service
+        // TODO: Fix this
+        self.rpc_client
+            .get_info()
+            .await
+            .map(GetInfo::from)
+            .map_err(Self::Error::from)
     }
 
     async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error> {
@@ -236,6 +240,8 @@ impl ZcashIndexer for StateService {
                 unreachable!("Unexpected response from state service: {unexpected:?}")
             }
         };
+        let usage_response = self.checked_call(ReadRequest::UsageInfo).await?;
+        let size_on_disk = expected_read_response!(usage_response, UsageInfo);
         let request = zebra_state::ReadRequest::BlockHeader(hash.into());
         let response = self.checked_call(request).await?;
         let header = match response {
@@ -300,15 +306,33 @@ impl ZcashIndexer for StateService {
             )
             .inner(),
         );
+        let difficulty =
+            chain_tip_difficulty(self.config.network.clone(), self.read_state_service.clone())
+                .await
+                .unwrap();
+
+        let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockChainInfo::new(
             self.config.network.bip70_network_name(),
             height,
             hash,
             estimated_height,
-            ValuePoolBalance::from_value_balance(balance),
+            Balance::chain_supply(balance),
+            Balance::value_pools(balance),
             upgrades,
             consensus,
+            height,
+            difficulty,
+            verification_progress,
+            // TODO: store work in the finalized state for each height
+            // see https://github.com/ZcashFoundation/zebra/issues/7109
+            0,
+            false,
+            size_on_disk,
+            // TODO (copied from zebra): Investigate whether this needs to
+            // be implemented (it's sprout-only in zcashd)
+            0,
         ))
     }
 
@@ -394,6 +418,7 @@ impl ZcashIndexer for StateService {
                     difficulty,
                     previous_block_hash,
                     next_block_hash,
+                    block_commitments,
                 } = *header_obj;
 
                 let transactions_response: Vec<GetBlockTransaction> = match txids_or_fullblock {
@@ -462,6 +487,7 @@ impl ZcashIndexer for StateService {
                     final_orchard_root,
                     previous_block_hash: Some(previous_block_hash),
                     next_block_hash,
+                    block_commitments: Some(block_commitments),
                 })
             }
             more_than_two => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
@@ -870,6 +896,12 @@ impl StateService {
                 };
 
             let difficulty = header.difficulty_threshold.relative_to_network(&network);
+            let block_commitments = header_to_block_commitments(
+                &header,
+                &self.config.network,
+                height,
+                final_sapling_root,
+            )?;
 
             let block_header = GetBlockHeaderObject {
                 hash: GetBlockHash(hash),
@@ -886,6 +918,7 @@ impl StateService {
                 difficulty,
                 previous_block_hash: GetBlockHash(header.previous_block_hash),
                 next_block_hash: next_block_hash.map(GetBlockHash),
+                block_commitments,
             };
 
             GetBlockHeader::Object(Box::new(block_header))
@@ -999,6 +1032,8 @@ impl StateService {
             let difficulty = header
                 .difficulty_threshold
                 .relative_to_network(&cloned_network);
+            let block_commitments =
+                header_to_block_commitments(&header, &cloned_network, height, final_sapling_root)?;
 
             Ok(GetBlockHeaderObject {
                 hash: GetBlockHash(hash),
@@ -1015,6 +1050,7 @@ impl StateService {
                 difficulty,
                 previous_block_hash: GetBlockHash(header.previous_block_hash),
                 next_block_hash: next_block_hash.map(GetBlockHash),
+                block_commitments,
             })
         });
 
@@ -1297,6 +1333,36 @@ fn tx_to_compact(
     })
 }
 
+fn header_to_block_commitments(
+    header: &Header,
+    network: &Network,
+    height: Height,
+    final_sapling_root: [u8; 32],
+) -> Result<[u8; 32], StateServiceError> {
+    let hash = match header.commitment(network, height).map_err(|e| {
+        StateServiceError::SerializationError(
+            zebra_chain::serialization::SerializationError::Parse(
+                // For some reason this error type takes a
+                // &'static str, and the the only way to create one
+                // dynamically is to leak a String. This shouldn't
+                // be a concern, as this error case should
+                // never occur when communing with a zebrad, which
+                // validates this field before serializing it
+                e.to_string().leak(),
+            ),
+        )
+    })? {
+        zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
+        zebra_chain::block::Commitment::FinalSaplingRoot(_root) => final_sapling_root,
+        zebra_chain::block::Commitment::ChainHistoryActivationReserved => [0; 32],
+        zebra_chain::block::Commitment::ChainHistoryRoot(root) => root.bytes_in_display_order(),
+        zebra_chain::block::Commitment::ChainHistoryBlockTxAuthCommitment(hash) => {
+            hash.bytes_in_display_order()
+        }
+    };
+    Ok(hash)
+}
+
 /// !!! NOTE / TODO: This code should be retested before continued development, once zebra regtest is fully operational.
 #[cfg(test)]
 mod tests {
@@ -1547,7 +1613,7 @@ mod tests {
         let fetch_service_get_blockchain_info = json_service.get_blockchain_info().await.unwrap();
         let fetch_service_duration = fetch_start.elapsed();
         let fetch_service_get_blockchain_info: GetBlockChainInfo =
-            fetch_service_get_blockchain_info.into();
+            fetch_service_get_blockchain_info.try_into().unwrap();
 
         // Zaino-Fetch does not return value_pools, ignore this field.
         assert_eq!(
@@ -1625,7 +1691,7 @@ mod tests {
         let fetch_service_get_blockchain_info = json_service.get_blockchain_info().await.unwrap();
         let fetch_service_duration = fetch_start.elapsed();
         let fetch_service_get_blockchain_info: GetBlockChainInfo =
-            fetch_service_get_blockchain_info.into();
+            fetch_service_get_blockchain_info.try_into().unwrap();
 
         println!(
             "Fetch Service Chain Height: {}",
