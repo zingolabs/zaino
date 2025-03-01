@@ -10,8 +10,8 @@ version = { workspace = true }
 
 [dependencies]
 # Test utility
-zaino-testutils = { path = "../zaino-testutils" }
-zaino-fetch = { path = "../zaino-fetch" }
+zaino-testutils = { workspace = true }
+zaino-fetch = { workspace = true }
 
 # Test fixtures
 zingo-infra-testutils = { workspace = true }

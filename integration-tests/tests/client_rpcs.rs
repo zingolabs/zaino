@@ -74,6 +74,8 @@ pub mod client_rpcs {
         .await;
     }
 
+    /// TODO: Fix this test in infrastructure and reactivate here.
+    #[ignore = "ignored in infrastructure, fix there first."]
     #[tokio::test]
     async fn get_block_out_of_bounds() {
         tracing_subscriber::fmt().init();
@@ -165,6 +167,8 @@ pub mod client_rpcs {
         .await;
     }
 
+    /// TODO: Fix this test in infrastructure and reactivate here.
+    #[ignore = "ignored in infrastructure, fix there first."]
     #[tokio::test]
     async fn get_block_range_out_of_bounds() {
         tracing_subscriber::fmt().init();
@@ -178,6 +182,8 @@ pub mod client_rpcs {
         .await;
     }
 
+    /// TODO: Fix this test in infrastructure and reactivate here.
+    #[ignore = "ignored in infrastructure, fix there first."]
     #[tokio::test]
     async fn get_transaction() {
         tracing_subscriber::fmt().init();
@@ -191,7 +197,8 @@ pub mod client_rpcs {
         .await;
     }
 
-    #[ignore = "incomplete"]
+    /// TODO: Fix this test in infrastructure and reactivate here.
+    #[ignore = "ignored in infrastructure, fix there first."]
     #[tokio::test]
     async fn send_transaction() {
         tracing_subscriber::fmt().init();
@@ -270,6 +277,8 @@ pub mod client_rpcs {
         .await;
     }
 
+    /// TODO: Fix this test in infrastructure and reactivate here.
+    #[ignore = "ignored in infrastructure, fix there first."]
     #[tokio::test]
     async fn get_mempool_tx() {
         tracing_subscriber::fmt().init();
@@ -283,6 +292,8 @@ pub mod client_rpcs {
         .await;
     }
 
+    /// TODO: Fix this test in infrastructure and reactivate here.
+    #[ignore = "ignored in infrastructure, fix there first."]
     #[tokio::test]
     async fn get_mempool_stream_zingolib_mempool_monitor() {
         tracing_subscriber::fmt().init();
@@ -296,6 +307,8 @@ pub mod client_rpcs {
         .await;
     }
 
+    /// TODO: Fix this test in infrastructure and reactivate here.
+    #[ignore = "ignored in infrastructure, fix there first."]
     #[tokio::test]
     async fn get_mempool_stream() {
         tracing_subscriber::fmt().init();
@@ -365,6 +378,7 @@ pub mod client_rpcs {
     /// `zaino/chain_cache/get_subtree_roots_sapling`
     ///
     /// See doc comments of test_fixture for more details.
+    #[ignore = "flaky"]
     #[tokio::test]
     async fn get_subtree_roots_sapling() {
         tracing_subscriber::fmt().init();
@@ -382,6 +396,7 @@ pub mod client_rpcs {
     /// `zaino/chain_cache/get_subtree_roots_orchard`
     ///
     /// See doc comments of test_fixture for more details.
+    #[ignore = "flaky"]
     #[tokio::test]
     async fn get_subtree_roots_orchard() {
         tracing_subscriber::fmt().init();

@@ -9,7 +9,7 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
-zaino-proto = { path = "../zaino-proto" }
+zaino-proto = { workspace = true }
 
 # Librustzcash
 zcash_protocol = { workspace = true }

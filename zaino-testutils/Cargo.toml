@@ -13,9 +13,9 @@ version = { workspace = true }
 test_fixtures = []
 
 [dependencies]
-zaino-fetch = { path = "../zaino-fetch" }
-zaino-state = { path = "../zaino-state" }
-zainod = { path = "../zainod" }
+zaino-fetch = { workspace = true }
+zaino-state = { workspace = true }
+zainod = { workspace = true }
 
 # Librustzcash
 zcash_protocol = { workspace = true }
@@ -26,6 +26,7 @@ zebra-chain = { workspace = true }
 
 # ZingoLib
 zingolib = { workspace = true }
+testvectors = { workspace = true }
 
 # Test Utilities
 zingo-infra-testutils = { workspace = true }

@@ -17,9 +17,9 @@ name = "zainodlib"
 path = "src/lib.rs"
 
 [dependencies]
-zaino-fetch = { path = "../zaino-fetch" }
-zaino-state = { path = "../zaino-state" }
-zaino-serve = { path = "../zaino-serve" }
+zaino-fetch = { workspace = true }
+zaino-state = { workspace = true }
+zaino-serve = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
