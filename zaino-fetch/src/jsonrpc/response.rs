@@ -1,28 +1,161 @@
 //! Response types for jsonRPC client.
 
+use std::num::ParseIntError;
+
 use hex::FromHex;
+use serde::{de::Error, Deserialize, Deserializer, Serialize};
+
+use zebra_chain::{
+    amount::{Amount, NonNegative},
+    block::Height,
+    work::difficulty::CompactDifficulty,
+};
+use zebra_rpc::methods::types::Balance;
+
+/// A helper module to serialize `Option<T: ToHex>` as a hex string.
+///
+/// *** NOTE / TODO: This code has been copied from zebra to ensure valid serialisation / deserialisation and extended. ***
+/// ***            - This code should be made pulic in zebra to avoid deviations in implementation. ***
+mod opthex {
+    use hex::{FromHex, ToHex};
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S, T>(data: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: ToHex,
+    {
+        match data {
+            Some(data) => {
+                let s = data.encode_hex::<String>();
+                serializer.serialize_str(&s)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: FromHex,
+    {
+        let opt = Option::<String>::deserialize(deserializer)?;
+        match opt {
+            Some(s) => T::from_hex(&s)
+                .map(Some)
+                .map_err(|_e| de::Error::custom("failed to convert hex string")),
+            None => Ok(None),
+        }
+    }
+}
 
 /// Response to a `getinfo` RPC request.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_info`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetInfoResponse {
+    /// The node version
+    #[serde(default)]
+    version: u64,
     /// The node version build number
     pub build: String,
     /// The server sub-version identifier, used as the network protocol user-agent
     pub subversion: String,
+    /// The protocol version
+    #[serde(default)]
+    #[serde(rename = "protocolversion")]
+    protocol_version: u32,
+
+    /// The current number of blocks processed in the server
+    #[serde(default)]
+    blocks: u32,
+
+    /// The total (inbound and outbound) number of connections the node has
+    #[serde(default)]
+    connections: usize,
+
+    /// The proxy (if any) used by the server. Currently always `None` in Zebra.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy: Option<String>,
+
+    /// The current network difficulty
+    #[serde(default)]
+    difficulty: f64,
+
+    /// True if the server is running in testnet mode, false otherwise
+    #[serde(default)]
+    testnet: bool,
+
+    /// The minimum transaction fee in ZEC/kB
+    #[serde(default)]
+    #[serde(rename = "paytxfee")]
+    pay_tx_fee: f64,
+
+    /// The minimum relay fee for non-free transactions in ZEC/kB
+    #[serde(default)]
+    #[serde(rename = "relayfee")]
+    relay_fee: f64,
+
+    /// The last error or warning message, or "no errors" if there are no errors
+    #[serde(default)]
+    errors: String,
+
+    /// The time of the last error or warning message, or "no errors timestamp" if there are no errors
+    #[serde(default)]
+    #[serde(rename = "errorstimestamp")]
+    errors_timestamp: ErrorsTimestamp,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+/// A wrapper to allow both types of error timestamp
+pub enum ErrorsTimestamp {
+    /// Returned from zcashd, the timestamp is an integer unix timstamp
+    Num(usize),
+    /// Returned from zebrad, the timestamp is a string representing a timestamp
+    Str(String),
+}
+
+impl std::fmt::Display for ErrorsTimestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorsTimestamp::Num(n) => f.write_str(&n.to_string()),
+            ErrorsTimestamp::Str(s) => f.write_str(s),
+        }
+    }
+}
+
+impl Default for ErrorsTimestamp {
+    fn default() -> Self {
+        ErrorsTimestamp::Str("Default".to_string())
+    }
 }
 
 impl From<GetInfoResponse> for zebra_rpc::methods::GetInfo {
     fn from(response: GetInfoResponse) -> Self {
-        zebra_rpc::methods::GetInfo::from_parts(response.build, response.subversion)
+        zebra_rpc::methods::GetInfo::from_parts(
+            response.version,
+            response.build,
+            response.subversion,
+            response.protocol_version,
+            response.blocks,
+            response.connections,
+            response.proxy,
+            response.difficulty,
+            response.testnet,
+            response.pay_tx_fee,
+            response.relay_fee,
+            response.errors,
+            response.errors_timestamp.to_string(),
+        )
     }
 }
 
 /// Response to a `getblockchaininfo` RPC request.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_blockchain_info`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockchainInfoResponse {
     /// Current network name as defined in BIP70 (main, test, regtest)
     pub chain: String,
@@ -40,28 +173,152 @@ pub struct GetBlockchainInfoResponse {
     #[serde(rename = "estimatedheight")]
     pub estimated_height: zebra_chain::block::Height,
 
+    /// Chain supply balance
+    #[serde(default)]
+    #[serde(rename = "chainSupply")]
+    chain_supply: ChainBalance,
+
     /// Status of network upgrades
     pub upgrades: indexmap::IndexMap<
         zebra_rpc::methods::ConsensusBranchIdHex,
         zebra_rpc::methods::NetworkUpgradeInfo,
     >,
 
+    /// Value pool balances
+    #[serde(rename = "valuePools")]
+    value_pools: [ChainBalance; 5],
+
     /// Branch IDs of the current and upcoming consensus rules
     pub consensus: zebra_rpc::methods::TipConsensusBranch,
+
+    /// The current number of headers we have validated in the best chain, that is,
+    /// the height of the best chain.
+    #[serde(default = "default_header")]
+    headers: Height,
+
+    /// The estimated network solution rate in Sol/s.
+    #[serde(default)]
+    difficulty: f64,
+
+    /// The verification progress relative to the estimated network chain tip.
+    #[serde(default)]
+    #[serde(rename = "verificationprogress")]
+    verification_progress: f64,
+
+    /// The total amount of work in the best chain, hex-encoded.
+    #[serde(default)]
+    #[serde(rename = "chainwork")]
+    chain_work: ChainWork,
+
+    /// Whether this node is pruned, currently always false in Zebra.
+    #[serde(default)]
+    pruned: bool,
+
+    /// The estimated size of the block and undo files on disk
+    #[serde(default)]
+    size_on_disk: u64,
+
+    /// The current number of note commitments in the commitment tree
+    #[serde(default)]
+    commitments: u64,
 }
 
-impl From<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockChainInfo {
-    fn from(response: GetBlockchainInfoResponse) -> Self {
-        zebra_rpc::methods::GetBlockChainInfo::new(
+fn default_header() -> Height {
+    Height(0)
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+/// A wrapper type to allow both kinds of ChainWork
+pub enum ChainWork {
+    /// Returned from zcashd, a chainwork is a String representing a
+    /// base-16 integer
+    Str(String),
+    /// Returned from zebrad, a chainwork is an integer
+    Num(u64),
+}
+
+impl TryFrom<ChainWork> for u64 {
+    type Error = ParseIntError;
+
+    fn try_from(value: ChainWork) -> Result<Self, Self::Error> {
+        match value {
+            ChainWork::Str(s) => u64::from_str_radix(&s, 16),
+            ChainWork::Num(u) => Ok(u),
+        }
+    }
+}
+
+impl Default for ChainWork {
+    fn default() -> Self {
+        ChainWork::Num(0)
+    }
+}
+
+/// Wrapper struct for a Zebra [`Balance`], enabling custom deserialisation logic to handle both zebrad and zcashd.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ChainBalance(Balance);
+
+impl<'de> Deserialize<'de> for ChainBalance {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Debug)]
+        struct TempBalance {
+            #[serde(default)]
+            id: String,
+            #[serde(rename = "chainValue")]
+            chain_value: f64,
+            #[serde(rename = "chainValueZat")]
+            chain_value_zat: u64,
+            #[allow(dead_code)]
+            #[serde(default)]
+            monitored: bool,
+        }
+        let temp = TempBalance::deserialize(deserializer)?;
+        let computed_zat = (temp.chain_value * 100_000_000.0).round() as u64;
+        if computed_zat != temp.chain_value_zat {
+            return Err(D::Error::custom(format!(
+                "chainValue and chainValueZat mismatch: computed {} but got {}",
+                computed_zat, temp.chain_value_zat
+            )));
+        }
+        let amount = Amount::<NonNegative>::from_bytes(temp.chain_value_zat.to_le_bytes())
+            .map_err(|e| serde::de::Error::custom(e.to_string()))?;
+        let balance = Balance::new(temp.id, amount);
+        Ok(ChainBalance(balance))
+    }
+}
+
+impl Default for ChainBalance {
+    fn default() -> Self {
+        Self(Balance::new("default", Amount::zero()))
+    }
+}
+
+impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockChainInfo {
+    fn try_from(response: GetBlockchainInfoResponse) -> Result<Self, ParseIntError> {
+        Ok(zebra_rpc::methods::GetBlockChainInfo::new(
             response.chain,
             response.blocks,
             response.best_block_hash,
             response.estimated_height,
-            zebra_rpc::methods::types::ValuePoolBalance::zero_pools(),
+            response.chain_supply.0,
+            response.value_pools.map(|pool| pool.0),
             response.upgrades,
             response.consensus,
-        )
+            response.headers,
+            response.difficulty,
+            response.verification_progress,
+            response.chain_work.try_into()?,
+            response.pruned,
+            response.size_on_disk,
+            response.commitments,
+        ))
     }
+
+    type Error = ParseIntError;
 }
 
 /// The transparent balance of a set of addresses.
@@ -105,6 +362,12 @@ pub struct GetBlockHash(#[serde(with = "hex")] pub zebra_chain::block::Hash);
 impl Default for GetBlockHash {
     fn default() -> Self {
         GetBlockHash(zebra_chain::block::Hash([0; 32]))
+    }
+}
+
+impl From<GetBlockHash> for zebra_rpc::methods::GetBlockHash {
+    fn from(value: GetBlockHash) -> Self {
+        zebra_rpc::methods::GetBlockHash(value.0)
     }
 }
 
@@ -218,11 +481,56 @@ impl From<GetBlockTrees> for zebra_rpc::methods::GetBlockTrees {
     }
 }
 
+/// Wrapper struct for a zebra `Solution`.
+///
+/// *** NOTE / TODO: ToHex should be inmlemented in zebra to avoid the use of a wrapper struct. ***
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Solution(pub zebra_chain::work::equihash::Solution);
+
+impl std::ops::Deref for Solution {
+    type Target = zebra_chain::work::equihash::Solution;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl hex::ToHex for Solution {
+    fn encode_hex<T: std::iter::FromIterator<char>>(&self) -> T {
+        self.0.encode_hex()
+    }
+
+    fn encode_hex_upper<T: std::iter::FromIterator<char>>(&self) -> T {
+        self.0.encode_hex_upper()
+    }
+}
+
+impl hex::FromHex for Solution {
+    type Error = zebra_chain::serialization::SerializationError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let hex_str = std::str::from_utf8(hex.as_ref()).map_err(|_| {
+            zebra_chain::serialization::SerializationError::Parse("invalid UTF-8 in hex input")
+        })?;
+        let bytes = hex::decode(hex_str).map_err(|_| {
+            zebra_chain::serialization::SerializationError::Parse("failed to decode hex string")
+        })?;
+        zebra_chain::work::equihash::Solution::from_bytes(&bytes).map(Solution)
+    }
+}
+
+impl From<Solution> for zebra_chain::work::equihash::Solution {
+    fn from(value: Solution) -> Self {
+        value.0
+    }
+}
+
 /// Contains the hex-encoded hash of the sent transaction.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_block`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum GetBlockResponse {
     /// The request block, hex-encoded.
     Raw(#[serde(with = "hex")] SerializedBlock),
@@ -235,19 +543,85 @@ pub enum GetBlockResponse {
         /// or -1 if it is not in the best chain.
         confirmations: i64,
 
-        /// The height of the requested block.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        height: Option<zebra_chain::block::Height>,
+        /// The block size. TODO: fill it
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<i64>,
 
         /// The height of the requested block.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<zebra_chain::block::Height>,
+
+        /// The version field of the requested block.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u32>,
+
+        /// The merkle root of the requested block.
+        #[serde(with = "opthex", rename = "merkleroot")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merkle_root: Option<zebra_chain::block::merkle::Root>,
+
+        /// The blockcommitments field of the requested block. Its interpretation changes
+        /// depending on the network and height.
+        #[serde(with = "opthex", rename = "blockcommitments")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        block_commitments: Option<[u8; 32]>,
+
+        /// The root of the Sapling commitment tree after applying this block.
+        #[serde(with = "opthex", rename = "finalsaplingroot")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_sapling_root: Option<[u8; 32]>,
+
+        /// The root of the Orchard commitment tree after applying this block.
+        #[serde(with = "opthex", rename = "finalorchardroot")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_orchard_root: Option<[u8; 32]>,
+
+        /// The height of the requested block.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         time: Option<i64>,
+
+        /// The nonce of the requested block header.
+        #[serde(with = "opthex")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<[u8; 32]>,
+
+        /// The Equihash solution in the requested block header.
+        /// Note: presence of this field in getblock is not documented in zcashd.
+        #[serde(with = "opthex")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        solution: Option<Solution>,
+
+        /// The difficulty threshold of the requested block header displayed in compact form.
+        #[serde(with = "opthex")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bits: Option<CompactDifficulty>,
+
+        /// Floating point number that represents the difficulty limit for this block as a multiple
+        /// of the minimum difficulty for the network.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        difficulty: Option<f64>,
 
         /// List of transaction IDs in block order, hex-encoded.
         tx: Vec<String>,
 
         /// Information about the note commitment trees.
         trees: GetBlockTrees,
+
+        /// The previous block hash of the requested block header.
+        #[serde(
+            rename = "previousblockhash",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        previous_block_hash: Option<GetBlockHash>,
+
+        /// The next block hash after the requested block header.
+        #[serde(
+            rename = "nextblockhash",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        next_block_hash: Option<GetBlockHash>,
     },
 }
 
@@ -261,11 +635,23 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
             }
             GetBlockResponse::Object {
                 hash,
+                block_commitments,
                 confirmations,
+                size,
                 height,
-                time,
+                version,
+                merkle_root,
+                final_sapling_root,
+                final_orchard_root,
                 tx,
+                time,
+                nonce,
+                solution,
+                bits,
+                difficulty,
                 trees,
+                previous_block_hash,
+                next_block_hash,
             } => {
                 let tx_ids: Result<Vec<_>, _> = tx
                     .into_iter()
@@ -277,22 +663,23 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
 
                 Ok(zebra_rpc::methods::GetBlock::Object {
                     hash: zebra_rpc::methods::GetBlockHash(hash.0),
+                    block_commitments,
                     confirmations,
-                    size: None,
+                    size,
                     height,
-                    version: None,
-                    merkle_root: None,
-                    final_sapling_root: None,
-                    final_orchard_root: None,
+                    version,
+                    merkle_root,
+                    final_sapling_root,
+                    final_orchard_root,
                     tx: tx_ids?,
                     time,
-                    nonce: None,
-                    solution: None,
-                    bits: None,
-                    difficulty: None,
+                    nonce,
+                    solution: solution.map(Into::into),
+                    bits,
+                    difficulty,
                     trees: trees.into(),
-                    previous_block_hash: None,
-                    next_block_hash: None,
+                    previous_block_hash: previous_block_hash.map(Into::into),
+                    next_block_hash: next_block_hash.map(Into::into),
                 })
             }
         }

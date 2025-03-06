@@ -212,7 +212,10 @@ impl JsonRpcConnector {
     ///
     /// NOTE: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     ///       This is because the node's queue can become overloaded and stop servicing RPCs.
-    async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
+    async fn send_request<
+        T: std::fmt::Debug + Serialize,
+        R: std::fmt::Debug + for<'de> Deserialize<'de>,
+    >(
         &self,
         method: &str,
         params: T,
@@ -263,6 +266,7 @@ impl JsonRpcConnector {
                 .bytes()
                 .await
                 .map_err(JsonRpcConnectorError::ReqwestError)?;
+
             let body_str = String::from_utf8_lossy(&body_bytes);
 
             if body_str.contains("Work queue depth exceeded") {

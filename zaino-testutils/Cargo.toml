@@ -13,8 +13,6 @@ version = { workspace = true }
 test_fixtures = []
 
 [dependencies]
-zaino-fetch = { workspace = true }
-zaino-state = { workspace = true }
 zainod = { workspace = true }
 
 # Librustzcash

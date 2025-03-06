@@ -150,11 +150,11 @@ impl Indexer {
     /// Returns the indexers current status usize, caliculates from internal statuses.
     fn status_int(&self) -> u16 {
         let service_status = match &self.service {
-            Some(service) => service.inner_ref().status().into(),
+            Some(service) => service.inner_ref().status(),
             None => return 7,
         };
         let server_status = match &self.server {
-            Some(server) => server.status().into(),
+            Some(server) => server.status(),
             None => return 7,
         };
 
@@ -169,11 +169,11 @@ impl Indexer {
     /// Logs the indexers status.
     pub fn log_status(&self) {
         let service_status = match &self.service {
-            Some(service) => service.inner_ref().status().into(),
+            Some(service) => service.inner_ref().status(),
             None => StatusType::Offline,
         };
         let grpc_server_status = match &self.server {
-            Some(server) => server.status().into(),
+            Some(server) => server.status(),
             None => StatusType::Offline,
         };
 
@@ -184,12 +184,6 @@ impl Indexer {
             "Zaino status check - ChainState Service:{}{} gRPC Server:{}{}",
             service_status_symbol, service_status, grpc_server_status_symbol, grpc_server_status
         );
-    }
-}
-
-impl Drop for Indexer {
-    fn drop(&mut self) {
-        let _ = self.close();
     }
 }
 

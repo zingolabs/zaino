@@ -29,10 +29,11 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 
 ## Documentation
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
-- [Testing](./docs/testing.md): Hold instructions fo running tests.
-- [Live Service System Architecture](./docs/live_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino live service.
-- [Library System Architecture](./docs/lib_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino client library.
-- [Internal Architecture](./docs/internal_architecture.pdf): Holds an internal Zaino system architecture diagram.
+- [Testing](./docs/testing.md): Holds instructions for running tests.
+- [Live Service System Architecture](./docs/zaino_live_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino live service.
+- [Library System Architecture](./docs/zaino_lib_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino client library.
+- [ZainoD (Live Service) Internal Architecture](./docs/zaino_serve_architecture_v020.pdf): Holds an internal Zaino system architecture diagram.
+- [Zaino-State (Library) Internal Architecture](./docs/zaino_state_architecture_v020.pdf): Holds an internal Zaino system architecture diagram.
 - [Internal Specification](./docs/internal_spec.md): Holds a specification for Zaino and its crates, detailing their functionality, interfaces and dependencies.
 - [RPC API Spec](./docs/rpc_api.md): Holds a full specification of all of the RPC services served by Zaino.
 - [Cargo Docs](https://zingolabs.github.io/zaino/): Holds a full code specification for Zaino.

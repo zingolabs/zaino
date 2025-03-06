@@ -52,7 +52,7 @@ pub(crate) fn get_build_info() -> BuildInfo {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ServiceMetadata {
+pub struct ServiceMetadata {
     build_info: BuildInfo,
     network: Network,
     zebra_build: String,

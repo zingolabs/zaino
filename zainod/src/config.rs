@@ -265,20 +265,8 @@ pub(crate) fn is_private_listen_addr(addr: &SocketAddr) -> bool {
 pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
     match ip {
-        IpAddr::V4(ipv4) => {
-            if ipv4.is_loopback() {
-                true
-            } else {
-                false
-            }
-        }
-        IpAddr::V6(ipv6) => {
-            if ipv6.is_loopback() {
-                true
-            } else {
-                false
-            }
-        }
+        IpAddr::V4(ipv4) => ipv4.is_loopback(),
+        IpAddr::V6(ipv6) => ipv6.is_loopback(),
     }
 }
 

@@ -22,14 +22,14 @@ use tower::Service;
 
 use zaino_fetch::jsonrpc::connector::{JsonRpcConnector, RpcError};
 use zaino_fetch::jsonrpc::response::TxidsResponse;
+use zaino_proto::proto::compact_formats::ChainMetadata;
 use zaino_proto::proto::compact_formats::{
-    ChainMetadata, CompactBlock, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend,
-    CompactTx,
+    CompactBlock, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
 };
 use zaino_proto::proto::service::BlockRange;
 
 use zebra_chain::{
-    block::{Height, SerializedBlock},
+    block::{Header, Height, SerializedBlock},
     chain_tip::{ChainTip, NetworkChainTipHeightEstimator},
     parameters::{ConsensusBranchId, Network, NetworkUpgrade},
     serialization::{ZcashDeserialize, ZcashSerialize},
@@ -38,9 +38,10 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     methods::{
+        chain_tip_difficulty,
         hex_data::HexData,
         trees::{GetSubtrees, GetTreestate, SubtreeRpcData},
-        types::ValuePoolBalance,
+        types::Balance,
         AddressBalance, AddressStrings, ConsensusBranchIdHex, GetAddressTxIdsRequest,
         GetAddressUtxos, GetBlock, GetBlockChainInfo, GetBlockHash, GetBlockHeader,
         GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetInfo, GetRawTransaction,
@@ -218,10 +219,13 @@ impl ZcashIndexer for StateService {
     type Error = StateServiceError;
 
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
-        Ok(GetInfo::from_parts(
-            self.data.zebra_build(),
-            self.data.zebra_subversion(),
-        ))
+        // A number of these fields are difficult to access from the state service
+        // TODO: Fix this
+        self.rpc_client
+            .get_info()
+            .await
+            .map(GetInfo::from)
+            .map_err(Self::Error::from)
     }
 
     async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error> {
@@ -236,6 +240,8 @@ impl ZcashIndexer for StateService {
                 unreachable!("Unexpected response from state service: {unexpected:?}")
             }
         };
+        let usage_response = self.checked_call(ReadRequest::UsageInfo).await?;
+        let size_on_disk = expected_read_response!(usage_response, UsageInfo);
         let request = zebra_state::ReadRequest::BlockHeader(hash.into());
         let response = self.checked_call(request).await?;
         let header = match response {
@@ -300,15 +306,33 @@ impl ZcashIndexer for StateService {
             )
             .inner(),
         );
+        let difficulty =
+            chain_tip_difficulty(self.config.network.clone(), self.read_state_service.clone())
+                .await
+                .unwrap();
+
+        let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockChainInfo::new(
             self.config.network.bip70_network_name(),
             height,
             hash,
             estimated_height,
-            ValuePoolBalance::from_value_balance(balance),
+            Balance::chain_supply(balance),
+            Balance::value_pools(balance),
             upgrades,
             consensus,
+            height,
+            difficulty,
+            verification_progress,
+            // TODO: store work in the finalized state for each height
+            // see https://github.com/ZcashFoundation/zebra/issues/7109
+            0,
+            false,
+            size_on_disk,
+            // TODO (copied from zebra): Investigate whether this needs to
+            // be implemented (it's sprout-only in zcashd)
+            0,
         ))
     }
 
@@ -394,6 +418,7 @@ impl ZcashIndexer for StateService {
                     difficulty,
                     previous_block_hash,
                     next_block_hash,
+                    block_commitments,
                 } = *header_obj;
 
                 let transactions_response: Vec<GetBlockTransaction> = match txids_or_fullblock {
@@ -462,6 +487,7 @@ impl ZcashIndexer for StateService {
                     final_orchard_root,
                     previous_block_hash: Some(previous_block_hash),
                     next_block_hash,
+                    block_commitments: Some(block_commitments),
                 })
             }
             more_than_two => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
@@ -870,6 +896,12 @@ impl StateService {
                 };
 
             let difficulty = header.difficulty_threshold.relative_to_network(&network);
+            let block_commitments = header_to_block_commitments(
+                &header,
+                &self.config.network,
+                height,
+                final_sapling_root,
+            )?;
 
             let block_header = GetBlockHeaderObject {
                 hash: GetBlockHash(hash),
@@ -886,6 +918,7 @@ impl StateService {
                 difficulty,
                 previous_block_hash: GetBlockHash(header.previous_block_hash),
                 next_block_hash: next_block_hash.map(GetBlockHash),
+                block_commitments,
             };
 
             GetBlockHeader::Object(Box::new(block_header))
@@ -999,6 +1032,8 @@ impl StateService {
             let difficulty = header
                 .difficulty_threshold
                 .relative_to_network(&cloned_network);
+            let block_commitments =
+                header_to_block_commitments(&header, &cloned_network, height, final_sapling_root)?;
 
             Ok(GetBlockHeaderObject {
                 hash: GetBlockHash(hash),
@@ -1015,6 +1050,7 @@ impl StateService {
                 difficulty,
                 previous_block_hash: GetBlockHash(header.previous_block_hash),
                 next_block_hash: next_block_hash.map(GetBlockHash),
+                block_commitments,
             })
         });
 
@@ -1297,627 +1333,32 @@ fn tx_to_compact(
     })
 }
 
-/// !!! NOTE / TODO: This code should be retested before continued development, once zebra regtest is fully operational.
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-    use futures::stream::StreamExt;
-    use zaino_fetch::jsonrpc::connector::test_node_and_return_url;
-    use zaino_proto::proto::service::BlockId;
-    use zaino_testutils::{TestManager, ZEBRAD_CHAIN_CACHE_BIN, ZEBRAD_TESTNET_CACHE_BIN};
-    use zebra_chain::parameters::Network;
-    use zingo_infra_services::validator::Validator;
-    async fn create_test_manager_and_state_service(
-        enable_zaino: bool,
-        zaino_no_sync: bool,
-        zaino_no_db: bool,
-        enable_clients: bool,
-    ) -> (TestManager, StateService) {
-        let test_manager = TestManager::launch(
-            "zebrad",
-            Some(zingo_infra_services::network::Network::Testnet),
-            ZEBRAD_TESTNET_CACHE_BIN.clone(),
-            enable_zaino,
-            zaino_no_sync,
-            zaino_no_db,
-            enable_clients,
-        )
-        .await
-        .unwrap();
-
-        let state_service = StateService::spawn(StateServiceConfig::new(
-            zebra_state::Config {
-                cache_dir: test_manager.data_dir.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Network::new_default_testnet(),
-        ))
-        .await
-        .unwrap();
-        (test_manager, state_service)
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn launch_state_regtest_service_no_cache() {
-        let mut test_manager = TestManager::launch("zebrad", None, None, false, true, true, false)
-            .await
-            .unwrap();
-
-        let state_service = StateService::spawn(StateServiceConfig::new(
-            zebra_state::Config {
-                cache_dir: test_manager.data_dir.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Network::new_regtest(Some(1), Some(1)),
-        ))
-        .await
-        .unwrap();
-
-        assert_eq!(
-            state_service.fetch_status_from_validator().await,
-            StatusType::Ready
-        );
-
-        test_manager.close().await;
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn launch_state_regtest_service_with_cache() {
-        let mut test_manager = TestManager::launch(
-            "zebrad",
-            None,
-            ZEBRAD_CHAIN_CACHE_BIN.clone(),
-            false,
-            true,
-            true,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let state_service = StateService::spawn(StateServiceConfig::new(
-            zebra_state::Config {
-                cache_dir: test_manager.data_dir.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Network::new_regtest(Some(1), Some(1)),
-        ))
-        .await
-        .unwrap();
-
-        assert_eq!(
-            state_service.fetch_status_from_validator().await,
-            StatusType::Ready
-        );
-
-        test_manager.close().await;
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_regtest_get_info() {
-        let mut test_manager = TestManager::launch(
-            "zebrad",
-            None,
-            ZEBRAD_CHAIN_CACHE_BIN.clone(),
-            false,
-            true,
-            true,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let state_service = StateService::spawn(StateServiceConfig::new(
-            zebra_state::Config {
-                cache_dir: test_manager.data_dir.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Network::new_regtest(Some(1), Some(1)),
-        ))
-        .await
-        .unwrap();
-        let json_service = JsonRpcConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                test_manager.zebrad_rpc_listen_address,
-                false,
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
-        )
-        .unwrap();
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_get_info = state_service.get_info().await.unwrap();
-        let state_service_duration = state_start.elapsed();
-
-        let fetch_start = tokio::time::Instant::now();
-        let fetch_service_get_info = json_service.get_info().await.unwrap();
-        let fetch_service_duration = fetch_start.elapsed();
-
-        assert_eq!(state_service_get_info, fetch_service_get_info.into());
-
-        println!("GetInfo responses correct. State-Service processing time: {:?} - fetch-Service processing time: {:?}.", state_service_duration, fetch_service_duration);
-
-        test_manager.close().await;
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_regtest_get_blockchain_info() {
-        let mut test_manager = TestManager::launch(
-            "zebrad",
-            None,
-            ZEBRAD_CHAIN_CACHE_BIN.clone(),
-            false,
-            true,
-            true,
-            false,
-        )
-        .await
-        .unwrap();
-
-        let state_service = StateService::spawn(StateServiceConfig::new(
-            zebra_state::Config {
-                cache_dir: test_manager.data_dir.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Network::new_regtest(Some(1), Some(1)),
-        ))
-        .await
-        .unwrap();
-        let json_service = JsonRpcConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                test_manager.zebrad_rpc_listen_address,
-                false,
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
-        )
-        .unwrap();
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_get_blockchain_info = state_service.get_blockchain_info().await.unwrap();
-        let state_service_duration = state_start.elapsed();
-
-        let fetch_start = tokio::time::Instant::now();
-        let fetch_service_get_blockchain_info = json_service.get_blockchain_info().await.unwrap();
-        let fetch_service_duration = fetch_start.elapsed();
-        let fetch_service_get_blockchain_info: GetBlockChainInfo =
-            fetch_service_get_blockchain_info.into();
-
-        // Zaino-Fetch does not return value_pools, ignore this field.
-        assert_eq!(
-            (
-                state_service_get_blockchain_info.chain(),
-                state_service_get_blockchain_info.blocks(),
-                state_service_get_blockchain_info.best_block_hash(),
-                state_service_get_blockchain_info.estimated_height(),
-                state_service_get_blockchain_info.upgrades(),
-                state_service_get_blockchain_info.consensus(),
+fn header_to_block_commitments(
+    header: &Header,
+    network: &Network,
+    height: Height,
+    final_sapling_root: [u8; 32],
+) -> Result<[u8; 32], StateServiceError> {
+    let hash = match header.commitment(network, height).map_err(|e| {
+        StateServiceError::SerializationError(
+            zebra_chain::serialization::SerializationError::Parse(
+                // For some reason this error type takes a
+                // &'static str, and the the only way to create one
+                // dynamically is to leak a String. This shouldn't
+                // be a concern, as this error case should
+                // never occur when communing with a zebrad, which
+                // validates this field before serializing it
+                e.to_string().leak(),
             ),
-            (
-                fetch_service_get_blockchain_info.chain(),
-                fetch_service_get_blockchain_info.blocks(),
-                fetch_service_get_blockchain_info.best_block_hash(),
-                fetch_service_get_blockchain_info.estimated_height(),
-                fetch_service_get_blockchain_info.upgrades(),
-                fetch_service_get_blockchain_info.consensus(),
-            )
-        );
-
-        println!("GetBlockChainInfo responses correct. State-Service processing time: {:?} - fetch-Service processing time: {:?}.", state_service_duration, fetch_service_duration);
-
-        test_manager.close().await;
-    }
-
-    /// Bug documented in https://github.com/zingolabs/zaino/issues/146.
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_get_blockchain_info_no_cache() {
-        let mut test_manager = TestManager::launch("zebrad", None, None, false, true, true, false)
-            .await
-            .unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-
-        let state_service = StateService::spawn(StateServiceConfig::new(
-            zebra_state::Config {
-                cache_dir: test_manager.data_dir.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Network::new_regtest(Some(1), Some(1)),
-        ))
-        .await
-        .unwrap();
-        let json_service = JsonRpcConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                test_manager.zebrad_rpc_listen_address,
-                false,
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
         )
-        .unwrap();
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_get_blockchain_info = state_service.get_blockchain_info().await.unwrap();
-        let state_service_duration = state_start.elapsed();
-
-        let fetch_start = tokio::time::Instant::now();
-        let fetch_service_get_blockchain_info = json_service.get_blockchain_info().await.unwrap();
-        let fetch_service_duration = fetch_start.elapsed();
-        let fetch_service_get_blockchain_info: GetBlockChainInfo =
-            fetch_service_get_blockchain_info.into();
-
-        println!(
-            "Fetch Service Chain Height: {}",
-            fetch_service_get_blockchain_info.blocks().0
-        );
-        println!(
-            "State Service Chain Height: {}",
-            state_service_get_blockchain_info.blocks().0
-        );
-
-        test_manager.local_net.print_stdout();
-
-        // Zaino-Fetch does not return value_pools, ignore this field.
-        assert_eq!(
-            (
-                state_service_get_blockchain_info.chain(),
-                state_service_get_blockchain_info.blocks(),
-                state_service_get_blockchain_info.best_block_hash(),
-                state_service_get_blockchain_info.estimated_height(),
-                state_service_get_blockchain_info.upgrades(),
-                state_service_get_blockchain_info.consensus(),
-            ),
-            (
-                fetch_service_get_blockchain_info.chain(),
-                fetch_service_get_blockchain_info.blocks(),
-                fetch_service_get_blockchain_info.best_block_hash(),
-                fetch_service_get_blockchain_info.estimated_height(),
-                fetch_service_get_blockchain_info.upgrades(),
-                fetch_service_get_blockchain_info.consensus(),
-            )
-        );
-
-        println!("GetBlockChainInfo responses correct. State-Service processing time: {:?} - fetch-Service processing time: {:?}.", state_service_duration, fetch_service_duration);
-
-        test_manager.close().await;
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_regtest_get_block_raw() {
-        let (mut test_manager, state_service) =
-            create_test_manager_and_state_service(false, true, true, false).await;
-        let fetch_service = zaino_fetch::jsonrpc::connector::JsonRpcConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                test_manager.zebrad_rpc_listen_address,
-                false,
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
-        )
-        .unwrap();
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_get_block = state_service
-            .z_get_block("1".to_string(), Some(0))
-            .await
-            .unwrap();
-        let state_service_duration = state_start.elapsed();
-
-        let fetch_start = tokio::time::Instant::now();
-        let fetch_service_get_block = fetch_service
-            .get_block("1".to_string(), Some(0))
-            .await
-            .unwrap();
-        let fetch_service_duration = fetch_start.elapsed();
-
-        assert_eq!(
-            state_service_get_block,
-            fetch_service_get_block.try_into().unwrap()
-        );
-
-        println!("GetBlock(raw) responses correct. State-Service processing time: {:?} - fetch-Service processing time: {:?}.", state_service_duration, fetch_service_duration);
-
-        test_manager.close().await;
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_regtest_get_block_object() {
-        let (mut test_manager, state_service) =
-            create_test_manager_and_state_service(false, true, true, false).await;
-        let fetch_service = zaino_fetch::jsonrpc::connector::JsonRpcConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                test_manager.zebrad_rpc_listen_address,
-                false,
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
-        )
-        .unwrap();
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_get_block = state_service
-            .z_get_block("1".to_string(), Some(1))
-            .await
-            .unwrap();
-        let state_service_duration = state_start.elapsed();
-
-        let fetch_start = tokio::time::Instant::now();
-        let fetch_service_get_block = fetch_service
-            .get_block("1".to_string(), Some(1))
-            .await
-            .unwrap();
-        let fetch_service_duration = fetch_start.elapsed();
-
-        // Zaino-fetch only returns fields that are required by the lightwallet services. Check those fields match and ignore the others.
-        match (
-            state_service_get_block,
-            fetch_service_get_block.try_into().unwrap(),
-        ) {
-            (
-                zebra_rpc::methods::GetBlock::Object {
-                    hash: state_hash,
-                    confirmations: state_confirmations,
-                    height: state_height,
-                    time: state_time,
-                    tx: state_tx,
-                    trees: state_trees,
-                    ..
-                },
-                zebra_rpc::methods::GetBlock::Object {
-                    hash: fetch_hash,
-                    confirmations: fetch_confirmations,
-                    height: fetch_height,
-                    time: fetch_time,
-                    tx: fetch_tx,
-                    trees: fetch_trees,
-                    ..
-                },
-            ) => {
-                assert_eq!(state_hash, fetch_hash);
-                assert_eq!(state_confirmations, fetch_confirmations);
-                assert_eq!(state_height, fetch_height);
-                assert_eq!(state_time, fetch_time);
-                assert_eq!(state_tx, fetch_tx);
-                assert_eq!(state_trees, fetch_trees);
-            }
-            _ => panic!("Mismatched variants or unexpected types in block response"),
+    })? {
+        zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
+        zebra_chain::block::Commitment::FinalSaplingRoot(_root) => final_sapling_root,
+        zebra_chain::block::Commitment::ChainHistoryActivationReserved => [0; 32],
+        zebra_chain::block::Commitment::ChainHistoryRoot(root) => root.bytes_in_display_order(),
+        zebra_chain::block::Commitment::ChainHistoryBlockTxAuthCommitment(hash) => {
+            hash.bytes_in_display_order()
         }
-
-        println!("GetBlock(object) responses correct. State-Service processing time: {:?} - fetch-Service processing time: {:?}.", state_service_duration, fetch_service_duration);
-
-        test_manager.close().await;
-    }
-
-    /// WARNING: This tests needs refactoring due to code removed in zaino-state.
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_regtest_get_block_compact() {
-        let (mut test_manager, state_service) =
-            create_test_manager_and_state_service(false, true, true, false).await;
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_get_compact_block = StateService::get_compact_block(
-            &state_service.read_state_service,
-            "1".to_string(),
-            &state_service.config.network,
-        )
-        .await
-        .unwrap();
-        let state_service_duration = state_start.elapsed();
-
-        dbg!(state_service_get_compact_block);
-
-        println!(
-            "State-Service processing time: {:?}.",
-            state_service_duration
-        );
-
-        test_manager.close().await;
-    }
-
-    /// WARNING: This tests needs refactoring due to code removed in zaino-state.
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_regtest_get_block_range() {
-        let (mut test_manager, state_service) =
-            create_test_manager_and_state_service(false, true, true, false).await;
-        let block_range = BlockRange {
-            start: Some(BlockId {
-                height: 50,
-                hash: Vec::new(),
-            }),
-            end: Some(BlockId {
-                height: 1,
-                hash: Vec::new(),
-            }),
-        };
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_stream = state_service
-            .get_block_range(block_range.clone())
-            .await
-            .unwrap();
-        let state_service_compact_blocks: Vec<_> = state_service_stream.collect().await;
-        let state_service_duration = state_start.elapsed();
-
-        // Extract only the successful `CompactBlock` results
-        let state_blocks: Vec<_> = state_service_compact_blocks
-            .into_iter()
-            .filter_map(|result| result.ok())
-            .collect();
-
-        dbg!(state_blocks);
-
-        println!(
-            "State-Service processing time: {:?}.",
-            state_service_duration
-        );
-
-        test_manager.close().await;
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_testnet_get_block_range_large() {
-        let (mut test_manager, state_service) =
-            create_test_manager_and_state_service(false, true, true, false).await;
-
-        let block_range = BlockRange {
-            start: Some(BlockId {
-                height: 2000000,
-                hash: Vec::new(),
-            }),
-            end: Some(BlockId {
-                height: 3000000,
-                hash: Vec::new(),
-            }),
-        };
-
-        let num_blocks =
-            block_range.clone().end.unwrap().height - block_range.clone().start.unwrap().height;
-        println!("Fetching {} blocks in range: {:?}", num_blocks, block_range);
-
-        let state_start = tokio::time::Instant::now();
-        let state_service_stream = state_service
-            .get_block_range(block_range.clone())
-            .await
-            .unwrap();
-        let state_service_compact_blocks: Vec<_> = state_service_stream.collect().await;
-        let state_service_duration = state_start.elapsed();
-
-        let state_blocks: Vec<_> = state_service_compact_blocks
-            .into_iter()
-            .filter_map(|result| result.ok())
-            .collect();
-
-        println!("First block in range: {:?}", state_blocks.first());
-        println!("Last block in range: {:?}", state_blocks.last());
-        println!("GetBlockRange response received. State-Service fetch 1,000,000 blocks in processing time: {:?}.", state_service_duration);
-
-        test_manager.close().await;
-    }
-
-    #[ignore = "ignoring until working reliably."]
-    #[tokio::test]
-    async fn state_service_testnet_get_blockchain_info() {
-        let (mut test_manager, state_service) =
-            create_test_manager_and_state_service(false, true, true, false).await;
-
-        let fetch_service = zaino_fetch::jsonrpc::connector::JsonRpcConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                test_manager.zebrad_rpc_listen_address,
-                false,
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
-        )
-        .unwrap();
-        let state_service_bcinfo = state_service.get_blockchain_info().await.unwrap();
-        let fetch_service_bcinfo = fetch_service.get_blockchain_info().await.unwrap();
-
-        dbg!(state_service_bcinfo);
-        dbg!(fetch_service_bcinfo);
-
-        // assert_eq!(state_service_bcinfo, fetch_service_bcinfo);
-
-        test_manager.close().await;
-    }
+    };
+    Ok(hash)
 }

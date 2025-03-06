@@ -317,8 +317,8 @@ impl NonFinalisedState {
                             .insert(Height(block_height), hash, None);
                         self.hashes_to_blocks.insert(hash, block, None);
                         info!(
-                            "Block at height {} successfully inserted in non-finalised state.",
-                            block_height
+                            "Block at height [{}] with hash [{}] successfully committed to non-finalised state.",
+                            block_height, hash,
                         );
                         break;
                     }
