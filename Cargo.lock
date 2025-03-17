@@ -617,6 +617,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cesu8"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
+
+[[package]]
 name = "cexpr"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,6 +771,16 @@ name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
+
+[[package]]
+name = "combine"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+dependencies = [
+ "bytes",
+ "memchr",
+]
 
 [[package]]
 name = "const-oid"
@@ -1765,7 +1781,7 @@ dependencies = [
  "hyper-util",
  "log",
  "rustls",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.1",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -2076,9 +2092,9 @@ dependencies = [
  "zaino-proto",
  "zaino-state",
  "zaino-testutils",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-rpc 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-rpc 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-state 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
  "zingo-infra-testutils",
  "zingolib",
 ]
@@ -2129,6 +2145,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d75a2a4b1b190afb6f5425f10f6a8f959d2ea0b9c2b1d79553551850539e4674"
 
 [[package]]
+name = "jni"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6df18c2e3db7e453d3c6ac5b3e9d5182664d28788126d39b91f2d1e22b017ec"
+dependencies = [
+ "cesu8",
+ "combine",
+ "jni-sys",
+ "log",
+ "thiserror 1.0.69",
+ "walkdir",
+]
+
+[[package]]
+name = "jni-sys"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eaf4bc02d17cbdd7ff4c7438cafcdf7fb9a4613313ad11b4f8fefe7d3fa0130"
+
+[[package]]
 name = "jobserver"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2175,6 +2211,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "834af00800e962dee8f7bfc0f60601de215e73e78e5497d733a2919da837d3c8"
 dependencies = [
  "jsonrpsee-core",
+ "jsonrpsee-http-client",
  "jsonrpsee-server",
  "jsonrpsee-types",
  "tokio",
@@ -2201,6 +2238,31 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "jsonrpsee-http-client"
+version = "0.24.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87c24e981ad17798bbca852b0738bfb7b94816ed687bd0d5da60bfa35fa0fdc3"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "http-body",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "jsonrpsee-core",
+ "jsonrpsee-types",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2329,7 +2391,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -3707,6 +3769,19 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-certs"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5bfb394eeed242e909609f56089eecfe5fda225042e8b171791b9c95f5931e5"
+dependencies = [
+ "openssl-probe",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework 2.11.1",
+]
+
+[[package]]
+name = "rustls-native-certs"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fcff2dd52b58a8d98a70243663a0d234c4e2b79235637849d15913394a247d3"
@@ -3734,6 +3809,33 @@ checksum = "917ce264624a4b4db1c364dcc35bfca9ded014d0a958cd47ad3e960e988ea51c"
 dependencies = [
  "web-time",
 ]
+
+[[package]]
+name = "rustls-platform-verifier"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afbb878bdfdf63a336a5e63561b1835e7a8c91524f51621db870169eac84b490"
+dependencies = [
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "jni",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-native-certs 0.7.3",
+ "rustls-platform-verifier-android",
+ "rustls-webpki",
+ "security-framework 2.11.1",
+ "security-framework-sys",
+ "webpki-roots 0.26.8",
+ "winapi",
+]
+
+[[package]]
+name = "rustls-platform-verifier-android"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
@@ -3865,6 +3967,7 @@ dependencies = [
  "core-foundation 0.9.4",
  "core-foundation-sys",
  "libc",
+ "num-bigint",
  "security-framework-sys",
 ]
 
@@ -4537,7 +4640,7 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.1",
  "rustls-pemfile",
  "socket2",
  "tokio",
@@ -4602,7 +4705,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "0.2.41-beta.21"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "futures",
  "futures-core",
@@ -4634,7 +4737,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.41-beta.21"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -5165,7 +5268,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -5464,9 +5567,9 @@ dependencies = [
  "url",
  "zaino-proto",
  "zcash_protocol 0.4.0",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-rpc 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-rpc 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-state 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -5498,9 +5601,9 @@ dependencies = [
  "zaino-fetch",
  "zaino-proto",
  "zaino-state",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-rpc 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-rpc 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-state 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -5530,9 +5633,9 @@ dependencies = [
  "whoami",
  "zaino-fetch",
  "zaino-proto",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-rpc 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-rpc 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-state 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
  "zingo-infra-services",
  "zingolib",
 ]
@@ -5555,7 +5658,7 @@ dependencies = [
  "zainod",
  "zcash_client_backend",
  "zcash_protocol 0.4.0",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
  "zingo-infra-testutils",
  "zingolib",
 ]
@@ -5577,7 +5680,7 @@ dependencies = [
  "zaino-fetch",
  "zaino-serve",
  "zaino-state",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -5673,12 +5776,13 @@ dependencies = [
 [[package]]
 name = "zcash_history"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fde17bf53792f9c756b313730da14880257d7661b5bfc69d0571c3a7c11a76d"
+source = "git+https://github.com/idky137/librustzcash.git?branch=remote_read_state_service_1#2f66120327fb666bd5955ea57aa6dbd36ef95652"
 dependencies = [
  "blake2b_simd",
  "byteorder",
+ "hex",
  "primitive-types",
+ "serde",
 ]
 
 [[package]]
@@ -5887,7 +5991,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "bitflags 2.8.0",
  "bitflags-serde-legacy",
@@ -5999,7 +6103,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6020,16 +6124,16 @@ dependencies = [
  "thiserror 2.0.11",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control 0.2.41-beta.21 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "tower-fallback 0.2.41-beta.21 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "tower-batch-control 0.2.41-beta.21 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "tower-fallback 0.2.41-beta.21 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
  "tracing",
  "tracing-futures",
  "wagyu-zcash-parameters",
  "zcash_proofs 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-node-services 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-script 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-node-services 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-script 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-state 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -6071,7 +6175,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "bitflags 2.8.0",
  "byteorder",
@@ -6101,7 +6205,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-futures",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -6143,7 +6247,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6151,7 +6255,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -6171,7 +6275,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6193,12 +6297,12 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "zcash_primitives 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-consensus 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-network 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-node-services 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-script 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
- "zebra-state 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-consensus 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-network 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-node-services 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-script 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
+ "zebra-state 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -6238,11 +6342,11 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "thiserror 2.0.11",
  "zcash_script",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]
@@ -6258,7 +6362,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git?branch=main#29ed501f11bf00c11214ee151a6f892619e72183"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
 dependencies = [
  "bincode",
  "chrono",
@@ -6271,6 +6375,7 @@ dependencies = [
  "humantime-serde",
  "indexmap 2.7.1",
  "itertools 0.14.0",
+ "jsonrpsee",
  "lazy_static",
  "metrics",
  "mset",
@@ -6285,7 +6390,8 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "tracing",
- "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?branch=main)",
+ "url",
+ "zebra-chain 1.0.0-beta.45 (git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2)",
 ]
 
 [[package]]

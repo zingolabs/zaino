@@ -126,6 +126,88 @@ impl From<FetchServiceError> for tonic::Status {
     }
 }
 
+/// Errors related to the `FetchService`.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteStateServiceError {
+    /// Custom Errors. *Remove before production.
+    #[error("Custom error: {0}")]
+    Custom(String),
+
+    /// Critical Errors, Restart Zaino.
+    #[error("Critical error: {0}")]
+    Critical(String),
+
+    /// Error from JsonRpcConnector.
+    #[error("JsonRpcConnector error: {0}")]
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpc::error::JsonRpcConnectorError),
+
+    /// Error from the block cache.
+    #[error("Mempool error: {0}")]
+    BlockCacheError(#[from] BlockCacheError),
+
+    /// Error from the mempool.
+    #[error("Mempool error: {0}")]
+    MempoolError(#[from] MempoolError),
+
+    /// RPC error in compatibility with zcashd.
+    #[error("RPC error: {0:?}")]
+    RpcError(#[from] zaino_fetch::jsonrpc::connector::RpcError),
+
+    /// Tonic gRPC error.
+    #[error("Tonic status error: {0}")]
+    TonicStatusError(#[from] tonic::Status),
+
+    /// Serialization error.
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] zebra_chain::serialization::SerializationError),
+
+    /// Integer conversion error.
+    #[error("Integer conversion error: {0}")]
+    TryFromIntError(#[from] std::num::TryFromIntError),
+
+    /// std::io::Error
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    /// A generic boxed error.
+    #[error("Generic error: {0}")]
+    Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl From<RemoteStateServiceError> for tonic::Status {
+    fn from(error: RemoteStateServiceError) -> Self {
+        match error {
+            RemoteStateServiceError::Custom(message) => tonic::Status::internal(message),
+            RemoteStateServiceError::Critical(message) => tonic::Status::internal(message),
+            RemoteStateServiceError::JsonRpcConnectorError(err) => {
+                tonic::Status::internal(format!("JsonRpcConnector error: {}", err))
+            }
+            RemoteStateServiceError::BlockCacheError(err) => {
+                tonic::Status::internal(format!("BlockCache error: {}", err))
+            }
+            RemoteStateServiceError::MempoolError(err) => {
+                tonic::Status::internal(format!("Mempool error: {}", err))
+            }
+            RemoteStateServiceError::RpcError(err) => {
+                tonic::Status::internal(format!("RPC error: {:?}", err))
+            }
+            RemoteStateServiceError::TonicStatusError(err) => err,
+            RemoteStateServiceError::SerializationError(err) => {
+                tonic::Status::internal(format!("Serialization error: {}", err))
+            }
+            RemoteStateServiceError::TryFromIntError(err) => {
+                tonic::Status::internal(format!("Integer conversion error: {}", err))
+            }
+            RemoteStateServiceError::IoError(err) => {
+                tonic::Status::internal(format!("IO error: {}", err))
+            }
+            RemoteStateServiceError::Generic(err) => {
+                tonic::Status::internal(format!("Generic error: {}", err))
+            }
+        }
+    }
+}
+
 /// Errors related to the `Mempool`.
 #[derive(Debug, thiserror::Error)]
 pub enum MempoolError {

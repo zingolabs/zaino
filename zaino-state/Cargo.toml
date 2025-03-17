@@ -13,9 +13,9 @@ zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
 # Zebra
-zebra-chain = { workspace = true }
-zebra-state = { workspace = true }
-zebra-rpc = { workspace = true }
+zebra-chain = { workspace = true, features = ["remote_read_state_service"] }
+zebra-state = { workspace = true, features = ["remote_read_state_service"] }
+zebra-rpc = { workspace = true, features = ["remote_read_state_service"] }
 
 # Tracing
 tracing = { workspace = true }

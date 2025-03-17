@@ -56,6 +56,8 @@ use zebra_state::{
     ReadResponse, ReadStateService, TransactionLocation,
 };
 
+/// Returns either the expected [`ReadResponse`] or an "Unexpected Error" error.
+#[macro_export]
 macro_rules! expected_read_response {
     ($response:ident, $expected_variant:ident) => {
         match $response {
@@ -1333,23 +1335,21 @@ fn tx_to_compact(
     })
 }
 
-fn header_to_block_commitments(
+pub(crate) fn header_to_block_commitments(
     header: &Header,
     network: &Network,
     height: Height,
     final_sapling_root: [u8; 32],
-) -> Result<[u8; 32], StateServiceError> {
+) -> Result<[u8; 32], zebra_chain::serialization::SerializationError> {
     let hash = match header.commitment(network, height).map_err(|e| {
-        StateServiceError::SerializationError(
-            zebra_chain::serialization::SerializationError::Parse(
-                // For some reason this error type takes a
-                // &'static str, and the the only way to create one
-                // dynamically is to leak a String. This shouldn't
-                // be a concern, as this error case should
-                // never occur when communing with a zebrad, which
-                // validates this field before serializing it
-                e.to_string().leak(),
-            ),
+        zebra_chain::serialization::SerializationError::Parse(
+            // For some reason this error type takes a
+            // &'static str, and the the only way to create one
+            // dynamically is to leak a String. This shouldn't
+            // be a concern, as this error case should
+            // never occur when communing with a zebrad, which
+            // validates this field before serializing it
+            e.to_string().leak(),
         )
     })? {
         zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,

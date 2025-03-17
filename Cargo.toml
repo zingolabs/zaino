@@ -34,10 +34,9 @@ zcash_protocol = { git = "https://github.com/zingolabs/librustzcash.git", tag = 
 
 # Zebra
 # This should be changed to a specific release tag once Zebra regtest stabalizes, currently main is used to fetch most recent bug fixes from Zebra.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", branch = "main" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", branch = "main" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", branch = "main" }
-
+zebra-chain = { git = "https://github.com/idky137/zebra.git", branch = "remote_read_state_service_2", features = ["remote_read_state_service"] }
+zebra-state = { git = "https://github.com/idky137/zebra.git", branch = "remote_read_state_service_2", features = ["remote_read_state_service"] }
+zebra-rpc = { git = "https://github.com/idky137/zebra.git", branch = "remote_read_state_service_2", features = ["remote_read_state_service"] }
 
 # Zingo-infra-testutils
 zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "f6db556d1a6d3efc59c7805446e9e230b2a688d6" }
@@ -104,6 +103,9 @@ zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
 zaino-testutils = { path = "zaino-testutils" }
 zainod = { path = "zainod" }
+
+[patch.crates-io]
+zcash_history = { git = "https://github.com/idky137/librustzcash.git", branch = "remote_read_state_service_1"}
 
 [profile.test]
 opt-level = 3

@@ -19,6 +19,7 @@ pub mod indexer;
 pub mod fetch;
 pub mod local_cache;
 pub mod mempool;
+pub mod remote_state;
 pub mod state;
 
 // Exposed backend Indexer functionality
