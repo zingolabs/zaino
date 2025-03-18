@@ -48,7 +48,7 @@ async fn create_test_manager_and_services(
         _ => (Network::new_regtest(Some(1), Some(1)), true),
     };
 
-    test_manager.local_net.print_stdout();
+    // test_manager.local_net.print_stdout();
 
     let config = FetchServiceConfig::new(
         test_manager.zebrad_rpc_listen_address,
@@ -238,7 +238,7 @@ async fn remote_state_service_get_address_balance_regtest_zebrad() {
     remote_state_service_get_address_balance("zebrad").await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_get_address_balance_testnet_zebrad() {
     remote_state_service_get_address_balance_testnet().await;
@@ -351,7 +351,7 @@ async fn remote_state_service_get_block_raw_regtest_zebrad() {
     remote_state_service_get_block_raw("zebrad", None, services::network::Network::Regtest).await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_get_block_raw_testnet_zebrad() {
     remote_state_service_get_block_raw(
@@ -401,7 +401,7 @@ async fn remote_state_service_get_block_object_regtest_zebrad() {
         .await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_get_block_object_testnet_zebrad() {
     remote_state_service_get_block_object(
@@ -451,7 +451,7 @@ async fn remote_state_service_get_raw_mempool_regtest_zebrad() {
     remote_state_service_get_raw_mempool("zebrad").await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_get_raw_mempool_testnet_zebrad() {
     remote_state_service_get_raw_mempool_testnet().await;
@@ -562,7 +562,7 @@ async fn remote_state_service_z_get_treestate_regtest_zebrad() {
     remote_state_service_z_get_treestate("zebrad").await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_z_get_treestate_testnet_zebrad() {
     remote_state_service_z_get_treestate_testnet().await;
@@ -664,7 +664,7 @@ async fn remote_state_service_z_get_subtrees_by_index_regtest_zebrad() {
     remote_state_service_z_get_subtrees_by_index("zebrad").await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_z_get_subtrees_by_index_testnet_zebrad() {
     remote_state_service_z_get_subtrees_by_index_testnet().await;
@@ -788,7 +788,7 @@ async fn remote_state_service_get_raw_transaction_regtest_zebrad() {
     remote_state_service_get_raw_transaction("zebrad").await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_get_raw_transaction_testnet_zebrad() {
     remote_state_service_get_raw_transaction_testnet().await;
@@ -894,7 +894,7 @@ async fn remote_state_service_get_address_tx_ids_regtest_zebrad() {
     remote_state_service_get_address_tx_ids("zebrad").await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_get_address_tx_ids_testnet_zebrad() {
     remote_state_service_get_address_tx_ids_testnet().await;
@@ -953,14 +953,17 @@ async fn remote_state_service_get_address_tx_ids(validator: &str) {
         .await
         .unwrap();
 
-    let state_service_txids = remote_state_subscriber
+    let state_service_txids_result = remote_state_subscriber
         .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
             vec![recipient_address],
             chain_height - 2,
             chain_height,
         ))
-        .await
-        .unwrap();
+        .await;
+
+    dbg!(&state_service_txids_result);
+    // test_manager.local_net.print_stdout();
+    let state_service_txids = state_service_txids_result.unwrap();
 
     dbg!(&tx);
     dbg!(&fetch_service_txids);
@@ -1000,12 +1003,15 @@ async fn remote_state_service_get_address_tx_ids_testnet() {
     )
     .unwrap();
 
-    let state_service_tx_ids = dbg!(
+    let state_service_tx_ids_result = dbg!(
         remote_state_subscriber
             .get_address_tx_ids(address_request)
             .await
-    )
-    .unwrap();
+    );
+
+    test_manager.local_net.print_stdout();
+
+    let state_service_tx_ids = state_service_tx_ids_result.unwrap();
 
     assert_eq!(fetch_service_tx_ids, state_service_tx_ids);
 
@@ -1014,11 +1020,11 @@ async fn remote_state_service_get_address_tx_ids_testnet() {
 
 // #[ignore = "currently fails due to error in TrustedChainSync [https://github.com/zingolabs/zaino/issues/231]."]
 #[tokio::test]
-async fn remote_state_service_get_address_utxos_zebrad() {
+async fn remote_state_service_get_address_utxos_regtest_zebrad() {
     remote_state_service_get_address_utxos("zebrad").await;
 }
 
-#[ignore = "testnet."]
+#[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn remote_state_service_get_address_utxos_testnet_zebrad() {
     remote_state_service_get_address_utxos_testnet().await;
@@ -1062,16 +1068,27 @@ async fn remote_state_service_get_address_utxos(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
+    let address_string = AddressStrings::new_valid(vec![recipient_address.clone()]).unwrap();
+
+    dbg!(&address_string);
+
     let fetch_service_utxos = fetch_service_subscriber
-        .z_get_address_utxos(AddressStrings::new_valid(vec![recipient_address.clone()]).unwrap())
+        .z_get_address_utxos(address_string.clone())
         .await
         .unwrap();
+
+    dbg!(&fetch_service_utxos);
+
     let (_, fetch_service_txid, ..) = fetch_service_utxos[0].into_parts();
 
-    let state_service_utxos = remote_state_subscriber
-        .z_get_address_utxos(AddressStrings::new_valid(vec![recipient_address]).unwrap())
-        .await
-        .unwrap();
+    let state_service_utxos_result = remote_state_subscriber
+        .z_get_address_utxos(address_string)
+        .await;
+
+    dbg!(&state_service_utxos_result);
+    // test_manager.local_net.print_stdout();
+    let state_service_utxos = state_service_utxos_result.unwrap();
+
     let (_, state_service_txid, ..) = state_service_utxos[0].into_parts();
 
     dbg!(&txid_1);
@@ -1115,12 +1132,15 @@ async fn remote_state_service_get_address_utxos_testnet() {
     )
     .unwrap();
 
-    let state_service_tx_utxos = dbg!(
+    let state_service_tx_utxos_result = dbg!(
         remote_state_subscriber
             .z_get_address_utxos(address_request)
             .await
-    )
-    .unwrap();
+    );
+
+    test_manager.local_net.print_stdout();
+
+    let state_service_tx_utxos = state_service_tx_utxos_result.unwrap();
 
     assert_eq!(fetch_service_utxos, state_service_tx_utxos);
 

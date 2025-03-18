@@ -463,24 +463,30 @@ impl ZcashIndexer for RemoteStateServiceSubscriber {
             .inner(),
         );
 
-        // Calculate dificulty
-        let response = remote_state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::ChainInfo))
-            .await?;
-        let chain_info = match response {
-            ReadResponse::ChainInfo(info) => info,
-            _ => unreachable!("unmatched response to a chain info request"),
+        let difficulty = if self.config.network.clone().is_regtest() {
+            0.0
+        } else {
+            let response = dbg!(
+                remote_state
+                    .ready()
+                    .and_then(|service| service.call(ReadRequest::ChainInfo))
+                    .await
+            )?;
+            let chain_info = match response {
+                ReadResponse::ChainInfo(info) => info,
+                _ => unreachable!("unmatched response to a chain info request"),
+            };
+            // // Shift out the lower 128 bits (256 bits, but the top 128 are all zeroes)
+            let difficulty = chain_info
+                .expected_difficulty
+                .to_expanded()
+                .map(|expanded| zebra_chain::work::difficulty::U256::from(expanded) >> 128)
+                .unwrap_or(zebra_chain::work::difficulty::U256::zero());
+            // Convert to u128 then f64.
+            // We could also convert U256 to String, then parse as f64, but that's slower.
+            let difficulty = difficulty.as_u128() as f64;
+            difficulty
         };
-        // // Shift out the lower 128 bits (256 bits, but the top 128 are all zeroes)
-        let difficulty = chain_info
-            .expected_difficulty
-            .to_expanded()
-            .map(|expanded| zebra_chain::work::difficulty::U256::from(expanded) >> 128)
-            .unwrap_or(zebra_chain::work::difficulty::U256::zero());
-        // Convert to u128 then f64.
-        // We could also convert U256 to String, then parse as f64, but that's slower.
-        let difficulty = difficulty.as_u128() as f64;
 
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 

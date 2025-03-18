@@ -2391,7 +2391,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -4705,7 +4705,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "0.2.41-beta.21"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "futures",
  "futures-core",
@@ -4721,7 +4721,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "0.2.41-beta.21"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "futures",
  "futures-core",
@@ -4737,7 +4737,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.41-beta.21"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -4748,7 +4748,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.41-beta.21"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -5268,7 +5268,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5991,7 +5991,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "bitflags 2.8.0",
  "bitflags-serde-legacy",
@@ -6047,7 +6047,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "bitflags 2.8.0",
  "bitflags-serde-legacy",
@@ -6103,7 +6103,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6139,7 +6139,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6175,7 +6175,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "bitflags 2.8.0",
  "byteorder",
@@ -6211,7 +6211,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "bitflags 2.8.0",
  "byteorder",
@@ -6247,7 +6247,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6261,7 +6261,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6275,7 +6275,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6308,7 +6308,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6342,7 +6342,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "thiserror 2.0.11",
  "zcash_script",
@@ -6352,7 +6352,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "thiserror 2.0.11",
  "zcash_script",
@@ -6362,7 +6362,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#f1a84958fbd545c12659ba2d3c1c5262dd02b32b"
+source = "git+https://github.com/idky137/zebra.git?branch=remote_read_state_service_2#60bb1c495df9cb749d26270c8743b14f42fef3bc"
 dependencies = [
  "bincode",
  "chrono",
@@ -6397,7 +6397,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "1.0.0-beta.45"
-source = "git+https://github.com/ZcashFoundation/zebra.git#79e18e045ce8ca11c4078495e2425cc204cf03c2"
+source = "git+https://github.com/ZcashFoundation/zebra.git#f0140a4cd8bbc7b1eb8b5d3be7be60e6248b0802"
 dependencies = [
  "bincode",
  "chrono",
