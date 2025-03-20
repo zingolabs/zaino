@@ -101,12 +101,17 @@ impl ZcashService for RemoteStateService {
     async fn spawn(config: FetchServiceConfig) -> Result<Self, RemoteStateServiceError> {
         info!("Launching Chain Fetch Service..");
 
+        let cookie_auth_path = match config.validator_cookie_auth {
+            true => config.validator_cookie_path.clone(),
+            false => None,
+        };
+
         let rpc_client = JsonRpcConnector::new_from_config_parts(
             config.validator_cookie_auth,
             config.validator_rpc_address,
             config.validator_rpc_user.clone(),
             config.validator_rpc_password.clone(),
-            config.validator_cookie_path.clone(),
+            cookie_auth_path.clone(),
         )
         .await?;
 
@@ -127,11 +132,12 @@ impl ZcashService for RemoteStateService {
             test_node_and_return_url(
                 config.validator_rpc_address,
                 config.validator_cookie_auth,
-                config.validator_cookie_path.clone(),
+                cookie_auth_path.clone(),
                 Some(config.validator_rpc_user.clone()),
                 Some(config.validator_rpc_password.clone()),
             )
             .await?,
+            cookie_auth_path.clone(),
         )?;
 
         let fetch_service = Self {
