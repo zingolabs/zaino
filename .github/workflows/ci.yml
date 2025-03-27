@@ -7,7 +7,7 @@ on:
 jobs:
   deps-cache:
     name: Cache Dependencies
-    runs-on: ${{ vars.RUNNER_TYPE || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_TYPE || 'ubuntu-latest-large' }}
     steps:
       - uses: actions/checkout@v4
       
