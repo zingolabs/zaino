@@ -82,16 +82,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4, 5, 6, 7, 8]
+        layer:
+          - client_rpcs
+          - fetch_service
+          - local_cache
+          - state_service
+          - wallet_to_validator
+          - zaino-testutils
 
     steps:
-
       - uses: actions/checkout@v4
-
-      # - name: Debug filetree
-      #   run: |
-      #     apt install tree
-      #     tree -L 5
 
       - name: Restore cache
         if: ${{ !env.ACT }}
@@ -103,15 +103,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      # - name: Build the zaino executable
-      #   run: |
-      #     cargo build  # Compile zaino
-
-      # - name: Place zaino binary
-      #   run: |
-      #     cp ./target/debug/zainod /usr/local/bin/
-
-      - name: Copy bins into test_binries
+      - name: Copy bins into test_binaries
         run: |
           mkdir -p ./test_binaries/bins
           cp /usr/local/bin/* ./test_binaries/bins/
@@ -122,10 +114,9 @@ jobs:
           name: nextest-archive
 
       - name: Run Tests (Nextest)
-        # continue-on-error: true
         run: |
           cargo nextest run --verbose --profile ci --retries 2 --archive-file nextest-archive.tar.zst \
-            --workspace-remap ./ --partition count:${{ matrix.partition }}/8 ${{ env.NEXTEST-FLAGS }}
+            --workspace-remap ./ --filter ${matrix.layer} ${{ env.NEXTEST_FLAGS }}
 
       - name: Test Summary
         uses: test-summary/action@v2
