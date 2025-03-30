@@ -82,14 +82,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        layer:
-          - client_rpcs
-          - fetch_service
-          - local_cache
-          - state_service
-          - wallet_to_validator
-          - zaino-testutils
-
+        layer: [client_rpcs,fetch_service,local_cache,state_service,wallet_to_validator,zaino-testutil]
     steps:
       - uses: actions/checkout@v4
 
