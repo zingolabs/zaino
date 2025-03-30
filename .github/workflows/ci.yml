@@ -109,7 +109,7 @@ jobs:
       - name: Run Tests (Nextest)
         run: |
           cargo nextest run --verbose --profile ci --retries 2 --archive-file nextest-archive.tar.zst \
-            --workspace-remap ./ --filter ${{ matrix.layer }} ${{ env.NEXTEST_FLAGS }}
+            --workspace-remap ./  ${{ matrix.layer }} ${{ env.NEXTEST_FLAGS }}
 
       - name: Test Summary
         uses: test-summary/action@v2
