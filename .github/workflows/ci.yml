@@ -7,7 +7,7 @@ on:
 jobs:
   deps-cache:
     name: Cache Dependencies
-    runs-on: ${{ vars.RUNNER_TYPE || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_TYPE || 'ubuntu-latest-large' }}
     steps:
       - uses: actions/checkout@v4
       
@@ -45,7 +45,7 @@ jobs:
     name: Build test artifacts
     container:
       image: zingodevops/zaino-ci
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest-large
     if: github.event.pull_request.draft == false
     # env:
     #   RUSTFLAGS: -D warnings
@@ -76,7 +76,7 @@ jobs:
   test:
     name: Run Tests
     needs: build-test-artifacts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large
     container:
       image: zingodevops/zaino-ci:latest  # Your pre-built Docker image
     strategy:
@@ -120,7 +120,7 @@ jobs:
   clippy:
     needs: deps-cache
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large
     steps:
       - uses: actions/checkout@v4
       
@@ -148,7 +148,7 @@ jobs:
   fmt:
     needs: deps-cache
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large
     steps:
       - uses: actions/checkout@v4
       
@@ -166,7 +166,7 @@ jobs:
 
   docker:
     name: Build Docker image, push if tagged
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large
     
     steps:
       - uses: actions/checkout@v4
@@ -210,7 +210,7 @@ jobs:
   create-release:
     needs: docker
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large
     if: startsWith(github.ref, 'refs/tags/') && github.token != ''
     
     steps:
