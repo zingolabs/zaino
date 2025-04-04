@@ -58,7 +58,7 @@ tracing-futures = "0.2"
 # Network / RPC
 http = "1.1"
 url = "2.5"
-reqwest = { version = "0.12", features = ["cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "rustls-tls"] }
 tower = { version = "0.4", features = ["buffer", "util"] }
 tonic = "0.12"
 tonic-build = "0.12"
