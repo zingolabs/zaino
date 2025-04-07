@@ -4,8 +4,11 @@ use std::collections::HashSet;
 
 use tracing::{error, info, warn};
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-use zaino_proto::proto::compact_formats::CompactBlock;
-use zebra_chain::block::{Hash, Height};
+use zaino_proto::proto::{compact_formats::CompactBlock, service::BlockId};
+use zebra_chain::{
+    block::{Hash, Height},
+    serialization::ZcashSerialize,
+};
 use zebra_state::HashOrHeight;
 
 use crate::{
@@ -31,6 +34,8 @@ pub struct NonFinalisedState {
     sync_task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Used to send blocks to the finalised state.
     block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
+    /// Used to send latest chain fork
+    latest_fork_sender: tokio::sync::watch::Sender<BlockId>,
     /// Non-finalised state status.
     status: AtomicStatus,
     /// BlockCache config data.
@@ -42,6 +47,7 @@ impl NonFinalisedState {
     pub async fn spawn(
         fetcher: &JsonRpSeeConnector,
         block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
+        latest_fork_sender: tokio::sync::watch::Sender<BlockId>,
         config: BlockCacheConfig,
     ) -> Result<Self, NonFinalisedStateError> {
         info!("Launching Non-Finalised State..");
@@ -51,6 +57,7 @@ impl NonFinalisedState {
             hashes_to_blocks: Broadcast::new(config.map_capacity, config.map_shard_amount),
             sync_task_handle: None,
             block_sender,
+            latest_fork_sender,
             status: AtomicStatus::new(StatusType::Spawning.into()),
             config,
         };
@@ -104,6 +111,7 @@ impl NonFinalisedState {
             hashes_to_blocks: self.hashes_to_blocks.clone(),
             sync_task_handle: None,
             block_sender: self.block_sender.clone(),
+            latest_fork_sender: self.latest_fork_sender.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -215,6 +223,15 @@ impl NonFinalisedState {
                 ))
             }
         };
+
+        self.latest_fork_sender.send(BlockId {
+            height: reorg_height.0 as u64,
+            hash: reorg_hash.zcash_serialize_to_vec().map_err(|_| {
+                NonFinalisedStateError::Custom(
+                    "Failed to serialise reorg hash into vector".to_string(),
+                )
+            })?,
+        });
 
         // Find reorg height.
         //
