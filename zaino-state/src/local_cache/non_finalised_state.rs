@@ -36,6 +36,8 @@ pub struct NonFinalisedState {
     block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
     /// Used to send latest chain fork
     latest_fork_sender: tokio::sync::watch::Sender<BlockId>,
+    /// Used to recieve latest chain fork
+    latest_fork_reciever: tokio::sync::watch::Receiver<BlockId>,
     /// Non-finalised state status.
     status: AtomicStatus,
     /// BlockCache config data.
@@ -48,6 +50,7 @@ impl NonFinalisedState {
         fetcher: &JsonRpSeeConnector,
         block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
         latest_fork_sender: tokio::sync::watch::Sender<BlockId>,
+        latest_fork_reciever: tokio::sync::watch::Receiver<BlockId>,
         config: BlockCacheConfig,
     ) -> Result<Self, NonFinalisedStateError> {
         info!("Launching Non-Finalised State..");
@@ -58,6 +61,7 @@ impl NonFinalisedState {
             sync_task_handle: None,
             block_sender,
             latest_fork_sender,
+            latest_fork_reciever,
             status: AtomicStatus::new(StatusType::Spawning.into()),
             config,
         };
@@ -114,6 +118,7 @@ impl NonFinalisedState {
             latest_fork_sender: self.latest_fork_sender.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
+            latest_fork_reciever: self.latest_fork_reciever.clone(),
         };
 
         let sync_handle = tokio::spawn(async move {
@@ -384,6 +389,7 @@ impl NonFinalisedState {
             heights_to_hashes: self.heights_to_hashes.subscriber(),
             hashes_to_blocks: self.hashes_to_blocks.subscriber(),
             status: self.status.clone(),
+            latest_fork_reciever: self.latest_fork_reciever.clone(),
         }
     }
 
