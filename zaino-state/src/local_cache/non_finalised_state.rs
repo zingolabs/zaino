@@ -229,14 +229,18 @@ impl NonFinalisedState {
             }
         };
 
-        self.latest_fork_sender.send(BlockId {
-            height: reorg_height.0 as u64,
-            hash: reorg_hash.zcash_serialize_to_vec().map_err(|_| {
-                NonFinalisedStateError::Custom(
-                    "Failed to serialise reorg hash into vector".to_string(),
-                )
-            })?,
-        });
+        self.latest_fork_sender
+            .send(BlockId {
+                height: reorg_height.0 as u64,
+                hash: reorg_hash.zcash_serialize_to_vec().map_err(|_| {
+                    NonFinalisedStateError::Custom(
+                        "Failed to serialise reorg hash into vector".to_string(),
+                    )
+                })?,
+            })
+            .map_err(|_| {
+                NonFinalisedStateError::Custom("Failed to send latest fork to reciever".to_string())
+            })?;
 
         // Find reorg height.
         //
