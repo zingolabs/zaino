@@ -433,6 +433,7 @@ pub struct NonFinalisedStateSubscriber {
     heights_to_hashes: BroadcastSubscriber<Height, Hash>,
     hashes_to_blocks: BroadcastSubscriber<Hash, CompactBlock>,
     status: AtomicStatus,
+    latest_fork_reciever: tokio::sync::watch::Receiver<BlockId>,
 }
 
 impl NonFinalisedStateSubscriber {
@@ -486,5 +487,15 @@ impl NonFinalisedStateSubscriber {
     /// Returns the status of the NonFinalisedState.
     pub fn status(&self) -> StatusType {
         self.status.load().into()
+    }
+
+    /// Returns the get latest fork of this [`NonFinalisedStateSubscriber`].
+    pub async fn get_latest_fork(&mut self) -> Result<BlockId, NonFinalisedStateError> {
+        match self.latest_fork_reciever.changed().await {
+            Ok(_) => Ok(self.latest_fork_reciever.borrow().clone()),
+            Err(_) => Err(NonFinalisedStateError::Custom(
+                "Failed recieving latest fork BlockId".to_string(),
+            )),
+        }
     }
 }
