@@ -6,6 +6,7 @@ jobs:
   cache-checkmate:
     name: Cache checkmate
     runs-on: ziserv-2
+    container: rust:latest
     # if: github.event.pull_request.draft == false
     steps:
       - uses: taiki-e/cache-cargo-install-action@v2
