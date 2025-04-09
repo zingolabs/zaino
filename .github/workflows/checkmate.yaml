@@ -3,19 +3,8 @@ name: Cargo checkmate
 on: [workflow_call]
 
 jobs:
-  cache-checkmate:
-    name: Cache checkmate
-    runs-on: ziserv-2
-    container: rust:latest
-    # if: github.event.pull_request.draft == false
-    steps:
-      - uses: taiki-e/cache-cargo-install-action@v2
-        with:
-          tool: cargo-checkmate
-
   cargo-checkmate:
     name: Cargo checkmate
-    container: rust:latest
     strategy:
       matrix:
         phase: [check, clippy, doc, format]
@@ -25,14 +14,9 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: taiki-e/cache-cargo-install-action@v2
+      - uses: actions/checkout@v2
+      - name: cargo checkmate
+        uses: cargo-checkmate/action@main
         with:
-          tool: cargo-checkmate
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Run cargo checkmate
-        run: cargo-checkmate run ${{ matrix.phase }}
-
+          phase: ${{ matrix.phase }}
 
