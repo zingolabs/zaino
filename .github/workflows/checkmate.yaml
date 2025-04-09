@@ -6,7 +6,7 @@ jobs:
   cache-checkmate:
     name: Cache checkmate
     runs-on: ziserv-2
-    container: rust:latest
+    # container: rust:latest
     # if: github.event.pull_request.draft == false
     steps:
       - uses: taiki-e/cache-cargo-install-action@v2
@@ -15,7 +15,7 @@ jobs:
 
   cargo-checkmate:
     name: Cargo checkmate
-    container: rust:latest
+    # container: rust:latest
     strategy:
       matrix:
         phase: [check, clippy, doc, format]
