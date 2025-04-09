@@ -3,21 +3,21 @@ name: Cargo checkmate
 on: [workflow_call]
 
 jobs:
-  cache-checkmate:
-    name: Cache checkmate
-    runs-on: ziserv-2
-    # if: github.event.pull_request.draft == false
-    steps:
-      - uses: taiki-e/cache-cargo-install-action@v2
-        with:
-          tool: cargo-checkmate
+  # cache-checkmate:
+  #   name: Cache checkmate
+  #   runs-on: ziserv-2
+  #   # if: github.event.pull_request.draft == false
+  #   steps:
+  #     - uses: taiki-e/cache-cargo-install-action@v2
+  #       with:
+  #         tool: cargo-checkmate
 
   cargo-checkmate:
     name: Cargo checkmate
     strategy:
       matrix:
         phase: [check, clippy, doc, format]
-    needs: cache-checkmate
+    # needs: cache-checkmate
     runs-on: ziserv-2
     # if: github.event.pull_request.draft == false
     env:
