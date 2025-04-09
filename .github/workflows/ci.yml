@@ -85,47 +85,9 @@ jobs:
         with:
           paths: "target/nextest/ci/junit.xml"
         if: always()
-
-  clippy:
-    name: Clippy
-    runs-on: ziserv-2
-    steps:
-      - uses: actions/checkout@v4
-
-      - run: rustup toolchain install stable --profile minimal
-      
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
-
-      - name: Run clippy with console output
-        run: cargo clippy --all-targets
-        continue-on-error: true
-
-      - name: Output clippy to Github
-        uses: actions-rs/clippy-check@v1
-        # Remove when clippy is green in local dev environments
-        continue-on-error: true
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-targets
-
-  fmt:
-    name: Rustfmt
-    runs-on: ziserv-2
-    steps:
-      - uses: actions/checkout@v4
-
-      - run: rustup toolchain install stable --profile minimal
-     
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+  
+  cargo-checkmate:
+      uses: ./.github/workflows/checkmate.yaml
 
   docker:
     name: Build Docker image, push if tagged
