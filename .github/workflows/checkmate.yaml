@@ -3,14 +3,14 @@ name: Cargo checkmate
 on: [workflow_call]
 
 jobs:
-  # cache-checkmate:
-  #   name: Cache checkmate
-  #   runs-on: ziserv-2
-  #   # if: github.event.pull_request.draft == false
-  #   steps:
-  #     - uses: taiki-e/cache-cargo-install-action@v2
-  #       with:
-  #         tool: cargo-checkmate
+  cache-checkmate:
+    name: Cache checkmate
+    runs-on: ziserv-2
+    # if: github.event.pull_request.draft == false
+    steps:
+      - uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-checkmate
 
   cargo-checkmate:
     name: Cargo checkmate
@@ -30,12 +30,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: |
-          if ! command -v protoc; then
-             sudo apt-get install -y protobuf-compiler
-          fi
 
       - name: Run cargo checkmate
         run: cargo-checkmate run ${{ matrix.phase }}
