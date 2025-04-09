@@ -615,6 +615,8 @@ mod wallet_basic {
                 .await
         );
 
+        recipient_client.do_sync(true).await.unwrap();
+
         assert_eq!(
             recipient_client
                 .do_balance()

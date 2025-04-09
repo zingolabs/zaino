@@ -608,10 +608,7 @@ async fn fetch_service_get_latest_block(validator: &str) {
 
     let json_service_get_latest_block = dbg!(BlockId {
         height: json_service_blockchain_info.blocks.0 as u64,
-        hash: json_service_blockchain_info
-            .best_block_hash
-            .bytes_in_display_order()
-            .to_vec(),
+        hash: json_service_blockchain_info.best_block_hash.0.to_vec(),
     });
 
     assert_eq!(fetch_service_get_latest_block.height, 2);

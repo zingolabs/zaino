@@ -33,10 +33,9 @@ zcash_protocol = { git = "https://github.com/zingolabs/librustzcash.git", tag = 
 
 
 # Zebra
-# This should be changed to a specific release tag once Zebra regtest stabalizes, currently main is used to fetch most recent bug fixes from Zebra.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", branch = "main" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", branch = "main" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", branch = "main" }
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
 
 
 # Zingo-infra-testutils
@@ -58,7 +57,7 @@ tracing-futures = "0.2"
 # Network / RPC
 http = "1.1"
 url = "2.5"
-reqwest = { version = "0.12", features = ["cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "rustls-tls"] }
 tower = { version = "0.4", features = ["buffer", "util"] }
 tonic = "0.12"
 tonic-build = "0.12"

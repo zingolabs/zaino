@@ -490,12 +490,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let latest_height = self.block_cache.get_chain_height().await?;
-        let mut latest_hash = self
+        let latest_hash = self
             .block_cache
             .get_compact_block(latest_height.0.to_string())
             .await?
             .hash;
-        latest_hash.reverse();
 
         Ok(BlockId {
             height: latest_height.0 as u64,

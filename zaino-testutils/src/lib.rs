@@ -806,6 +806,7 @@ mod tests {
         test_manager.close().await;
     }
 
+    #[ignore = "requires fully synced testnet."]
     #[tokio::test]
     async fn launch_testmanager_zebrad_zaino_testnet() {
         let mut test_manager = TestManager::launch(
