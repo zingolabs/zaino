@@ -14,6 +14,7 @@ jobs:
 
   cargo-checkmate:
     name: Cargo checkmate
+    container: rust:latest
     strategy:
       matrix:
         phase: [check, clippy, doc, format]
