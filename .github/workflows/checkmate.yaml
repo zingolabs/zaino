@@ -9,6 +9,9 @@ jobs:
     # container: rust:latest
     # if: github.event.pull_request.draft == false
     steps:
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
       - uses: taiki-e/cache-cargo-install-action@v2
         with:
           tool: cargo-checkmate
@@ -25,6 +28,10 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
       - uses: taiki-e/cache-cargo-install-action@v2
         with:
           tool: cargo-checkmate
