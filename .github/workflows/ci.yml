@@ -10,7 +10,7 @@ jobs:
     name: Build test artifacts
     container:
       image: zingodevops/zaino-ci
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
     # env:
     #   RUSTFLAGS: -D warnings
@@ -45,7 +45,7 @@ jobs:
   test:
     name: Run Tests
     needs: build-test-artifacts
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     container:
       image: zingodevops/zaino-ci:latest  # Your pre-built Docker image
     strategy:
@@ -129,8 +129,7 @@ jobs:
 
   docker:
     name: Build Docker image, push if tagged
-    runs-on: ubuntu-latest-m
-    if: false
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         
@@ -173,7 +172,7 @@ jobs:
   create-release:
     needs: docker
     name: Create GitHub Release
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') && github.token != ''
     
     steps:
