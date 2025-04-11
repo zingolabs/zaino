@@ -43,7 +43,7 @@ RUN cargo fetch && \
 COPY . .
 
 RUN find . -name "*.rs" -exec touch {} + && \
-    cargo build --release
+    cargo build --release --features test_only_very_insecure
 
 FROM debian:bookworm-slim
 
