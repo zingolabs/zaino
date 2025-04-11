@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use tracing::{error, info, warn};
-use zaino_fetch::jsonrpc::connector::JsonRpcConnector;
+use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_chain::block::{Hash, Height};
 use zebra_state::HashOrHeight;
@@ -22,7 +22,7 @@ use crate::{
 #[derive(Debug)]
 pub struct NonFinalisedState {
     /// Chain fetch service.
-    fetcher: JsonRpcConnector,
+    fetcher: JsonRpSeeConnector,
     /// Broadcast containing `<block_height, block_hash>`.
     heights_to_hashes: Broadcast<Height, Hash>,
     /// Broadcast containing `<block_hash, compact_block>`.
@@ -40,7 +40,7 @@ pub struct NonFinalisedState {
 impl NonFinalisedState {
     /// Spawns a new [`NonFinalisedState`].
     pub async fn spawn(
-        fetcher: &JsonRpcConnector,
+        fetcher: &JsonRpSeeConnector,
         block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
         config: BlockCacheConfig,
     ) -> Result<Self, NonFinalisedStateError> {
@@ -208,7 +208,7 @@ impl NonFinalisedState {
             .get_block(reorg_height.0.to_string(), Some(1))
             .await?
         {
-            zaino_fetch::jsonrpc::response::GetBlockResponse::Object { hash, .. } => hash.0,
+            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object { hash, .. } => hash.0,
             _ => {
                 return Err(NonFinalisedStateError::Custom(
                     "Unexpected block response type".to_string(),
@@ -243,7 +243,7 @@ impl NonFinalisedState {
                 .get_block(reorg_height.0.to_string(), Some(1))
                 .await?
             {
-                zaino_fetch::jsonrpc::response::GetBlockResponse::Object { hash, .. } => hash.0,
+                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object { hash, .. } => hash.0,
                 _ => {
                     return Err(NonFinalisedStateError::Custom(
                         "Unexpected block response type".to_string(),

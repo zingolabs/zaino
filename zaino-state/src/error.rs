@@ -13,11 +13,11 @@ pub enum StateServiceError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpc::error::JsonRpcConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
 
     /// RPC error in compatibility with zcashd.
     #[error("RPC error: {0:?}")]
-    RpcError(#[from] zaino_fetch::jsonrpc::connector::RpcError),
+    RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
 
     /// Tonic gRPC error.
     #[error("Tonic status error: {0}")]
@@ -79,7 +79,7 @@ pub enum FetchServiceError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpc::error::JsonRpcConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
 
     /// Error from the block cache.
     #[error("Mempool error: {0}")]
@@ -91,7 +91,7 @@ pub enum FetchServiceError {
 
     /// RPC error in compatibility with zcashd.
     #[error("RPC error: {0:?}")]
-    RpcError(#[from] zaino_fetch::jsonrpc::connector::RpcError),
+    RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
 
     /// Tonic gRPC error.
     #[error("Tonic status error: {0}")]
@@ -135,7 +135,7 @@ pub enum MempoolError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpc::error::JsonRpcConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
 
     /// Error from a Tokio Watch Receiver.
     #[error("Join error: {0}")]
@@ -167,7 +167,7 @@ pub enum BlockCacheError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpc::error::JsonRpcConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
 
     /// Chain parse error.
     #[error("Chain parse error: {0}")]
@@ -207,7 +207,7 @@ pub enum NonFinalisedStateError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpc::error::JsonRpcConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
 
     /// Unexpected status-related error.
     #[error("Status error: {0:?}")]
@@ -243,7 +243,7 @@ pub enum FinalisedStateError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpc::error::JsonRpcConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
 
     /// std::io::Error
     #[error("IO error: {0}")]

@@ -1,6 +1,6 @@
 //! Hold error types for the Indexer and related functionality.
 
-use zaino_fetch::jsonrpc::error::JsonRpcConnectorError;
+use zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError;
 use zaino_serve::server::error::ServerError;
 use zaino_state::error::FetchServiceError;
 
@@ -13,9 +13,9 @@ pub enum IndexerError {
     /// Configuration errors.
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    /// JSON RPC connector errors.
-    #[error("JSON RPC connector error: {0}")]
-    JsonRpcConnectorError(#[from] JsonRpcConnectorError),
+    /// JSON RPSee connector errors.
+    #[error("JSON RPSee connector error: {0}")]
+    JsonRpSeeConnectorError(#[from] JsonRpSeeConnectorError),
     /// FetchService errors.
     #[error("FetchService error: {0}")]
     FetchServiceError(#[from] FetchServiceError),

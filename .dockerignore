@@ -5,4 +5,4 @@ target/
 .dockerignore
 Dockerfile
 *.md
-.env* 
+.env*

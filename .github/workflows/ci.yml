@@ -5,79 +5,99 @@ on:
   pull_request:
 
 jobs:
-  deps-cache:
-    name: Cache Dependencies
-    runs-on: ${{ vars.RUNNER_TYPE || 'ubuntu-latest' }}
+
+  build-test-artifacts:
+    name: Build test artifacts
+    container:
+      image: zingodevops/zaino-ci
+    runs-on: ubuntu-latest-m
+    if: github.event.pull_request.draft == false
+    # env:
+    #   RUSTFLAGS: -D warnings
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # - name: Install nextest
+      #   uses: taiki-e/install-action@v2
+      #   with:
+      #     tool: nextest@0.9.78
+
+      - run: rustup toolchain install stable --profile minimal
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with: 
+          cache-provider: buildjet
+
+      - name: Build and archive tests
+        run: cargo nextest archive --verbose --workspace --all-features --archive-file nextest-archive.tar.zst
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: nextest-archive.tar.zst
+
+
+  test:
+    name: Run Tests
+    needs: build-test-artifacts
+    runs-on: ubuntu-latest-m
+    container:
+      image: zingodevops/zaino-ci:latest  # Your pre-built Docker image
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3, 4, 5, 6, 7, 8]
+
+    steps:
+
       - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+
+      - run: rustup toolchain install stable --profile minimal
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with: 
+          cache-provider: buildjet
+
+      - name: Copy bins into test_binries
+        run: |
+          mkdir -p ./test_binaries/bins
+          cp /usr/local/bin/* ./test_binaries/bins/
+
+      - name: Download archive
+        uses: actions/download-artifact@v4
         with:
-          profile: minimal
-          toolchain: stable
-      
-      - name: Cache Rust dependencies
-        uses: actions/cache@v3
-        id: cache
+          name: nextest-archive
+
+      - name: Run Tests (Nextest)
+        # continue-on-error: true
+        run: |
+          cargo nextest run --verbose --profile ci --retries 2 --archive-file nextest-archive.tar.zst \
+            --workspace-remap ./ --partition count:${{ matrix.partition }}/8 ${{ env.NEXTEST-FLAGS }}
+
+      - name: Test Summary
+        uses: test-summary/action@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-v1-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v1-
-
-      - name: Fetch dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: cargo fetch
-
-      - name: Quick compilation check
-        run: cargo check --all-targets
-
-      - name: Build dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: cargo build --all-targets
-
-  # Uncomment this when tests are passing
-  # test:
-  #   needs: deps-cache
-  #   name: Run Tests
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-      
-  #     - name: Restore cache
-  #       uses: actions/cache@v3
-  #       with:
-  #         path: |
-  #           ~/.cargo/registry
-  #           ~/.cargo/git
-  #           target
-  #         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-  #     - name: Run tests
-  #       run: cargo test --workspace --release
-        
-  #     - name: Run slow tests
-  #       run: cargo test --workspace --release -- --ignored
+          paths: "target/nextest/ci/junit.xml"
+        if: always()
 
   clippy:
-    needs: deps-cache
     name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - run: rustup toolchain install stable --profile minimal
       
-      - name: Restore cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with: 
+          cache-provider: buildjet
 
       - name: Run clippy with console output
         run: cargo clippy --all-targets
@@ -92,28 +112,25 @@ jobs:
           args: --all-targets
 
   fmt:
-    needs: deps-cache
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Restore cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - run: rustup toolchain install stable --profile minimal
+     
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with: 
+          cache-provider: buildjet
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
   docker:
     name: Build Docker image, push if tagged
-    runs-on: ubuntu-latest
-    
+    runs-on: ubuntu-latest-m
+    if: false
     steps:
       - uses: actions/checkout@v4
         
@@ -156,7 +173,7 @@ jobs:
   create-release:
     needs: docker
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     if: startsWith(github.ref, 'refs/tags/') && github.token != ''
     
     steps:

@@ -32,13 +32,13 @@ The Zaino repo consists of several crates that collectively provide an indexing 
 
 **Runtime:**
 - tokio
-- tokio-stream 
+- tokio-stream
 
 **CLI:**
 - clap
 
 **Tracing:**
-- tracing 
+- tracing
 - tracing-subscriber
 - tracing-futures
 
@@ -50,33 +50,33 @@ The Zaino repo consists of several crates that collectively provide an indexing 
 - tonic
 - tonic-build
 - prost
-- serde 
+- serde
 - serde_json
-- jsonrpc-core 
+- jsonrpsee-core
 - jsonrpsee-types
 
 **Hashmaps, channels, DBs:**
-- indexmap 
+- indexmap
 - crossbeam-channel
-- dashmap 
-- lmdb 
+- dashmap
+- lmdb
 
 **Async:**
-- async-stream 
-- async-trait 
-- futures 
+- async-stream
+- async-trait
+- futures
 
 **Utility:**
 - thiserror
 - lazy-regex
 - once_cell
-- ctrlc 
+- ctrlc
 - chrono
-- which 
-- whoami 
+- which
+- whoami
 
 **Formats:**
-- base64 
+- base64
 - byteorder
 - sha2
 - hex

@@ -8,7 +8,7 @@ use crate::{
     status::{AtomicStatus, StatusType},
 };
 use tracing::{info, warn};
-use zaino_fetch::jsonrpc::connector::JsonRpcConnector;
+use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zebra_chain::block::Hash;
 use zebra_rpc::methods::GetRawTransaction;
 
@@ -30,7 +30,7 @@ pub struct MempoolValue(pub GetRawTransaction);
 #[derive(Debug)]
 pub struct Mempool {
     /// Zcash chain fetch service.
-    fetcher: JsonRpcConnector,
+    fetcher: JsonRpSeeConnector,
     /// Wrapper for a dashmap of mempool transactions.
     state: Broadcast<MempoolKey, MempoolValue>,
     /// Mempool sync handle.
@@ -42,7 +42,7 @@ pub struct Mempool {
 impl Mempool {
     /// Spawns a new [`Mempool`].
     pub async fn spawn(
-        fetcher: &JsonRpcConnector,
+        fetcher: &JsonRpSeeConnector,
         capacity_and_shard_amount: Option<(usize, usize)>,
     ) -> Result<Self, MempoolError> {
         // Wait for mempool in validator to come online.

@@ -2,3 +2,9 @@
 test-threads = 4
 fail-fast = false
 retries = 1
+
+[profile.ci]
+default-filter = "not test(testnet) & not test(regtest) & not test(client_rpcs)"
+
+[profile.ci.junit]  # this can be some other profile, too
+path = "junit.xml"

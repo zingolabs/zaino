@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "zainodlib"
 path = "src/lib.rs"
 
+[features]
+# Removes network restrictions.
+test_only_very_insecure = []
+
 [dependencies]
 zaino-fetch = { workspace = true }
 zaino-state = { workspace = true }

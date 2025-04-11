@@ -3,7 +3,7 @@
 use tokio::time::Instant;
 use tracing::info;
 
-use zaino_fetch::jsonrpc::connector::test_node_and_return_url;
+use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_serve::server::{config::GrpcConfig, grpc::TonicServer};
 use zaino_state::{
     config::FetchServiceConfig,
@@ -50,7 +50,7 @@ impl Indexer {
         .await?;
 
         info!(
-            " - Connected to node using JsonRPC at address {}.",
+            " - Connected to node using JsonRPSee at address {}.",
             zebrad_uri
         );
 

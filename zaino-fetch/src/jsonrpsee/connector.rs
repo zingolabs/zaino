@@ -1,7 +1,7 @@
-//! JsonRPC client implementation.
+//! JsonRPSee client implementation.
 //!
 //! TODO: - Add option for http connector.
-//!       - Refactor JsonRpcConnectorError into concrete error types and implement fmt::display [https://github.com/zingolabs/zaino/issues/67].
+//!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [https://github.com/zingolabs/zaino/issues/67].
 
 use base64::{engine::general_purpose, Engine};
 use http::Uri;
@@ -20,8 +20,8 @@ use std::{
 };
 use tracing::error;
 
-use crate::jsonrpc::{
-    error::JsonRpcConnectorError,
+use crate::jsonrpsee::{
+    error::JsonRpSeeConnectorError,
     response::{
         GetBalanceResponse, GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse,
         GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse, GetUtxosResponse,
@@ -45,7 +45,7 @@ struct RpcResponse<T> {
     error: Option<RpcError>,
 }
 
-/// Json RPC Error type.
+/// Json RPSee Error type.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RpcError {
     /// Error Code.
@@ -102,28 +102,28 @@ enum AuthMethod {
     Cookie { cookie: String },
 }
 
-/// JsonRPC Client config data.
+/// JsonRpSee Client config data.
 #[derive(Debug, Clone)]
-pub struct JsonRpcConnector {
+pub struct JsonRpSeeConnector {
     url: Url,
     id_counter: Arc<AtomicI32>,
     client: Client,
     auth_method: AuthMethod,
 }
 
-impl JsonRpcConnector {
-    /// Creates a new JsonRpcConnector with Basic Authentication.
+impl JsonRpSeeConnector {
+    /// Creates a new JsonRpSeeConnector with Basic Authentication.
     pub fn new_with_basic_auth(
         url: Url,
         username: String,
         password: String,
-    ) -> Result<Self, JsonRpcConnectorError> {
+    ) -> Result<Self, JsonRpSeeConnectorError> {
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(JsonRpcConnectorError::ReqwestError)?;
+            .map_err(JsonRpSeeConnectorError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -133,13 +133,13 @@ impl JsonRpcConnector {
         })
     }
 
-    /// Creates a new JsonRpcConnector with Cookie Authentication.
+    /// Creates a new JsonRpSeeConnector with Cookie Authentication.
     pub fn new_with_cookie_auth(
         url: Url,
         cookie_path: &Path,
-    ) -> Result<Self, JsonRpcConnectorError> {
+    ) -> Result<Self, JsonRpSeeConnectorError> {
         let cookie_content =
-            fs::read_to_string(cookie_path).map_err(JsonRpcConnectorError::IoError)?;
+            fs::read_to_string(cookie_path).map_err(JsonRpSeeConnectorError::IoError)?;
         let cookie = cookie_content.trim().to_string();
 
         let client = ClientBuilder::new()
@@ -148,7 +148,7 @@ impl JsonRpcConnector {
             .redirect(reqwest::redirect::Policy::none())
             .cookie_store(true)
             .build()
-            .map_err(JsonRpcConnectorError::ReqwestError)?;
+            .map_err(JsonRpSeeConnectorError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -166,9 +166,9 @@ impl JsonRpcConnector {
         validator_rpc_user: String,
         validator_rpc_password: String,
         validator_cookie_path: Option<String>,
-    ) -> Result<Self, JsonRpcConnectorError> {
+    ) -> Result<Self, JsonRpSeeConnectorError> {
         match validator_cookie_auth {
-            true => JsonRpcConnector::new_with_cookie_auth(
+            true => JsonRpSeeConnector::new_with_cookie_auth(
                 test_node_and_return_url(
                     validator_rpc_address,
                     validator_cookie_auth,
@@ -183,7 +183,7 @@ impl JsonRpcConnector {
                         .expect("validator cookie authentication path missing"),
                 ),
             ),
-            false => JsonRpcConnector::new_with_basic_auth(
+            false => JsonRpSeeConnector::new_with_basic_auth(
                 test_node_and_return_url(
                     validator_rpc_address,
                     false,
@@ -198,12 +198,12 @@ impl JsonRpcConnector {
         }
     }
 
-    /// Returns the http::uri the JsonRpcConnector is configured to send requests to.
-    pub fn uri(&self) -> Result<Uri, JsonRpcConnectorError> {
+    /// Returns the http::uri the JsonRpSeeConnector is configured to send requests to.
+    pub fn uri(&self) -> Result<Uri, JsonRpSeeConnectorError> {
         Ok(self.url.as_str().parse()?)
     }
 
-    /// Returns the reqwest::url the JsonRpcConnector is configured to send requests to.
+    /// Returns the reqwest::url the JsonRpSeeConnector is configured to send requests to.
     pub fn url(&self) -> Url {
         self.url.clone()
     }
@@ -219,7 +219,7 @@ impl JsonRpcConnector {
         &self,
         method: &str,
         params: T,
-    ) -> Result<R, JsonRpcConnectorError> {
+    ) -> Result<R, JsonRpSeeConnectorError> {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
         let req = RpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -252,26 +252,26 @@ impl JsonRpcConnector {
             }
 
             let request_body =
-                serde_json::to_string(&req).map_err(JsonRpcConnectorError::SerdeJsonError)?;
+                serde_json::to_string(&req).map_err(JsonRpSeeConnectorError::SerdeJsonError)?;
 
             let response = request_builder
                 .body(request_body)
                 .send()
                 .await
-                .map_err(JsonRpcConnectorError::ReqwestError)?;
+                .map_err(JsonRpSeeConnectorError::ReqwestError)?;
 
             let status = response.status();
 
             let body_bytes = response
                 .bytes()
                 .await
-                .map_err(JsonRpcConnectorError::ReqwestError)?;
+                .map_err(JsonRpSeeConnectorError::ReqwestError)?;
 
             let body_str = String::from_utf8_lossy(&body_bytes);
 
             if body_str.contains("Work queue depth exceeded") {
                 if attempts >= max_attempts {
-                    return Err(JsonRpcConnectorError::new(
+                    return Err(JsonRpSeeConnectorError::new(
                         "Error: The node's rpc queue depth was exceeded after multiple attempts",
                     ));
                 }
@@ -280,17 +280,17 @@ impl JsonRpcConnector {
             }
 
             if !status.is_success() {
-                return Err(JsonRpcConnectorError::new(format!(
+                return Err(JsonRpSeeConnectorError::new(format!(
                     "Error: Error status from node's rpc server: {}, {}",
                     status, body_str
                 )));
             }
 
             let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
-                .map_err(JsonRpcConnectorError::SerdeJsonError)?;
+                .map_err(JsonRpSeeConnectorError::SerdeJsonError)?;
 
             return match response.error {
-                Some(error) => Err(JsonRpcConnectorError::new(format!(
+                Some(error) => Err(JsonRpSeeConnectorError::new(format!(
                     "Error: Error from node's rpc server: {} - {}",
                     error.code, error.message
                 ))),
@@ -304,7 +304,7 @@ impl JsonRpcConnector {
     /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
     /// tags: control
-    pub async fn get_info(&self) -> Result<GetInfoResponse, JsonRpcConnectorError> {
+    pub async fn get_info(&self) -> Result<GetInfoResponse, JsonRpSeeConnectorError> {
         self.send_request::<(), GetInfoResponse>("getinfo", ())
             .await
     }
@@ -316,7 +316,7 @@ impl JsonRpcConnector {
     /// tags: blockchain
     pub async fn get_blockchain_info(
         &self,
-    ) -> Result<GetBlockchainInfoResponse, JsonRpcConnectorError> {
+    ) -> Result<GetBlockchainInfoResponse, JsonRpSeeConnectorError> {
         self.send_request::<(), GetBlockchainInfoResponse>("getblockchaininfo", ())
             .await
     }
@@ -334,7 +334,7 @@ impl JsonRpcConnector {
     pub async fn get_address_balance(
         &self,
         addresses: Vec<String>,
-    ) -> Result<GetBalanceResponse, JsonRpcConnectorError> {
+    ) -> Result<GetBalanceResponse, JsonRpSeeConnectorError> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressbalance", params).await
     }
@@ -352,7 +352,7 @@ impl JsonRpcConnector {
     pub async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<SendTransactionResponse, JsonRpcConnectorError> {
+    ) -> Result<SendTransactionResponse, JsonRpSeeConnectorError> {
         let params = vec![serde_json::to_value(raw_transaction_hex)?];
         self.send_request("sendrawtransaction", params).await
     }
@@ -373,7 +373,7 @@ impl JsonRpcConnector {
         &self,
         hash_or_height: String,
         verbosity: Option<u8>,
-    ) -> Result<GetBlockResponse, JsonRpcConnectorError> {
+    ) -> Result<GetBlockResponse, JsonRpSeeConnectorError> {
         let params = match verbosity {
             Some(v) => vec![
                 serde_json::to_value(hash_or_height)?,
@@ -392,7 +392,7 @@ impl JsonRpcConnector {
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
-    pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, JsonRpcConnectorError> {
+    pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, JsonRpSeeConnectorError> {
         self.send_request::<(), TxidsResponse>("getrawmempool", ())
             .await
     }
@@ -409,7 +409,7 @@ impl JsonRpcConnector {
     pub async fn get_treestate(
         &self,
         hash_or_height: String,
-    ) -> Result<GetTreestateResponse, JsonRpcConnectorError> {
+    ) -> Result<GetTreestateResponse, JsonRpSeeConnectorError> {
         let params = vec![serde_json::to_value(hash_or_height)?];
         self.send_request("z_gettreestate", params).await
     }
@@ -430,7 +430,7 @@ impl JsonRpcConnector {
         pool: String,
         start_index: u16,
         limit: Option<u16>,
-    ) -> Result<GetSubtreesResponse, JsonRpcConnectorError> {
+    ) -> Result<GetSubtreesResponse, JsonRpSeeConnectorError> {
         let params = match limit {
             Some(v) => vec![
                 serde_json::to_value(pool)?,
@@ -459,7 +459,7 @@ impl JsonRpcConnector {
         &self,
         txid_hex: String,
         verbose: Option<u8>,
-    ) -> Result<GetTransactionResponse, JsonRpcConnectorError> {
+    ) -> Result<GetTransactionResponse, JsonRpSeeConnectorError> {
         let params = match verbose {
             Some(v) => vec![serde_json::to_value(txid_hex)?, serde_json::to_value(v)?],
             None => vec![serde_json::to_value(txid_hex)?, serde_json::to_value(0)?],
@@ -485,7 +485,7 @@ impl JsonRpcConnector {
         addresses: Vec<String>,
         start: u32,
         end: u32,
-    ) -> Result<TxidsResponse, JsonRpcConnectorError> {
+    ) -> Result<TxidsResponse, JsonRpSeeConnectorError> {
         let params = serde_json::json!({
             "addresses": addresses,
             "start": start,
@@ -507,7 +507,7 @@ impl JsonRpcConnector {
     pub async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
-    ) -> Result<Vec<GetUtxosResponse>, JsonRpcConnectorError> {
+    ) -> Result<Vec<GetUtxosResponse>, JsonRpSeeConnectorError> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressutxos", params).await
     }
@@ -517,7 +517,7 @@ impl JsonRpcConnector {
 async fn test_node_connection(
     url: Url,
     auth_method: AuthMethod,
-) -> Result<(), JsonRpcConnectorError> {
+) -> Result<(), JsonRpSeeConnectorError> {
     let client = Client::builder()
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(5))
@@ -548,13 +548,13 @@ async fn test_node_connection(
     let response = request_builder
         .send()
         .await
-        .map_err(JsonRpcConnectorError::ReqwestError)?;
+        .map_err(JsonRpSeeConnectorError::ReqwestError)?;
     let body_bytes = response
         .bytes()
         .await
-        .map_err(JsonRpcConnectorError::ReqwestError)?;
+        .map_err(JsonRpSeeConnectorError::ReqwestError)?;
     let _response: RpcResponse<serde_json::Value> =
-        serde_json::from_slice(&body_bytes).map_err(JsonRpcConnectorError::SerdeJsonError)?;
+        serde_json::from_slice(&body_bytes).map_err(JsonRpSeeConnectorError::SerdeJsonError)?;
     Ok(())
 }
 
@@ -565,12 +565,12 @@ pub async fn test_node_and_return_url(
     cookie_path: Option<String>,
     user: Option<String>,
     password: Option<String>,
-) -> Result<Url, JsonRpcConnectorError> {
+) -> Result<Url, JsonRpSeeConnectorError> {
     let auth_method = match rpc_cookie_auth {
         true => {
             let cookie_content =
                 fs::read_to_string(cookie_path.expect("validator rpc cookie path missing"))
-                    .map_err(JsonRpcConnectorError::IoError)?;
+                    .map_err(JsonRpSeeConnectorError::IoError)?;
             let cookie = cookie_content.trim().to_string();
 
             AuthMethod::Cookie { cookie }

@@ -1,11 +1,11 @@
-//! Hold error types for the JsonRpcConnector and related functionality.
+//! Hold error types for the JsonRpSeeConnector and related functionality.
 
-/// General error type for handling JsonRpcConnector errors.
+/// General error type for handling JsonRpSeeConnector errors.
 #[derive(Debug, thiserror::Error)]
-pub enum JsonRpcConnectorError {
+pub enum JsonRpSeeConnectorError {
     /// Type for errors without an underlying source.
     #[error("Error: {0}")]
-    JsonRpcClientError(String),
+    JsonRpSeeClientError(String),
 
     /// Serialization/Deserialization Errors.
     #[error("Error: Serialization/Deserialization Error: {0}")]
@@ -28,24 +28,24 @@ pub enum JsonRpcConnectorError {
     IoError(#[from] std::io::Error),
 }
 
-impl JsonRpcConnectorError {
+impl JsonRpSeeConnectorError {
     /// Constructor for errors without an underlying source
     pub fn new(msg: impl Into<String>) -> Self {
-        JsonRpcConnectorError::JsonRpcClientError(msg.into())
+        JsonRpSeeConnectorError::JsonRpSeeClientError(msg.into())
     }
 
-    /// Converts JsonRpcConnectorError to tonic::Status
+    /// Converts JsonRpSeeConnectorError to tonic::Status
     ///
     /// TODO: This impl should be changed to return the correct status [https://github.com/zcash/lightwalletd/issues/497] before release,
     ///       however propagating the server error is useful during development.
     pub fn to_grpc_status(&self) -> tonic::Status {
         // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-        tonic::Status::internal(format!("Error: JsonRPC Client Error: {}", self))
+        tonic::Status::internal(format!("Error: JsonRpSee Client Error: {}", self))
     }
 }
 
-impl From<JsonRpcConnectorError> for tonic::Status {
-    fn from(err: JsonRpcConnectorError) -> Self {
+impl From<JsonRpSeeConnectorError> for tonic::Status {
+    fn from(err: JsonRpSeeConnectorError) -> Self {
         err.to_grpc_status()
     }
 }
