@@ -40,7 +40,7 @@ impl BlockCache {
     ) -> Result<Self, BlockCacheError> {
         info!("Launching Local Block Cache..");
         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(100);
-        let (channel_fork_sx, channel_fork_rx) = tokio::sync::watch::channel(BlockId {
+        let (channel_fork_tx, channel_fork_rx) = tokio::sync::watch::channel(BlockId {
             height: 0,
             hash: vec![0, 0],
         });
@@ -54,7 +54,7 @@ impl BlockCache {
         let non_finalised_state = NonFinalisedState::spawn(
             fetcher,
             channel_tx,
-            channel_fork_sx,
+            channel_fork_tx,
             channel_fork_rx,
             config.clone(),
         )
