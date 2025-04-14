@@ -781,7 +781,7 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::methods::trees::GetTreestate {
     fn try_from(value: GetTreestateResponse) -> Result<Self, Self::Error> {
         let parsed_hash = zebra_chain::block::Hash::from_hex(&value.hash)?;
         let height_u32 = u32::try_from(value.height).map_err(|_| {
-            zebra_chain::serialization::SerializationError::Parse("negative block height".into())
+            zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
         let sapling_bytes = hex::decode(value.sapling.inner().inner().as_bytes())?;
