@@ -39,8 +39,8 @@ zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201
 
 
 # Zingo-infra-testutils
-zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "9c885e1c5cf7707f0bd5db6abf9e8a9d4b5e1b0e" }
-zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "9c885e1c5cf7707f0bd5db6abf9e8a9d4b5e1b0e" }
+zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "5f5b8171874831a3ff5ebfed1f95627944885f35" }
+zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "5f5b8171874831a3ff5ebfed1f95627944885f35" }
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

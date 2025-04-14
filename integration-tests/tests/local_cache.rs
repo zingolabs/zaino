@@ -4,13 +4,13 @@ use zaino_state::{
     config::BlockCacheConfig,
     local_cache::{BlockCache, BlockCacheSubscriber},
 };
-use zaino_testutils::TestManager;
+use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::block::Height;
 use zebra_state::HashOrHeight;
 use zingo_infra_testutils::services::validator::Validator as _;
 
 async fn create_test_manager_and_block_cache(
-    validator: &str,
+    validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     zaino_no_sync: bool,
@@ -82,25 +82,25 @@ async fn create_test_manager_and_block_cache(
 
 #[tokio::test]
 async fn zcashd_local_cache_launch_no_db() {
-    launch_local_cache("zcashd", true).await;
+    launch_local_cache(&ValidatorKind::Zcashd, true).await;
 }
 
 #[tokio::test]
 async fn zebrad_local_cache_launch_no_db() {
-    launch_local_cache("zebrad", true).await;
+    launch_local_cache(&ValidatorKind::Zebrad, true).await;
 }
 
 #[tokio::test]
 async fn zcashd_local_cache_launch_with_db() {
-    launch_local_cache("zcashd", false).await;
+    launch_local_cache(&ValidatorKind::Zcashd, false).await;
 }
 
 #[tokio::test]
 async fn zebrad_local_cache_launch_with_db() {
-    launch_local_cache("zebrad", false).await;
+    launch_local_cache(&ValidatorKind::Zebrad, false).await;
 }
 
-async fn launch_local_cache(validator: &str, no_db: bool) {
+async fn launch_local_cache(validator: &ValidatorKind, no_db: bool) {
     let (_test_manager, _json_service, _block_cache, block_cache_subscriber) =
         create_test_manager_and_block_cache(validator, None, false, true, no_db, false).await;
 
@@ -109,26 +109,26 @@ async fn launch_local_cache(validator: &str, no_db: bool) {
 
 #[tokio::test]
 async fn zebrad_local_cache_process_100_blocks() {
-    launch_local_cache_process_n_block_batches("zebrad", 1).await;
+    launch_local_cache_process_n_block_batches(&ValidatorKind::Zebrad, 1).await;
 }
 
 #[tokio::test]
 async fn zcashd_local_cache_process_100_blocks() {
-    launch_local_cache_process_n_block_batches("zcashd", 1).await;
+    launch_local_cache_process_n_block_batches(&ValidatorKind::Zcashd, 1).await;
 }
 
 #[tokio::test]
 async fn zebrad_local_cache_process_200_blocks() {
-    launch_local_cache_process_n_block_batches("zebrad", 2).await;
+    launch_local_cache_process_n_block_batches(&ValidatorKind::Zebrad, 2).await;
 }
 
 #[tokio::test]
 async fn zcashd_local_cache_process_200_blocks() {
-    launch_local_cache_process_n_block_batches("zcashd", 2).await;
+    launch_local_cache_process_n_block_batches(&ValidatorKind::Zcashd, 2).await;
 }
 
 /// Launches a testmanager and block cache and generates `n*100` blocks, checking blocks are stored and fetched correctly.
-async fn launch_local_cache_process_n_block_batches(validator: &str, batches: u32) {
+async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, batches: u32) {
     let (test_manager, json_service, mut block_cache, mut block_cache_subscriber) =
         create_test_manager_and_block_cache(validator, None, false, true, false, false).await;
 

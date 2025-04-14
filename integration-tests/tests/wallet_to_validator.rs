@@ -9,20 +9,21 @@ use zingolib::testutils::lightclient::from_inputs;
 
 mod wallet_basic {
     use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
+    use zaino_testutils::ValidatorKind;
 
     use super::*;
 
     #[tokio::test]
     async fn zcashd_connect_to_node_get_info() {
-        connect_to_node_get_info("zcashd").await;
+        connect_to_node_get_info(&ValidatorKind::Zcashd).await;
     }
 
     #[tokio::test]
     async fn zebrad_connect_to_node_get_info() {
-        connect_to_node_get_info("zebrad").await;
+        connect_to_node_get_info(&ValidatorKind::Zebrad).await;
     }
 
-    async fn connect_to_node_get_info(validator: &str) {
+    async fn connect_to_node_get_info(validator: &ValidatorKind) {
         let mut test_manager = TestManager::launch(validator, None, None, true, true, true, true)
             .await
             .unwrap();
@@ -39,15 +40,15 @@ mod wallet_basic {
 
     #[tokio::test]
     async fn zcashd_send_to_orchard() {
-        send_to_orchard("zcashd").await;
+        send_to_orchard(&ValidatorKind::Zcashd).await;
     }
 
     #[tokio::test]
     async fn zebrad_send_to_orchard() {
-        send_to_orchard("zebrad").await;
+        send_to_orchard(&ValidatorKind::Zebrad).await;
     }
 
-    async fn send_to_orchard(validator: &str) {
+    async fn send_to_orchard(validator: &ValidatorKind) {
         let mut test_manager = TestManager::launch(validator, None, None, true, true, true, true)
             .await
             .unwrap();
@@ -58,7 +59,7 @@ mod wallet_basic {
 
         clients.faucet.do_sync(true).await.unwrap();
 
-        if validator == "zebrad" {
+        if matches!(validator, ValidatorKind::Zebrad) {
             test_manager.local_net.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
@@ -97,15 +98,15 @@ mod wallet_basic {
 
     #[tokio::test]
     async fn zcashd_send_to_sapling() {
-        send_to_sapling("zcashd").await;
+        send_to_sapling(&ValidatorKind::Zcashd).await;
     }
 
     #[tokio::test]
     async fn zebrad_send_to_sapling() {
-        send_to_sapling("zebrad").await;
+        send_to_sapling(&ValidatorKind::Zebrad).await;
     }
 
-    async fn send_to_sapling(validator: &str) {
+    async fn send_to_sapling(validator: &ValidatorKind) {
         let mut test_manager = TestManager::launch(validator, None, None, true, true, true, true)
             .await
             .unwrap();
@@ -116,7 +117,7 @@ mod wallet_basic {
 
         clients.faucet.do_sync(true).await.unwrap();
 
-        if validator == "zebrad" {
+        if matches!(validator, ValidatorKind::Zebrad) {
             test_manager.local_net.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
@@ -155,16 +156,16 @@ mod wallet_basic {
 
     #[tokio::test]
     async fn zcashd_send_to_transparent() {
-        send_to_transparent("zcashd").await;
+        send_to_transparent(&ValidatorKind::Zcashd).await;
     }
 
     /// Bug documented in https://github.com/zingolabs/zaino/issues/145.
     #[tokio::test]
     async fn zebrad_send_to_transparent() {
-        send_to_transparent("zebrad").await;
+        send_to_transparent(&ValidatorKind::Zebrad).await;
     }
 
-    async fn send_to_transparent(validator: &str) {
+    async fn send_to_transparent(validator: &ValidatorKind) {
         let mut test_manager = TestManager::launch(validator, None, None, true, true, true, true)
             .await
             .unwrap();
@@ -175,7 +176,7 @@ mod wallet_basic {
 
         clients.faucet.do_sync(true).await.unwrap();
 
-        if validator == "zebrad" {
+        if matches!(validator, ValidatorKind::Zebrad) {
             test_manager.local_net.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
@@ -277,15 +278,15 @@ mod wallet_basic {
 
     #[tokio::test]
     async fn zcashd_send_to_all() {
-        send_to_all("zcashd").await;
+        send_to_all(&ValidatorKind::Zcashd).await;
     }
 
     #[tokio::test]
     async fn zebrad_send_to_all() {
-        send_to_all("zebrad").await;
+        send_to_all(&ValidatorKind::Zebrad).await;
     }
 
-    async fn send_to_all(validator: &str) {
+    async fn send_to_all(validator: &ValidatorKind) {
         let mut test_manager = TestManager::launch(validator, None, None, true, true, true, true)
             .await
             .unwrap();
@@ -299,7 +300,7 @@ mod wallet_basic {
         clients.faucet.do_sync(true).await.unwrap();
 
         // "Create" 3 orchard notes in faucet.
-        if validator == "zebrad" {
+        if matches!(validator, ValidatorKind::Zebrad) {
             test_manager.local_net.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
@@ -394,15 +395,15 @@ mod wallet_basic {
 
     #[tokio::test]
     async fn zcashd_shield() {
-        shield("zcashd").await;
+        shield(&ValidatorKind::Zcashd).await;
     }
 
     #[tokio::test]
     async fn zebrad_shield() {
-        shield("zebrad").await;
+        shield(&ValidatorKind::Zebrad).await;
     }
 
-    async fn shield(validator: &str) {
+    async fn shield(validator: &ValidatorKind) {
         let mut test_manager = TestManager::launch(validator, None, None, true, true, true, true)
             .await
             .unwrap();
@@ -413,7 +414,7 @@ mod wallet_basic {
 
         clients.faucet.do_sync(true).await.unwrap();
 
-        if validator == "zebrad" {
+        if matches!(validator, ValidatorKind::Zebrad) {
             test_manager.local_net.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();
@@ -477,16 +478,16 @@ mod wallet_basic {
 
     #[tokio::test]
     async fn zcashd_monitor_unverified_mempool() {
-        monitor_unverified_mempool("zcashd").await;
+        monitor_unverified_mempool(&ValidatorKind::Zcashd).await;
     }
 
     /// Bug documented in https://github.com/zingolabs/zaino/issues/144.
     #[tokio::test]
     async fn zebrad_monitor_unverified_mempool() {
-        monitor_unverified_mempool("zebrad").await;
+        monitor_unverified_mempool(&ValidatorKind::Zebrad).await;
     }
 
-    async fn monitor_unverified_mempool(validator: &str) {
+    async fn monitor_unverified_mempool(validator: &ValidatorKind) {
         let mut test_manager = TestManager::launch(validator, None, None, true, true, true, true)
             .await
             .unwrap();
@@ -500,7 +501,7 @@ mod wallet_basic {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
 
-        if validator == "zebrad" {
+        if matches!(validator, ValidatorKind::Zebrad) {
             test_manager.local_net.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.do_sync(true).await.unwrap();

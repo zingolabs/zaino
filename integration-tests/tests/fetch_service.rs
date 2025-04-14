@@ -10,33 +10,33 @@ use zaino_state::{
     indexer::{LightWalletIndexer, ZcashIndexer as _, ZcashService as _},
     status::StatusType,
 };
-use zaino_testutils::{TestManager, ZCASHD_CHAIN_CACHE_DIR, ZEBRAD_CHAIN_CACHE_DIR};
+use zaino_testutils::{TestManager, ValidatorKind, ZCASHD_CHAIN_CACHE_DIR, ZEBRAD_CHAIN_CACHE_DIR};
 use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest};
 use zingo_infra_testutils::services::validator::Validator as _;
 
 #[tokio::test]
 async fn launch_fetch_service_zcashd_regtest_no_cache() {
-    launch_fetch_service("zcashd", None).await;
+    launch_fetch_service(&ValidatorKind::Zcashd, None).await;
 }
 
 #[tokio::test]
 async fn launch_fetch_service_zcashd_regtest_with_cache() {
-    launch_fetch_service("zcashd", ZCASHD_CHAIN_CACHE_DIR.clone()).await;
+    launch_fetch_service(&ValidatorKind::Zcashd, ZCASHD_CHAIN_CACHE_DIR.clone()).await;
 }
 
 #[tokio::test]
 async fn launch_fetch_service_zebrad_regtest_no_cache() {
-    launch_fetch_service("zebrad", None).await;
+    launch_fetch_service(&ValidatorKind::Zebrad, None).await;
 }
 
 #[tokio::test]
 async fn launch_fetch_service_zebrad_regtest_with_cache() {
-    launch_fetch_service("zebrad", ZEBRAD_CHAIN_CACHE_DIR.clone()).await;
+    launch_fetch_service(&ValidatorKind::Zebrad, ZEBRAD_CHAIN_CACHE_DIR.clone()).await;
 }
 
 async fn create_test_manager_and_fetch_service(
-    validator: &str,
+    validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     zaino_no_sync: bool,
@@ -82,7 +82,7 @@ async fn create_test_manager_and_fetch_service(
     (test_manager, fetch_service, subscriber)
 }
 
-async fn launch_fetch_service(validator: &str, chain_cache: Option<std::path::PathBuf>) {
+async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std::path::PathBuf>) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, chain_cache, false, true, true, false)
             .await;
@@ -100,15 +100,15 @@ async fn launch_fetch_service(validator: &str, chain_cache: Option<std::path::Pa
 
 #[tokio::test]
 async fn fetch_service_get_address_balance_zcashd() {
-    fetch_service_get_address_balance("zcashd").await;
+    fetch_service_get_address_balance(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_address_balance_zebrad() {
-    fetch_service_get_address_balance("zebrad").await;
+    fetch_service_get_address_balance(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_address_balance(validator: &str) {
+async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -120,7 +120,7 @@ async fn fetch_service_get_address_balance(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -161,15 +161,15 @@ async fn fetch_service_get_address_balance(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_block_raw_zcashd() {
-    fetch_service_get_block_raw("zcashd").await;
+    fetch_service_get_block_raw(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_block_raw_zebrad() {
-    fetch_service_get_block_raw("zebrad").await;
+    fetch_service_get_block_raw(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_block_raw(validator: &str) {
+async fn fetch_service_get_block_raw(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, false, true, true, false).await;
 
@@ -183,15 +183,15 @@ async fn fetch_service_get_block_raw(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_block_object_zcashd() {
-    fetch_service_get_block_object("zcashd").await;
+    fetch_service_get_block_object(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_block_object_zebrad() {
-    fetch_service_get_block_object("zebrad").await;
+    fetch_service_get_block_object(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_block_object(validator: &str) {
+async fn fetch_service_get_block_object(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, false, true, true, false).await;
 
@@ -205,15 +205,15 @@ async fn fetch_service_get_block_object(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_raw_mempool_zcashd() {
-    fetch_service_get_raw_mempool("zcashd").await;
+    fetch_service_get_raw_mempool(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_raw_mempool_zebrad() {
-    fetch_service_get_raw_mempool("zebrad").await;
+    fetch_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_raw_mempool(validator: &str) {
+async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
     let clients = test_manager
@@ -241,7 +241,7 @@ async fn fetch_service_get_raw_mempool(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -292,15 +292,15 @@ async fn fetch_service_get_raw_mempool(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_z_get_treestate_zcashd() {
-    fetch_service_z_get_treestate("zcashd").await;
+    fetch_service_z_get_treestate(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_z_get_treestate_zebrad() {
-    fetch_service_z_get_treestate("zebrad").await;
+    fetch_service_z_get_treestate(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_z_get_treestate(validator: &str) {
+async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -311,7 +311,7 @@ async fn fetch_service_z_get_treestate(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -345,15 +345,15 @@ async fn fetch_service_z_get_treestate(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_z_get_subtrees_by_index_zcashd() {
-    fetch_service_z_get_subtrees_by_index("zcashd").await;
+    fetch_service_z_get_subtrees_by_index(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_z_get_subtrees_by_index_zebrad() {
-    fetch_service_z_get_subtrees_by_index("zebrad").await;
+    fetch_service_z_get_subtrees_by_index(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_z_get_subtrees_by_index(validator: &str) {
+async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -364,7 +364,7 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -398,15 +398,15 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_raw_transaction_zcashd() {
-    fetch_service_get_raw_transaction("zcashd").await;
+    fetch_service_get_raw_transaction(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_raw_transaction_zebrad() {
-    fetch_service_get_raw_transaction("zebrad").await;
+    fetch_service_get_raw_transaction(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_raw_transaction(validator: &str) {
+async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -417,7 +417,7 @@ async fn fetch_service_get_raw_transaction(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -451,15 +451,15 @@ async fn fetch_service_get_raw_transaction(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_address_tx_ids_zcashd() {
-    fetch_service_get_address_tx_ids("zcashd").await;
+    fetch_service_get_address_tx_ids(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_address_tx_ids_zebrad() {
-    fetch_service_get_address_tx_ids("zebrad").await;
+    fetch_service_get_address_tx_ids(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_address_tx_ids(validator: &str) {
+async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -471,7 +471,7 @@ async fn fetch_service_get_address_tx_ids(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -516,15 +516,15 @@ async fn fetch_service_get_address_tx_ids(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_address_utxos_zcashd() {
-    fetch_service_get_address_utxos("zcashd").await;
+    fetch_service_get_address_utxos(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_address_utxos_zebrad() {
-    fetch_service_get_address_utxos("zebrad").await;
+    fetch_service_get_address_utxos(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_address_utxos(validator: &str) {
+async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -536,7 +536,7 @@ async fn fetch_service_get_address_utxos(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -572,15 +572,15 @@ async fn fetch_service_get_address_utxos(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_latest_block_zcashd() {
-    fetch_service_get_latest_block("zcashd").await;
+    fetch_service_get_latest_block(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_latest_block_zebrad() {
-    fetch_service_get_latest_block("zebrad").await;
+    fetch_service_get_latest_block(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_latest_block(validator: &str) {
+async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
     test_manager.local_net.generate_blocks(1).await.unwrap();
@@ -622,15 +622,15 @@ async fn fetch_service_get_latest_block(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_block_zcashd() {
-    fetch_service_get_block("zcashd").await;
+    fetch_service_get_block(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_block_zebrad() {
-    fetch_service_get_block("zebrad").await;
+    fetch_service_get_block(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_block(validator: &str) {
+async fn fetch_service_get_block(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -660,15 +660,15 @@ async fn fetch_service_get_block(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_block_nullifiers_zcashd() {
-    fetch_service_get_block_nullifiers("zcashd").await;
+    fetch_service_get_block_nullifiers(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_block_nullifiers_zebrad() {
-    fetch_service_get_block_nullifiers("zebrad").await;
+    fetch_service_get_block_nullifiers(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_block_nullifiers(validator: &str) {
+async fn fetch_service_get_block_nullifiers(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -689,15 +689,15 @@ async fn fetch_service_get_block_nullifiers(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_block_range_zcashd() {
-    fetch_service_get_block_range("zcashd").await;
+    fetch_service_get_block_range(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_block_range_zebrad() {
-    fetch_service_get_block_range("zebrad").await;
+    fetch_service_get_block_range(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_block_range(validator: &str) {
+async fn fetch_service_get_block_range(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
     test_manager.local_net.generate_blocks(10).await.unwrap();
@@ -732,15 +732,15 @@ async fn fetch_service_get_block_range(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_block_range_nullifiers_zcashd() {
-    fetch_service_get_block_range_nullifiers("zcashd").await;
+    fetch_service_get_block_range_nullifiers(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_block_range_nullifiers_zebrad() {
-    fetch_service_get_block_range_nullifiers("zebrad").await;
+    fetch_service_get_block_range_nullifiers(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_block_range_nullifiers(validator: &str) {
+async fn fetch_service_get_block_range_nullifiers(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
     test_manager.local_net.generate_blocks(10).await.unwrap();
@@ -775,15 +775,15 @@ async fn fetch_service_get_block_range_nullifiers(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_transaction_mined_zcashd() {
-    fetch_service_get_transaction_mined("zcashd").await;
+    fetch_service_get_transaction_mined(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_transaction_mined_zebrad() {
-    fetch_service_get_transaction_mined("zebrad").await;
+    fetch_service_get_transaction_mined(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_transaction_mined(validator: &str) {
+async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -794,7 +794,7 @@ async fn fetch_service_get_transaction_mined(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -835,15 +835,15 @@ async fn fetch_service_get_transaction_mined(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_transaction_mempool_zcashd() {
-    fetch_service_get_transaction_mempool("zcashd").await;
+    fetch_service_get_transaction_mempool(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_transaction_mempool_zebrad() {
-    fetch_service_get_transaction_mempool("zebrad").await;
+    fetch_service_get_transaction_mempool(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_transaction_mempool(validator: &str) {
+async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -854,7 +854,7 @@ async fn fetch_service_get_transaction_mempool(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -895,15 +895,15 @@ async fn fetch_service_get_transaction_mempool(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_taddress_txids_zcashd() {
-    fetch_service_get_taddress_txids("zcashd").await;
+    fetch_service_get_taddress_txids(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_taddress_txids_zebrad() {
-    fetch_service_get_taddress_txids("zebrad").await;
+    fetch_service_get_taddress_txids(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_taddress_txids(validator: &str) {
+async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -915,7 +915,7 @@ async fn fetch_service_get_taddress_txids(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -975,15 +975,15 @@ async fn fetch_service_get_taddress_txids(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_taddress_balance_zcashd() {
-    fetch_service_get_taddress_balance("zcashd").await;
+    fetch_service_get_taddress_balance(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_taddress_balance_zebrad() {
-    fetch_service_get_taddress_balance("zebrad").await;
+    fetch_service_get_taddress_balance(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_taddress_balance(validator: &str) {
+async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -995,7 +995,7 @@ async fn fetch_service_get_taddress_balance(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -1037,15 +1037,15 @@ async fn fetch_service_get_taddress_balance(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_mempool_tx_zcashd() {
-    fetch_service_get_mempool_tx("zcashd").await;
+    fetch_service_get_mempool_tx(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_mempool_tx_zebrad() {
-    fetch_service_get_mempool_tx("zebrad").await;
+    fetch_service_get_mempool_tx(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_mempool_tx(validator: &str) {
+async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
     let clients = test_manager
@@ -1058,7 +1058,7 @@ async fn fetch_service_get_mempool_tx(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -1147,15 +1147,15 @@ async fn fetch_service_get_mempool_tx(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_mempool_stream_zcashd() {
-    fetch_service_get_mempool_stream("zcashd").await;
+    fetch_service_get_mempool_stream(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_mempool_stream_zebrad() {
-    fetch_service_get_mempool_stream("zebrad").await;
+    fetch_service_get_mempool_stream(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_mempool_stream(validator: &str) {
+async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -1169,7 +1169,7 @@ async fn fetch_service_get_mempool_stream(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -1231,15 +1231,15 @@ async fn fetch_service_get_mempool_stream(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_tree_state_zcashd() {
-    fetch_service_get_tree_state("zcashd").await;
+    fetch_service_get_tree_state(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_tree_state_zebrad() {
-    fetch_service_get_tree_state("zebrad").await;
+    fetch_service_get_tree_state(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_tree_state(validator: &str) {
+async fn fetch_service_get_tree_state(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -1260,15 +1260,15 @@ async fn fetch_service_get_tree_state(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_latest_tree_state_zcashd() {
-    fetch_service_get_latest_tree_state("zcashd").await;
+    fetch_service_get_latest_tree_state(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_latest_tree_state_zebrad() {
-    fetch_service_get_latest_tree_state("zebrad").await;
+    fetch_service_get_latest_tree_state(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_latest_tree_state(validator: &str) {
+async fn fetch_service_get_latest_tree_state(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -1282,15 +1282,15 @@ async fn fetch_service_get_latest_tree_state(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_subtree_roots_zcashd() {
-    fetch_service_get_subtree_roots("zcashd").await;
+    fetch_service_get_subtree_roots(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_subtree_roots_zebrad() {
-    fetch_service_get_subtree_roots("zebrad").await;
+    fetch_service_get_subtree_roots(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_subtree_roots(validator: &str) {
+async fn fetch_service_get_subtree_roots(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -1318,15 +1318,15 @@ async fn fetch_service_get_subtree_roots(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_taddress_utxos_zcashd() {
-    fetch_service_get_taddress_utxos("zcashd").await;
+    fetch_service_get_taddress_utxos(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_taddress_utxos_zebrad() {
-    fetch_service_get_taddress_utxos("zebrad").await;
+    fetch_service_get_taddress_utxos(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_taddress_utxos(validator: &str) {
+async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -1338,7 +1338,7 @@ async fn fetch_service_get_taddress_utxos(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -1376,15 +1376,15 @@ async fn fetch_service_get_taddress_utxos(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_taddress_utxos_stream_zcashd() {
-    fetch_service_get_taddress_utxos_stream("zcashd").await;
+    fetch_service_get_taddress_utxos_stream(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_taddress_utxos_stream_zebrad() {
-    fetch_service_get_taddress_utxos_stream("zebrad").await;
+    fetch_service_get_taddress_utxos_stream(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_taddress_utxos_stream(validator: &str) {
+async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
@@ -1396,7 +1396,7 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -1439,15 +1439,15 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &str) {
 
 #[tokio::test]
 async fn fetch_service_get_lightd_info_zcashd() {
-    fetch_service_get_lightd_info("zcashd").await;
+    fetch_service_get_lightd_info(&ValidatorKind::Zcashd).await;
 }
 
 #[tokio::test]
 async fn fetch_service_get_lightd_info_zebrad() {
-    fetch_service_get_lightd_info("zebrad").await;
+    fetch_service_get_lightd_info(&ValidatorKind::Zebrad).await;
 }
 
-async fn fetch_service_get_lightd_info(validator: &str) {
+async fn fetch_service_get_lightd_info(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 

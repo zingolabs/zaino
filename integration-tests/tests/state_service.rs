@@ -4,13 +4,15 @@ use zaino_state::{
     indexer::{ZcashIndexer, ZcashService as _},
     state::StateService,
 };
-use zaino_testutils::{TestManager, ZEBRAD_CHAIN_CACHE_DIR, ZEBRAD_TESTNET_CACHE_DIR};
+use zaino_testutils::{
+    TestManager, ValidatorKind, ZEBRAD_CHAIN_CACHE_DIR, ZEBRAD_TESTNET_CACHE_DIR,
+};
 use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 use zingo_infra_testutils::services::{self, validator::Validator as _};
 
 async fn create_test_manager_and_services(
-    validator: &str,
+    validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
@@ -107,13 +109,18 @@ async fn create_test_manager_and_services(
 
 #[tokio::test]
 async fn state_service_check_info_regtest_no_cache_zebrad() {
-    state_service_check_info("zebrad", None, services::network::Network::Regtest).await;
+    state_service_check_info(
+        &ValidatorKind::Zebrad,
+        None,
+        services::network::Network::Regtest,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn state_service_check_info_regtest_with_cache_zebrad() {
     state_service_check_info(
-        "zebrad",
+        &ValidatorKind::Zebrad,
         ZEBRAD_CHAIN_CACHE_DIR.clone(),
         services::network::Network::Regtest,
     )
@@ -124,7 +131,7 @@ async fn state_service_check_info_regtest_with_cache_zebrad() {
 #[tokio::test]
 async fn state_service_check_info_testnet_zebrad() {
     state_service_check_info(
-        "zebrad",
+        &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         services::network::Network::Testnet,
     )
@@ -132,7 +139,7 @@ async fn state_service_check_info_testnet_zebrad() {
 }
 
 async fn state_service_check_info(
-    validator: &str,
+    validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     network: services::network::Network,
 ) {
@@ -253,7 +260,7 @@ async fn state_service_check_info(
 
 #[tokio::test]
 async fn state_service_get_address_balance_regtest_zebrad() {
-    state_service_get_address_balance("zebrad").await;
+    state_service_get_address_balance(&ValidatorKind::Zebrad).await;
 }
 
 #[ignore = "requires fully synced testnet."]
@@ -262,7 +269,7 @@ async fn state_service_get_address_balance_testnet_zebrad() {
     state_service_get_address_balance_testnet().await;
 }
 
-async fn state_service_get_address_balance(validator: &str) {
+async fn state_service_get_address_balance(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(validator, None, true, true, None).await;
 
@@ -274,7 +281,7 @@ async fn state_service_get_address_balance(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -323,7 +330,7 @@ async fn state_service_get_address_balance(validator: &str) {
 async fn state_service_get_address_balance_testnet() {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(
-            "zebrad",
+            &ValidatorKind::Zebrad,
             ZEBRAD_TESTNET_CACHE_DIR.clone(),
             false,
             false,
@@ -352,14 +359,19 @@ async fn state_service_get_address_balance_testnet() {
 
 #[tokio::test]
 async fn state_service_get_block_raw_regtest_zebrad() {
-    state_service_get_block_raw("zebrad", None, services::network::Network::Regtest).await;
+    state_service_get_block_raw(
+        &ValidatorKind::Zebrad,
+        None,
+        services::network::Network::Regtest,
+    )
+    .await;
 }
 
 #[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn state_service_get_block_raw_testnet_zebrad() {
     state_service_get_block_raw(
-        "zebrad",
+        &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         services::network::Network::Testnet,
     )
@@ -367,7 +379,7 @@ async fn state_service_get_block_raw_testnet_zebrad() {
 }
 
 async fn state_service_get_block_raw(
-    validator: &str,
+    validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     network: services::network::Network,
 ) {
@@ -393,14 +405,19 @@ async fn state_service_get_block_raw(
 
 #[tokio::test]
 async fn state_service_get_block_object_regtest_zebrad() {
-    state_service_get_block_object("zebrad", None, services::network::Network::Regtest).await;
+    state_service_get_block_object(
+        &ValidatorKind::Zebrad,
+        None,
+        services::network::Network::Regtest,
+    )
+    .await;
 }
 
 #[ignore = "requires fully synced testnet."]
 #[tokio::test]
 async fn state_service_get_block_object_testnet_zebrad() {
     state_service_get_block_object(
-        "zebrad",
+        &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         services::network::Network::Testnet,
     )
@@ -408,7 +425,7 @@ async fn state_service_get_block_object_testnet_zebrad() {
 }
 
 async fn state_service_get_block_object(
-    validator: &str,
+    validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     network: services::network::Network,
 ) {
@@ -444,7 +461,7 @@ async fn state_service_get_block_object(
 
 #[tokio::test]
 async fn state_service_get_raw_mempool_regtest_zebrad() {
-    state_service_get_raw_mempool("zebrad").await;
+    state_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
 }
 
 #[ignore = "requires fully synced testnet."]
@@ -453,7 +470,7 @@ async fn state_service_get_raw_mempool_testnet_zebrad() {
     state_service_get_raw_mempool_testnet().await;
 }
 
-async fn state_service_get_raw_mempool(validator: &str) {
+async fn state_service_get_raw_mempool(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(validator, None, true, true, None).await;
     let clients = test_manager
@@ -466,7 +483,7 @@ async fn state_service_get_raw_mempool(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -520,7 +537,7 @@ async fn state_service_get_raw_mempool(validator: &str) {
 async fn state_service_get_raw_mempool_testnet() {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(
-            "zebrad",
+            &ValidatorKind::Zebrad,
             ZEBRAD_TESTNET_CACHE_DIR.clone(),
             false,
             false,
@@ -544,7 +561,7 @@ async fn state_service_get_raw_mempool_testnet() {
 
 #[tokio::test]
 async fn state_service_z_get_treestate_regtest_zebrad() {
-    state_service_z_get_treestate("zebrad").await;
+    state_service_z_get_treestate(&ValidatorKind::Zebrad).await;
 }
 
 #[ignore = "requires fully synced testnet."]
@@ -553,7 +570,7 @@ async fn state_service_z_get_treestate_testnet_zebrad() {
     state_service_z_get_treestate_testnet().await;
 }
 
-async fn state_service_z_get_treestate(validator: &str) {
+async fn state_service_z_get_treestate(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(validator, None, true, true, None).await;
 
@@ -564,7 +581,7 @@ async fn state_service_z_get_treestate(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -606,7 +623,7 @@ async fn state_service_z_get_treestate(validator: &str) {
 async fn state_service_z_get_treestate_testnet() {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(
-            "zebrad",
+            &ValidatorKind::Zebrad,
             ZEBRAD_TESTNET_CACHE_DIR.clone(),
             false,
             false,
@@ -631,7 +648,7 @@ async fn state_service_z_get_treestate_testnet() {
 
 #[tokio::test]
 async fn state_service_z_get_subtrees_by_index_regtest_zebrad() {
-    state_service_z_get_subtrees_by_index("zebrad").await;
+    state_service_z_get_subtrees_by_index(&ValidatorKind::Zebrad).await;
 }
 
 #[ignore = "requires fully synced testnet."]
@@ -640,7 +657,7 @@ async fn state_service_z_get_subtrees_by_index_testnet_zebrad() {
     state_service_z_get_subtrees_by_index_testnet().await;
 }
 
-async fn state_service_z_get_subtrees_by_index(validator: &str) {
+async fn state_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(validator, None, true, true, None).await;
 
@@ -651,7 +668,7 @@ async fn state_service_z_get_subtrees_by_index(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -693,7 +710,7 @@ async fn state_service_z_get_subtrees_by_index(validator: &str) {
 async fn state_service_z_get_subtrees_by_index_testnet() {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(
-            "zebrad",
+            &ValidatorKind::Zebrad,
             ZEBRAD_TESTNET_CACHE_DIR.clone(),
             false,
             false,
@@ -744,7 +761,7 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
 
 #[tokio::test]
 async fn state_service_get_raw_transaction_regtest_zebrad() {
-    state_service_get_raw_transaction("zebrad").await;
+    state_service_get_raw_transaction(&ValidatorKind::Zebrad).await;
 }
 
 #[ignore = "requires fully synced testnet."]
@@ -753,7 +770,7 @@ async fn state_service_get_raw_transaction_testnet_zebrad() {
     state_service_get_raw_transaction_testnet().await;
 }
 
-async fn state_service_get_raw_transaction(validator: &str) {
+async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(validator, None, true, true, None).await;
 
@@ -764,7 +781,7 @@ async fn state_service_get_raw_transaction(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -808,7 +825,7 @@ async fn state_service_get_raw_transaction(validator: &str) {
 async fn state_service_get_raw_transaction_testnet() {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(
-            "zebrad",
+            &ValidatorKind::Zebrad,
             ZEBRAD_TESTNET_CACHE_DIR.clone(),
             false,
             false,
@@ -835,7 +852,7 @@ async fn state_service_get_raw_transaction_testnet() {
 
 #[tokio::test]
 async fn state_service_get_address_tx_ids_regtest_zebrad() {
-    state_service_get_address_tx_ids("zebrad").await;
+    state_service_get_address_tx_ids(&ValidatorKind::Zebrad).await;
 }
 
 #[ignore = "requires fully synced testnet."]
@@ -844,7 +861,7 @@ async fn state_service_get_address_tx_ids_testnet_zebrad() {
     state_service_get_address_tx_ids_testnet().await;
 }
 
-async fn state_service_get_address_tx_ids(validator: &str) {
+async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(validator, None, true, true, None).await;
 
@@ -856,7 +873,7 @@ async fn state_service_get_address_tx_ids(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -914,7 +931,7 @@ async fn state_service_get_address_tx_ids(validator: &str) {
 async fn state_service_get_address_tx_ids_testnet() {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(
-            "zebrad",
+            &ValidatorKind::Zebrad,
             ZEBRAD_TESTNET_CACHE_DIR.clone(),
             false,
             false,
@@ -944,7 +961,7 @@ async fn state_service_get_address_tx_ids_testnet() {
 
 #[tokio::test]
 async fn state_service_get_address_utxos_zebrad() {
-    state_service_get_address_utxos("zebrad").await;
+    state_service_get_address_utxos(&ValidatorKind::Zebrad).await;
 }
 
 #[ignore = "requires fully synced testnet."]
@@ -953,7 +970,7 @@ async fn state_service_get_address_utxos_testnet_zebrad() {
     state_service_get_address_utxos_testnet().await;
 }
 
-async fn state_service_get_address_utxos(validator: &str) {
+async fn state_service_get_address_utxos(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(validator, None, true, true, None).await;
 
@@ -965,7 +982,7 @@ async fn state_service_get_address_utxos(validator: &str) {
 
     clients.faucet.do_sync(true).await.unwrap();
 
-    if validator == "zebrad" {
+    if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.do_sync(true).await.unwrap();
@@ -1015,7 +1032,7 @@ async fn state_service_get_address_utxos(validator: &str) {
 async fn state_service_get_address_utxos_testnet() {
     let (mut test_manager, _fetch_service, fetch_service_subscriber, state_service) =
         create_test_manager_and_services(
-            "zebrad",
+            &ValidatorKind::Zebrad,
             ZEBRAD_TESTNET_CACHE_DIR.clone(),
             false,
             false,

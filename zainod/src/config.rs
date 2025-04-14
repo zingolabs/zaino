@@ -151,26 +151,41 @@ impl IndexerConfig {
             }
         }
 
-        // Ensure TLS is used when connecting to external addresses.
-        if !is_private_listen_addr(&self.grpc_listen_address) && !self.grpc_tls {
-            return Err(IndexerError::ConfigError(
-                "TLS required when connecting to external addresses.".to_string(),
-            ));
-        }
+        #[cfg(not(feature = "test_only_very_insecure"))]
+        let grpc_addr = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
+        #[cfg(feature = "test_only_very_insecure")]
+        let _ = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
+
+        let validator_addr =
+            fetch_socket_addr_from_hostname(&self.validator_listen_address.to_string())?;
 
         // Ensure validator listen address is private.
-        if !is_private_listen_addr(&self.validator_listen_address) {
+        if !is_private_listen_addr(&validator_addr) {
             return Err(IndexerError::ConfigError(
                 "Zaino may only connect to Zebra with private IP addresses.".to_string(),
             ));
         }
 
-        // Ensure validator rpc cookie authentication is used when connecting to non-loopback addresses.
-        if !is_loopback_listen_addr(&self.validator_listen_address) && !self.validator_cookie_auth {
-            return Err(IndexerError::ConfigError(
+        #[cfg(not(feature = "test_only_very_insecure"))]
+        {
+            // Ensure TLS is used when connecting to external addresses.
+            if !is_private_listen_addr(&grpc_addr) && !self.grpc_tls {
+                return Err(IndexerError::ConfigError(
+                    "TLS required when connecting to external addresses.".to_string(),
+                ));
+            }
+
+            // Ensure validator rpc cookie authentication is used when connecting to non-loopback addresses.
+            if !is_loopback_listen_addr(&validator_addr) && !self.validator_cookie_auth {
+                return Err(IndexerError::ConfigError(
                 "Validator listen address is not loopback, so cookie authentication must be enabled."
                     .to_string(),
             ));
+            }
+        }
+        #[cfg(feature = "test_only_very_insecure")]
+        {
+            warn!("Zaino built using test_only_very_insecure feature, proceed with caution.");
         }
 
         Ok(())
@@ -259,6 +274,7 @@ pub(crate) fn is_private_listen_addr(addr: &SocketAddr) -> bool {
 /// Validates that the configured `address` is a loopback address.
 ///
 /// Returns `Ok(BindAddress)` if valid.
+#[cfg_attr(feature = "test_only_very_insecure", allow(dead_code))]
 pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
     match ip {
