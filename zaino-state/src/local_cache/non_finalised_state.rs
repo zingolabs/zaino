@@ -35,9 +35,9 @@ pub struct NonFinalisedState {
     /// Used to send blocks to the finalised state.
     block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
     /// Used to send latest chain fork
-    latest_fork_sender: tokio::sync::watch::Sender<BlockId>,
+    latest_fork_sender: tokio::sync::watch::Sender<Option<BlockId>>,
     /// Used to recieve latest chain fork
-    latest_fork_reciever: tokio::sync::watch::Receiver<BlockId>,
+    latest_fork_reciever: tokio::sync::watch::Receiver<Option<BlockId>>,
     /// Non-finalised state status.
     status: AtomicStatus,
     /// BlockCache config data.
@@ -53,10 +53,7 @@ impl NonFinalisedState {
     ) -> Result<Self, NonFinalisedStateError> {
         info!("Launching Non-Finalised State..");
 
-        let (channel_fork_tx, channel_fork_rx) = tokio::sync::watch::channel(BlockId {
-            height: 0,
-            hash: vec![0, 0],
-        });
+        let (channel_fork_tx, channel_fork_rx) = tokio::sync::watch::channel(None);
 
         let mut non_finalised_state = NonFinalisedState {
             fetcher: fetcher.clone(),
@@ -234,14 +231,14 @@ impl NonFinalisedState {
         };
 
         self.latest_fork_sender
-            .send(BlockId {
+            .send(Some(BlockId {
                 height: reorg_height.0 as u64,
                 hash: reorg_hash.zcash_serialize_to_vec().map_err(|_| {
                     NonFinalisedStateError::Custom(
                         "Failed to serialise reorg hash into vector".to_string(),
                     )
                 })?,
-            })
+            }))
             .map_err(|_| {
                 NonFinalisedStateError::Custom("Failed to send latest fork to reciever".to_string())
             })?;
@@ -437,7 +434,7 @@ pub struct NonFinalisedStateSubscriber {
     heights_to_hashes: BroadcastSubscriber<Height, Hash>,
     hashes_to_blocks: BroadcastSubscriber<Hash, CompactBlock>,
     status: AtomicStatus,
-    latest_fork_reciever: tokio::sync::watch::Receiver<BlockId>,
+    latest_fork_reciever: tokio::sync::watch::Receiver<Option<BlockId>>,
 }
 
 impl NonFinalisedStateSubscriber {
@@ -494,7 +491,7 @@ impl NonFinalisedStateSubscriber {
     }
 
     /// Returns the get latest fork of this [`NonFinalisedStateSubscriber`].
-    pub async fn get_latest_fork(&mut self) -> Result<BlockId, NonFinalisedStateError> {
+    pub async fn get_latest_fork(&mut self) -> Result<Option<BlockId>, NonFinalisedStateError> {
         match self.latest_fork_reciever.changed().await {
             Ok(_) => Ok(self.latest_fork_reciever.borrow().clone()),
             Err(_) => Err(NonFinalisedStateError::Custom(
