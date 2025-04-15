@@ -49,19 +49,23 @@ impl NonFinalisedState {
     pub async fn spawn(
         fetcher: &JsonRpSeeConnector,
         block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
-        latest_fork_sender: tokio::sync::watch::Sender<BlockId>,
-        latest_fork_reciever: tokio::sync::watch::Receiver<BlockId>,
         config: BlockCacheConfig,
     ) -> Result<Self, NonFinalisedStateError> {
         info!("Launching Non-Finalised State..");
+
+        let (channel_fork_tx, channel_fork_rx) = tokio::sync::watch::channel(BlockId {
+            height: 0,
+            hash: vec![0, 0],
+        });
+
         let mut non_finalised_state = NonFinalisedState {
             fetcher: fetcher.clone(),
             heights_to_hashes: Broadcast::new(config.map_capacity, config.map_shard_amount),
             hashes_to_blocks: Broadcast::new(config.map_capacity, config.map_shard_amount),
             sync_task_handle: None,
             block_sender,
-            latest_fork_sender,
-            latest_fork_reciever,
+            latest_fork_sender: channel_fork_tx,
+            latest_fork_reciever: channel_fork_rx,
             status: AtomicStatus::new(StatusType::Spawning.into()),
             config,
         };

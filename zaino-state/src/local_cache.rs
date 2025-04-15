@@ -12,9 +12,8 @@ use zaino_fetch::{
     chain::block::FullBlock,
     jsonrpsee::{connector::JsonRpSeeConnector, response::GetBlockResponse},
 };
-use zaino_proto::proto::{
-    compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx},
-    service::BlockId,
+use zaino_proto::proto::compact_formats::{
+    ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx,
 };
 use zebra_chain::block::{Hash, Height};
 use zebra_state::HashOrHeight;
@@ -40,10 +39,6 @@ impl BlockCache {
     ) -> Result<Self, BlockCacheError> {
         info!("Launching Local Block Cache..");
         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(100);
-        let (channel_fork_tx, channel_fork_rx) = tokio::sync::watch::channel(BlockId {
-            height: 0,
-            hash: vec![0, 0],
-        });
 
         let finalised_state = if !config.no_db {
             Some(FinalisedState::spawn(fetcher, channel_rx, config.clone()).await?)
@@ -51,14 +46,8 @@ impl BlockCache {
             None
         };
 
-        let non_finalised_state = NonFinalisedState::spawn(
-            fetcher,
-            channel_tx,
-            channel_fork_tx,
-            channel_fork_rx,
-            config.clone(),
-        )
-        .await?;
+        let non_finalised_state =
+            NonFinalisedState::spawn(fetcher, channel_tx, config.clone()).await?;
 
         Ok(BlockCache {
             fetcher: fetcher.clone(),
