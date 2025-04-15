@@ -491,12 +491,7 @@ impl NonFinalisedStateSubscriber {
     }
 
     /// Returns the get latest fork of this [`NonFinalisedStateSubscriber`].
-    pub async fn get_latest_fork(&mut self) -> Result<Option<BlockId>, NonFinalisedStateError> {
-        match self.latest_fork_reciever.changed().await {
-            Ok(_) => Ok(self.latest_fork_reciever.borrow().clone()),
-            Err(_) => Err(NonFinalisedStateError::Custom(
-                "Failed recieving latest fork BlockId".to_string(),
-            )),
-        }
+    pub async fn get_latest_fork(&mut self) -> Option<BlockId> {
+        self.latest_fork_reciever.borrow().clone()
     }
 }
