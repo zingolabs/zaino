@@ -2157,8 +2157,6 @@ dependencies = [
  "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?rev=0d201a59f812d7312239f488f9c8beea73cd64d4)",
  "zebra-rpc 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?rev=0d201a59f812d7312239f488f9c8beea73cd64d4)",
  "zebra-state 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?rev=0d201a59f812d7312239f488f9c8beea73cd64d4)",
- "zingo-infra-testutils",
- "zingolib",
 ]
 
 [[package]]
@@ -5899,7 +5897,8 @@ dependencies = [
  "zcash_client_backend",
  "zcash_protocol 0.4.0",
  "zebra-chain 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git?rev=0d201a59f812d7312239f488f9c8beea73cd64d4)",
- "zingo-infra-testutils",
+ "zingo-infra-services",
+ "zingo-netutils",
  "zingolib",
 ]
 
@@ -6841,27 +6840,6 @@ dependencies = [
  "zebra-node-services 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git)",
  "zebra-rpc 1.0.0-beta.45 (git+https://github.com/ZcashFoundation/zebra.git)",
  "zingo-infra-fetcher-core",
-]
-
-[[package]]
-name = "zingo-infra-testutils"
-version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=9c885e1c5cf7707f0bd5db6abf9e8a9d4b5e1b0e#9c885e1c5cf7707f0bd5db6abf9e8a9d4b5e1b0e"
-dependencies = [
- "http",
- "portpicker",
- "tempfile",
- "testvectors",
- "tokio",
- "tokio-stream",
- "tonic",
- "tracing-subscriber",
- "zcash_client_backend",
- "zcash_primitives 0.19.0",
- "zcash_protocol 0.4.0",
- "zingo-infra-services",
- "zingo-netutils",
- "zingolib",
 ]
 
 [[package]]

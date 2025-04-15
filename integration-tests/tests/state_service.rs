@@ -4,12 +4,14 @@ use zaino_state::{
     indexer::{ZcashIndexer, ZcashService as _},
     state::StateService,
 };
+use zaino_testutils::from_inputs;
+use zaino_testutils::services;
+use zaino_testutils::Validator as _;
 use zaino_testutils::{
     TestManager, ValidatorKind, ZEBRAD_CHAIN_CACHE_DIR, ZEBRAD_TESTNET_CACHE_DIR,
 };
 use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
-use zingo_infra_testutils::services::{self, validator::Validator as _};
 
 async fn create_test_manager_and_services(
     validator: &ValidatorKind,
@@ -291,7 +293,7 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    from_inputs::quick_send(
         &clients.faucet,
         vec![(recipient_address.as_str(), 250_000, None)],
     )
@@ -497,7 +499,7 @@ async fn state_service_get_raw_mempool(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("transparent").await,
@@ -507,7 +509,7 @@ async fn state_service_get_raw_mempool(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -591,7 +593,7 @@ async fn state_service_z_get_treestate(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -678,7 +680,7 @@ async fn state_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -791,7 +793,7 @@ async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -883,7 +885,7 @@ async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = from_inputs::quick_send(
         &clients.faucet,
         vec![(recipient_address.as_str(), 250_000, None)],
     )
@@ -992,7 +994,7 @@ async fn state_service_get_address_utxos(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let txid_1 = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let txid_1 = from_inputs::quick_send(
         &clients.faucet,
         vec![(recipient_address.as_str(), 250_000, None)],
     )

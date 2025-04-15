@@ -25,6 +25,7 @@ version = "0.1.2"
 [workspace.dependencies]
 # Zingolabs
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_005", features = [ "test-elevation" ] }
+zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_005" }
 testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_005" }
 
 # Librustzcash
@@ -37,10 +38,7 @@ zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d2
 zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
 zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
 
-
-# Zingo-infra-testutils
-zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "5f5b8171874831a3ff5ebfed1f95627944885f35" }
-zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "5f5b8171874831a3ff5ebfed1f95627944885f35" }
+zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "9c885e1c5cf7707f0bd5db6abf9e8a9d4b5e1b0e" }
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
