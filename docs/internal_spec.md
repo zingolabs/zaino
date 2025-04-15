@@ -26,8 +26,7 @@ The Zaino repo consists of several crates that collectively provide an indexing 
 - zebra-rpc
 
 
-**Zingo-infra-testutils:**
-- zingo-infra-testutils
+**Zingo-infra-services:**
 - zingo-infra-services
 
 **Runtime:**

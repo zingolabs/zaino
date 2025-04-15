@@ -3,9 +3,9 @@
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
+use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
-use zingo_infra_testutils::services::validator::Validator;
-use zingolib::testutils::lightclient::from_inputs;
+use zaino_testutils::Validator as _;
 
 mod wallet_basic {
     use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
@@ -518,7 +518,7 @@ mod wallet_basic {
         let txid_1 = from_inputs::quick_send(
             &clients.faucet,
             vec![(
-                &zingolib::get_base_address_macro!(recipient_client, "unified"),
+                &zaino_testutils::get_base_address_macro!(recipient_client, "unified"),
                 250_000,
                 None,
             )],
@@ -528,7 +528,7 @@ mod wallet_basic {
         let txid_2 = from_inputs::quick_send(
             &clients.faucet,
             vec![(
-                &zingolib::get_base_address_macro!(recipient_client, "sapling"),
+                &zaino_testutils::get_base_address_macro!(recipient_client, "sapling"),
                 250_000,
                 None,
             )],
@@ -539,8 +539,7 @@ mod wallet_basic {
         println!("\n\nStarting Mempool!\n");
 
         recipient_client.clear_state().await;
-        zingolib::lightclient::LightClient::start_mempool_monitor(recipient_client.clone())
-            .unwrap();
+        zaino_testutils::LightClient::start_mempool_monitor(recipient_client.clone()).unwrap();
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         // test_manager.local_net.print_stdout();

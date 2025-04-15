@@ -19,12 +19,6 @@ zebra-state.workspace = true
 zebra-rpc.workspace = true
 futures.workspace = true
 
-# Test fixtures
-zingo-infra-testutils = { workspace = true }
-
-# Lightclient
-zingolib = { workspace = true }
-
 # Runtime
 tokio = { workspace = true }
 

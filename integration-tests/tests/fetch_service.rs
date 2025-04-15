@@ -10,10 +10,10 @@ use zaino_state::{
     indexer::{LightWalletIndexer, ZcashIndexer as _, ZcashService as _},
     status::StatusType,
 };
+use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind, ZCASHD_CHAIN_CACHE_DIR, ZEBRAD_CHAIN_CACHE_DIR};
 use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest};
-use zingo_infra_testutils::services::validator::Validator as _;
 
 #[tokio::test]
 async fn launch_fetch_service_zcashd_regtest_no_cache() {
@@ -130,7 +130,7 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(recipient_address.as_str(), 250_000, None)],
     )
@@ -255,7 +255,7 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("transparent").await,
@@ -265,7 +265,7 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -321,7 +321,7 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -374,7 +374,7 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -427,7 +427,7 @@ async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -481,7 +481,7 @@ async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(recipient_address.as_str(), 250_000, None)],
     )
@@ -546,7 +546,7 @@ async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let txid_1 = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let txid_1 = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(recipient_address.as_str(), 250_000, None)],
     )
@@ -804,7 +804,7 @@ async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -864,7 +864,7 @@ async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -925,7 +925,7 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(&recipient_address, 250_000, None)],
     )
@@ -1005,7 +1005,7 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(&recipient_address, 250_000, None)],
     )
@@ -1072,7 +1072,7 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx_1 = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx_1 = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("transparent").await,
@@ -1082,7 +1082,7 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    let tx_2 = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx_2 = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -1194,7 +1194,7 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("transparent").await,
@@ -1204,7 +1204,7 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(
             &clients.get_recipient_address("unified").await,
@@ -1348,7 +1348,7 @@ async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    let tx = zingolib::testutils::lightclient::from_inputs::quick_send(
+    let tx = zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(&recipient_address, 250_000, None)],
     )
@@ -1406,7 +1406,7 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
         clients.faucet.do_sync(true).await.unwrap();
     };
 
-    zingolib::testutils::lightclient::from_inputs::quick_send(
+    zaino_testutils::from_inputs::quick_send(
         &clients.faucet,
         vec![(&recipient_address, 250_000, None)],
     )

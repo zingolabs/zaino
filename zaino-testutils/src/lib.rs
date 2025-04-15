@@ -4,14 +4,22 @@
 #![forbid(unsafe_code)]
 
 use once_cell::sync::Lazy;
-use services::validator::Validator;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
 use tempfile::TempDir;
-use testvectors::REG_O_ADDR_FROM_ABANDONART;
+use testvectors::{seeds, REG_O_ADDR_FROM_ABANDONART};
 use tracing_subscriber::EnvFilter;
+use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
+pub use zingo_infra_services as services;
+pub use zingo_infra_services::network::Network;
+pub use zingo_infra_services::validator::Validator;
+use zingo_netutils::{GetClientError, GrpcConnector, UnderlyingService};
+use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
+pub use zingolib::{
+    get_base_address_macro, lightclient::LightClient, testutils::lightclient::from_inputs,
+};
 
 /// Path for zcashd binary.
 pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
@@ -79,9 +87,9 @@ pub enum ValidatorKind {
 /// Config for validators.
 pub enum ValidatorConfig {
     /// Zcashd Config.
-    ZcashdConfig(services::validator::ZcashdConfig),
+    ZcashdConfig(zingo_infra_services::validator::ZcashdConfig),
     /// Zebrad Config.
-    ZebradConfig(services::validator::ZebradConfig),
+    ZebradConfig(zingo_infra_services::validator::ZebradConfig),
 }
 
 /// Available zcash-local-net configurations.
@@ -91,12 +99,22 @@ pub enum ValidatorConfig {
 )]
 pub enum LocalNet {
     /// Zcash-local-net backed by Zcashd.
-    Zcashd(services::LocalNet<services::indexer::Empty, services::validator::Zcashd>),
+    Zcashd(
+        zingo_infra_services::LocalNet<
+            zingo_infra_services::indexer::Empty,
+            zingo_infra_services::validator::Zcashd,
+        >,
+    ),
     /// Zcash-local-net backed by Zebrad.
-    Zebrad(services::LocalNet<services::indexer::Empty, services::validator::Zebrad>),
+    Zebrad(
+        zingo_infra_services::LocalNet<
+            zingo_infra_services::indexer::Empty,
+            zingo_infra_services::validator::Zebrad,
+        >,
+    ),
 }
 
-impl services::validator::Validator for LocalNet {
+impl zingo_infra_services::validator::Validator for LocalNet {
     const CONFIG_FILENAME: &str = "";
 
     type Config = ValidatorConfig;
@@ -104,22 +122,27 @@ impl services::validator::Validator for LocalNet {
     #[allow(clippy::manual_async_fn)]
     fn launch(
         config: Self::Config,
-    ) -> impl std::future::Future<Output = Result<Self, services::error::LaunchError>> + Send {
+    ) -> impl std::future::Future<Output = Result<Self, zingo_infra_services::error::LaunchError>> + Send
+    {
         async move {
             match config {
                 ValidatorConfig::ZcashdConfig(cfg) => {
-                    let net = services::LocalNet::<
-                        services::indexer::Empty,
-                        services::validator::Zcashd,
-                    >::launch(services::indexer::EmptyConfig {}, cfg)
+                    let net = zingo_infra_services::LocalNet::<
+                        zingo_infra_services::indexer::Empty,
+                        zingo_infra_services::validator::Zcashd,
+                    >::launch(
+                        zingo_infra_services::indexer::EmptyConfig {}, cfg
+                    )
                     .await;
                     Ok(LocalNet::Zcashd(net))
                 }
                 ValidatorConfig::ZebradConfig(cfg) => {
-                    let net = services::LocalNet::<
-                        services::indexer::Empty,
-                        services::validator::Zebrad,
-                    >::launch(services::indexer::EmptyConfig {}, cfg)
+                    let net = zingo_infra_services::LocalNet::<
+                        zingo_infra_services::indexer::Empty,
+                        zingo_infra_services::validator::Zebrad,
+                    >::launch(
+                        zingo_infra_services::indexer::EmptyConfig {}, cfg
+                    )
                     .await;
                     Ok(LocalNet::Zebrad(net))
                 }
@@ -193,7 +216,7 @@ impl services::validator::Validator for LocalNet {
         }
     }
 
-    fn network(&self) -> services::network::Network {
+    fn network(&self) -> Network {
         match self {
             LocalNet::Zcashd(net) => net.validator().network(),
             LocalNet::Zebrad(net) => *net.validator().network(),
@@ -212,16 +235,16 @@ impl services::validator::Validator for LocalNet {
     fn load_chain(
         chain_cache: PathBuf,
         validator_data_dir: PathBuf,
-        validator_network: services::network::Network,
+        validator_network: Network,
     ) -> PathBuf {
         if chain_cache.to_string_lossy().contains("zcashd") {
-            services::validator::Zcashd::load_chain(
+            zingo_infra_services::validator::Zcashd::load_chain(
                 chain_cache,
                 validator_data_dir,
                 validator_network,
             )
         } else if chain_cache.to_string_lossy().contains("zebrad") {
-            services::validator::Zebrad::load_chain(
+            zingo_infra_services::validator::Zebrad::load_chain(
                 chain_cache,
                 validator_data_dir,
                 validator_network,
@@ -266,7 +289,7 @@ pub struct TestManager {
     /// Data directory for the validator.
     pub data_dir: PathBuf,
     /// Network (chain) type:
-    pub network: services::network::Network,
+    pub network: Network,
     /// Zebrad/Zcashd JsonRpc listen address.
     pub zebrad_rpc_listen_address: SocketAddr,
     /// Zaino Indexer JoinHandle.
@@ -277,7 +300,32 @@ pub struct TestManager {
     pub clients: Option<Clients>,
 }
 
-use zingo_infra_testutils::services;
+fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
+    format!("http://127.0.0.1:{}", indexer_port)
+        .try_into()
+        .unwrap()
+}
+// NOTE: this should be migrated to zingolib when LocalNet replaces regtest manager in zingoilb::testutils
+/// Builds faucet (miner) and recipient lightclients for local network integration testing
+async fn build_lightclients(
+    lightclient_dir: PathBuf,
+    indexer_port: portpicker::Port,
+) -> (LightClient, LightClient) {
+    let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
+    let faucet = client_builder
+        .build_faucet(true, RegtestNetwork::all_upgrades_active())
+        .await;
+    let recipient = client_builder
+        .build_client(
+            seeds::HOSPITAL_MUSEUM_SEED.to_string(),
+            1,
+            true,
+            RegtestNetwork::all_upgrades_active(),
+        )
+        .await;
+
+    (faucet, recipient)
+}
 impl TestManager {
     /// Launches zcash-local-net<Empty, Validator>.
     ///
@@ -318,23 +366,23 @@ impl TestManager {
 
         let validator_config = match validator {
             ValidatorKind::Zcashd => {
-                let cfg = services::validator::ZcashdConfig {
+                let cfg = zingo_infra_services::validator::ZcashdConfig {
                     zcashd_bin: ZCASHD_BIN.clone(),
                     zcash_cli_bin: ZCASH_CLI_BIN.clone(),
                     rpc_listen_port: Some(zebrad_rpc_listen_port),
-                    activation_heights: services::network::ActivationHeights::default(),
+                    activation_heights: zingo_infra_services::network::ActivationHeights::default(),
                     miner_address: Some(REG_O_ADDR_FROM_ABANDONART),
                     chain_cache,
                 };
                 ValidatorConfig::ZcashdConfig(cfg)
             }
             ValidatorKind::Zebrad => {
-                let cfg = services::validator::ZebradConfig {
+                let cfg = zingo_infra_services::validator::ZebradConfig {
                     zebrad_bin: ZEBRAD_BIN.clone(),
                     network_listen_port: None,
                     rpc_listen_port: Some(zebrad_rpc_listen_port),
-                    activation_heights: services::network::ActivationHeights::default(),
-                    miner_address: services::validator::ZEBRAD_DEFAULT_MINER,
+                    activation_heights: zingo_infra_services::network::ActivationHeights::default(),
+                    miner_address: zingo_infra_services::validator::ZEBRAD_DEFAULT_MINER,
                     chain_cache,
                     network,
                 };
@@ -384,7 +432,7 @@ impl TestManager {
         // Launch Zingolib Lightclients:
         let clients = if enable_clients {
             let lightclient_dir = tempfile::tempdir().unwrap();
-            let lightclients = zingo_infra_testutils::client::build_lightclients(
+            let lightclients = build_lightclients(
                 lightclient_dir.path().to_path_buf(),
                 zaino_grpc_listen_address
                     .expect("Error launching zingo lightclients. `enable_zaino` is None.")
@@ -427,6 +475,13 @@ impl Drop for TestManager {
     }
 }
 
+/// Builds a client for creating RPC requests to the indexer/light-node
+pub fn build_client(
+    uri: http::Uri,
+) -> impl std::future::Future<Output = Result<CompactTxStreamerClient<UnderlyingService>, GetClientError>>
+{
+    GrpcConnector::new(uri).get_client()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,15 +594,14 @@ mod tests {
             TestManager::launch(&ValidatorKind::Zebrad, None, None, true, true, true, false)
                 .await
                 .unwrap();
-        let mut grpc_client =
-            zingo_infra_testutils::client::build_client(services::network::localhost_uri(
-                test_manager
-                    .zaino_grpc_listen_address
-                    .expect("Zaino listen port not available but zaino is active.")
-                    .port(),
-            ))
-            .await
-            .unwrap();
+        let mut grpc_client = build_client(services::network::localhost_uri(
+            test_manager
+                .zaino_grpc_listen_address
+                .expect("Zaino listen port not available but zaino is active.")
+                .port(),
+        ))
+        .await
+        .unwrap();
         dbg!(grpc_client
             .get_lightd_info(tonic::Request::new(
                 zcash_client_backend::proto::service::Empty {},
@@ -563,15 +617,14 @@ mod tests {
             TestManager::launch(&ValidatorKind::Zcashd, None, None, true, true, true, false)
                 .await
                 .unwrap();
-        let mut grpc_client =
-            zingo_infra_testutils::client::build_client(services::network::localhost_uri(
-                test_manager
-                    .zaino_grpc_listen_address
-                    .expect("Zaino listen port is not available but zaino is active.")
-                    .port(),
-            ))
-            .await
-            .unwrap();
+        let mut grpc_client = build_client(services::network::localhost_uri(
+            test_manager
+                .zaino_grpc_listen_address
+                .expect("Zaino listen port is not available but zaino is active.")
+                .port(),
+        ))
+        .await
+        .unwrap();
         dbg!(grpc_client
             .get_lightd_info(tonic::Request::new(
                 zcash_client_backend::proto::service::Empty {},

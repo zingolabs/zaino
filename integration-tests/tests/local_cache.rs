@@ -4,10 +4,10 @@ use zaino_state::{
     config::BlockCacheConfig,
     local_cache::{BlockCache, BlockCacheSubscriber},
 };
+use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::block::Height;
 use zebra_state::HashOrHeight;
-use zingo_infra_testutils::services::validator::Validator as _;
 
 async fn create_test_manager_and_block_cache(
     validator: &ValidatorKind,

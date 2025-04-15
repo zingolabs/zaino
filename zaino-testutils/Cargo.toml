@@ -8,10 +8,6 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
-[features]
-# Used by zcash-local-net:
-test_fixtures = []
-
 [dependencies]
 zainod = { workspace = true }
 
@@ -22,12 +18,13 @@ zcash_client_backend = { workspace = true }
 # Zebra
 zebra-chain = { workspace = true }
 
+# Zingo-infra
+zingo-infra-services = { workspace = true }
+
 # ZingoLib
+zingo-netutils = { workspace = true }
 zingolib = { workspace = true }
 testvectors = { workspace = true }
-
-# Test Utilities
-zingo-infra-testutils = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
