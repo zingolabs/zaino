@@ -22,6 +22,8 @@ Code and documentation are very helpful and the lifeblood of Free Software. To m
 The best way to verify is using a GPG signature. See [this document about commit signature verification.](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
 
 Code, being Rust, should be formatted using `rustfmt` and applying the `clippy` suggestions.
+For convenience, there are two scripts included in the `utils` directory which run these tools and remove trailing whitespaces.
+From the project's workspace root, you can run `./utils/precommit_check.sh`
 
 Code should be as complex as it needs to be, but no more.
 
