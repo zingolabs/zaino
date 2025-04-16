@@ -1,4 +1,5 @@
 use core::panic;
+use std::time::Duration;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::{
     config::BlockCacheConfig,
@@ -78,6 +79,73 @@ async fn create_test_manager_and_block_cache(
         block_cache,
         block_cache_subscriber,
     )
+}
+
+#[tokio::test]
+async fn create_test_manager_and_reorg() {
+    let validator_kind = ValidatorKind::Zebrad;
+    let (mut test_manager, _json_service, _block_cache, block_cache_subscriber) =
+        create_test_manager_and_block_cache(&validator_kind, None, true, true, false, false).await;
+
+    let zebra_dir = dbg!(test_manager.data_dir.clone());
+    let backup = dbg!(tempfile::tempdir().unwrap());
+    std::process::Command::new("cp")
+        .arg("-r")
+        .arg(zebra_dir.to_string_lossy().to_string())
+        .arg(backup.path())
+        .output()
+        .unwrap();
+
+    dbg!(std::process::Command::new("ls")
+        .arg(zebra_dir.to_string_lossy().to_string())
+        .output()
+        .unwrap());
+    dbg!(std::process::Command::new("ls")
+        .arg(backup.path())
+        .output()
+        .unwrap());
+
+    dbg!(block_cache_subscriber.status());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    dbg!(block_cache_subscriber.status());
+
+    dbg!(block_cache_subscriber.get_chain_height().await.unwrap());
+
+    test_manager.local_net.generate_blocks(10).await.unwrap();
+    dbg!(block_cache_subscriber.get_chain_height().await.unwrap());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    dbg!(block_cache_subscriber.get_chain_height().await.unwrap());
+    test_manager
+        .zaino_shutdown_handle
+        .as_mut()
+        .take()
+        .unwrap()
+        .shutdown();
+    dbg!(block_cache_subscriber.status());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    dbg!(block_cache_subscriber.status());
+    test_manager.data_dir = backup.path().to_owned();
+
+    let cfg = zingo_infra_testutils::services::validator::ZebradConfig {
+        zebrad_bin: zaino_testutils::ZEBRAD_BIN.clone(),
+        network_listen_port: None,
+        rpc_listen_port: test_manager.zaino_grpc_listen_address.map(|sa| sa.port()),
+        activation_heights: zingo_infra_testutils::services::network::ActivationHeights::default(),
+        miner_address: zingo_infra_testutils::services::validator::ZEBRAD_DEFAULT_MINER,
+        chain_cache: None,
+        network: zingo_infra_testutils::services::network::Network::Regtest,
+    };
+    test_manager.local_net =
+        zaino_testutils::LocalNet::launch(zaino_testutils::ValidatorConfig::ZebradConfig(cfg))
+            .await
+            .unwrap();
+
+    dbg!(block_cache_subscriber.status());
+
+    dbg!(block_cache_subscriber.get_chain_height().await.unwrap());
+
+    test_manager.local_net.generate_blocks(5).await.unwrap();
+    dbg!(block_cache_subscriber.get_chain_height().await.unwrap());
 }
 
 #[tokio::test]

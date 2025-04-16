@@ -31,13 +31,19 @@ impl Indexer {
     ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
         startup_message();
         info!("Starting Zaino..");
-        Indexer::spawn(config).await
+        Indexer::spawn(config).await.map(|(handle, _)| handle)
     }
 
     /// Spawns a new Indexer server.
     pub async fn spawn(
         config: IndexerConfig,
-    ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    ) -> Result<
+        (
+            tokio::task::JoinHandle<Result<(), IndexerError>>,
+            ShutdownHandle,
+        ),
+        IndexerError,
+    > {
         config.check_config()?;
         info!("Checking connection with node..");
         let zebrad_uri = test_node_and_return_url(
@@ -83,7 +89,7 @@ impl Indexer {
         )
         .await
         .unwrap();
-
+        let shutdown_handle = ShutdownHandle(grpc_server.status.clone());
         let mut indexer = Indexer {
             server: Some(grpc_server),
             service: Some(chain_state_service),
@@ -117,7 +123,7 @@ impl Indexer {
             }
         });
 
-        Ok(serve_task)
+        Ok((serve_task, shutdown_handle))
     }
 
     /// Checks indexers status and servers internal statuses for either offline of critical error signals.
@@ -184,6 +190,18 @@ impl Indexer {
             "Zaino status check - ChainState Service:{}{} gRPC Server:{}{}",
             service_status_symbol, service_status, grpc_server_status_symbol, grpc_server_status
         );
+    }
+}
+
+/// A handle used to allow a caller to shutdown the zaino process early
+/// (TODO: extend to other processes?)
+pub struct ShutdownHandle(zaino_state::status::AtomicStatus);
+impl ShutdownHandle {
+    /// Send a shutdown signal to the targetted process
+    pub fn shutdown(&self) {
+        if self.0.load() < StatusType::Closing as usize {
+            self.0.store(StatusType::Closing as usize);
+        }
     }
 }
 

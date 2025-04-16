@@ -12,6 +12,7 @@ use std::{
 use tempfile::TempDir;
 use testvectors::REG_O_ADDR_FROM_ABANDONART;
 use tracing_subscriber::EnvFilter;
+use zainodlib::indexer::ShutdownHandle;
 
 /// Path for zcashd binary.
 pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
@@ -271,6 +272,8 @@ pub struct TestManager {
     pub zebrad_rpc_listen_address: SocketAddr,
     /// Zaino Indexer JoinHandle.
     pub zaino_handle: Option<tokio::task::JoinHandle<Result<(), zainodlib::error::IndexerError>>>,
+    /// A handle used to trigger zaino shutdown early
+    pub zaino_shutdown_handle: Option<ShutdownHandle>,
     /// Zingo-Indexer gRPC listen address.
     pub zaino_grpc_listen_address: Option<SocketAddr>,
     /// Zingolib lightclients.
@@ -346,7 +349,7 @@ impl TestManager {
         let db_path = data_dir.join("zaino");
 
         // Launch Zaino:
-        let (zaino_grpc_listen_address, zaino_handle) = if enable_zaino {
+        let (zaino_grpc_listen_address, zaino_handles) = if enable_zaino {
             let zaino_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
             let zaino_grpc_listen_address =
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_grpc_listen_port);
@@ -400,12 +403,15 @@ impl TestManager {
             None
         };
 
+        let (zaino_handle, zaino_shutdown_handle) = zaino_handles.unzip();
+
         Ok(Self {
             local_net,
             data_dir,
             network,
             zebrad_rpc_listen_address,
             zaino_handle,
+            zaino_shutdown_handle,
             zaino_grpc_listen_address,
             clients,
         })

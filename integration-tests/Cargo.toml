@@ -21,6 +21,8 @@ futures.workspace = true
 
 # Test fixtures
 zingo-infra-testutils = { workspace = true }
+tempfile.workspace = true
+portpicker.workspace = true
 
 # Lightclient
 zingolib = { workspace = true }

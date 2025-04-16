@@ -2147,6 +2147,8 @@ name = "integration-tests"
 version = "0.1.2"
 dependencies = [
  "futures",
+ "portpicker",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
  "url",
