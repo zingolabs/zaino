@@ -1,4 +1,4 @@
-name: Check MinIO Connection
+name: Check MinIO Connection and Setup Caching
 
 on:
   push:
@@ -8,9 +8,9 @@ jobs:
   check-minio:
     runs-on: ziserv-2
     env:
-      AWS_ACCESS_KEY_ID: minio
-      AWS_SECRET_ACCESS_KEY: minio123
-      S3_ENDPOINT: https://minio.gh-cache.svc.cluster.local
+      AWS_ACCESS_KEY_ID: minio      # Hard-coded MinIO access key
+      AWS_SECRET_ACCESS_KEY: minio123 # Hard-coded MinIO secret key
+      S3_ENDPOINT: https://minio.gh-cache.svc.cluster.local # Hard-coded MinIO endpoint
 
     steps:
     - name: Test connection to MinIO
@@ -26,4 +26,39 @@ jobs:
         else
           echo "Failed to connect to MinIO: HTTP $response"
           exit 1  # Exit with a failure status
+        fi
+                                               
+  setup-cache:
+    runs-on: ziserv-2
+    needs: check-minio
+
+    steps:
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: minio        # Hard-coded MinIO access key
+        aws-secret-access-key: minio123  # Hard-coded MinIO secret key
+        aws-region: us-east-1            # Hard-coded region
+        aws-endpoint-url: https://minio.gh-cache.svc.cluster.local # Hard-coded MinIO endpoint
+
+    - name: Caching a Simple Value
+      run: |
+        # Create a simple text file with a value
+        echo "This is a cached value." > cached_value.txt
+
+    - name: Cache the Value
+      uses: runs-on/cache@v4
+      with:
+        path: cached_value.txt # Path to the file to cache
+        key: ${{ runner.os }}-cached-value-${{ github.run_id }} # Generate a cache key based on OSand run ID
+        restore-keys: |
+          ${{ runner.os }}-cached-value-
+
+    - name: Verify Cached Value
+      run: |
+        if [ -f cached_value.txt ]; then
+          echo "Cached value found:"
+          cat cached_value.txt
+        else
+          echo "No cached value found."
         fi
