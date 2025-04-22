@@ -731,9 +731,11 @@ pub struct GetTreestateResponse {
     pub time: u32,
 
     /// A treestate containing a Sapling note commitment tree, hex-encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sapling: Option<zebra_rpc::methods::trees::Treestate<String>>,
 
     /// A treestate containing an Orchard note commitment tree, hex-encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchard: Option<zebra_rpc::methods::trees::Treestate<String>>,
 }
 
