@@ -16,4 +16,4 @@ jobs:
     - name: Test connection to MinIO
       run: |
         echo "Testing connection to MinIO server..."
-        curl -k -X GET "${{ env.S3_ENDPOINT }}/minio/health/live
+        curl -k -X GET "${{ env.S3_ENDPOINT }}/minio/health/live"
