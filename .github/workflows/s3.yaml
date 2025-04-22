@@ -16,4 +16,4 @@ jobs:
     - name: Test connection to MinIO
       run: |
         echo "Testing connection to MinIO server..."
-        curl -X GET "${{ env.S3_ENDPOINT }}/minio/health/live" --user ${{ secrets.MINIO_ACCESS_KEY }}:${{ secrets.MINIO_SECRET_KEY }}
+        curl -X GET "${{ env.S3_ENDPOINT }}/minio/health/live" --user ${{ env.AWS_ACCESS_KEY_ID }}:${{ env.AWS_SECRET_ACESS_KEY }}
