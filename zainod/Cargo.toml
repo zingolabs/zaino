@@ -18,7 +18,7 @@ path = "src/lib.rs"
 
 [features]
 # Removes network restrictions.
-test_only_very_insecure = []
+disable_tls_unencrypted_traffic_mode = []
 
 [dependencies]
 zaino-fetch = { workspace = true }
