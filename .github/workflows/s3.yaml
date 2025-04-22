@@ -1,0 +1,20 @@
+name: Check MinIO Connection
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  check-minio:
+    runs-on: ziserv-2
+    env:
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+      S3_ENDPOINT: http://gh-cache.minio.svc.cluster.local:9000
+
+    steps:
+
+    - name: Test connection to MinIO
+      run: |
+        echo "Testing connection to MinIO server..."
+        curl -X GET "${{ env.S3_ENDPOINT }}/minio/health/live" --user ${{ secrets.MINIO_ACCESS_KEY }}:${{ secrets.MINIO_SECRET_KEY }}
