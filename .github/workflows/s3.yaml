@@ -10,8 +10,7 @@ jobs:
     env:
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio123
-      S3_ENDPOINT: http://gh-cache.minio.svc.cluster.local:9000
-
+      S3_ENDPOINT: https://minio.gh-cache.svc.cluster.local
     steps:
 
     - name: Test connection to MinIO
