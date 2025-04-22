@@ -151,9 +151,9 @@ impl IndexerConfig {
             }
         }
 
-        #[cfg(not(feature = "test_only_very_insecure"))]
+        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
         let grpc_addr = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
-        #[cfg(feature = "test_only_very_insecure")]
+        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
         let _ = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
 
         let validator_addr =
@@ -166,7 +166,7 @@ impl IndexerConfig {
             ));
         }
 
-        #[cfg(not(feature = "test_only_very_insecure"))]
+        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
         {
             // Ensure TLS is used when connecting to external addresses.
             if !is_private_listen_addr(&grpc_addr) && !self.grpc_tls {
@@ -183,9 +183,9 @@ impl IndexerConfig {
             ));
             }
         }
-        #[cfg(feature = "test_only_very_insecure")]
+        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
         {
-            warn!("Zaino built using test_only_very_insecure feature, proceed with caution.");
+            warn!("Zaino built using disable_tls_unencrypted_traffic_mode feature, proceed with caution.");
         }
 
         Ok(())
@@ -274,7 +274,7 @@ pub(crate) fn is_private_listen_addr(addr: &SocketAddr) -> bool {
 /// Validates that the configured `address` is a loopback address.
 ///
 /// Returns `Ok(BindAddress)` if valid.
-#[cfg_attr(feature = "test_only_very_insecure", allow(dead_code))]
+#[cfg_attr(feature = "disable_tls_unencrypted_traffic_mode", allow(dead_code))]
 pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
     match ip {
