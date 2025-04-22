@@ -11,9 +11,19 @@ jobs:
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio123
       S3_ENDPOINT: https://minio.gh-cache.svc.cluster.local
-    steps:
 
+    steps:
     - name: Test connection to MinIO
       run: |
         echo "Testing connection to MinIO server..."
-        curl -k -X GET "${{ env.S3_ENDPOINT }}/minio/health/live"
+
+        # Make the curl request and capture the response
+        response=$(curl -k -s -o /dev/null -w "%{http_code}" "${{ env.S3_ENDPOINT }}/minio/health/live")
+
+        # Check the HTTP response code
+        if [ "$response" -eq 200 ]; then
+          echo "Connection to MinIO successful: HTTP $response"
+        else
+          echo "Failed to connect to MinIO: HTTP $response"
+          exit 1  # Exit with a failure status
+        fi
