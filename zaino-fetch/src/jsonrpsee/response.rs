@@ -459,7 +459,9 @@ pub struct OrchardTrees {
 /// Wrapper struct for zebra's GetBlockTrees
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockTrees {
+    #[serde(default)]
     sapling: Option<SaplingTrees>,
+    #[serde(default)]
     orchard: Option<OrchardTrees>,
 }
 
