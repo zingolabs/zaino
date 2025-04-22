@@ -731,10 +731,10 @@ pub struct GetTreestateResponse {
     pub time: u32,
 
     /// A treestate containing a Sapling note commitment tree, hex-encoded.
-    pub sapling: zebra_rpc::methods::trees::Treestate<String>,
+    pub sapling: Option<zebra_rpc::methods::trees::Treestate<String>>,
 
     /// A treestate containing an Orchard note commitment tree, hex-encoded.
-    pub orchard: zebra_rpc::methods::trees::Treestate<String>,
+    pub orchard: Option<zebra_rpc::methods::trees::Treestate<String>>,
 }
 
 impl<'de> serde::Deserialize<'de> for GetTreestateResponse {
@@ -743,34 +743,48 @@ impl<'de> serde::Deserialize<'de> for GetTreestateResponse {
         D: serde::Deserializer<'de>,
     {
         let v = serde_json::Value::deserialize(deserializer)?;
+
         let height = v["height"]
             .as_i64()
             .ok_or_else(|| serde::de::Error::missing_field("height"))? as i32;
+
         let hash = v["hash"]
             .as_str() // This directly accesses the string value
             .ok_or_else(|| serde::de::Error::missing_field("hash"))? // Converts Option to Result
             .to_string();
+
         let time = v["time"]
             .as_i64()
             .ok_or_else(|| serde::de::Error::missing_field("time"))? as u32;
-        let sapling_final_state = v["sapling"]["commitments"]["finalState"]
-            .as_str()
-            .ok_or_else(|| serde::de::Error::missing_field("sapling final state"))?
-            .to_string();
-        let orchard_final_state = v["orchard"]["commitments"]["finalState"]
-            .as_str()
-            .ok_or_else(|| serde::de::Error::missing_field("orchard final state"))?
-            .to_string();
+
+        let sapling = v
+            .get("sapling")
+            .and_then(|s| s.get("commitments"))
+            .and_then(|c| c.get("finalState"))
+            .and_then(|f| f.as_str())
+            .map(|s| {
+                zebra_rpc::methods::trees::Treestate::new(
+                    zebra_rpc::methods::trees::Commitments::new(s.to_string()),
+                )
+            });
+
+        let orchard = v
+            .get("orchard")
+            .and_then(|s| s.get("commitments"))
+            .and_then(|c| c.get("finalState"))
+            .and_then(|f| f.as_str())
+            .map(|s| {
+                zebra_rpc::methods::trees::Treestate::new(
+                    zebra_rpc::methods::trees::Commitments::new(s.to_string()),
+                )
+            });
+
         Ok(GetTreestateResponse {
             height,
             hash,
             time,
-            sapling: zebra_rpc::methods::trees::Treestate::new(
-                zebra_rpc::methods::trees::Commitments::new(sapling_final_state),
-            ),
-            orchard: zebra_rpc::methods::trees::Treestate::new(
-                zebra_rpc::methods::trees::Commitments::new(orchard_final_state),
-            ),
+            sapling,
+            orchard,
         })
     }
 }
@@ -780,19 +794,27 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::methods::trees::GetTreestate {
 
     fn try_from(value: GetTreestateResponse) -> Result<Self, Self::Error> {
         let parsed_hash = zebra_chain::block::Hash::from_hex(&value.hash)?;
+
         let height_u32 = u32::try_from(value.height).map_err(|_| {
             zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
-        let sapling_bytes = hex::decode(value.sapling.inner().inner().as_bytes())?;
-        let orchard_bytes = hex::decode(value.orchard.inner().inner().as_bytes())?;
+        let sapling_bytes = match value.sapling {
+            Some(s) => Some(hex::decode(s.inner().inner().as_bytes())?),
+            None => None,
+        };
+
+        let orchard_bytes = match value.orchard {
+            Some(o) => Some(hex::decode(o.inner().inner().as_bytes())?),
+            None => None,
+        };
 
         Ok(zebra_rpc::methods::trees::GetTreestate::from_parts(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
             value.time,
-            Some(sapling_bytes),
-            Some(orchard_bytes),
+            sapling_bytes,
+            orchard_bytes,
         ))
     }
 }
