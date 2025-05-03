@@ -32,8 +32,6 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
 
       - name: Build and archive tests
         run: cargo nextest archive --verbose --workspace --all-features --archive-file nextest-archive.tar.zst
@@ -56,8 +54,6 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
 
       - name: Cargo Check
         run: |
@@ -131,8 +127,6 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -149,8 +143,6 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
 
       - name: Run clippy with console output
         run: cargo clippy --all-targets
@@ -174,8 +166,6 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
 
       - name: Check trailing whitespace
         run: ./utils/trailing-whitespace.sh reject
