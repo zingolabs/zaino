@@ -34,8 +34,6 @@ To run client rpc test `get_subtree_roots_orchard`:
 See the `get_subtree_roots_orchard` test fixture doc comments in infrastructure for more details.
 
 - TESTNET TESTS:
-The testnet tests are temporary and will be replaced with regtest as soon as (https://github.com/zingolabs/zaino/issues/231) is resolved.
-In the mean time, these tests can be ran, but it is a fiddly process. First, it needs a zebrad fully synced to testnet (depending on internet speed, etc., this could take 10+ hours).
-To build the zebra testnet cache, the best way is to use zebra directly. With `zebrad` already in `$PATH` and from the `zaino/` directory run `zebrad --config ./zainod/zebrad.toml start`.
-Then, the tests must be run 1 at a time (passing `--no-capture` will enforce this).
-Furthermore, due to https://github.com/zingolabs/infrastructure/issues/43, sometimes a zebrad may persist past the end of the test and hold a lock on the testnet cache, causing remaining tests to fail. This process can be stopped manually, in order to allow testnet tests to work again.
+The testnet tests are temporary.
+
+Due to https://github.com/zingolabs/infrastructure/issues/43, sometimes a zebrad may persist past the end of the test and hold a lock on the testnet cache, causing remaining tests to fail. This process can be stopped manually, in order to allow testnet tests to work again.
