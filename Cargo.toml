@@ -36,9 +36,9 @@ zcash_protocol = { git = "https://github.com/zingolabs/librustzcash.git", tag = 
 
 
 # Zebra
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "89f825265a8fa184b5d4619da7af900f10870769" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "89f825265a8fa184b5d4619da7af900f10870769" }
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "89f825265a8fa184b5d4619da7af900f10870769" }
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

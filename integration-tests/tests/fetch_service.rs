@@ -10,6 +10,7 @@ use zaino_state::{
 };
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest};
 
@@ -53,7 +54,17 @@ async fn create_test_manager_and_fetch_service(
             .to_path_buf()
             .join("zaino"),
         None,
-        Network::new_regtest(Some(1), Some(1)),
+        Network::new_regtest(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu7: None,
+        }),
         true,
         true,
     ))

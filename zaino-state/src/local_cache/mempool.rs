@@ -21,7 +21,7 @@ pub struct MempoolKey(pub String);
 /// Mempool value.
 ///
 /// Holds GetRawTransaction::TransactionObject.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MempoolValue(pub GetRawTransaction);
 
 /// Zcash mempool, uses dashmap for efficient serving of mempool tx.

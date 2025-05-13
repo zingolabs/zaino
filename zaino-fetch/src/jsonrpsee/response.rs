@@ -10,7 +10,7 @@ use zebra_chain::{
     block::Height,
     work::difficulty::CompactDifficulty,
 };
-use zebra_rpc::methods::types::Balance;
+use zebra_rpc::methods::types::get_blockchain_info::Balance;
 
 /// A helper module to serialize `Option<T: ToHex>` as a hex string.
 ///
@@ -746,12 +746,10 @@ impl<'de> serde::Deserialize<'de> for GetTreestateResponse {
             .ok_or_else(|| serde::de::Error::missing_field("time"))? as u32;
         let sapling_final_state = v["sapling"]["commitments"]["finalState"]
             .as_str()
-            .ok_or_else(|| serde::de::Error::missing_field("sapling final state"))?
-            .to_string();
+            .map(|s| s.to_string());
         let orchard_final_state = v["orchard"]["commitments"]["finalState"]
             .as_str()
-            .ok_or_else(|| serde::de::Error::missing_field("orchard final state"))?
-            .to_string();
+            .map(|s| s.to_string());
         Ok(GetTreestateResponse {
             height,
             hash,
@@ -775,15 +773,27 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::methods::trees::GetTreestate {
             zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
-        let sapling_bytes = hex::decode(value.sapling.inner().inner().as_bytes())?;
-        let orchard_bytes = hex::decode(value.orchard.inner().inner().as_bytes())?;
+        let sapling_bytes = value
+            .sapling
+            .inner()
+            .inner()
+            .as_ref()
+            .map(|v| hex::decode(v.as_bytes()))
+            .transpose()?;
+        let orchard_bytes = value
+            .orchard
+            .inner()
+            .inner()
+            .as_ref()
+            .map(|v| hex::decode(v.as_bytes()))
+            .transpose()?;
 
         Ok(zebra_rpc::methods::trees::GetTreestate::from_parts(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
             value.time,
-            Some(sapling_bytes),
-            Some(orchard_bytes),
+            sapling_bytes,
+            orchard_bytes,
         ))
     }
 }
@@ -919,15 +929,16 @@ impl From<GetTransactionResponse> for zebra_rpc::methods::GetRawTransaction {
                 hex,
                 height,
                 confirmations,
-            } => zebra_rpc::methods::GetRawTransaction::Object(
-                zebra_rpc::methods::TransactionObject {
+            } => zebra_rpc::methods::GetRawTransaction::Object(Box::new(
+                zebra_rpc::methods::types::transaction::TransactionObject {
                     hex: hex.0,
                     // Deserialised height is always positive or None so it is safe to convert here.
                     // (see [`impl<'de> serde::Deserialize<'de> for GetTransactionResponse`]).
                     height: height.map(|h| h as u32),
                     confirmations,
+                    ..Default::default()
                 },
-            ),
+            )),
         }
     }
 }

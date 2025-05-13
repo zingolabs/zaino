@@ -7,6 +7,7 @@ use zaino_testutils::from_inputs;
 use zaino_testutils::services;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
@@ -49,7 +50,20 @@ async fn create_test_manager_and_services(
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             (Network::new_default_testnet(), false)
         }
-        _ => (Network::new_regtest(Some(1), Some(1)), true),
+        _ => (
+            Network::new_regtest(ConfiguredActivationHeights {
+                before_overwinter: Some(1),
+                overwinter: Some(1),
+                sapling: Some(1),
+                blossom: Some(1),
+                heartwood: Some(1),
+                canopy: Some(1),
+                nu5: Some(1),
+                nu6: Some(1),
+                nu7: None,
+            }),
+            true,
+        ),
     };
 
     test_manager.local_net.print_stdout();
