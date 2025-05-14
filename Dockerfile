@@ -1,8 +1,15 @@
-# Specify the base image for building
-FROM rust:1.86.0-bookworm AS builder
+# syntax=docker/dockerfile:1
+
+# Set the build arguments used across the stages.
+# Each stage must define the build arguments (ARGs) it uses.
 
 # Accept an argument to control no-tls builds
 ARG NO_TLS=false
+
+ARG RUST_VERSION=1.86.0
+
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musl-dev \
@@ -14,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     # Install OpenSSL only if not building with no-tls
     && if [ "$NO_TLS" = "false" ]; then apt-get install -y libssl-dev; fi \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*  /tmp/*
 
 WORKDIR /app
 
@@ -62,7 +69,7 @@ RUN find . -name "*.rs" -exec touch {} + && \
     fi
 
 # Final stage using a slim base image
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
