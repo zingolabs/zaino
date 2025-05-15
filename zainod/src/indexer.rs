@@ -197,10 +197,10 @@ where
             None => return 7,
         };
 
-        let json_server_status = match &self.json_server {
-            Some(json_server) => Some(json_server.status()),
-            None => None,
-        };
+        let json_server_status = self
+            .json_server
+            .as_ref()
+            .map(|json_server| json_server.status());
 
         let mut server_status = match &self.server {
             Some(server) => server.status(),
