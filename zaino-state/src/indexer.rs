@@ -2,7 +2,7 @@
 //! and generic wrapper structs for the various backend options available.
 
 use async_trait::async_trait;
-
+use block_explorer_types::GetAddressDeltas;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_proto::proto::{
@@ -410,6 +410,18 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         ))
         .await
     }
+}
+
+/// BlockExplorerIndexer RPC method signatures.
+///
+/// Doc comments taken from Zaino-Proto for consistency.
+#[async_trait]
+pub trait BlockExplorerIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
+    /// Return getaddressdelta RPC message
+    async fn get_address_deltas(
+        &self,
+        request: GetAddressDeltas,
+    ) -> Result<Vec<String>, Self::Error>;
 }
 
 /// LightWallet RPC method signatures.

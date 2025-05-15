@@ -4,7 +4,8 @@ use crate::{
     config::StateServiceConfig,
     error::{BlockCacheError, StateServiceError},
     indexer::{
-        handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
+        handle_raw_transaction, BlockExplorerIndexer, IndexerSubscriber, LightWalletIndexer,
+        ZcashIndexer, ZcashService,
     },
     local_cache::{
         compact_block_to_nullifiers,
@@ -39,6 +40,7 @@ use zebra_chain::{
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkUpgrade},
+    //primitives::Address,
     serialization::ZcashSerialize,
     subtree::NoteCommitmentSubtreeIndex,
 };
@@ -1266,6 +1268,70 @@ impl ZcashIndexer for StateServiceSubscriber {
             RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
         )?;
         Ok(chain_height)
+    }
+}
+
+// not usng a mod due to visibility issues.
+// see https://doc.rust-lang.org/rust-by-example/mod/struct_visibility.html
+// format purloined from zebra
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+struct GetAddressDeltas {
+    // A list of addresses from which to get transactions.
+    addresses: Vec<String>,
+    // The height at which to start looking for transactions.
+    start: Option<u32>,
+    // The height at which to end looking for transactions.
+    end: Option<u32>,
+    // When true, also includes the heights and hashes of the start and end block.
+    chaininfo: bool,
+}
+
+#[async_trait]
+impl BlockExplorerIndexer for StateServiceSubscriber {
+    async fn get_address_deltas(
+        &self,
+        request: GetAddressDeltas,
+    ) -> Result<Vec<String>, Self::Error> {
+        let mut state = self.read_state_service.clone();
+        //let response = state.ready().and_then(|service| service.call(req)).await?;
+
+        // is there an address struct for base58check encoded addresses?
+        // check all incoming address, use exisiting struct if possible.
+
+        // Here, Address is an enum of many types. the RPC call may be or may have been more restrictive.
+        // let adds: Vec<Address>;
+        // for now, just grabbing the strings as they come in.
+        let mut adds: Vec<String> = Vec::new();
+        for a in request.addresses {
+            adds.push(a);
+        }
+
+        /*
+        start and end are optional, defined by
+        block height range, and the default is the full blockchain.
+        If start or end are not specified, they default to zero.
+        If start is greater than the latest block height, it's interpreted as that height.
+        If end is zero, it's interpreted as the latest block height.
+        */
+
+        if request.chaininfo {
+            // When true, also includes the heights and hashes of the start and end block.
+            // use ReadRequest::Transaction(hash)
+            // above: use zebra_rpc::{ methods::{
+            let _s = state;
+        }
+        return todo!();
+        /* Result:
+        [
+          {
+            "satoshis"  (number) The difference of zatoshis
+            "txid"      (string) The related txid
+            "index"     (number) The related input or output index
+            "height"    (number) The block height
+            "address"   (string) The base58check encoded address
+          }, ...
+        ]
+        */
     }
 }
 
