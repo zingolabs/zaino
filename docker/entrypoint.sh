@@ -173,6 +173,10 @@ fi
 # 2. Generate config file if it doesn't exist
 generate_config_if_needed
 
+echo "INFO: Contents of Zaino config file at ${ZAINO_CONF_PATH}:"
+cat "${ZAINO_CONF_PATH}"
+echo "--- End of Zaino config file ---"
+
 # 3. Display logging information
 echo "INFO: Using Rust log level: ${RUST_LOG}"
 echo "      To change log level, set RUST_LOG (e.g., RUST_LOG=debug,zainod=trace)"
