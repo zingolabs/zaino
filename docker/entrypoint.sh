@@ -55,7 +55,17 @@ ensure_dir_owned() {
         mkdir -p "${dir_path}" || { echo "ERROR: Failed to create directory: ${dir_path}"; exit 1; }
     fi
     if [[ "$(id -u)" == "0" ]]; then
-        chown -R "${UID}:${GID}" "${dir_path}" || { echo "ERROR: Failed to chown directory: ${dir_path}"; exit 1; }
+        if ! chown -R "${UID}:${GID}" "${dir_path}" >/dev/null 2>&1; then
+            echo "WARNING: Failed to set recursive ownership (chown -R ${UID}:${GID}) for directory '${dir_path}'." >&2
+            echo "         This could be due to read-only mounts or other permission issues." >&2
+            echo "         The application may proceed, but could misbehave or fail to start correctly if permissions are insufficient." >&2
+            # As a fallback, try to chown only the directory itself, not recursively.
+            if ! chown "${UID}:${GID}" "${dir_path}" >/dev/null 2>&1; then
+                echo "WARNING: Failed to set ownership (chown ${UID}:${GID}) for the directory '${dir_path}' itself." >&2
+            else
+                echo "INFO: Successfully set ownership (chown ${UID}:${GID}) for the directory '${dir_path}' itself (non-recursive)." >&2
+            fi
+        fi
     fi
 }
 
