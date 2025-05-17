@@ -1,5 +1,26 @@
 # Configuration for Zaino
 
+# Backend:
+
+# Type of backend to use. Options are:
+# - "fetch" - Uses JsonRPC client to fetch data (Zcashd, Zainod).
+# - "state" - Uses ReadStateService to fetch data (Zebrad).
+backend = "fetch"
+
+# JsonRPC server config:
+
+# Enables JsonRPC server.
+enable_json_server =  false
+
+# JsonRPC server listen addr.
+json_rpc_listen_address = "localhost:8237"
+
+# Enables cookie-based authentication for JsonRPC server.
+enable_cookie_auth = false
+
+# Directory to store authentication cookie file.
+cookie_dir = "None"
+
 # gRPC server config:
 
 # Zainod's gRPC server listen address.
@@ -17,8 +38,6 @@ tls_cert_path = "None"
 # Path to the TLS private key file in PEM format.
 # Required if `tls` is true.
 tls_key_path = "None"
-
-
 
 # JsonRPC client config:
 
@@ -41,8 +60,6 @@ validator_user = "xxxxxx"
 # Optional full node / validator Password.
 validator_password = "xxxxxx"
 
-
-
 # Mempool, Non-Finalised State and Finalised State config:
 
 # Capacity of the Dashmaps used for the Mempool.
@@ -60,12 +77,15 @@ map_capacity = "None"
 # None by default.
 map_shard_amount = "None"
 
-# Block Cache database file path.
-#
-# This is Zaino's Compact Block Cache db if using the FetchService or Zebra's RocksDB if using the StateService.
+# Zaino Block Cache database file path.
 #
 # None by default, this defaults to `$HOME/.cache/zaino/`
-db_path = "None"
+zaino_db_path = "None"
+
+# Zebra Block Cache database file path.
+#
+# None by default, this defaults to `$HOME/.cache/zebra/`
+zebra_db_path = "None"
 
 # Block Cache database maximum size in gb.
 #
@@ -74,14 +94,10 @@ db_path = "None"
 # None by default
 db_size = "None"
 
-
-
 # Network:
 
 # Network chain type (Mainnet, Testnet, Regtest).
 network = "Testnet"
-
-
 
 # Options:
 
@@ -95,9 +111,8 @@ no_sync = false
 # Used for testing.
 no_db = false
 
-# Disables internal mempool and blockcache.
+# When enabled Zaino syncs it DB in the background, fetching data from the validator.
 #
-# For use by lightweight wallets that do not want to run any extra processes.
-#
- no_state = false
+# NOTE: Unimplemented.
+slow_sync = false
 

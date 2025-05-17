@@ -2,7 +2,7 @@
 
 use zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError;
 use zaino_serve::server::error::ServerError;
-use zaino_state::error::FetchServiceError;
+use zaino_state::{FetchServiceError, StateServiceError};
 
 /// Zingo-Indexer errors.
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +19,9 @@ pub enum IndexerError {
     /// FetchService errors.
     #[error("FetchService error: {0}")]
     FetchServiceError(#[from] FetchServiceError),
+    /// FetchService errors.
+    #[error("FetchService error: {0}")]
+    StateServiceError(#[from] StateServiceError),
     /// HTTP related errors due to invalid URI.
     #[error("HTTP error: Invalid URI {0}")]
     HttpError(#[from] http::Error),

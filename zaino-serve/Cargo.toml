@@ -37,6 +37,8 @@ futures = { workspace = true }
 async-stream = { workspace = true }
 crossbeam-channel = { workspace = true }
 lazy-regex = { workspace = true }
+jsonrpsee = { workspace = true, features = ["server", "macros"] }
+tower = { workspace = true }
 
 [build-dependencies]
 whoami = { workspace = true }

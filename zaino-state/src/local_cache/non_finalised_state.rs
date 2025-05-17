@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_chain::block::{Hash, Height};
-use zebra_state::HashOrHeight;
+use zebra_state::{HashOrHeight, ReadStateService};
 
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
@@ -24,6 +24,8 @@ use crate::{
 pub struct NonFinalisedState {
     /// Chain fetch service.
     fetcher: JsonRpSeeConnector,
+    /// Optional ReadStateService based chain fetch service.
+    state: Option<ReadStateService>,
     /// Broadcast containing `<block_height, block_hash>`.
     heights_to_hashes: Broadcast<Height, Hash>,
     /// Broadcast containing `<block_hash, compact_block>`.
@@ -42,12 +44,14 @@ impl NonFinalisedState {
     /// Spawns a new [`NonFinalisedState`].
     pub async fn spawn(
         fetcher: &JsonRpSeeConnector,
+        state: Option<&ReadStateService>,
         block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
         config: BlockCacheConfig,
     ) -> Result<Self, NonFinalisedStateError> {
         info!("Launching Non-Finalised State..");
         let mut non_finalised_state = NonFinalisedState {
             fetcher: fetcher.clone(),
+            state: state.cloned(),
             heights_to_hashes: Broadcast::new(config.map_capacity, config.map_shard_amount),
             hashes_to_blocks: Broadcast::new(config.map_capacity, config.map_shard_amount),
             sync_task_handle: None,
@@ -70,6 +74,8 @@ impl NonFinalisedState {
         {
             loop {
                 match fetch_block_from_node(
+                    non_finalised_state.state.as_ref(),
+                    Some(&non_finalised_state.config.network),
                     &non_finalised_state.fetcher,
                     HashOrHeight::Height(Height(height)),
                 )
@@ -101,6 +107,7 @@ impl NonFinalisedState {
     async fn serve(&self) -> Result<tokio::task::JoinHandle<()>, NonFinalisedStateError> {
         let non_finalised_state = Self {
             fetcher: self.fetcher.clone(),
+            state: self.state.clone(),
             heights_to_hashes: self.heights_to_hashes.clone(),
             hashes_to_blocks: self.hashes_to_blocks.clone(),
             sync_task_handle: None,
@@ -209,7 +216,7 @@ impl NonFinalisedState {
             .get_block(reorg_height.0.to_string(), Some(1))
             .await?
         {
-            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object { hash, .. } => hash.0,
+            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
             _ => {
                 return Err(NonFinalisedStateError::Custom(
                     "Unexpected block response type".to_string(),
@@ -244,7 +251,7 @@ impl NonFinalisedState {
                 .get_block(reorg_height.0.to_string(), Some(1))
                 .await?
             {
-                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object { hash, .. } => hash.0,
+                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
                 _ => {
                     return Err(NonFinalisedStateError::Custom(
                         "Unexpected block response type".to_string(),
@@ -308,6 +315,8 @@ impl NonFinalisedState {
             }
             loop {
                 match fetch_block_from_node(
+                    self.state.as_ref(),
+                    Some(&self.config.network.clone()),
                     &self.fetcher,
                     HashOrHeight::Height(Height(block_height)),
                 )

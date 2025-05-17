@@ -13,7 +13,7 @@ version = { workspace = true }
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
 zaino-proto.workspace = true
-zaino-state.workspace = true
+zaino-state = { workspace = true, features = ["bench"] }
 zebra-chain.workspace = true
 zebra-state.workspace = true
 zebra-rpc.workspace = true

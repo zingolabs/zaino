@@ -10,44 +10,7 @@ use zebra_chain::{
     block::Height,
     work::difficulty::CompactDifficulty,
 };
-use zebra_rpc::methods::types::Balance;
-
-/// A helper module to serialize `Option<T: ToHex>` as a hex string.
-///
-/// *** NOTE / TODO: This code has been copied from zebra to ensure valid serialisation / deserialisation and extended. ***
-/// ***            - This code should be made pulic in zebra to avoid deviations in implementation. ***
-mod opthex {
-    use hex::{FromHex, ToHex};
-    use serde::{de, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S, T>(data: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-        T: ToHex,
-    {
-        match data {
-            Some(data) => {
-                let s = data.encode_hex::<String>();
-                serializer.serialize_str(&s)
-            }
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-    where
-        D: Deserializer<'de>,
-        T: FromHex,
-    {
-        let opt = Option::<String>::deserialize(deserializer)?;
-        match opt {
-            Some(s) => T::from_hex(&s)
-                .map(Some)
-                .map_err(|_e| de::Error::custom("failed to convert hex string")),
-            None => Ok(None),
-        }
-    }
-}
+use zebra_rpc::methods::{opthex, types::get_blockchain_info::Balance};
 
 /// Response to a `getinfo` RPC request.
 ///
@@ -459,7 +422,9 @@ pub struct OrchardTrees {
 /// Wrapper struct for zebra's GetBlockTrees
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockTrees {
+    #[serde(default)]
     sapling: Option<SaplingTrees>,
+    #[serde(default)]
     orchard: Option<OrchardTrees>,
 }
 
@@ -530,99 +495,104 @@ impl From<Solution> for zebra_chain::work::equihash::Solution {
 /// This is used for the output parameter of [`JsonRpcConnector::get_block`].
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
-#[allow(clippy::large_enum_variant)]
 pub enum GetBlockResponse {
     /// The request block, hex-encoded.
     Raw(#[serde(with = "hex")] SerializedBlock),
     /// The block object.
-    Object {
-        /// The hash of the requested block.
-        hash: GetBlockHash,
+    Object(Box<BlockObject>),
+}
 
-        /// The number of confirmations of this block in the best chain,
-        /// or -1 if it is not in the best chain.
-        confirmations: i64,
+/// A block object containing data and metadata about a block.
+///
+/// This is used for the output parameter of [`JsonRpcConnector::get_block`].
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct BlockObject {
+    /// The hash of the requested block.
+    pub hash: GetBlockHash,
 
-        /// The block size. TODO: fill it
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        size: Option<i64>,
+    /// The number of confirmations of this block in the best chain,
+    /// or -1 if it is not in the best chain.
+    pub confirmations: i64,
 
-        /// The height of the requested block.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        height: Option<zebra_chain::block::Height>,
+    /// The block size. TODO: fill it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
 
-        /// The version field of the requested block.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u32>,
+    /// The height of the requested block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<zebra_chain::block::Height>,
 
-        /// The merkle root of the requested block.
-        #[serde(with = "opthex", rename = "merkleroot")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        merkle_root: Option<zebra_chain::block::merkle::Root>,
+    /// The version field of the requested block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
 
-        /// The blockcommitments field of the requested block. Its interpretation changes
-        /// depending on the network and height.
-        #[serde(with = "opthex", rename = "blockcommitments")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        block_commitments: Option<[u8; 32]>,
+    /// The merkle root of the requested block.
+    #[serde(with = "opthex", rename = "merkleroot")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merkle_root: Option<zebra_chain::block::merkle::Root>,
 
-        /// The root of the Sapling commitment tree after applying this block.
-        #[serde(with = "opthex", rename = "finalsaplingroot")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        final_sapling_root: Option<[u8; 32]>,
+    /// The blockcommitments field of the requested block. Its interpretation changes
+    /// depending on the network and height.
+    #[serde(with = "opthex", rename = "blockcommitments")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_commitments: Option<[u8; 32]>,
 
-        /// The root of the Orchard commitment tree after applying this block.
-        #[serde(with = "opthex", rename = "finalorchardroot")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        final_orchard_root: Option<[u8; 32]>,
+    /// The root of the Sapling commitment tree after applying this block.
+    #[serde(with = "opthex", rename = "finalsaplingroot")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_sapling_root: Option<[u8; 32]>,
 
-        /// The height of the requested block.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        time: Option<i64>,
+    /// The root of the Orchard commitment tree after applying this block.
+    #[serde(with = "opthex", rename = "finalorchardroot")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_orchard_root: Option<[u8; 32]>,
 
-        /// The nonce of the requested block header.
-        #[serde(with = "opthex")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        nonce: Option<[u8; 32]>,
+    /// The height of the requested block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<i64>,
 
-        /// The Equihash solution in the requested block header.
-        /// Note: presence of this field in getblock is not documented in zcashd.
-        #[serde(with = "opthex")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        solution: Option<Solution>,
+    /// The nonce of the requested block header.
+    #[serde(with = "opthex")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<[u8; 32]>,
 
-        /// The difficulty threshold of the requested block header displayed in compact form.
-        #[serde(with = "opthex")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        bits: Option<CompactDifficulty>,
+    /// The Equihash solution in the requested block header.
+    /// Note: presence of this field in getblock is not documented in zcashd.
+    #[serde(with = "opthex")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solution: Option<Solution>,
 
-        /// Floating point number that represents the difficulty limit for this block as a multiple
-        /// of the minimum difficulty for the network.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        difficulty: Option<f64>,
+    /// The difficulty threshold of the requested block header displayed in compact form.
+    #[serde(with = "opthex")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bits: Option<CompactDifficulty>,
 
-        /// List of transaction IDs in block order, hex-encoded.
-        tx: Vec<String>,
+    /// Floating point number that represents the difficulty limit for this block as a multiple
+    /// of the minimum difficulty for the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<f64>,
 
-        /// Information about the note commitment trees.
-        trees: GetBlockTrees,
+    /// List of transaction IDs in block order, hex-encoded.
+    pub tx: Vec<String>,
 
-        /// The previous block hash of the requested block header.
-        #[serde(
-            rename = "previousblockhash",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )]
-        previous_block_hash: Option<GetBlockHash>,
+    /// Information about the note commitment trees.
+    pub trees: GetBlockTrees,
 
-        /// The next block hash after the requested block header.
-        #[serde(
-            rename = "nextblockhash",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )]
-        next_block_hash: Option<GetBlockHash>,
-    },
+    /// The previous block hash of the requested block header.
+    #[serde(
+        rename = "previousblockhash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub previous_block_hash: Option<GetBlockHash>,
+
+    /// The next block hash after the requested block header.
+    #[serde(
+        rename = "nextblockhash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub next_block_hash: Option<GetBlockHash>,
 }
 
 impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
@@ -633,27 +603,9 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
             GetBlockResponse::Raw(serialized_block) => {
                 Ok(zebra_rpc::methods::GetBlock::Raw(serialized_block.0))
             }
-            GetBlockResponse::Object {
-                hash,
-                block_commitments,
-                confirmations,
-                size,
-                height,
-                version,
-                merkle_root,
-                final_sapling_root,
-                final_orchard_root,
-                tx,
-                time,
-                nonce,
-                solution,
-                bits,
-                difficulty,
-                trees,
-                previous_block_hash,
-                next_block_hash,
-            } => {
-                let tx_ids: Result<Vec<_>, _> = tx
+            GetBlockResponse::Object(block) => {
+                let tx_ids: Result<Vec<_>, _> = block
+                    .tx
                     .into_iter()
                     .map(|txid| {
                         txid.parse::<zebra_chain::transaction::Hash>()
@@ -662,24 +614,24 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                     .collect();
 
                 Ok(zebra_rpc::methods::GetBlock::Object {
-                    hash: zebra_rpc::methods::GetBlockHash(hash.0),
-                    block_commitments,
-                    confirmations,
-                    size,
-                    height,
-                    version,
-                    merkle_root,
-                    final_sapling_root,
-                    final_orchard_root,
+                    hash: zebra_rpc::methods::GetBlockHash(block.hash.0),
+                    block_commitments: block.block_commitments,
+                    confirmations: block.confirmations,
+                    size: block.size,
+                    height: block.height,
+                    version: block.version,
+                    merkle_root: block.merkle_root,
+                    final_sapling_root: block.final_sapling_root,
+                    final_orchard_root: block.final_orchard_root,
                     tx: tx_ids?,
-                    time,
-                    nonce,
-                    solution: solution.map(Into::into),
-                    bits,
-                    difficulty,
-                    trees: trees.into(),
-                    previous_block_hash: previous_block_hash.map(Into::into),
-                    next_block_hash: next_block_hash.map(Into::into),
+                    time: block.time,
+                    nonce: block.nonce,
+                    solution: block.solution.map(Into::into),
+                    bits: block.bits,
+                    difficulty: block.difficulty,
+                    trees: block.trees.into(),
+                    previous_block_hash: block.previous_block_hash.map(Into::into),
+                    next_block_hash: block.next_block_hash.map(Into::into),
                 })
             }
         }
@@ -715,6 +667,8 @@ impl<'de> serde::Deserialize<'de> for TxidsResponse {
 
 /// Contains the hex-encoded Sapling & Orchard note commitment trees, and their
 /// corresponding [`block::Hash`], [`Height`], and block time.
+///
+/// Encoded using v0 frontier encoding.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_treestate`].
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -766,10 +720,10 @@ impl<'de> serde::Deserialize<'de> for GetTreestateResponse {
             hash,
             time,
             sapling: zebra_rpc::methods::trees::Treestate::new(
-                zebra_rpc::methods::trees::Commitments::new(sapling_final_state),
+                zebra_rpc::methods::trees::Commitments::new(Some(sapling_final_state)),
             ),
             orchard: zebra_rpc::methods::trees::Treestate::new(
-                zebra_rpc::methods::trees::Commitments::new(orchard_final_state),
+                zebra_rpc::methods::trees::Commitments::new(Some(orchard_final_state)),
             ),
         })
     }
@@ -784,8 +738,13 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::methods::trees::GetTreestate {
             zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
-        let sapling_bytes = hex::decode(value.sapling.inner().inner().as_bytes())?;
-        let orchard_bytes = hex::decode(value.orchard.inner().inner().as_bytes())?;
+        let sapling_bytes = hex::decode(value.sapling.inner().inner().as_ref().ok_or(
+            zebra_chain::serialization::SerializationError::Parse("missing sapling tree"),
+        )?)?;
+
+        let orchard_bytes = hex::decode(value.orchard.inner().inner().as_ref().ok_or(
+            zebra_chain::serialization::SerializationError::Parse("missing orchard tree"),
+        )?)?;
 
         Ok(zebra_rpc::methods::trees::GetTreestate::from_parts(
             parsed_hash,
@@ -797,86 +756,15 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::methods::trees::GetTreestate {
     }
 }
 
-/// A wrapper struct for a zebra serialized transaction.
-///
-/// Stores bytes that are guaranteed to be deserializable into a [`Transaction`].
-///
-/// Sorts in lexicographic order of the transaction's serialized data.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SerializedTransaction(zebra_chain::transaction::SerializedTransaction);
-
-impl std::ops::Deref for SerializedTransaction {
-    type Target = zebra_chain::transaction::SerializedTransaction;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<[u8]> for SerializedTransaction {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl From<Vec<u8>> for SerializedTransaction {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self(zebra_chain::transaction::SerializedTransaction::from(bytes))
-    }
-}
-
-impl From<zebra_chain::transaction::SerializedTransaction> for SerializedTransaction {
-    fn from(inner: zebra_chain::transaction::SerializedTransaction) -> Self {
-        SerializedTransaction(inner)
-    }
-}
-
-impl hex::FromHex for SerializedTransaction {
-    type Error = <Vec<u8> as hex::FromHex>::Error;
-
-    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        let bytes = <Vec<u8>>::from_hex(hex)?;
-
-        Ok(bytes.into())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SerializedTransaction {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let v = serde_json::Value::deserialize(deserializer)?;
-        if let Some(hex_str) = v.as_str() {
-            let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
-            Ok(SerializedTransaction(
-                zebra_chain::transaction::SerializedTransaction::from(bytes),
-            ))
-        } else {
-            Err(serde::de::Error::custom("expected a hex string"))
-        }
-    }
-}
-
 /// Contains raw transaction, encoded as hex bytes.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_raw_transaction`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub enum GetTransactionResponse {
     /// The raw transaction, encoded as hex bytes.
-    Raw(#[serde(with = "hex")] SerializedTransaction),
+    Raw(#[serde(with = "hex")] zebra_chain::transaction::SerializedTransaction),
     /// The transaction object.
-    Object {
-        /// The raw transaction, encoded as hex bytes.
-        #[serde(with = "hex")]
-        hex: SerializedTransaction,
-        /// The height of the block in the best chain that contains the transaction, or -1 if
-        /// the transaction is in the mempool.
-        height: Option<i32>,
-        /// The confirmations of the block in the best chain that contains the transaction,
-        /// or 0 if the transaction is in the mempool.
-        confirmations: Option<u32>,
-    },
+    Object(Box<zebra_rpc::methods::types::transaction::TransactionObject>),
 }
 
 impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
@@ -884,11 +772,19 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
     where
         D: serde::Deserializer<'de>,
     {
+        use zebra_rpc::methods::types::transaction::{
+            Input, Orchard, Output, ShieldedOutput, ShieldedSpend, TransactionObject,
+        };
+
         let tx_value = serde_json::Value::deserialize(deserializer)?;
 
         if let Some(hex_value) = tx_value.get("hex") {
-            let hex =
-                serde_json::from_value(hex_value.clone()).map_err(serde::de::Error::custom)?;
+            let hex_str = hex_value
+                .as_str()
+                .ok_or_else(|| serde::de::Error::custom("expected hex to be a string"))?;
+
+            let hex = zebra_chain::transaction::SerializedTransaction::from_hex(hex_str)
+                .map_err(serde::de::Error::custom)?;
 
             // Convert `mempool tx height = -1` (Zcashd) to `None` (Zebrad).
             let height = match tx_value.get("height").and_then(|v| v.as_i64()) {
@@ -896,7 +792,7 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 Some(h) if h < -1 => {
                     return Err(serde::de::Error::custom("invalid height returned in block"))
                 }
-                Some(h) => Some(h as i32),
+                Some(h) => Some(h as u32),
             };
 
             let confirmations = tx_value
@@ -904,13 +800,93 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u32);
 
-            Ok(GetTransactionResponse::Object {
-                hex,
-                height,
-                confirmations,
-            })
+            // if let Some(vin_value) = tx_value.get("vin") {
+            //     match serde_json::from_value::<Vec<Input>>(vin_value.clone()) {
+            //         Ok(_inputs) => { /* continue */ }
+            //         Err(err) => {
+            //             eprintln!("Failed to parse vin: {err}");
+            //             eprintln!(
+            //                 "Offending JSON:\n{}",
+            //                 serde_json::to_string_pretty(vin_value).unwrap()
+            //             );
+            //             return Err(serde::de::Error::custom("Failed to deserialize vin"));
+            //         }
+            //     }
+            // }
+
+            let inputs = tx_value
+                .get("vin")
+                .map(|v| serde_json::from_value::<Vec<Input>>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let outputs = tx_value
+                .get("vout")
+                .map(|v| serde_json::from_value::<Vec<Output>>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let shielded_spends = tx_value
+                .get("vShieldedSpend")
+                .map(|v| serde_json::from_value::<Vec<ShieldedSpend>>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let shielded_outputs = tx_value
+                .get("vShieldedOutput")
+                .map(|v| serde_json::from_value::<Vec<ShieldedOutput>>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let orchard = tx_value
+                .get("orchard")
+                .map(|v| serde_json::from_value::<Orchard>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let value_balance = tx_value
+                .get("valueBalance")
+                .map(|v| serde_json::from_value::<f64>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let value_balance_zat = tx_value
+                .get("valueBalanceZat")
+                .map(|v| serde_json::from_value::<i64>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let size = tx_value
+                .get("size")
+                .map(|v| serde_json::from_value::<i64>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            let time = tx_value
+                .get("time")
+                .map(|v| serde_json::from_value::<i64>(v.clone()))
+                .transpose()
+                .map_err(serde::de::Error::custom)?;
+
+            Ok(GetTransactionResponse::Object(Box::new(
+                TransactionObject {
+                    hex,
+                    height,
+                    confirmations,
+                    inputs,
+                    outputs,
+                    shielded_spends,
+                    shielded_outputs,
+                    orchard,
+                    value_balance,
+                    value_balance_zat,
+                    size,
+                    time,
+                },
+            )))
         } else if let Some(hex_str) = tx_value.as_str() {
-            let raw = SerializedTransaction::from_hex(hex_str).map_err(serde::de::Error::custom)?;
+            let raw = zebra_chain::transaction::SerializedTransaction::from_hex(hex_str)
+                .map_err(serde::de::Error::custom)?;
             Ok(GetTransactionResponse::Raw(raw))
         } else {
             Err(serde::de::Error::custom("Unexpected transaction format"))
@@ -922,20 +898,24 @@ impl From<GetTransactionResponse> for zebra_rpc::methods::GetRawTransaction {
     fn from(value: GetTransactionResponse) -> Self {
         match value {
             GetTransactionResponse::Raw(serialized_transaction) => {
-                zebra_rpc::methods::GetRawTransaction::Raw(serialized_transaction.0)
+                zebra_rpc::methods::GetRawTransaction::Raw(serialized_transaction)
             }
-            GetTransactionResponse::Object {
-                hex,
-                height,
-                confirmations,
-            } => zebra_rpc::methods::GetRawTransaction::Object(
-                zebra_rpc::methods::TransactionObject {
-                    hex: hex.0,
-                    // Deserialised height is always positive or None so it is safe to convert here.
-                    // (see [`impl<'de> serde::Deserialize<'de> for GetTransactionResponse`]).
-                    height: height.map(|h| h as u32),
-                    confirmations,
-                },
+
+            GetTransactionResponse::Object(obj) => zebra_rpc::methods::GetRawTransaction::Object(
+                Box::new(zebra_rpc::methods::types::transaction::TransactionObject {
+                    hex: obj.hex.clone(),
+                    height: obj.height,
+                    confirmations: obj.confirmations,
+                    inputs: obj.inputs.clone(),
+                    outputs: obj.outputs.clone(),
+                    shielded_spends: obj.shielded_spends.clone(),
+                    shielded_outputs: obj.shielded_outputs.clone(),
+                    orchard: obj.orchard.clone(),
+                    value_balance: obj.value_balance,
+                    value_balance_zat: obj.value_balance_zat,
+                    size: obj.size,
+                    time: obj.time,
+                }),
             ),
         }
     }

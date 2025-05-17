@@ -6,11 +6,7 @@ use tokio::time::interval;
 use tonic::transport::Server;
 use tracing::warn;
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zaino_state::{
-    fetch::FetchServiceSubscriber,
-    indexer::IndexerSubscriber,
-    status::{AtomicStatus, StatusType},
-};
+use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusType, ZcashIndexer};
 
 use crate::{
     rpc::GrpcClient,
@@ -31,8 +27,8 @@ impl TonicServer {
     /// Launches all components then enters command loop:
     /// - Updates the ServerStatus.
     /// - Checks for shutdown signal, shutting down server if received.
-    pub async fn spawn(
-        service_subscriber: IndexerSubscriber<FetchServiceSubscriber>,
+    pub async fn spawn<Indexer: ZcashIndexer + LightWalletIndexer>(
+        service_subscriber: IndexerSubscriber<Indexer>,
         server_config: GrpcConfig,
     ) -> Result<Self, ServerError> {
         let status = AtomicStatus::new(StatusType::Spawning.into());

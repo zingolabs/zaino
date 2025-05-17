@@ -8,6 +8,7 @@ use std::{
 
 use toml::Value;
 use tracing::warn;
+use zaino_state::{BackendConfig, BackendType, FetchServiceConfig, StateServiceConfig};
 
 use crate::error::IndexerError;
 
@@ -43,6 +44,16 @@ macro_rules! parse_field_or_warn_and_default {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct IndexerConfig {
+    /// Type of backend to be used.
+    pub backend: BackendType,
+    /// Enable JsonRPC server.
+    pub enable_json_server: bool,
+    /// Server bind addr.
+    pub json_rpc_listen_address: SocketAddr,
+    /// Enable cookie-based authentication.
+    pub enable_cookie_auth: bool,
+    /// Directory to store authentication cookie file.
+    pub cookie_dir: Option<PathBuf>,
     /// gRPC server bind addr.
     pub grpc_listen_address: SocketAddr,
     /// Enables TLS.
@@ -72,8 +83,12 @@ pub struct IndexerConfig {
     pub map_shard_amount: Option<usize>,
     /// Block Cache database file path.
     ///
-    /// This is Zaino's Compact Block Cache db if using the FetchService or Zebra's RocksDB if using the StateService.
-    pub db_path: PathBuf,
+    /// ZainoDB location.
+    pub zaino_db_path: PathBuf,
+    /// Block Cache database file path.
+    ///
+    /// ZebraDB location.
+    pub zebra_db_path: PathBuf,
     /// Block Cache database maximum size in gb.
     ///
     /// Only used by the FetchService.
@@ -86,12 +101,10 @@ pub struct IndexerConfig {
     /// Disables FinalisedState.
     /// Used for testing.
     pub no_db: bool,
-    /// Disables internal mempool and blockcache.
+    /// When enabled Zaino syncs it DB in the background, fetching data from the validator.
     ///
-    /// For use by lightweight wallets that do not want to run any extra processes.
-    ///
-    /// NOTE: Currently unimplemented as will require either a Tonic backend or a JsonRPC server.
-    pub no_state: bool,
+    /// NOTE: Unimplemented.
+    pub slow_sync: bool,
 }
 
 impl IndexerConfig {
@@ -151,9 +164,9 @@ impl IndexerConfig {
             }
         }
 
-        #[cfg(not(feature = "test_only_very_insecure"))]
+        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
         let grpc_addr = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
-        #[cfg(feature = "test_only_very_insecure")]
+        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
         let _ = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
 
         let validator_addr =
@@ -166,7 +179,7 @@ impl IndexerConfig {
             ));
         }
 
-        #[cfg(not(feature = "test_only_very_insecure"))]
+        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
         {
             // Ensure TLS is used when connecting to external addresses.
             if !is_private_listen_addr(&grpc_addr) && !self.grpc_tls {
@@ -183,9 +196,16 @@ impl IndexerConfig {
             ));
             }
         }
-        #[cfg(feature = "test_only_very_insecure")]
+        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
         {
-            warn!("Zaino built using test_only_very_insecure feature, proceed with caution.");
+            warn!("Zaino built using disable_tls_unencrypted_traffic_mode feature, proceed with caution.");
+        }
+
+        // Check gRPC and JsonRPC server are not listening on the same address.
+        if self.json_rpc_listen_address == self.grpc_listen_address {
+            return Err(IndexerError::ConfigError(
+                "gRPC server and JsonRPC server must listen on different addresses.".to_string(),
+            ));
         }
 
         Ok(())
@@ -195,8 +215,17 @@ impl IndexerConfig {
     pub fn get_network(&self) -> Result<zebra_chain::parameters::Network, IndexerError> {
         match self.network.as_str() {
             "Regtest" => Ok(zebra_chain::parameters::Network::new_regtest(
-                Some(1),
-                Some(1),
+                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+                    before_overwinter: Some(1),
+                    overwinter: Some(1),
+                    sapling: Some(1),
+                    blossom: Some(1),
+                    heartwood: Some(1),
+                    canopy: Some(1),
+                    nu5: Some(1),
+                    nu6: Some(1),
+                    nu7: None,
+                },
             )),
             "Testnet" => Ok(zebra_chain::parameters::Network::new_default_testnet()),
             "Mainnet" => Ok(zebra_chain::parameters::Network::Mainnet),
@@ -210,6 +239,12 @@ impl IndexerConfig {
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
+            // TODO: change to BackendType::State.
+            backend: BackendType::Fetch,
+            enable_json_server: false,
+            json_rpc_listen_address: "127.0.0.1:8237".parse().unwrap(),
+            enable_cookie_auth: false,
+            cookie_dir: None,
             grpc_listen_address: "127.0.0.1:8137".parse().unwrap(),
             grpc_tls: false,
             tls_cert_path: None,
@@ -221,21 +256,41 @@ impl Default for IndexerConfig {
             validator_password: Some("xxxxxx".to_string()),
             map_capacity: None,
             map_shard_amount: None,
-            db_path: default_db_path(),
+            zaino_db_path: default_zaino_db_path(),
+            zebra_db_path: default_zebra_db_path().unwrap(),
             db_size: None,
             network: "Testnet".to_string(),
             no_sync: false,
             no_db: false,
-            no_state: false,
+            slow_sync: false,
         }
     }
 }
 
+/// Returns the default path for Zaino's ephemeral authentication cookie.
+pub fn default_ephemeral_cookie_path() -> PathBuf {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        PathBuf::from(runtime_dir).join("zaino").join(".cookie")
+    } else {
+        PathBuf::from("/tmp").join("zaino").join(".cookie")
+    }
+}
+
 /// Loads the default file path for zaino's local db.
-fn default_db_path() -> PathBuf {
+fn default_zaino_db_path() -> PathBuf {
     match std::env::var("HOME") {
         Ok(home) => PathBuf::from(home).join(".cache").join("zaino"),
-        Err(_) => PathBuf::from("/tmp").join("zaino"),
+        Err(_) => PathBuf::from("/tmp").join("zaino").join(".cache"),
+    }
+}
+
+/// Loads the default file path for zebras's local db.
+fn default_zebra_db_path() -> Result<PathBuf, IndexerError> {
+    match std::env::var("HOME") {
+        Ok(home) => Ok(PathBuf::from(home).join(".cache").join("zebra")),
+        Err(e) => Err(IndexerError::ConfigError(format!(
+            "Unable to find home directory: {e}",
+        ))),
     }
 }
 
@@ -274,7 +329,7 @@ pub(crate) fn is_private_listen_addr(addr: &SocketAddr) -> bool {
 /// Validates that the configured `address` is a loopback address.
 ///
 /// Returns `Ok(BindAddress)` if valid.
-#[cfg_attr(feature = "test_only_very_insecure", allow(dead_code))]
+#[cfg_attr(feature = "disable_tls_unencrypted_traffic_mode", allow(dead_code))]
 pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
     match ip {
@@ -292,6 +347,61 @@ pub fn load_config(file_path: &std::path::PathBuf) -> Result<IndexerConfig, Inde
     if let Ok(contents) = std::fs::read_to_string(file_path) {
         let parsed_config: toml::Value = toml::from_str(&contents)
             .map_err(|e| IndexerError::ConfigError(format!("TOML parsing error: {}", e)))?;
+
+        parse_field_or_warn_and_default!(
+            parsed_config,
+            backend,
+            String,
+            default_config,
+            |v: String| match v.to_lowercase().as_str() {
+                "state" => Some(BackendType::State),
+                "fetch" => Some(BackendType::Fetch),
+                _ => {
+                    warn!("Invalid backend type '{}', using default.", v);
+                    None
+                }
+            }
+        );
+
+        parse_field_or_warn_and_default!(
+            parsed_config,
+            enable_json_server,
+            Boolean,
+            default_config,
+            Some
+        );
+
+        parse_field_or_warn_and_default!(
+            parsed_config,
+            json_rpc_listen_address,
+            String,
+            default_config,
+            |val: String| match fetch_socket_addr_from_hostname(val.as_str()) {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    warn!("Invalid `json_rpc_listen_address`, using default.");
+                    None
+                }
+            }
+        );
+
+        parse_field_or_warn_and_default!(
+            parsed_config,
+            enable_cookie_auth,
+            Boolean,
+            default_config,
+            Some
+        );
+
+        parse_field_or_warn_and_default!(parsed_config, cookie_dir, String, default_config, |v| {
+            Some(Some(PathBuf::from(v)))
+        });
+
+        let cookie_dir = if enable_cookie_auth {
+            cookie_dir.or_else(|| Some(default_ephemeral_cookie_path()))
+        } else {
+            None
+        };
 
         parse_field_or_warn_and_default!(
             parsed_config,
@@ -381,7 +491,18 @@ pub fn load_config(file_path: &std::path::PathBuf) -> Result<IndexerConfig, Inde
         );
         parse_field_or_warn_and_default!(
             parsed_config,
-            db_path,
+            zaino_db_path,
+            String,
+            default_config,
+            |v: String| {
+                match PathBuf::from_str(v.as_str()) {
+                    Ok(path) => Some(path),
+                }
+            }
+        );
+        parse_field_or_warn_and_default!(
+            parsed_config,
+            zebra_db_path,
             String,
             default_config,
             |v: String| {
@@ -400,9 +521,14 @@ pub fn load_config(file_path: &std::path::PathBuf) -> Result<IndexerConfig, Inde
         parse_field_or_warn_and_default!(parsed_config, network, String, default_config, Some);
         parse_field_or_warn_and_default!(parsed_config, no_sync, Boolean, default_config, Some);
         parse_field_or_warn_and_default!(parsed_config, no_db, Boolean, default_config, Some);
-        parse_field_or_warn_and_default!(parsed_config, no_state, Boolean, default_config, Some);
+        parse_field_or_warn_and_default!(parsed_config, slow_sync, Boolean, default_config, Some);
 
         let config = IndexerConfig {
+            backend,
+            enable_json_server,
+            json_rpc_listen_address,
+            enable_cookie_auth,
+            cookie_dir,
             grpc_listen_address,
             grpc_tls,
             tls_cert_path,
@@ -414,12 +540,13 @@ pub fn load_config(file_path: &std::path::PathBuf) -> Result<IndexerConfig, Inde
             validator_password,
             map_capacity,
             map_shard_amount,
-            db_path,
+            zaino_db_path,
+            zebra_db_path,
             db_size,
             network,
             no_sync,
             no_db,
-            no_state,
+            slow_sync,
         };
 
         config.check_config()?;
@@ -427,5 +554,60 @@ pub fn load_config(file_path: &std::path::PathBuf) -> Result<IndexerConfig, Inde
     } else {
         warn!("Could not find config file at given path, using default config.");
         Ok(default_config)
+    }
+}
+
+impl TryFrom<IndexerConfig> for BackendConfig {
+    type Error = IndexerError;
+
+    fn try_from(cfg: IndexerConfig) -> Result<Self, Self::Error> {
+        let network = cfg.get_network()?;
+
+        match cfg.backend {
+            BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
+                validator_config: zebra_state::Config {
+                    cache_dir: cfg.zebra_db_path.clone(),
+                    ephemeral: false,
+                    delete_old_database: true,
+                    debug_stop_at_height: None,
+                    debug_validity_check_interval: None,
+                },
+                validator_rpc_address: cfg.validator_listen_address,
+                validator_cookie_auth: cfg.validator_cookie_auth,
+                validator_cookie_path: cfg.validator_cookie_path,
+                validator_rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
+                validator_rpc_password: cfg
+                    .validator_password
+                    .unwrap_or_else(|| "xxxxxx".to_string()),
+                service_timeout: 30,
+                service_channel_size: 32,
+                map_capacity: cfg.map_capacity,
+                map_shard_amount: cfg.map_shard_amount,
+                db_path: cfg.zaino_db_path,
+                db_size: cfg.db_size,
+                network,
+                no_sync: cfg.no_sync,
+                no_db: cfg.no_db,
+            })),
+
+            BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
+                validator_rpc_address: cfg.validator_listen_address,
+                validator_cookie_auth: cfg.validator_cookie_auth,
+                validator_cookie_path: cfg.validator_cookie_path,
+                validator_rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
+                validator_rpc_password: cfg
+                    .validator_password
+                    .unwrap_or_else(|| "xxxxxx".to_string()),
+                service_timeout: 30,
+                service_channel_size: 32,
+                map_capacity: cfg.map_capacity,
+                map_shard_amount: cfg.map_shard_amount,
+                db_path: cfg.zaino_db_path,
+                db_size: cfg.db_size,
+                network,
+                no_sync: cfg.no_sync,
+                no_db: cfg.no_db,
+            })),
+        }
     }
 }

@@ -8,6 +8,10 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
+[features]
+# (Work)bench - Exposes internal functionality for testing.
+bench = []
+
 [dependencies]
 zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
@@ -40,6 +44,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 jsonrpsee-core = { workspace = true }
 prost = { workspace = true }
+nonempty = "0.11.0"
 
 [dev-dependencies]
 zingo-infra-services = { workspace = true }

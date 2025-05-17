@@ -2,6 +2,8 @@ name: CI checks
 
 on: 
   push:
+    tags:
+      - '**'
   pull_request:
 
 jobs:
@@ -180,9 +182,10 @@ jobs:
         working-directory: .
 
   docker:
-    name: Build Docker image, push if tagged
+    name: Build Docker images
     runs-on: ziserv-2
-    if: false
+    env:
+      PUSH_IMAGES: true
     steps:
       - uses: actions/checkout@v4
 
@@ -195,31 +198,54 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata for Docker
-        id: meta
+      - name: Extract metadata for Docker (default image)
+        id: meta-default
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
+            type=semver,pattern={{version}}, prefix=v
 
-      - name: Docker Build, push if tagged
+      - name: Build and Push Default Image
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64
-          push: ${{ startsWith(github.ref, 'refs/tags/') }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          push: ${{ env.PUSH_IMAGES }}
+          tags: ${{ steps.meta-default.outputs.tags }}
+          labels: ${{ steps.meta-default.outputs.labels }}
           cache-from: |
             type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache
             type=gha
           cache-to: |
             type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache,mode=max
+            type=gha,mode=max
+
+
+      - name: Extract metadata for Docker (no-tls image)
+        id: meta-no-tls
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}
+          flavor: |
+            suffix=-no-tls
+          tags: |
+            type=semver,pattern={{version}}, prefix=v
+
+      - name: Build and Push No-TLS Image
+        uses: docker/build-push-action@v5
+        with:
+          build-args: NO_TLS=true
+          context: .
+          platforms: linux/amd64
+          push: ${{ env.PUSH_IMAGES }}
+          tags: "${{ steps.meta-no-tls.outputs.tags }}"
+          labels: ${{ steps.meta-no-tls.outputs.labels }}
+          cache-from: |
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache-no-tls
+            type=gha
+          cache-to: |
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache-no-tls,mode=max
             type=gha,mode=max
 
   create-release:

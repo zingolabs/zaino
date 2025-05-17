@@ -1,6 +1,6 @@
 //! Server configuration data.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
 use tonic::transport::{Identity, ServerTlsConfig};
 
@@ -45,4 +45,16 @@ impl GrpcConfig {
             Ok(None)
         }
     }
+}
+
+/// Configuration data for Zaino's gRPC server.
+pub struct JsonRpcConfig {
+    /// Server bind addr.
+    pub json_rpc_listen_address: SocketAddr,
+
+    /// Enable cookie-based authentication.
+    pub enable_cookie_auth: bool,
+
+    /// Directory to store authentication cookie file.
+    pub cookie_dir: Option<PathBuf>,
 }

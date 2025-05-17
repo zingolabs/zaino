@@ -14,11 +14,8 @@ use zaino_proto::proto::{
     },
 };
 use zaino_state::{
-    indexer::LightWalletIndexer,
-    stream::{
-        AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-        SubtreeRootReplyStream, UtxoReplyStream,
-    },
+    AddressStream, CompactBlockStream, CompactTransactionStream, LightWalletIndexer,
+    RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream, ZcashIndexer,
 };
 
 /// A helper macro invoked by implement_client_methods, as the
@@ -37,7 +34,8 @@ macro_rules! client_method_helper {
                 .service_subscriber
                 .inner_ref()
                 .$method_name($input.into_inner())
-                .await?,
+                .await
+                .map_err(Into::into)?,
         )
     };
     // in the case of Streaming return types, we need an additional
@@ -49,18 +47,31 @@ macro_rules! client_method_helper {
                 .service_subscriber
                 .inner_ref()
                 .$method_name($input.into_inner())
-                .await?,
+                .await
+                .map_err(Into::into)?,
         ))
     };
     // for the no-input variant
     (empty $self:ident $input:ident $method_name:ident) => {
-        tonic::Response::new($self.service_subscriber.inner_ref().$method_name().await?)
+        tonic::Response::new(
+            $self
+                .service_subscriber
+                .inner_ref()
+                .$method_name()
+                .await
+                .map_err(Into::into)?,
+        )
     };
     // WOMBO-COMBO!!
     (streamingempty $self:ident $input:ident $method_name:ident) => {
         // extra Box::pin here
         tonic::Response::new(Box::pin(
-            $self.service_subscriber.inner_ref().$method_name().await?,
+            $self
+                .service_subscriber
+                .inner_ref()
+                .$method_name()
+                .await
+                .map_err(Into::into)?,
         ))
     };
 }
@@ -112,7 +123,10 @@ macro_rules! implement_client_methods {
     };
 }
 
-impl CompactTxStreamer for GrpcClient {
+impl<Indexer: ZcashIndexer + LightWalletIndexer> CompactTxStreamer for GrpcClient<Indexer>
+where
+    Indexer::Error: Into<tonic::Status>,
+{
     implement_client_methods!(
         "Return the height of the tip of the best chain."
         get_latest_block(ChainSpec) -> BlockId as empty,
@@ -224,7 +238,8 @@ impl CompactTxStreamer for GrpcClient {
                 self.service_subscriber
                     .inner_ref()
                     .get_taddress_balance_stream(address_stream)
-                    .await?,
+                    .await
+                    .map_err(Into::into)?,
             ))
         })
     }

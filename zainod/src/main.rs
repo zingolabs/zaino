@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use zainodlib::{config::load_config, error::IndexerError, indexer::Indexer};
+use zainodlib::{config::load_config, error::IndexerError, indexer::start_indexer};
 
 #[derive(Parser, Debug)]
 #[command(name = "Zaino", about = "The Zcash Indexing Service", version)]
@@ -38,7 +38,7 @@ async fn main() {
         .unwrap_or_else(|| PathBuf::from("./zainod/zindexer.toml"));
 
     loop {
-        match Indexer::start(load_config(&config_path).unwrap()).await {
+        match start_indexer(load_config(&config_path).unwrap()).await {
             Ok(joinhandle_result) => {
                 info!("Zaino Indexer started successfully.");
                 match joinhandle_result.await {

@@ -1,6 +1,6 @@
 //! Holds Zaino's mempool implementation.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
@@ -20,10 +20,8 @@ pub struct MempoolKey(pub String);
 
 /// Mempool value.
 ///
-/// NOTE: Currently holds a copy of txid,
-///       this could be updated to store the corresponding transaction as the value,
-///       this would enable the serving of mempool transactions directly, significantly increasing efficiency.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Holds GetRawTransaction::TransactionObject.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MempoolValue(pub GetRawTransaction);
 
 /// Zcash mempool, uses dashmap for efficient serving of mempool tx.
@@ -361,6 +359,16 @@ impl MempoolSubscriber {
         });
 
         Ok((channel_rx, streamer_handle))
+    }
+
+    /// Returns true if mempool contains the given txid.
+    pub async fn contains_txid(&self, txid: &MempoolKey) -> bool {
+        self.subscriber.contains_key(txid)
+    }
+
+    /// Returns transaction by txid if in the mempool, else returns none.
+    pub async fn get_transaction(&self, txid: &MempoolKey) -> Option<Arc<MempoolValue>> {
+        self.subscriber.get(txid)
     }
 
     /// Returns the status of the mempool.

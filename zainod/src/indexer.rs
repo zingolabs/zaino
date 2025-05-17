@@ -4,89 +4,127 @@ use tokio::time::Instant;
 use tracing::info;
 
 use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
-use zaino_serve::server::{config::GrpcConfig, grpc::TonicServer};
+use zaino_serve::server::{
+    config::{GrpcConfig, JsonRpcConfig},
+    grpc::TonicServer,
+    jsonrpc::JsonRpcServer,
+};
 use zaino_state::{
-    config::FetchServiceConfig,
-    fetch::FetchService,
-    indexer::{IndexerService, ZcashService},
-    status::StatusType,
+    BackendConfig, FetchService, IndexerService, LightWalletService, StateService, StatusType,
+    ZcashIndexer, ZcashService,
 };
 
 use crate::{config::IndexerConfig, error::IndexerError};
 
 /// Zingo-Indexer.
-pub struct Indexer {
+pub struct Indexer<Service: ZcashService + LightWalletService> {
+    /// JsonRPC server.
+    ///
+    /// Disabled by default.
+    json_server: Option<JsonRpcServer>,
     /// GRPC server.
     server: Option<TonicServer>,
     /// Chain fetch service state process handler..
-    service: Option<IndexerService<FetchService>>,
+    service: Option<IndexerService<Service>>,
 }
 
-impl Indexer {
-    /// Starts Indexer service.
-    ///
-    /// Currently only takes an IndexerConfig.
-    pub async fn start(
-        config: IndexerConfig,
-    ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
-        startup_message();
-        info!("Starting Zaino..");
-        Indexer::spawn(config).await
+/// Starts Indexer service.
+///
+/// Currently only takes an IndexerConfig.
+pub async fn start_indexer(
+    config: IndexerConfig,
+) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    startup_message();
+    info!("Starting Zaino..");
+    spawn_indexer(config).await
+}
+
+/// Spawns a new Indexer server.
+pub async fn spawn_indexer(
+    config: IndexerConfig,
+) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    config.check_config()?;
+    info!("Checking connection with node..");
+    let zebrad_uri = test_node_and_return_url(
+        config.validator_listen_address,
+        config.validator_cookie_auth,
+        config.validator_cookie_path.clone(),
+        config.validator_user.clone(),
+        config.validator_password.clone(),
+    )
+    .await?;
+
+    info!(
+        " - Connected to node using JsonRPSee at address {}.",
+        zebrad_uri
+    );
+    match BackendConfig::try_from(config.clone()) {
+        Ok(BackendConfig::State(state_service_config)) => {
+            Indexer::<StateService>::spawn_inner(state_service_config, config).await
+        }
+        Ok(BackendConfig::Fetch(fetch_service_config)) => {
+            Indexer::<FetchService>::spawn_inner(fetch_service_config, config).await
+        }
+        Err(e) => Err(e),
     }
+}
 
+impl<Service: ZcashService + LightWalletService + Send + Sync + 'static> Indexer<Service>
+where
+    IndexerError: From<<Service::Subscriber as ZcashIndexer>::Error>,
+{
     /// Spawns a new Indexer server.
-    pub async fn spawn(
-        config: IndexerConfig,
+    pub async fn spawn_inner(
+        service_config: Service::Config,
+        indexer_config: IndexerConfig,
     ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
-        config.check_config()?;
-        info!("Checking connection with node..");
-        let zebrad_uri = test_node_and_return_url(
-            config.validator_listen_address,
-            config.validator_cookie_auth,
-            config.validator_cookie_path.clone(),
-            config.validator_user.clone(),
-            config.validator_password.clone(),
-        )
-        .await?;
+        let service = IndexerService::<Service>::spawn(service_config).await?;
 
-        info!(
-            " - Connected to node using JsonRPSee at address {}.",
-            zebrad_uri
-        );
+        // let read_state_service = IndexerService::<StateService>::spawn(StateServiceConfig::new(
+        //     todo!("add zebra config to indexerconfig"),
+        //     config.validator_listen_address,
+        //     config.validator_cookie_auth,
+        //     config.validator_cookie_path,
+        //     config.validator_user,
+        //     config.validator_password,
+        //     None,
+        //     None,
+        //     config.get_network()?,
+        // ))
+        // .await?;
 
-        let chain_state_service = IndexerService::<FetchService>::spawn(FetchServiceConfig::new(
-            config.validator_listen_address,
-            config.validator_cookie_auth,
-            config.validator_cookie_path.clone(),
-            config.validator_user.clone(),
-            config.validator_password.clone(),
-            None,
-            None,
-            config.map_capacity,
-            config.map_shard_amount,
-            config.db_path.clone(),
-            config.db_size,
-            config.get_network()?,
-            config.no_sync,
-            config.no_db,
-        ))
-        .await?;
+        let json_server = match indexer_config.enable_json_server {
+            true => Some(
+                JsonRpcServer::spawn(
+                    service.inner_ref().get_subscriber(),
+                    JsonRpcConfig {
+                        json_rpc_listen_address: indexer_config.json_rpc_listen_address,
+                        enable_cookie_auth: indexer_config.enable_cookie_auth,
+                        cookie_dir: indexer_config.cookie_dir,
+                    },
+                )
+                .await
+                .unwrap(),
+            ),
+            false => None,
+        };
 
         let grpc_server = TonicServer::spawn(
-            chain_state_service.inner_ref().get_subscriber(),
+            service.inner_ref().get_subscriber(),
             GrpcConfig {
-                grpc_listen_address: config.grpc_listen_address,
-                tls: config.grpc_tls,
-                tls_cert_path: config.tls_cert_path.clone(),
-                tls_key_path: config.tls_key_path.clone(),
+                grpc_listen_address: indexer_config.grpc_listen_address,
+                tls: indexer_config.grpc_tls,
+                tls_cert_path: indexer_config.tls_cert_path.clone(),
+                tls_key_path: indexer_config.tls_key_path.clone(),
             },
         )
         .await
         .unwrap();
 
-        let mut indexer = Indexer {
+        let mut indexer = Self {
+            json_server,
             server: Some(grpc_server),
-            service: Some(chain_state_service),
+            service: Some(service),
         };
 
         let mut server_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
@@ -136,6 +174,11 @@ impl Indexer {
 
     /// Sets the servers to close gracefully.
     async fn close(&mut self) {
+        if let Some(mut json_server) = self.json_server.take() {
+            json_server.close().await;
+            json_server.status.store(StatusType::Offline.into());
+        }
+
         if let Some(mut server) = self.server.take() {
             server.close().await;
             server.status.store(StatusType::Offline.into());
@@ -153,10 +196,20 @@ impl Indexer {
             Some(service) => service.inner_ref().status().await,
             None => return 7,
         };
-        let server_status = match &self.server {
+
+        let json_server_status = self
+            .json_server
+            .as_ref()
+            .map(|json_server| json_server.status());
+
+        let mut server_status = match &self.server {
             Some(server) => server.status(),
             None => return 7,
         };
+
+        if let Some(json_status) = json_server_status {
+            server_status = StatusType::combine(server_status, json_status);
+        }
 
         StatusType::combine(service_status, server_status) as u16
     }
@@ -172,17 +225,29 @@ impl Indexer {
             Some(service) => service.inner_ref().status().await,
             None => StatusType::Offline,
         };
+
+        let json_server_status = match &self.server {
+            Some(server) => server.status(),
+            None => StatusType::Offline,
+        };
+
         let grpc_server_status = match &self.server {
             Some(server) => server.status(),
             None => StatusType::Offline,
         };
 
         let service_status_symbol = service_status.get_status_symbol();
+        let json_server_status_symbol = json_server_status.get_status_symbol();
         let grpc_server_status_symbol = grpc_server_status.get_status_symbol();
 
         info!(
-            "Zaino status check - ChainState Service:{}{} gRPC Server:{}{}",
-            service_status_symbol, service_status, grpc_server_status_symbol, grpc_server_status
+            "Zaino status check - ChainState Service:{}{} JsonRPC Server:{}{} gRPC Server:{}{}",
+            service_status_symbol,
+            service_status,
+            json_server_status_symbol,
+            json_server_status,
+            grpc_server_status_symbol,
+            grpc_server_status
         );
     }
 }

@@ -8,10 +8,7 @@ use tonic::async_trait;
 use tracing::{info, warn};
 use zebra_state::HashOrHeight;
 
-use zebra_chain::{
-    block::{Hash, Height},
-    subtree::NoteCommitmentSubtreeIndex,
-};
+use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{
     trees::{GetSubtrees, GetTreestate},
     AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
@@ -27,24 +24,27 @@ use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
         AddressList, Balance, BlockId, BlockRange, Duration, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReply, GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo,
-        PingResponse, RawTransaction, SendResponse, ShieldedProtocol, SubtreeRoot,
-        TransparentAddressBlockFilter, TreeState, TxFilter,
+        GetAddressUtxosReply, GetAddressUtxosReplyList, LightdInfo, PingResponse, RawTransaction,
+        SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
 
 use crate::{
     config::FetchServiceConfig,
     error::FetchServiceError,
-    indexer::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService},
-    local_cache::{BlockCache, BlockCacheSubscriber},
-    mempool::{Mempool, MempoolSubscriber},
+    indexer::{
+        handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
+    },
+    local_cache::{
+        mempool::{Mempool, MempoolSubscriber},
+        BlockCache, BlockCacheSubscriber,
+    },
     status::StatusType,
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-        SubtreeRootReplyStream, UtxoReplyStream,
+        UtxoReplyStream,
     },
-    utils::{get_build_info, ServiceMetadata},
+    utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -71,7 +71,6 @@ pub struct FetchService {
 
 #[async_trait]
 impl ZcashService for FetchService {
-    type Error = FetchServiceError;
     type Subscriber = FetchServiceSubscriber;
     type Config = FetchServiceConfig;
     /// Initializes a new StateService instance and starts sync process.
@@ -421,6 +420,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .into())
     }
 
+    async fn chain_height(&self) -> Result<Height, Self::Error> {
+        Ok(self.block_cache.get_chain_height().await?)
+    }
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
     /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
@@ -486,8 +488,6 @@ impl ZcashIndexer for FetchServiceSubscriber {
 
 #[async_trait]
 impl LightWalletIndexer for FetchServiceSubscriber {
-    type Error = FetchServiceError;
-
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let latest_height = self.block_cache.get_chain_height().await?;
@@ -505,20 +505,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
     /// Return the compact block corresponding to the given block identifier
     async fn get_block(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
-        let hash_or_height: HashOrHeight = <[u8; 32]>::try_from(request.hash)
-            .map(Hash)
-            .map(HashOrHeight::from)
-            .or_else(|_| {
-                request
-                    .height
-                    .try_into()
-                    .map(|height| HashOrHeight::Height(Height(height)))
-            })
-            .map_err(|_| {
-                FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
-                    "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
-                ))
-            })?;
+        let hash_or_height = blockid_to_hashorheight(request).ok_or(
+            FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
+            )),
+        )?;
         match self
             .block_cache
             .get_compact_block(hash_or_height.to_string())
@@ -847,56 +838,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: TransparentAddressBlockFilter,
     ) -> Result<RawTransactionStream, Self::Error> {
-        let chain_height = self.block_cache.get_chain_height().await?.0;
-        let (start, end) =
-            match request.range {
-                Some(range) => match (range.start, range.end) {
-                    (Some(start), Some(end)) => {
-                        let start = match u32::try_from(start.height) {
-                            Ok(height) => height.min(chain_height),
-                            Err(_) => return Err(FetchServiceError::TonicStatusError(
-                                tonic::Status::invalid_argument(
-                                    "Error: Start height out of range. Failed to convert to u32.",
-                                ),
-                            )),
-                        };
-                        let end =
-                            match u32::try_from(end.height) {
-                                Ok(height) => height.min(chain_height),
-                                Err(_) => return Err(FetchServiceError::TonicStatusError(
-                                    tonic::Status::invalid_argument(
-                                        "Error: End height out of range. Failed to convert to u32.",
-                                    ),
-                                )),
-                            };
-                        if start > end {
-                            (end, start)
-                        } else {
-                            (start, end)
-                        }
-                    }
-                    _ => {
-                        return Err(FetchServiceError::TonicStatusError(
-                            tonic::Status::invalid_argument("Error: Incomplete block range given."),
-                        ))
-                    }
-                },
-                None => {
-                    return Err(FetchServiceError::TonicStatusError(
-                        tonic::Status::invalid_argument("Error: No block range given."),
-                    ))
-                }
-            };
-        let txids = self
-            .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
-                vec![request.address],
-                start,
-                end,
-            ))
-            .await?;
+        let chain_height = self.chain_height().await?;
+        let txids = self.get_taddress_txids_helper(request).await?;
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let (transmitter, receiver) = mpsc::channel(self.config.service_channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -904,45 +850,15 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     for txid in txids {
                         let transaction =
                             fetch_service_clone.get_raw_transaction(txid, Some(1)).await;
-                        match transaction {
-                            Ok(GetRawTransaction::Object(transaction_obj)) => {
-                                let height: u64 = match transaction_obj.height {
-                                    Some(h) => h as u64,
-                                    // Zebra returns None for mempool transactions, convert to `Mempool Height`.
-                                    None => chain_height as u64,
-                                };
-                                if channel_tx
-                                    .send(Ok(RawTransaction {
-                                        data: transaction_obj.hex.as_ref().to_vec(),
-                                        height,
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Ok(GetRawTransaction::Raw(_)) => {
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(
-                                    "Received raw transaction type, this should not be impossible.",
-                                    )))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(e.to_string())))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
+                        if handle_raw_transaction::<Self>(
+                            chain_height.0 as u64,
+                            transaction,
+                            transmitter.clone(),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
                         }
                     }
                 },
@@ -951,7 +867,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             match timeout {
                 Ok(_) => {}
                 Err(_) => {
-                    channel_tx
+                    transmitter
                         .send(Err(tonic::Status::internal(
                             "Error: get_taddress_txids gRPC request timed out",
                         )))
@@ -960,7 +876,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 }
             }
         });
-        Ok(RawTransactionStream::new(channel_rx))
+        Ok(RawTransactionStream::new(receiver))
     }
 
     /// Returns the total balance for a list of taddrs
@@ -1379,161 +1295,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         }
     }
 
-    /// Returns a stream of information about roots of subtrees of the Sapling and Orchard
-    /// note commitment trees.
-    async fn get_subtree_roots(
-        &self,
-        request: GetSubtreeRootsArg,
-    ) -> Result<SubtreeRootReplyStream, Self::Error> {
-        let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
-            Ok(protocol) => protocol.as_str_name(),
-            Err(_) => {
-                return Err(FetchServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),
-                ))
-            }
-        };
-        let start_index = match u16::try_from(request.start_index) {
-            Ok(value) => value,
-            Err(_) => {
-                return Err(FetchServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument("Error: start_index value exceeds u16 range."),
-                ))
-            }
-        };
-        let limit = if request.max_entries == 0 {
-            None
-        } else {
-            match u16::try_from(request.max_entries) {
-                Ok(value) => Some(value),
-                Err(_) => {
-                    return Err(FetchServiceError::TonicStatusError(
-                        tonic::Status::invalid_argument(
-                            "Error: max_entries value exceeds u16 range.",
-                        ),
-                    ))
-                }
-            }
-        };
-        let subtrees = self
-            .z_get_subtrees_by_index(
-                pool.to_string(),
-                NoteCommitmentSubtreeIndex(start_index),
-                limit.map(NoteCommitmentSubtreeIndex),
-            )
-            .await?;
-        let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
-        tokio::spawn(async move {
-            let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    for subtree in subtrees.subtrees {
-                        match fetch_service_clone
-                            .z_get_block(subtree.end_height.0.to_string(), Some(1))
-                            .await
-                        {
-                            Ok(GetBlock::Object { hash, height, .. }) => {
-                                let checked_height = match height {
-                                    Some(h) => h.0 as u64,
-                                    None => {
-                                        match channel_tx
-                                            .send(Err(tonic::Status::unknown(
-                                                "Error: No block height returned by node.",
-                                            )))
-                                            .await
-                                        {
-                                            Ok(_) => break,
-                                            Err(e) => {
-                                                warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                };
-                                let checked_root_hash = match hex::decode(&subtree.root) {
-                                    Ok(hash) => hash,
-                                    Err(e) => {
-                                        match channel_tx
-                                            .send(Err(tonic::Status::unknown(format!(
-                                                "Error: Failed to hex decode root hash: {}.",
-                                                e
-                                            ))))
-                                            .await
-                                        {
-                                            Ok(_) => break,
-                                            Err(e) => {
-                                                warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                };
-                                if channel_tx
-                                    .send(Ok(SubtreeRoot {
-                                        root_hash: checked_root_hash,
-                                        completing_block_hash: hash
-                                            .0
-                                            .bytes_in_display_order()
-                                            .to_vec(),
-                                        completing_block_height: checked_height,
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Ok(GetBlock::Raw(_)) => {
-                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                if channel_tx
-                                .send(Err(tonic::Status::unknown(
-                                    "Error: Received raw block type, this should not be possible.",
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                            }
-                            Err(e) => {
-                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(format!(
-                                        "Error: Could not fetch block at height [{}] from node: {}",
-                                        subtree.end_height.0, e
-                                    ))))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                },
-            )
-            .await;
-            match timeout {
-                Ok(_) => {}
-                Err(_) => {
-                    channel_tx
-                        .send(Err(tonic::Status::deadline_exceeded(
-                            "Error: get_mempool_stream gRPC request timed out",
-                        )))
-                        .await
-                        .ok();
-                }
-            }
-        });
-        Ok(SubtreeRootReplyStream::new(channel_rx))
+    fn timeout_channel_size(&self) -> (u32, u32) {
+        (
+            self.config.service_timeout,
+            self.config.service_channel_size,
+        )
     }
 
     /// Returns all unspent outputs for a list of addresses.

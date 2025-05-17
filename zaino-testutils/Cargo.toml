@@ -10,6 +10,7 @@ version = { workspace = true }
 
 [dependencies]
 zainod = { workspace = true }
+zaino-state = { workspace = true, features = ["bench"] }
 
 # Librustzcash
 zcash_protocol = { workspace = true }
@@ -20,9 +21,9 @@ zebra-chain = { workspace = true }
 
 # Zingo-infra
 zingo-infra-services = { workspace = true }
+zingo-infra-testutils = { workspace = true }
 
 # ZingoLib
-zingo-netutils = { workspace = true }
 zingolib = { workspace = true }
 testvectors = { workspace = true }
 

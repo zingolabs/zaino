@@ -2,6 +2,25 @@
 
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Copy)]
+#[serde(rename_all = "lowercase")]
+/// Type of backend to be used.
+pub enum BackendType {
+    /// Uses ReadStateService (Zebrad)
+    State,
+    /// Uses JsonRPC client (Zcashd. Zainod)
+    Fetch,
+}
+
+#[derive(Debug, Clone)]
+/// Unified backend configuration enum.
+pub enum BackendConfig {
+    /// StateService config.
+    State(StateServiceConfig),
+    /// Fetchservice config.
+    Fetch(FetchServiceConfig),
+}
+
 /// Holds config data for [`StateService`].
 #[derive(Debug, Clone)]
 pub struct StateServiceConfig {

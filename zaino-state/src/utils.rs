@@ -2,7 +2,9 @@
 
 use std::fmt;
 
-use zebra_chain::parameters::Network;
+use zaino_proto::proto::service::BlockId;
+use zebra_chain::{block::Height, parameters::Network};
+use zebra_state::HashOrHeight;
 
 /// Zaino build info.
 #[derive(Debug, Clone)]
@@ -112,4 +114,17 @@ impl fmt::Display for ServiceMetadata {
         writeln!(f, "Zebra Build: {}", self.zebra_build)?;
         writeln!(f, "Zebra Subversion: {}", self.zebra_subversion)
     }
+}
+
+pub(crate) fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
+    <[u8; 32]>::try_from(block_id.hash)
+        .map(zebra_chain::block::Hash)
+        .map(HashOrHeight::from)
+        .or_else(|_| {
+            block_id
+                .height
+                .try_into()
+                .map(|height| HashOrHeight::Height(Height(height)))
+        })
+        .ok()
 }

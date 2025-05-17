@@ -374,17 +374,20 @@ impl JsonRpSeeConnector {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlockResponse, JsonRpSeeConnectorError> {
-        let params = match verbosity {
-            Some(v) => vec![
-                serde_json::to_value(hash_or_height)?,
-                serde_json::to_value(v)?,
-            ],
-            None => vec![
-                serde_json::to_value(hash_or_height)?,
-                serde_json::to_value(1)?,
-            ],
-        };
-        self.send_request("getblock", params).await
+        let v = verbosity.unwrap_or(1);
+        let params = [
+            serde_json::to_value(hash_or_height)?,
+            serde_json::to_value(v)?,
+        ];
+        if v == 0 {
+            self.send_request("getblock", params)
+                .await
+                .map(GetBlockResponse::Raw)
+        } else {
+            self.send_request("getblock", params)
+                .await
+                .map(GetBlockResponse::Object)
+        }
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

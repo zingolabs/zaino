@@ -18,7 +18,7 @@ path = "src/lib.rs"
 
 [features]
 # Removes network restrictions.
-test_only_very_insecure = []
+disable_tls_unencrypted_traffic_mode = []
 
 [dependencies]
 zaino-fetch = { workspace = true }
@@ -27,6 +27,7 @@ zaino-serve = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }

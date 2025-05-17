@@ -275,6 +275,8 @@ impl FinalisedState {
                             retry_attempts -= 1;
 
                             match fetch_block_from_node(
+                                finalised_state.state.as_ref(),
+                                Some(&finalised_state.config.network),
                                 &finalised_state.fetcher,
                                 HashOrHeight::Height(height),
                             )
@@ -338,7 +340,13 @@ impl FinalisedState {
                     Ok(block) => Ok(block),
                     Err(_) => {
                         warn!("Failed to fetch block from DB, re-fetching from validator.");
-                        match fetch_block_from_node(&finalised_state.fetcher, hash_or_height).await
+                        match fetch_block_from_node(
+                            finalised_state.state.as_ref(),
+                            Some(&finalised_state.config.network),
+                            &finalised_state.fetcher,
+                            hash_or_height,
+                        )
+                        .await
                         {
                             Ok((hash, block)) => {
                                 match finalised_state.insert_block((
@@ -377,7 +385,11 @@ impl FinalisedState {
     /// - Searches from ZainoDB tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
     async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
+        let network = self.config.network.clone();
+
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
+        // let reorg_height_int = reorg_height.0.saturating_sub(100);
+        // reorg_height = Height(reorg_height_int);
 
         let mut reorg_hash = self.get_hash(reorg_height.0).unwrap_or(Hash([0u8; 32]));
 
@@ -386,7 +398,7 @@ impl FinalisedState {
             .get_block(reorg_height.0.to_string(), Some(1))
             .await?
         {
-            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object { hash, .. } => hash.0,
+            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
             _ => {
                 return Err(FinalisedStateError::Custom(
                     "Unexpected block response type".to_string(),
@@ -413,14 +425,14 @@ impl FinalisedState {
                 }
             };
 
-            reorg_hash = self.get_hash(reorg_height.0)?;
+            reorg_hash = self.get_hash(reorg_height.0).unwrap_or(Hash([0u8; 32]));
 
             check_hash = match self
                 .fetcher
                 .get_block(reorg_height.0.to_string(), Some(1))
                 .await?
             {
-                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object { hash, .. } => hash.0,
+                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
                 _ => {
                     return Err(FinalisedStateError::Custom(
                         "Unexpected block response type".to_string(),
@@ -445,75 +457,26 @@ impl FinalisedState {
                 self.delete_block(Height(block_height))?;
             }
             loop {
-                match self.state.clone() {
-                    Some(state) => {
-                        match crate::state::get_compact_block(
-                            &state,
-                            HashOrHeight::Height(Height(block_height)),
-                            &self.config.network,
-                        )
-                        .await
-                        {
-                            Ok(block) => {
-                                let hash_bytes: [u8; 32] = block
-                                    .hash
-                                    .clone()
-                                    .try_into()
-                                    .expect("Expected Vec<u8> with exactly 32 bytes");
-                                let hash = Hash(hash_bytes);
-                                self.insert_block((Height(block_height), hash, block))?;
-                                info!(
-                                    "Block at height {} successfully inserted in finalised state.",
-                                    block_height
-                                );
-                                break;
-                            }
-                            Err(_) => {
-                                match fetch_block_from_node(
-                                    &self.fetcher,
-                                    HashOrHeight::Height(Height(block_height)),
-                                )
-                                .await
-                                {
-                                    Ok((hash, block)) => {
-                                        self.insert_block((Height(block_height), hash, block))?;
-                                        info!(
-                                    "Block at height {} successfully inserted in finalised state.",
-                                    block_height
-                                );
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        self.status.store(StatusType::RecoverableError.into());
-                                        warn!("{e}");
-                                        tokio::time::sleep(std::time::Duration::from_millis(500))
-                                            .await;
-                                    }
-                                }
-                            }
-                        }
+                match fetch_block_from_node(
+                    self.state.as_ref(),
+                    Some(&network),
+                    &self.fetcher,
+                    HashOrHeight::Height(Height(block_height)),
+                )
+                .await
+                {
+                    Ok((hash, block)) => {
+                        self.insert_block((Height(block_height), hash, block))?;
+                        info!(
+                            "Block at height {} successfully inserted in finalised state.",
+                            block_height
+                        );
+                        break;
                     }
-                    None => {
-                        match fetch_block_from_node(
-                            &self.fetcher,
-                            HashOrHeight::Height(Height(block_height)),
-                        )
-                        .await
-                        {
-                            Ok((hash, block)) => {
-                                self.insert_block((Height(block_height), hash, block))?;
-                                info!(
-                                    "Block at height {} successfully inserted in finalised state.",
-                                    block_height
-                                );
-                                break;
-                            }
-                            Err(e) => {
-                                self.status.store(StatusType::RecoverableError.into());
-                                warn!("{e}");
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            }
-                        }
+                    Err(e) => {
+                        self.status.store(StatusType::RecoverableError.into());
+                        warn!("{e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 }
             }
@@ -531,6 +494,8 @@ impl FinalisedState {
                     }
                     loop {
                         match fetch_block_from_node(
+                            self.state.as_ref(),
+                            Some(&network),
                             &self.fetcher,
                             HashOrHeight::Height(Height(block_height)),
                         )
@@ -564,7 +529,7 @@ impl FinalisedState {
                             &blockchain_info.blocks.0,
                             &blockchain_info.estimated_height.0
                         );
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     continue;
                 }
             }
