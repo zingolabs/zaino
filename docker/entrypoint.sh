@@ -118,11 +118,16 @@ tls_key_path = $(format_toml_string_field "${ZAINO_GRPC_TLS_KEY_PATH:-None}")
 validator_listen_address = "${ZAINO_VALIDATOR_LISTEN_ADDRESS:-localhost:18232}"
 validator_cookie_auth = ${ZAINO_VALIDATOR_COOKIE_AUTH_ENABLE:-false}
 validator_cookie_path = $(format_toml_string_field "${ZAINO_VALIDATOR_COOKIE_PATH:-${default_validator_cookie_path}}")
-if [[ "${ZAINO_VALIDATOR_COOKIE_AUTH_ENABLE:-false}" == "false" ]]; then
+$(if [[ "${ZAINO_VALIDATOR_COOKIE_AUTH_ENABLE:-false}" == "false" ]]; then
   # Only add user/pass to TOML if cookie auth is explicitly disabled
-  ${ZAINO_VALIDATOR_USER:+"validator_user = \"${ZAINO_VALIDATOR_USER}\""}
-  ${ZAINO_VALIDATOR_PASSWORD:+"validator_password = \"${ZAINO_VALIDATOR_PASSWORD}\""}
-fi
+  # and the variables are set
+  if [[ -n "${ZAINO_VALIDATOR_USER}" ]]; then
+    echo "validator_user = \\\"${ZAINO_VALIDATOR_USER}\\\""
+  fi
+  if [[ -n "${ZAINO_VALIDATOR_PASSWORD}" ]]; then
+    echo "validator_password = \\\"${ZAINO_VALIDATOR_PASSWORD}\\\""
+  fi
+fi)
 
 # Mempool, Non-Finalised State and Finalised State config
 map_capacity = $(format_toml_string_field "${ZAINO_MAP_CAPACITY:-None}")
