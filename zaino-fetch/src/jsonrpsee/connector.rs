@@ -140,7 +140,12 @@ impl JsonRpSeeConnector {
     ) -> Result<Self, JsonRpSeeConnectorError> {
         let cookie_content =
             fs::read_to_string(cookie_path).map_err(JsonRpSeeConnectorError::IoError)?;
-        let cookie = cookie_content.trim().to_string();
+        let trimmed_content = cookie_content.trim();
+        let cookie_password = if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
+            stripped.to_string()
+        } else {
+            trimmed_content.to_string()
+        };
 
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
@@ -154,7 +159,9 @@ impl JsonRpSeeConnector {
             url,
             id_counter: Arc::new(AtomicI32::new(0)),
             client,
-            auth_method: AuthMethod::Cookie { cookie },
+            auth_method: AuthMethod::Cookie {
+                cookie: cookie_password,
+            },
         })
     }
 
@@ -571,12 +578,19 @@ pub async fn test_node_and_return_url(
 ) -> Result<Url, JsonRpSeeConnectorError> {
     let auth_method = match rpc_cookie_auth {
         true => {
-            let cookie_content =
-                fs::read_to_string(cookie_path.expect("validator rpc cookie path missing"))
-                    .map_err(JsonRpSeeConnectorError::IoError)?;
-            let cookie = cookie_content.trim().to_string();
-
-            AuthMethod::Cookie { cookie }
+            let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
+            let cookie_content = fs::read_to_string(&cookie_file_path_str)
+                .map_err(JsonRpSeeConnectorError::IoError)?;
+            let trimmed_content = cookie_content.trim();
+            let cookie_password =
+                if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
+                    stripped.to_string()
+                } else {
+                    trimmed_content.to_string()
+                };
+            AuthMethod::Cookie {
+                cookie: cookie_password,
+            }
         }
         false => AuthMethod::Basic {
             username: user.unwrap_or_else(|| "xxxxxx".to_string()),
