@@ -877,48 +877,24 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_existing_zindexer_toml_content() {
+    fn test_parse_zindexer_toml() {
         // Include the actual zindexer.toml file content at compile time
         let zindexer_toml_content = include_str!("../zindexer.toml");
 
-        // Assert that parsing the original zindexer.toml content fails
-        // due to string "None" for Option<usize> fields (and similar issues).
-        assert!(
-            toml::from_str::<IndexerConfig>(zindexer_toml_content).is_err(),
-            "Parsing the actual zindexer.toml (with string 'None' for Option<usize> etc.) should fail."
-        );
+        // Assert that parsing the current zindexer.toml content SUCCEEDS.
+        let config: IndexerConfig = match toml::from_str(zindexer_toml_content) {
+            Ok(c) => c,
+            Err(e) => panic!(
+                "Parsing the current zaino/zainod/zindexer.toml failed. Error: {}",
+                e
+            ),
+        };
 
-        // Test with a version of zindexer.toml that IS expected to parse successfully
-        // by omitting or correcting the problematic "None" string for numeric/boolean Optionals.
-        let zindexer_toml_adjusted_for_direct_parse = r#"
-            backend = "fetch"
-            enable_json_server =  false
-            json_rpc_listen_address = "127.0.0.1:8237"
-            enable_cookie_auth = false
-            # cookie_dir = "None" // Omitted, will be None, then handled by finalize_config_logic
-            grpc_listen_address = "127.0.0.1:8137"
-            grpc_tls = false
-            # tls_cert_path = "None" // Omitted, becomes None
-            # tls_key_path = "None"  // Omitted, becomes None
-            validator_listen_address = "127.0.0.1:18232"
-            validator_cookie_auth = false
-            # validator_cookie_path = "None" // Omitted, becomes None
-            validator_user = "xxxxxx"
-            validator_password = "xxxxxx"
-            # map_capacity omitted
-            # map_shard_amount omitted
-            zaino_db_path = "/path/to/zaino_db_explicit" # Explicit valid path
-            zebra_db_path = "/path/to/zebra_db_explicit" # Explicit valid path
-            # db_size omitted
-            network = "Testnet"
-            no_sync = false
-            no_db = false
-            slow_sync = false
-        "#;
-
-        let config: IndexerConfig = toml::from_str(zindexer_toml_adjusted_for_direct_parse)
-            .expect("Failed to parse adjusted zindexer.toml content for successful parse test");
         let finalized_config = config.finalize_config_logic();
+
+        // Assertions reflect the expected state after parsing the project's zindexer.toml
+        // and applying finalize_config_logic. Assumes zindexer.toml follows new parsing rules
+        // (e.g., optional numerics are omitted to be None, not set to "None").
 
         assert_eq!(finalized_config.backend, BackendType::Fetch);
         assert_eq!(finalized_config.enable_json_server, false);
@@ -927,39 +903,69 @@ mod tests {
             "127.0.0.1:8237".parse().unwrap()
         );
         assert_eq!(finalized_config.enable_cookie_auth, false);
+
+        // cookie_dir becomes None if enable_cookie_auth is false.
         assert_eq!(finalized_config.cookie_dir, None);
+
+        assert_eq!(
+            finalized_config.grpc_listen_address,
+            "127.0.0.1:8137".parse().unwrap()
+        );
+        assert_eq!(finalized_config.grpc_tls, false);
+
+        // These are None if omitted in zindexer.toml.
         assert_eq!(finalized_config.tls_cert_path, None);
         assert_eq!(finalized_config.tls_key_path, None);
-        assert_eq!(finalized_config.validator_cookie_path, None);
-        assert_eq!(finalized_config.map_capacity, None);
+
         assert_eq!(
-            finalized_config.zaino_db_path,
-            PathBuf::from("/path/to/zaino_db_explicit")
+            finalized_config.validator_listen_address,
+            "127.0.0.1:18232".parse().unwrap()
         );
+        assert_eq!(finalized_config.validator_cookie_auth, false);
+        assert_eq!(finalized_config.validator_cookie_path, None);
+
+        // These are Some because they are explicitly set in the current zindexer.toml.
+        assert_eq!(finalized_config.validator_user, Some("xxxxxx".to_string()));
         assert_eq!(
-            finalized_config.zebra_db_path,
-            PathBuf::from("/path/to/zebra_db_explicit")
+            finalized_config.validator_password,
+            Some("xxxxxx".to_string())
         );
 
-        // The full validity according to check_config depends on existence of specified paths if flags are true.
-        // For this test, the main point is that Serde parsing worked for the adjusted structure.
-        // We expect check_config to fail if, for example, grpc_tls were true and paths were missing.
-        // Since they are false and paths are None, some checks might pass, but not all required for a fully operational config.
-        // A more robust check_config test would mock file system operations.
-        if finalized_config.grpc_tls
-            && (finalized_config.tls_cert_path.is_none() || finalized_config.tls_key_path.is_none())
-        {
-            assert!(finalized_config.check_config().is_err());
-        } else if finalized_config.validator_cookie_auth
-            && finalized_config.validator_cookie_path.is_none()
-        {
-            assert!(finalized_config.check_config().is_err());
-        } else {
-            // If the above specific error conditions for TLS/validator cookie paths aren't met
-            // (because grpc_tls and validator_cookie_auth are false in zindexer_toml_adjusted_for_direct_parse),
-            // then check_config should pass, assuming other checks (network name, IP validity) are satisfied.
-            // The explicit paths for zaino_db_path and zebra_db_path are not currently checked for existence by check_config.
-            finalized_config.check_config().expect("check_config should pass for the adjusted TOML with explicit non-TLS/non-validator-cookie paths");
+        // These are None if omitted in zindexer.toml.
+        assert_eq!(finalized_config.map_capacity, None);
+        assert_eq!(finalized_config.map_shard_amount, None);
+        assert_eq!(finalized_config.db_size, None);
+
+        // These take their values from IndexerConfig::default() if omitted in zindexer.toml.
+        assert_eq!(finalized_config.zaino_db_path, default_zaino_db_path());
+        assert_eq!(
+            finalized_config.zebra_db_path,
+            default_zebra_db_path().unwrap()
+        );
+
+        assert_eq!(finalized_config.network, "Testnet");
+        assert_eq!(finalized_config.no_sync, false);
+        assert_eq!(finalized_config.no_db, false);
+        assert_eq!(finalized_config.slow_sync, false);
+
+        // check_config validation for the loaded zindexer.toml.
+        // It's expected to pass if conditional path checks (TLS, validator cookie) are not triggered.
+        // Failures due to non-existent default DB paths in test env are considered acceptable for this test.
+        match finalized_config.check_config() {
+            Ok(_) => {} // Expected if zindexer.toml specifies non-TLS, non-validator-cookie-auth config.
+            Err(e) => {
+                // Allow failure if it's due to default DB paths not existing in test environment.
+                if e.to_string().contains("does not exist")
+                    || e.to_string().contains("Unable to find home directory")
+                {
+                    // This is an acceptable failure for default paths in unit test env
+                } else {
+                    panic!(
+                        "check_config on current zindexer.toml failed for an unexpected reason: {}",
+                        e
+                    );
+                }
+            }
         }
     }
 }
