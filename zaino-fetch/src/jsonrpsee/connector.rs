@@ -96,6 +96,24 @@ impl fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
+// Helper function to read and parse the cookie file content.
+// Zebra's RPC server expects Basic Auth with username "__cookie__"
+// and the token from the cookie file as the password.
+// The cookie file itself is formatted as "__cookie__:<token>".
+// This function extracts just the <token> part.
+fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, JsonRpSeeConnectorError> {
+    let cookie_content =
+        fs::read_to_string(cookie_path).map_err(JsonRpSeeConnectorError::IoError)?;
+    let trimmed_content = cookie_content.trim();
+    if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
+        Ok(stripped.to_string())
+    } else {
+        // If the prefix is not present, use the entire trimmed content.
+        // This maintains compatibility with older formats or other cookie sources.
+        Ok(trimmed_content.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 enum AuthMethod {
     Basic { username: String, password: String },
@@ -138,9 +156,7 @@ impl JsonRpSeeConnector {
         url: Url,
         cookie_path: &Path,
     ) -> Result<Self, JsonRpSeeConnectorError> {
-        let cookie_content =
-            fs::read_to_string(cookie_path).map_err(JsonRpSeeConnectorError::IoError)?;
-        let cookie = cookie_content.trim().to_string();
+        let cookie_password = read_and_parse_cookie_token(cookie_path)?;
 
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
@@ -154,7 +170,9 @@ impl JsonRpSeeConnector {
             url,
             id_counter: Arc::new(AtomicI32::new(0)),
             client,
-            auth_method: AuthMethod::Cookie { cookie },
+            auth_method: AuthMethod::Cookie {
+                cookie: cookie_password,
+            },
         })
     }
 
@@ -571,12 +589,11 @@ pub async fn test_node_and_return_url(
 ) -> Result<Url, JsonRpSeeConnectorError> {
     let auth_method = match rpc_cookie_auth {
         true => {
-            let cookie_content =
-                fs::read_to_string(cookie_path.expect("validator rpc cookie path missing"))
-                    .map_err(JsonRpSeeConnectorError::IoError)?;
-            let cookie = cookie_content.trim().to_string();
-
-            AuthMethod::Cookie { cookie }
+            let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
+            let cookie_password = read_and_parse_cookie_token(Path::new(&cookie_file_path_str))?;
+            AuthMethod::Cookie {
+                cookie: cookie_password,
+            }
         }
         false => AuthMethod::Basic {
             username: user.unwrap_or_else(|| "xxxxxx".to_string()),

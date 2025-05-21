@@ -417,8 +417,6 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 /// Doc comments taken from Zaino-Proto for consistency.
 #[async_trait]
 pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
-    /// Uses underlying error type of implementer.
-
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error>;
 

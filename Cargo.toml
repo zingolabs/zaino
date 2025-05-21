@@ -24,21 +24,21 @@ version = "0.1.2"
 
 [workspace.dependencies]
 # Zingolabs
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_005", features = [ "test-elevation" ] }
-zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_005" }
-testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "zaino_dep_005" }
-
-zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "8ec286507c3950f0ba692ba45167f3001c5da49f" }
+# Should be updated to crates.io releases when available.
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2", features = [ "test-elevation" ] }
+testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
+zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cca5d0705111e1e7064a691724c8501560c84782" }
+zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cca5d0705111e1e7064a691724c8501560c84782" }
 
 # Librustzcash
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2", features = [ "lightwalletd-tonic" ] }
-zcash_protocol = { git = "https://github.com/zingolabs/librustzcash.git", tag = "zcash_client_sqlite-0.12.1_plus_zingolabs_changes-test_2" }
-
+zcash_client_backend = { version = "0.18.0" , features = [ "lightwalletd-tonic" ] }
+zcash_protocol = "0.5.1"
 
 # Zebra
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0d201a59f812d7312239f488f9c8beea73cd64d4" }
+# Can be updated to 2.4.0 once lands. Should be updated to crates.io releases once available.
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "8b9fdd073d822a02768927634c635e84edb4eee4" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "8b9fdd073d822a02768927634c635e84edb4eee4" }
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "8b9fdd073d822a02768927634c635e84edb4eee4" }
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

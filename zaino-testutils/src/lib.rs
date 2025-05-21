@@ -13,11 +13,9 @@ use testvectors::{seeds, REG_O_ADDR_FROM_ABANDONART};
 use tracing_subscriber::EnvFilter;
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
-use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::network::Network;
 pub use zingo_infra_services::validator::Validator;
-use zingo_netutils::{GetClientError, GrpcConnector, UnderlyingService};
 use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
 pub use zingolib::{
     get_base_address_macro, lightclient::LightClient, testutils::lightclient::from_inputs,
@@ -319,17 +317,13 @@ async fn build_lightclients(
     indexer_port: portpicker::Port,
 ) -> (LightClient, LightClient) {
     let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
-    let faucet = client_builder
-        .build_faucet(true, RegtestNetwork::all_upgrades_active())
-        .await;
-    let recipient = client_builder
-        .build_client(
-            seeds::HOSPITAL_MUSEUM_SEED.to_string(),
-            1,
-            true,
-            RegtestNetwork::all_upgrades_active(),
-        )
-        .await;
+    let faucet = client_builder.build_faucet(true, RegtestNetwork::all_upgrades_active());
+    let recipient = client_builder.build_client(
+        seeds::HOSPITAL_MUSEUM_SEED.to_string(),
+        1,
+        true,
+        RegtestNetwork::all_upgrades_active(),
+    );
 
     (faucet, recipient)
 }
@@ -343,6 +337,7 @@ impl TestManager {
     /// If clients is set to active zingolib lightclients will be created for test use.
     ///
     /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
+    #[allow(clippy::too_many_arguments)]
     pub async fn launch(
         validator: &ValidatorKind,
         backend: &BackendType,
@@ -531,19 +526,14 @@ impl Drop for TestManager {
     }
 }
 
-/// Builds a client for creating RPC requests to the indexer/light-node
-pub fn build_client(
-    uri: http::Uri,
-) -> impl std::future::Future<Output = Result<CompactTxStreamerClient<UnderlyingService>, GetClientError>>
-{
-    GrpcConnector::new(uri).get_client()
-}
 #[cfg(test)]
 mod launch_testmanager {
 
     use super::*;
 
     mod zcashd {
+
+        use zingo_infra_testutils::client::build_client;
 
         use super::*;
 
@@ -598,6 +588,7 @@ mod launch_testmanager {
             test_manager.close().await;
         }
 
+        #[ignore = "chain cache needs development"]
         #[tokio::test]
         pub(crate) async fn with_chain() {
             let mut test_manager = TestManager::launch(
@@ -698,20 +689,20 @@ mod launch_testmanager {
             )
             .await
             .unwrap();
-            let clients = test_manager
+            let mut clients = test_manager
                 .clients
-                .as_ref()
+                .take()
                 .expect("Clients are not initialized");
 
-            clients.faucet.do_sync(true).await.unwrap();
+            clients.faucet.sync_and_await().await.unwrap();
             dbg!(clients.faucet.do_balance().await);
 
             assert!(
                     clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.transparent_balance.unwrap() > 0,
+                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
                     "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                     clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.transparent_balance.unwrap()
+                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
                 );
 
             test_manager.close().await;
@@ -722,6 +713,8 @@ mod launch_testmanager {
         use super::*;
 
         mod fetch_service {
+            use zingo_infra_testutils::client::build_client;
+
             use super::*;
 
             #[tokio::test]
@@ -775,6 +768,7 @@ mod launch_testmanager {
                 test_manager.close().await;
             }
 
+            #[ignore = "chain cache needs development"]
             #[tokio::test]
             pub(crate) async fn with_chain() {
                 let mut test_manager = TestManager::launch(
@@ -875,24 +869,24 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let clients = test_manager
+                let mut clients = test_manager
                     .clients
-                    .as_ref()
+                    .take()
                     .expect("Clients are not initialized");
 
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 test_manager.local_net.generate_blocks(100).await.unwrap();
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 assert!(
                     clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.transparent_balance.unwrap() > 0,
+                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                     clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.transparent_balance.unwrap()
+                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
             );
 
                 test_manager.close().await;
@@ -914,14 +908,14 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let clients = test_manager
+                let mut clients = test_manager
                     .clients
-                    .as_ref()
+                    .take()
                     .expect("Clients are not initialized");
 
                 test_manager.local_net.generate_blocks(100).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 assert!(
@@ -929,7 +923,7 @@ mod launch_testmanager {
                         .faucet
                         .do_balance()
                         .await
-                        .transparent_balance
+                        .confirmed_transparent_balance
                         .unwrap()
                         > 0,
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
@@ -937,7 +931,7 @@ mod launch_testmanager {
                         .faucet
                         .do_balance()
                         .await
-                        .transparent_balance
+                        .confirmed_transparent_balance
                         .unwrap()
                 );
 
@@ -945,30 +939,27 @@ mod launch_testmanager {
                 clients.faucet.quick_shield().await.unwrap();
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 assert!(
                 clients.faucet.do_balance().await.orchard_balance.unwrap() > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                 clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                clients.faucet.do_balance().await.transparent_balance.unwrap()
+                clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
             );
 
+                let recipient_zaddr = clients.get_recipient_address("sapling").await;
                 zingolib::testutils::lightclient::from_inputs::quick_send(
-                    &clients.faucet,
-                    vec![(
-                        &clients.get_recipient_address("sapling").await,
-                        250_000,
-                        None,
-                    )],
+                    &mut clients.faucet,
+                    vec![(&recipient_zaddr, 250_000, None)],
                 )
                 .await
                 .unwrap();
 
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                clients.recipient.do_sync(true).await.unwrap();
+                clients.recipient.sync_and_await().await.unwrap();
                 dbg!(clients.recipient.do_balance().await);
 
                 assert_eq!(
@@ -1012,6 +1003,8 @@ mod launch_testmanager {
         }
 
         mod state_service {
+            use zingo_infra_testutils::client::build_client;
+
             use super::*;
 
             #[tokio::test]
@@ -1065,6 +1058,7 @@ mod launch_testmanager {
                 test_manager.close().await;
             }
 
+            #[ignore = "chain cache needs development"]
             #[tokio::test]
             pub(crate) async fn with_chain() {
                 let mut test_manager = TestManager::launch(
@@ -1166,24 +1160,25 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let clients = test_manager
+
+                let mut clients = test_manager
                     .clients
-                    .as_ref()
+                    .take()
                     .expect("Clients are not initialized");
 
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 test_manager.generate_blocks_with_delay(100).await;
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 assert!(
                     clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.transparent_balance.unwrap() > 0,
+                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                     clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.transparent_balance.unwrap()
+                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
             );
 
                 test_manager.close().await;
@@ -1206,13 +1201,14 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let clients = test_manager
+
+                let mut clients = test_manager
                     .clients
-                    .as_ref()
+                    .take()
                     .expect("Clients are not initialized");
 
                 test_manager.generate_blocks_with_delay(100).await;
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 assert!(
@@ -1220,7 +1216,7 @@ mod launch_testmanager {
                         .faucet
                         .do_balance()
                         .await
-                        .transparent_balance
+                        .confirmed_transparent_balance
                         .unwrap()
                         > 0,
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
@@ -1228,36 +1224,33 @@ mod launch_testmanager {
                         .faucet
                         .do_balance()
                         .await
-                        .transparent_balance
+                        .confirmed_transparent_balance
                         .unwrap()
                 );
 
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield().await.unwrap();
                 test_manager.generate_blocks_with_delay(1).await;
-                clients.faucet.do_sync(true).await.unwrap();
+                clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
 
                 assert!(
                 clients.faucet.do_balance().await.orchard_balance.unwrap() > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                 clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                clients.faucet.do_balance().await.transparent_balance.unwrap()
+                clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
             );
 
+                let recipient_zaddr = clients.get_recipient_address("sapling").await;
                 zingolib::testutils::lightclient::from_inputs::quick_send(
-                    &clients.faucet,
-                    vec![(
-                        &clients.get_recipient_address("sapling").await,
-                        250_000,
-                        None,
-                    )],
+                    &mut clients.faucet,
+                    vec![(&recipient_zaddr, 250_000, None)],
                 )
                 .await
                 .unwrap();
 
                 test_manager.generate_blocks_with_delay(1).await;
-                clients.recipient.do_sync(true).await.unwrap();
+                clients.recipient.sync_and_await().await.unwrap();
                 dbg!(clients.recipient.do_balance().await);
 
                 assert_eq!(

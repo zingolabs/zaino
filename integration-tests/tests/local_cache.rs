@@ -53,7 +53,19 @@ async fn create_test_manager_and_block_cache(
     .unwrap();
 
     let network = match test_manager.network.to_string().as_str() {
-        "Regtest" => zebra_chain::parameters::Network::new_regtest(Some(1), Some(1)),
+        "Regtest" => zebra_chain::parameters::Network::new_regtest(
+            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+                before_overwinter: Some(1),
+                overwinter: Some(1),
+                sapling: Some(1),
+                blossom: Some(1),
+                heartwood: Some(1),
+                canopy: Some(1),
+                nu5: Some(1),
+                nu6: Some(1),
+                nu7: None,
+            },
+        ),
         "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
         "Mainnet" => zebra_chain::parameters::Network::Mainnet,
         _ => panic!("Incorrect newtork type found."),

@@ -27,6 +27,8 @@ pub use backends::{
 // TODO: Rework local_cache -> ChainIndex
 pub(crate) mod local_cache;
 
+pub use local_cache::mempool::{MempoolKey, MempoolValue};
+
 #[cfg(feature = "bench")]
 /// allow public access to additional APIs, for testing
 pub mod bench {

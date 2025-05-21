@@ -202,7 +202,6 @@ where
     type GetTaddressTxidsStream = std::pin::Pin<Box<RawTransactionStream>>;
 
     /// Returns the total balance for a list of taddrs
-    #[must_use]
     #[allow(clippy::type_complexity, clippy::type_repetition_in_bounds)]
     fn get_taddress_balance_stream<'life0, 'async_trait>(
         &'life0 self,
