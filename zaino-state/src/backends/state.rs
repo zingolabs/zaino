@@ -696,7 +696,7 @@ impl StateServiceSubscriber {
                                     transaction.clone(),
                                     Some(height),
                                     Some(confirmations as u32),
-                                    &network,
+                                    network,
                                     DateTime::<Utc>::from_timestamp(time, 0),
                                 ),
                             ))

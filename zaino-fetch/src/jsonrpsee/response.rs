@@ -709,21 +709,19 @@ impl<'de> serde::Deserialize<'de> for GetTreestateResponse {
             .ok_or_else(|| serde::de::Error::missing_field("time"))? as u32;
         let sapling_final_state = v["sapling"]["commitments"]["finalState"]
             .as_str()
-            .ok_or_else(|| serde::de::Error::missing_field("sapling final state"))?
-            .to_string();
+            .map(ToString::to_string);
         let orchard_final_state = v["orchard"]["commitments"]["finalState"]
             .as_str()
-            .ok_or_else(|| serde::de::Error::missing_field("orchard final state"))?
-            .to_string();
+            .map(ToString::to_string);
         Ok(GetTreestateResponse {
             height,
             hash,
             time,
             sapling: zebra_rpc::methods::trees::Treestate::new(
-                zebra_rpc::methods::trees::Commitments::new(Some(sapling_final_state)),
+                zebra_rpc::methods::trees::Commitments::new(sapling_final_state),
             ),
             orchard: zebra_rpc::methods::trees::Treestate::new(
-                zebra_rpc::methods::trees::Commitments::new(Some(orchard_final_state)),
+                zebra_rpc::methods::trees::Commitments::new(orchard_final_state),
             ),
         })
     }
@@ -738,20 +736,28 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::methods::trees::GetTreestate {
             zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
-        let sapling_bytes = hex::decode(value.sapling.inner().inner().as_ref().ok_or(
-            zebra_chain::serialization::SerializationError::Parse("missing sapling tree"),
-        )?)?;
+        let sapling_bytes = value
+            .sapling
+            .inner()
+            .inner()
+            .as_ref()
+            .map(hex::decode)
+            .transpose()?;
 
-        let orchard_bytes = hex::decode(value.orchard.inner().inner().as_ref().ok_or(
-            zebra_chain::serialization::SerializationError::Parse("missing orchard tree"),
-        )?)?;
+        let orchard_bytes = value
+            .orchard
+            .inner()
+            .inner()
+            .as_ref()
+            .map(hex::decode)
+            .transpose()?;
 
         Ok(zebra_rpc::methods::trees::GetTreestate::from_parts(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
             value.time,
-            Some(sapling_bytes),
-            Some(orchard_bytes),
+            sapling_bytes,
+            orchard_bytes,
         ))
     }
 }
