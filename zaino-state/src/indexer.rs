@@ -416,8 +416,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 /// Doc comments taken from Zaino-Proto for consistency.
 #[async_trait]
 pub trait BlockExplorerIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
-    /// Return best block (tip) hash
-    async fn get_best_block_hash(&self) -> Result<String, Self::Error>;
+    async fn block_explorer_demo(&self) -> Result<String, Self::Error>;
 }
 
 /// LightWallet RPC method signatures.
