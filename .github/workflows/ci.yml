@@ -5,6 +5,8 @@ on:
   push:
     tags:
       - '**'
+    branches:
+      - 'test-sh-cache'
   pull_request:
 
 env:
