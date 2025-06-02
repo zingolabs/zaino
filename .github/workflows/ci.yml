@@ -100,7 +100,7 @@ jobs:
           cargo check --tests --all-features
 
   test:
-    name: Tests
+    name: Run Tests
     needs: build-test-artifacts
     runs-on: arc-sh-runners
     container:
