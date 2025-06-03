@@ -17,7 +17,6 @@ env:
   INSECURE_CACHE: true
 
 jobs:
-
   build-test-artifacts:
     name: Build test artifacts
     container:
@@ -31,45 +30,24 @@ jobs:
 
       - run: rustup toolchain install stable --profile minimal
 
-      - name: Restore cargo dependencies
-        id: restore-cargo
-        uses: tespkg/actions-cache/restore@v1
+      - name: Sync cargo dependencies (restore + save)
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
+          action: sync
+          cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          cache_paths: |
             ~/.cargo
             target/debug/deps
 
       - name: Build and archive tests
         run: cargo nextest archive --verbose --workspace --all-features --archive-file nextest-archive.tar.zst
 
-      - name: Save cargo dependencies
-        if: steps.restore-cargo.outputs.cache-hit != 'true'
-        uses: tespkg/actions-cache/save@v1
-        with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          path: |
-            ~/.cargo
-            target/debug/deps
-
       - name: Save nextest archive to S3
-        uses: tespkg/actions-cache/save@v1
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: nextest-archive-${{ github.sha }}
-          path: nextest-archive.tar.zst
+          action: save
+          cache_key: nextest-archive-${{ github.sha }}
+          cache_paths: nextest-archive.tar.zst
 
   check:
     name: Cargo Check
@@ -82,15 +60,11 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: MinIO Cache (cargo + target)
-        uses: tespkg/actions-cache@v1
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
+          action: restore
+          cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          cache_paths: |
             ~/.cargo
             target
 
@@ -121,15 +95,11 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
 
       - name: Restore cargo dependencies
-        uses: tespkg/actions-cache/restore@v1
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
+          action: restore
+          cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          cache_paths: |
             ~/.cargo
             target/debug/deps
 
@@ -139,14 +109,11 @@ jobs:
           cp /usr/local/bin/* ./test_binaries/bins/
 
       - name: Restore nextest archive from S3
-        uses: tespkg/actions-cache/restore@v1
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: nextest-archive-${{ github.sha }}
-          path: nextest-archive.tar.zst
+          action: restore
+          cache_key: nextest-archive-${{ github.sha }}
+          cache_paths: nextest-archive.tar.zst
 
       - name: Run Tests (Nextest)
         run: |
@@ -172,15 +139,11 @@ jobs:
           components: clippy
 
       - name: MinIO Cache (cargo + target)
-        uses: tespkg/actions-cache@v1
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
+          action: restore
+          cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          cache_paths: |
             ~/.cargo
             target
 
@@ -200,15 +163,11 @@ jobs:
           components: clippy
 
       - name: MinIO Cache (cargo + target)
-        uses: tespkg/actions-cache@v1
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
+          action: restore
+          cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          cache_paths: |
             ~/.cargo
             target
 
@@ -234,15 +193,11 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: MinIO Cache (cargo + target)
-        uses: tespkg/actions-cache@v1
+        uses: ./.github/actions/cache.yml
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
+          action: restore
+          cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          cache_paths: |
             ~/.cargo
             target
 

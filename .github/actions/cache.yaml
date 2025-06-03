@@ -1,0 +1,53 @@
+name: Cache Action
+description: Generic cache action for saving and restoring caches
+
+inputs:
+  action:
+    description: 'The action to perform: restore, save, or sync (both)'
+    required: true
+  cache_key:
+    description: 'The cache key to use'
+    required: true
+  cache_paths:
+    description: 'Paths to be cached or restored (e.g., ~/.cargo, target)'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    # Step for 'sync' action: Uses tespkg/actions-cache which handles both restore and save
+    - name: Sync Cache (if action is sync)
+      if: ${{ inputs.action == 'sync' }}
+      uses: tespkg/actions-cache@v1
+      with:
+        endpoint: ${{ env.CACHE_ENDPOINT }}
+        port: ${{ env.CACHE_PORT }}
+        bucket: ${{ env.CACHE_BUCKET }}
+        insecure: ${{ env.INSECURE_CACHE }}
+        key: ${{ inputs.cache_key }}
+        path: ${{ inputs.cache_paths }}
+
+    # Step for 'restore' action
+    - name: Restore Cache (if action is restore)
+      if: ${{ inputs.action == 'restore' }}
+      uses: tespkg/actions-cache/restore@v1
+      with:
+        endpoint: ${{ env.CACHE_ENDPOINT }}
+        port: ${{ env.CACHE_PORT }}
+        bucket: ${{ env.CACHE_BUCKET }}
+        insecure: ${{ env.INSECURE_CACHE }}
+        key: ${{ inputs.cache_key }}
+        path: ${{ inputs.cache_paths }}
+
+    # Step for 'save' action
+    - name: Save Cache (if action is save)
+      if: ${{ inputs.action == 'save' }}
+      uses: tespkg/actions-cache/save@v1
+      with:
+        endpoint: ${{ env.CACHE_ENDPOINT }}
+        port: ${{ env.CACHE_PORT }}
+        bucket: ${{ env.CACHE_BUCKET }}
+        insecure: ${{ env.INSECURE_CACHE }}
+        key: ${{ inputs.cache_key }}
+        path: ${{ inputs.cache_paths }}
+
