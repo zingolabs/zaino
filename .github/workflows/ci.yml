@@ -31,7 +31,7 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
 
       - name: Sync cargo dependencies (restore + save)
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: sync
           cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
@@ -43,7 +43,7 @@ jobs:
         run: cargo nextest archive --verbose --workspace --all-features --archive-file nextest-archive.tar.zst
 
       - name: Save nextest archive to S3
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: save
           cache_key: nextest-archive-${{ github.sha }}
@@ -60,7 +60,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: MinIO Cache (cargo + target)
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: restore
           cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
@@ -95,7 +95,7 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
 
       - name: Restore cargo dependencies
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: restore
           cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
@@ -109,7 +109,7 @@ jobs:
           cp /usr/local/bin/* ./test_binaries/bins/
 
       - name: Restore nextest archive from S3
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: restore
           cache_key: nextest-archive-${{ github.sha }}
@@ -139,7 +139,7 @@ jobs:
           components: clippy
 
       - name: MinIO Cache (cargo + target)
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: restore
           cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
@@ -163,7 +163,7 @@ jobs:
           components: clippy
 
       - name: MinIO Cache (cargo + target)
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: restore
           cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
@@ -193,7 +193,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: MinIO Cache (cargo + target)
-        uses: ./.github/actions/cache.yml
+        uses: .github/actions/cache.yaml
         with:
           action: restore
           cache_key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
