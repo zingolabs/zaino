@@ -516,11 +516,9 @@ impl From<GetBlockCountResponse> for Height {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBestBlockHashResponse(Hash);
 
-impl TryFrom<GetBestBlockHashResponse> for Hash {
-    type Error = zebra_chain::serialization::SerializationError;
-
-    fn try_from(value: GetBestBlockHashResponse) -> Result<Self, Self::Error> {
-        Ok(value.0)
+impl From<GetBestBlockHashResponse> for Hash {
+    fn from(value: GetBestBlockHashResponse) -> Self {
+        value.into()
     }
 }
 

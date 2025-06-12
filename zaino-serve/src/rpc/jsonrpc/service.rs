@@ -1,11 +1,8 @@
 //! Zcash RPC implementations.
 
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
-use zebra_chain::{
-    block::Hash, block::Height, chain_tip::ChainTip, subtree::NoteCommitmentSubtreeIndex,
-};
+use zebra_chain::{block::Hash, block::Height, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{
-    self,
     trees::{GetSubtrees, GetTreestate},
     AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
     GetBlockChainInfo, GetInfo, GetRawTransaction, SentTransactionHash,
