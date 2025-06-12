@@ -1,8 +1,11 @@
 //! Zcash RPC implementations.
 
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::{
+    block::Hash, block::Height, chain_tip::ChainTip, subtree::NoteCommitmentSubtreeIndex,
+};
 use zebra_rpc::methods::{
+    self,
     trees::{GetSubtrees, GetTreestate},
     AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
     GetBlockChainInfo, GetInfo, GetRawTransaction, SentTransactionHash,
@@ -55,6 +58,17 @@ pub trait ZcashIndexerRpc {
     /// tags: blockchain
     #[method(name = "getblockcount")]
     async fn get_block_count(&self) -> Result<Height, ErrorObjectOwned>;
+
+    /// Returns the hash of the best block (tip) of the longest chain.
+    /// zcashd reference: [`z_gettreestate`](https://zcash.github.io/rpc/getbestblockhash.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Notes
+    ///
+    /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
+    #[method(name = "getbestblockhash")]
+    async fn get_best_blockhash(&self) -> Result<Hash, ErrorObjectOwned>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -269,6 +283,20 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_info()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_best_blockhash(&self) -> Result<Hash, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_best_blockhash()
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

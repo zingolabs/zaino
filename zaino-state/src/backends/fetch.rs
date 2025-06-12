@@ -327,6 +327,13 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.get_block_count().await?.into())
     }
 
+    // No request parameters.
+    /// Return the hex encoded hash of the best (tip) block, in the longest block chain.
+    async fn get_best_blockhash(&self) -> Result<String, Self::Error> {
+        // return should be valid hex encoded.
+        return Ok("test_return".to_string());
+    }
+
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)

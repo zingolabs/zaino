@@ -1054,6 +1054,13 @@ impl ZcashIndexer for StateServiceSubscriber {
         Ok(self.block_cache.get_chain_height().await?)
     }
 
+    // No request parameters.
+    /// Return the hex encoded hash of the best (tip) block, in the longest block chain.
+    async fn get_best_blockhash(&self) -> Result<String, Self::Error> {
+        // return should be valid hex encoded.
+        return Ok("test_return".to_string());
+    }
+
     async fn z_get_subtrees_by_index(
         &self,
         pool: String,

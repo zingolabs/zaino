@@ -2,7 +2,6 @@
 //! and generic wrapper structs for the various backend options available.
 
 use async_trait::async_trait;
-
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_proto::proto::{
@@ -14,7 +13,7 @@ use zaino_proto::proto::{
         TxFilter,
     },
 };
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex, transaction::Hash};
 use zebra_rpc::methods::{
     trees::{GetSubtrees, GetTreestate},
     AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
@@ -253,6 +252,16 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// method: post
     /// tags: blockchain
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error>;
+
+    /// Returns the hash of the best block (tip) of the longest chain.
+    /// zcashd reference: [`z_gettreestate`](https://zcash.github.io/rpc/getbestblockhash.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Notes
+    ///
+    /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
+    async fn get_best_blockhash(&self) -> Result<Hash, Self::Error>;
 
     /// Returns information about the given block's Sapling & Orchard tree state.
     ///
