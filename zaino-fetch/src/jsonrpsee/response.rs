@@ -3,7 +3,6 @@
 use std::num::ParseIntError;
 
 use hex::FromHex;
-use http::response;
 use serde::{de::Error, Deserialize, Deserializer, Serialize};
 
 use zebra_chain::{

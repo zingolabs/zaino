@@ -13,7 +13,7 @@ use zaino_proto::proto::{
         TxFilter,
     },
 };
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex, transaction::Hash};
+use zebra_chain::{block::Hash, block::Height, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{
     trees::{GetSubtrees, GetTreestate},
     AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
