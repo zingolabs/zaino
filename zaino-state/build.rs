@@ -1,6 +1,13 @@
 use std::env;
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::process::Command;
+use std::str::FromStr as _;
+
+use cargo_lock::package::GitReference;
+use cargo_lock::package::SourceKind;
+use cargo_lock::Lockfile;
 
 fn main() -> io::Result<()> {
     // Fetch the commit hash
@@ -36,6 +43,30 @@ fn main() -> io::Result<()> {
     // Set the version from Cargo.toml
     let version = env::var("CARGO_PKG_VERSION").expect("Failed to get version from Cargo.toml");
     println!("cargo:rustc-env=VERSION={}", version);
+    let lockfile = Lockfile::load("../Cargo.lock").expect("build script cannot load lockfile");
+    let maybe_zebra_rev = lockfile.packages.iter().find_map(|package| {
+        if package.name == cargo_lock::Name::from_str("zebra-chain").unwrap() {
+            package
+                .source
+                .as_ref()
+                .and_then(|source_id| match source_id.kind() {
+                    SourceKind::Git(GitReference::Rev(rev)) => Some(rev),
+                    _ => None,
+                })
+        } else {
+            None
+        }
+    });
+    let out_dir = env::var_os("OUT_DIR").unwrap();
+    let dest_path = Path::new(&out_dir).join("zebraversion.rs");
+    fs::write(
+        &dest_path,
+        format!(
+            "const ZEBRA_VERSION: Option<&'static str> = {:?};",
+            maybe_zebra_rev
+        ),
+    )
+    .unwrap();
 
     Ok(())
 }

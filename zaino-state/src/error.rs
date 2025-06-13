@@ -46,6 +46,20 @@ pub enum StateServiceError {
     /// A generic boxed error.
     #[error("Generic error: {0}")]
     Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
+
+    /// The zebrad version and zebra library version do not align
+    #[error(
+        "zebrad version mismatch. this build of zaino requires a \
+        version of {expected_zebrad_version}, but the connected zebrad \
+        is version {connected_zebrad_version}"
+    )]
+    ZebradVersionMismatch {
+        /// The version string or commit hash we specify in Cargo.lock
+        expected_zebrad_version: String,
+        /// The version string of the zebrad, plus its git describe
+        /// information if applicable
+        connected_zebrad_version: String,
+    },
 }
 
 impl From<StateServiceError> for tonic::Status {
@@ -79,6 +93,9 @@ impl From<StateServiceError> for tonic::Status {
             }
             StateServiceError::Generic(err) => {
                 tonic::Status::internal(format!("Generic error: {}", err))
+            }
+            ref err @ StateServiceError::ZebradVersionMismatch { .. } => {
+                tonic::Status::internal(err.to_string())
             }
         }
     }

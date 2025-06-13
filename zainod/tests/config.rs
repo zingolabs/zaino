@@ -377,10 +377,10 @@ fn test_figment_env_override_toml_and_defaults() {
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
 
         assert_eq!(config.network, "Mainnet");
-        assert_eq!(config.enable_json_server, true);
+        assert!(config.enable_json_server);
         assert_eq!(config.map_capacity, Some(12345));
         assert_eq!(config.cookie_dir, Some(PathBuf::from("/env/cookie/path")));
-        assert_eq!(config.grpc_tls, false);
+        assert!(!config.grpc_tls);
         Ok(())
     });
 }
@@ -398,7 +398,7 @@ fn test_figment_toml_overrides_defaults() {
         let temp_toml_path = jail.directory().join("test_config.toml");
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
         assert_eq!(config.network, "Regtest");
-        assert_eq!(config.enable_json_server, true);
+        assert!(config.enable_json_server);
         Ok(())
     });
 }

@@ -21,7 +21,7 @@ jobs:
   build-test-artifacts:
     name: Build test artifacts
     container:
-      image: zingodevops/zaino-ci:root
+      image: zingodevops/zaino-ci:latest
     runs-on: arc-sh-runners
     if: github.event.pull_request.draft == false
 
@@ -75,7 +75,7 @@ jobs:
     name: Cargo Check
     runs-on: arc-sh-runners
     container:
-      image: zingodevops/zaino-ci:root
+      image: zingodevops/zaino-ci:latest
     steps:
       - uses: actions/checkout@v4
 
@@ -104,7 +104,7 @@ jobs:
     needs: build-test-artifacts
     runs-on: arc-sh-runners
     container:
-      image: zingodevops/zaino-ci:root
+      image: zingodevops/zaino-ci:latest
     strategy:
       fail-fast: false
       matrix:
@@ -163,7 +163,7 @@ jobs:
     name: Rustfmt
     runs-on: arc-sh-runners
     container:
-      image: zingodevops/zaino-ci:root
+      image: zingodevops/zaino-ci:latest
     steps:
       - uses: actions/checkout@v4
 
@@ -191,7 +191,7 @@ jobs:
     name: Clippy
     runs-on: arc-sh-runners
     container:
-      image: zingodevops/zaino-ci:root
+      image: zingodevops/zaino-ci:latest
     steps:
       - uses: actions/checkout@v4
 
@@ -227,7 +227,7 @@ jobs:
     name: Whitespace check
     runs-on: arc-sh-runners
     container:
-      image: zingodevops/zaino-ci:root
+      image: zingodevops/zaino-ci:latest
     steps:
       - uses: actions/checkout@v4
 

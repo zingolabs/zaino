@@ -61,3 +61,5 @@ zingolib = { workspace = true }
 
 [build-dependencies]
 whoami = { workspace = true }
+cargo-lock = "10.1.0"
+

@@ -9,6 +9,8 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+include!(concat!(env!("OUT_DIR"), "/zebraversion.rs"));
+
 // Zaino's Indexer library frontend.
 pub(crate) mod indexer;
 

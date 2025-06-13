@@ -12,22 +12,6 @@ default-filter = """
     not test(testnet)
     & not test(regtest)
     & not test(client_rpcs)
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::address_balance))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::address_tx_ids))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::address_utxos))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::mempool_stream))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::mempool_tx))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::raw_mempool))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::raw_transaction))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::taddress_balance))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::taddress_txids))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::taddress_utxos))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::taddress_utxos_stream))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::transaction_mempool))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::transaction_mined))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::z::subtrees_by_index))
-    & not (binary_id(integration-tests::fetch_service) and test(zebrad::get::z::treestate))
-    & not (binary_id(integration-tests::state_service) and test(zebrad::get::address_utxos))
 """
 
 [profile.ci.junit]  # this can be some other profile, too
