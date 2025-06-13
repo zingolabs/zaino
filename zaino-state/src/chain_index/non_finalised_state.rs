@@ -1,6 +1,7 @@
 use std::{collections::HashMap, mem, sync::Arc};
 
 use crate::chain_index::types::{Hash, Height};
+use arc_swap::ArcSwap;
 use tokio::sync::{mpsc, RwLock};
 use tower::Service;
 use zaino_fetch::jsonrpsee::{connector::JsonRpSeeConnector, response::GetBlockResponse};
@@ -19,7 +20,7 @@ struct NonFinalzedState {
     /// This lock should not be exposed to consumers. Rather,
     /// clone the Arc and offer that. This means we can overwrite the arc
     /// without interfering with readers, who will hold a stale copy
-    current: RwLock<Arc<NonfinalizedBlockCacheSnapshot>>,
+    current: ArcSwap<NonfinalizedBlockCacheSnapshot>,
 }
 
 pub(crate) struct NonfinalizedBlockCacheSnapshot {
@@ -131,14 +132,17 @@ impl NonFinalzedState {
             }
         });
         // Need to get best hash at some point in this process
-        *self.current.write().await = Arc::new(NonfinalizedBlockCacheSnapshot { blocks, best_tip });
+        self.current.store(Arc::new(NonfinalizedBlockCacheSnapshot {
+            blocks,
+            best_tip,
+        }));
 
         Ok(())
     }
 
     /// Get a copy of the block cache as it existed at the last [update] call
     pub async fn get_snapshot(&self) -> Arc<NonfinalizedBlockCacheSnapshot> {
-        self.current.read().await.clone()
+        self.current.load_full()
     }
 }
 

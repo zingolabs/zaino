@@ -5822,6 +5822,7 @@ dependencies = [
 name = "zaino-state"
 version = "0.1.2"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "chrono",
  "dashmap",
