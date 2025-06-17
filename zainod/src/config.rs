@@ -3,58 +3,74 @@
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
-    str::FromStr,
 };
 
-use toml::Value;
+use figment::{
+    providers::{Format, Serialized, Toml},
+    Figment,
+};
+
+// Added for Serde deserialization helpers
+use serde::{
+    de::{self, Deserializer},
+    Deserialize, Serialize,
+};
+#[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
 use tracing::warn;
-use zaino_state::{BackendConfig, BackendType, FetchServiceConfig, StateServiceConfig};
+use tracing::{error, info};
+use zaino_state::{BackendConfig, FetchServiceConfig, StateServiceConfig};
 
 use crate::error::IndexerError;
 
-/// Arguments:
-/// config: the config to parse
-/// field: the name of the variable to define, which matches the name of
-///     the config field
-/// kind: the toml::Value variant to parse the config field as
-/// default: the default config to fall back on
-/// handle: a function which returns an Option. Usually, this is
-///     simply [Some], to wrap the parsed value in Some when found
-macro_rules! parse_field_or_warn_and_default {
-    ($config:ident, $field:ident, $kind:ident, $default:ident, $handle:expr) => {
-        let $field = $config
-            .get(stringify!($field))
-            .map(|value| match value {
-                Value::String(string) if string == "None" => None,
-                Value::$kind(val_inner) => $handle(val_inner.clone()),
-                _ => {
-                    warn!("Invalid `{}`, using default.", stringify!($field));
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                warn!("Missing `{}`, using default.", stringify!($field));
-                None
-            })
-            .unwrap_or_else(|| $default.$field);
-    };
+/// Custom deserialization function for `SocketAddr` from a String.
+/// Used by Serde's `deserialize_with`.
+fn deserialize_socketaddr_from_string<'de, D>(deserializer: D) -> Result<SocketAddr, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    fetch_socket_addr_from_hostname(&s)
+        .map_err(|e| de::Error::custom(format!("Invalid socket address string '{}': {}", s, e)))
+}
+
+/// Custom deserialization function for `BackendType` from a String.
+/// Used by Serde's `deserialize_with`.
+fn deserialize_backendtype_from_string<'de, D>(
+    deserializer: D,
+) -> Result<zaino_state::BackendType, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    match s.to_lowercase().as_str() {
+        "state" => Ok(zaino_state::BackendType::State),
+        "fetch" => Ok(zaino_state::BackendType::Fetch),
+        _ => Err(de::Error::custom(format!(
+            "Invalid backend type '{}', valid options are 'state' or 'fetch'",
+            s
+        ))),
+    }
 }
 
 /// Config information required for Zaino.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IndexerConfig {
     /// Type of backend to be used.
-    pub backend: BackendType,
+    #[serde(deserialize_with = "deserialize_backendtype_from_string")]
+    #[serde(serialize_with = "serialize_backendtype_to_string")]
+    pub backend: zaino_state::BackendType,
     /// Enable JsonRPC server.
     pub enable_json_server: bool,
     /// Server bind addr.
+    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
     pub json_rpc_listen_address: SocketAddr,
     /// Enable cookie-based authentication.
     pub enable_cookie_auth: bool,
     /// Directory to store authentication cookie file.
     pub cookie_dir: Option<PathBuf>,
     /// gRPC server bind addr.
+    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
     pub grpc_listen_address: SocketAddr,
     /// Enables TLS.
     pub grpc_tls: bool,
@@ -63,6 +79,7 @@ pub struct IndexerConfig {
     /// Path to the TLS private key file.
     pub tls_key_path: Option<String>,
     /// Full node / validator listen port.
+    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
     pub validator_listen_address: SocketAddr,
     /// Enable validator rpc cookie authentification.
     pub validator_cookie_auth: bool,
@@ -224,6 +241,8 @@ impl IndexerConfig {
                     canopy: Some(1),
                     nu5: Some(1),
                     nu6: Some(1),
+                    // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
+                    nu6_1: None,
                     nu7: None,
                 },
             )),
@@ -234,13 +253,25 @@ impl IndexerConfig {
             )),
         }
     }
+
+    /// Finalizes the configuration after initial parsing, applying conditional defaults.
+    fn finalize_config_logic(mut self) -> Self {
+        if self.enable_cookie_auth {
+            if self.cookie_dir.is_none() {
+                self.cookie_dir = Some(default_ephemeral_cookie_path());
+            }
+        } else {
+            // If auth is not enabled, cookie_dir should be None, regardless of what was in the config.
+            self.cookie_dir = None;
+        }
+        self
+    }
 }
 
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
-            // TODO: change to BackendType::State.
-            backend: BackendType::Fetch,
+            backend: zaino_state::BackendType::Fetch,
             enable_json_server: false,
             json_rpc_listen_address: "127.0.0.1:8237".parse().unwrap(),
             enable_cookie_auth: false,
@@ -277,7 +308,7 @@ pub fn default_ephemeral_cookie_path() -> PathBuf {
 }
 
 /// Loads the default file path for zaino's local db.
-fn default_zaino_db_path() -> PathBuf {
+pub fn default_zaino_db_path() -> PathBuf {
     match std::env::var("HOME") {
         Ok(home) => PathBuf::from(home).join(".cache").join("zaino"),
         Err(_) => PathBuf::from("/tmp").join("zaino").join(".cache"),
@@ -285,7 +316,7 @@ fn default_zaino_db_path() -> PathBuf {
 }
 
 /// Loads the default file path for zebras's local db.
-fn default_zebra_db_path() -> Result<PathBuf, IndexerError> {
+pub fn default_zebra_db_path() -> Result<PathBuf, IndexerError> {
     match std::env::var("HOME") {
         Ok(home) => Ok(PathBuf::from(home).join(".cache").join("zebra")),
         Err(e) => Err(IndexerError::ConfigError(format!(
@@ -338,222 +369,38 @@ pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
     }
 }
 
-/// Attempts to load config data from a toml file at the specified path else returns a default config.
+/// Attempts to load config data from a TOML file at the specified path.
 ///
-/// Loads each variable individually to log all default values used and correctly parse hostnames.
-pub fn load_config(file_path: &std::path::PathBuf) -> Result<IndexerConfig, IndexerError> {
-    let default_config = IndexerConfig::default();
+/// If the file cannot be read, or if its contents cannot be parsed into `IndexerConfig`,
+/// a warning is logged, and a default configuration is returned.
+/// The loaded or default configuration undergoes further checks and finalization.
+pub fn load_config(file_path: &PathBuf) -> Result<IndexerConfig, IndexerError> {
+    // Configuration sources are layered: Env > TOML > Defaults.
+    let figment = Figment::new()
+        // 1. Base defaults from `IndexerConfig::default()`.
+        .merge(Serialized::defaults(IndexerConfig::default()))
+        // 2. Override with values from the TOML configuration file.
+        .merge(Toml::file(file_path))
+        // 3. Override with values from environment variables prefixed with "ZAINO_".
+        .merge(figment::providers::Env::prefixed("ZAINO_"));
 
-    if let Ok(contents) = std::fs::read_to_string(file_path) {
-        let parsed_config: toml::Value = toml::from_str(&contents)
-            .map_err(|e| IndexerError::ConfigError(format!("TOML parsing error: {}", e)))?;
-
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            backend,
-            String,
-            default_config,
-            |v: String| match v.to_lowercase().as_str() {
-                "state" => Some(BackendType::State),
-                "fetch" => Some(BackendType::Fetch),
-                _ => {
-                    warn!("Invalid backend type '{}', using default.", v);
-                    None
-                }
-            }
-        );
-
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            enable_json_server,
-            Boolean,
-            default_config,
-            Some
-        );
-
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            json_rpc_listen_address,
-            String,
-            default_config,
-            |val: String| match fetch_socket_addr_from_hostname(val.as_str()) {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    warn!("Invalid `json_rpc_listen_address`, using default.");
-                    None
-                }
-            }
-        );
-
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            enable_cookie_auth,
-            Boolean,
-            default_config,
-            Some
-        );
-
-        parse_field_or_warn_and_default!(parsed_config, cookie_dir, String, default_config, |v| {
-            Some(Some(PathBuf::from(v)))
-        });
-
-        let cookie_dir = if enable_cookie_auth {
-            cookie_dir.or_else(|| Some(default_ephemeral_cookie_path()))
-        } else {
-            None
-        };
-
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            grpc_listen_address,
-            String,
-            default_config,
-            |val: String| match fetch_socket_addr_from_hostname(val.as_str()) {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    warn!("Invalid `grpc_listen_address`, using default.");
-                    None
-                }
-            }
-        );
-
-        parse_field_or_warn_and_default!(parsed_config, grpc_tls, Boolean, default_config, Some);
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            tls_cert_path,
-            String,
-            default_config,
-            |v| Some(Some(v))
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            tls_key_path,
-            String,
-            default_config,
-            |v| Some(Some(v))
-        );
-
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            validator_listen_address,
-            String,
-            default_config,
-            |val: String| match fetch_socket_addr_from_hostname(val.as_str()) {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    warn!("Invalid `validator_listen_address`, using default.");
-                    None
-                }
-            }
-        );
-
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            validator_cookie_auth,
-            Boolean,
-            default_config,
-            Some
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            validator_cookie_path,
-            String,
-            default_config,
-            |v| Some(Some(v))
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            validator_user,
-            String,
-            default_config,
-            |v| Some(Some(v))
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            validator_password,
-            String,
-            default_config,
-            |v| Some(Some(v))
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            map_capacity,
-            Integer,
-            default_config,
-            |v| Some(Some(v as usize))
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            map_shard_amount,
-            Integer,
-            default_config,
-            |v| Some(Some(v as usize))
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            zaino_db_path,
-            String,
-            default_config,
-            |v: String| {
-                match PathBuf::from_str(v.as_str()) {
-                    Ok(path) => Some(path),
-                }
-            }
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            zebra_db_path,
-            String,
-            default_config,
-            |v: String| {
-                match PathBuf::from_str(v.as_str()) {
-                    Ok(path) => Some(path),
-                }
-            }
-        );
-        parse_field_or_warn_and_default!(
-            parsed_config,
-            db_size,
-            Integer,
-            default_config,
-            |v| Some(Some(v as usize))
-        );
-        parse_field_or_warn_and_default!(parsed_config, network, String, default_config, Some);
-        parse_field_or_warn_and_default!(parsed_config, no_sync, Boolean, default_config, Some);
-        parse_field_or_warn_and_default!(parsed_config, no_db, Boolean, default_config, Some);
-        parse_field_or_warn_and_default!(parsed_config, slow_sync, Boolean, default_config, Some);
-
-        let config = IndexerConfig {
-            backend,
-            enable_json_server,
-            json_rpc_listen_address,
-            enable_cookie_auth,
-            cookie_dir,
-            grpc_listen_address,
-            grpc_tls,
-            tls_cert_path,
-            tls_key_path,
-            validator_listen_address,
-            validator_cookie_auth,
-            validator_cookie_path,
-            validator_user,
-            validator_password,
-            map_capacity,
-            map_shard_amount,
-            zaino_db_path,
-            zebra_db_path,
-            db_size,
-            network,
-            no_sync,
-            no_db,
-            slow_sync,
-        };
-
-        config.check_config()?;
-        Ok(config)
-    } else {
-        warn!("Could not find config file at given path, using default config.");
-        Ok(default_config)
+    match figment.extract::<IndexerConfig>() {
+        Ok(parsed_config) => {
+            let finalized_config = parsed_config.finalize_config_logic();
+            finalized_config.check_config()?;
+            info!(
+                "Successfully loaded and validated config. Base TOML file checked: '{}'",
+                file_path.display()
+            );
+            Ok(finalized_config)
+        }
+        Err(figment_error) => {
+            error!("Failed to extract configuration: {}", figment_error);
+            Err(IndexerError::ConfigError(format!(
+                "Configuration loading failed for TOML file '{}' (or environment variables). Details: {}",
+                file_path.display(), figment_error
+            )))
+        }
     }
 }
 
@@ -564,7 +411,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
         let network = cfg.get_network()?;
 
         match cfg.backend {
-            BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
+            zaino_state::BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
                 validator_config: zebra_state::Config {
                     cache_dir: cfg.zebra_db_path.clone(),
                     ephemeral: false,
@@ -590,7 +437,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                 no_db: cfg.no_db,
             })),
 
-            BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
+            zaino_state::BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
                 validator_rpc_address: cfg.validator_listen_address,
                 validator_cookie_auth: cfg.validator_cookie_auth,
                 validator_cookie_path: cfg.validator_cookie_path,
@@ -610,4 +457,18 @@ impl TryFrom<IndexerConfig> for BackendConfig {
             })),
         }
     }
+}
+
+/// Custom serializer for BackendType
+fn serialize_backendtype_to_string<S>(
+    backend_type: &zaino_state::BackendType,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(match backend_type {
+        zaino_state::BackendType::State => "state",
+        zaino_state::BackendType::Fetch => "fetch",
+    })
 }

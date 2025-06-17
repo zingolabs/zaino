@@ -13,86 +13,82 @@ backend = "fetch"
 enable_json_server =  false
 
 # JsonRPC server listen addr.
-json_rpc_listen_address = "localhost:8237"
+json_rpc_listen_address = "127.0.0.1:8237"
 
 # Enables cookie-based authentication for JsonRPC server.
 enable_cookie_auth = false
 
 # Directory to store authentication cookie file.
-cookie_dir = "None"
+# If 'enable_cookie_auth' is true and this is omitted, a default ephemeral path (e.g., /tmp/zaino/.cookie or XDG_RUNTIME_DIR) will be used.
+# If 'enable_cookie_auth' is false, this setting is ignored and no cookie_dir is used.
+# cookie_dir = "/path/to/cookie_dir"
 
 # gRPC server config:
 
 # Zainod's gRPC server listen address.
 #
 # Must use TLS when connecting to non localhost addresses.
-grpc_listen_address = "localhost:8137"
+grpc_listen_address = "127.0.0.1:8137"
 
 # Enables TLS for the gRPC server.
 grpc_tls = false
 
 # Path to the TLS certificate file in PEM format.
-# Required if `tls` is true.
-tls_cert_path = "None"
+# Required if `grpc_tls` is true. If omitted and grpc_tls is true, startup will fail.
+# tls_cert_path = "/path/to/cert.pem"
 
 # Path to the TLS private key file in PEM format.
-# Required if `tls` is true.
-tls_key_path = "None"
+# Required if `grpc_tls` is true. If omitted and grpc_tls is true, startup will fail.
+# tls_key_path = "/path/to/key.pem"
 
 # JsonRPC client config:
 
 # Full node / validator listen address.
 #
-# Must be a "pravate" address as defined in [IETF RFC 1918] for ipv4 addreses and [IETF RFC 4193] for ipv6 addreses.
+# Must be a "private" address as defined in [IETF RFC 1918] for ipv4 addreses and [IETF RFC 4193] for ipv6 addreses.
 #
 # Must use validator rpc cookie authentication when connecting to non localhost addresses.
-validator_listen_address = "localhost:18232"
+validator_listen_address = "127.0.0.1:18232"
 
 # Enable validator rpc cookie authentication.
 validator_cookie_auth = false
 
 # Path to the validator cookie file.
-validator_cookie_path = "None"
+# Required if `validator_cookie_auth` is true. If omitted and validator_cookie_auth is true, startup will fail.
+# validator_cookie_path = "/path/to/validator.cookie"
 
 # Optional full node / validator Username.
-validator_user = "xxxxxx"
+# validator_user = "xxxxxx"
 
 # Optional full node / validator Password.
-validator_password = "xxxxxx"
+# validator_password = "xxxxxx"
 
 # Mempool, Non-Finalised State and Finalised State config:
 
 # Capacity of the Dashmaps used for the Mempool.
-# Also use by the BlockCache::NonFinalisedState when using the FetchService.
-#
-# None by default.
-map_capacity = "None"
+# Also used by the BlockCache::NonFinalisedState when using the FetchService.
+# If omitted, Zaino uses an internal default or relies on library defaults.
+# map_capacity = 10000
 
 # Number of shard used in the DashMap used for the Mempool.
-# Also use by the BlockCache::NonFinalisedState when using the FetchService.
+# Also used by the BlockCache::NonFinalisedState when using the FetchService.
 #
 # shard_amount should greater than 0 and be a power of two.
-# If a shard_amount which is not a power of two is provided, the function will panic.
-#
-# None by default.
-map_shard_amount = "None"
+# If omitted, Zaino uses an internal default or relies on library defaults.
+# map_shard_amount = 16
 
 # Zaino Block Cache database file path.
-#
-# None by default, this defaults to `$HOME/.cache/zaino/`
-zaino_db_path = "None"
+# If omitted, this defaults to $HOME/.cache/zaino/ (platform dependent).
+# zaino_db_path = "/path/to/zaino_db"
 
 # Zebra Block Cache database file path.
-#
-# None by default, this defaults to `$HOME/.cache/zebra/`
-zebra_db_path = "None"
+# If omitted, this defaults to $HOME/.cache/zebra/ (platform dependent).
+# zebra_db_path = "/path/to/zebra_db"
 
 # Block Cache database maximum size in gb.
-#
 # Only used by the FetchService.
-#
-# None by default
-db_size = "None"
+# If omitted, no specific limit may be enforced by Zaino for this setting initially.
+# db_size = 100
 
 # Network:
 
@@ -115,4 +111,3 @@ no_db = false
 #
 # NOTE: Unimplemented.
 slow_sync = false
-

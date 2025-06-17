@@ -1,0 +1,131 @@
+# syntax=docker/dockerfile:1.4
+
+########################
+# === GLOBAL ARGS ===
+########################
+ARG RUST_VERSION
+ARG ZCASH_VERSION
+ARG ZEBRA_VERSION
+ARG UID=1000
+ARG GID=${UID}
+ARG USER=root
+ARG HOME="/root"
+ARG CARGO_HOME="${HOME}/.cargo"
+ARG CARGO_TARGET_DIR="${HOME}/target"
+
+########################
+# === DOWNLOADERS ===
+########################
+
+FROM zfnd/zebra:${ZEBRA_VERSION} AS zebra-downloader
+FROM electriccoinco/zcashd:v${ZCASH_VERSION} AS zcashd-downloader
+
+########################
+# === BUILDERS ===
+########################
+
+FROM rust:${RUST_VERSION}-bookworm AS zebra-builder
+
+ARG ZEBRA_VERSION
+RUN apt-get update
+RUN apt-get install -y git clang cmake pkg-config libssl-dev protobuf-compiler
+WORKDIR /zebra
+RUN git clone https://github.com/ZcashFoundation/zebra .
+RUN git checkout "${ZEBRA_VERSION}" 
+# Use persistent cache for cargo
+# RUN --mount=type=cache,target=/usr/local/cargo/registry \
+#     --mount=type=cache,target=/usr/local/cargo/git \
+#     --mount=type=cache,target=/zebra/target \
+RUN cargo build --release --bin zebrad
+RUN cp target/release/zebrad /usr/local/bin/zebrad
+
+FROM debian:bookworm AS zcashd-builder
+
+ARG ZCASH_VERSION
+RUN apt-get update && apt-get install -y \
+    git build-essential pkg-config libssl-dev automake autoconf \
+    libtool bsdmainutils curl
+
+WORKDIR /zcash
+RUN git clone --depth 1 --branch "v${ZCASH_VERSION}" https://github.com/zcash/zcash .
+RUN ./zcutil/fetch-params.sh && ./zcutil/build.sh -j$(nproc)
+RUN cp src/zcashd src/zcash-cli /usr/local/bin/
+
+########################
+# === BASE RUNTIME IMAGE ===
+########################
+
+FROM rust:${RUST_VERSION}-bookworm AS base
+
+ARG UID
+ARG GID
+ARG USER
+ARG HOME
+ARG CARGO_HOME
+ARG CARGO_TARGET_DIR
+
+ENV CARGO_HOME=${CARGO_HOME}
+ENV CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
+ENV PATH="/usr/local/bin:${PATH}"
+ENV CARGO_TERM_COLOR=always
+
+LABEL maintainer="nachog00"
+LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl-dev \
+    curl \
+    libclang-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install rustup (Rust toolchain manager) and set up the Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN rustup update stable
+
+WORKDIR /app
+USER ${USER}
+
+########################
+# === FINAL TARGETS ===
+########################
+
+FROM base AS final-prebuilt
+ARG ZCASH_VERSION
+ARG ZEBRA_VERSION
+LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
+LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+COPY --from=zcashd-downloader /usr/bin/zcashd /usr/local/bin/
+COPY --from=zcashd-downloader /usr/bin/zcash-cli /usr/local/bin/
+COPY --from=zebra-downloader /usr/local/bin/zebrad /usr/local/bin/
+RUN cargo install cargo-nextest --locked --verbose
+
+FROM base AS final-zcashd-source
+ARG ZCASH_VERSION
+ARG ZEBRA_VERSION
+LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
+LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+COPY --from=zcashd-builder /usr/local/bin/zcashd /usr/local/bin/
+COPY --from=zcashd-builder /usr/local/bin/zcash-cli /usr/local/bin/
+COPY --from=zebra-downloader /usr/local/bin/zebrad /usr/local/bin/
+RUN cargo install cargo-nextest --locked --verbose
+
+FROM base AS final-zebrad-source
+ARG ZCASH_VERSION
+ARG ZEBRA_VERSION
+LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
+LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+COPY --from=zcashd-downloader /usr/bin/zcashd /usr/local/bin/
+COPY --from=zcashd-downloader /usr/bin/zcash-cli /usr/local/bin/
+COPY --from=zebra-builder /usr/local/bin/zebrad /usr/local/bin/
+RUN cargo install cargo-nextest --locked --verbose
+
+FROM base AS final-all-source
+ARG ZCASH_VERSION
+ARG ZEBRA_VERSION
+LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
+LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+COPY --from=zcashd-builder /usr/local/bin/zcashd /usr/local/bin/
+COPY --from=zcashd-builder /usr/local/bin/zcash-cli /usr/local/bin/
+COPY --from=zebra-builder /usr/local/bin/zebrad /usr/local/bin/
+RUN cargo install cargo-nextest --locked --verbose

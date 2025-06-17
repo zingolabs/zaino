@@ -1,85 +1,132 @@
 name: CI checks
 
-on: 
+on:
+  workflow_dispatch:
   push:
     tags:
       - '**'
   pull_request:
 
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+  AWS_REGION: us-east-1
+  CACHE_ENDPOINT: gh-cache-hl.minio-tenants.svc.cluster.local
+  CACHE_PORT: 9000
+  CACHE_BUCKET: gha-cache-bucket
+  INSECURE_CACHE: true
+
 jobs:
+  compute-tag:
+    name: Compute Docker Image Tag
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.taggen.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Compute version-based image tag
+        id: taggen
+        run: |
+          source .env.testing-artifacts
+          export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION
+          TAG=$(./utils/get-ci-image-tag.sh)
+          echo "TAG= $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
   build-test-artifacts:
     name: Build test artifacts
+    needs: compute-tag
     container:
-      image: zingodevops/zaino-ci
-    runs-on: ziserv-2
-
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
     if: github.event.pull_request.draft == false
-    # env:
-    #   RUSTFLAGS: -D warnings
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      # - name: Install nextest
-      #   uses: taiki-e/install-action@v2
-      #   with:
-      #     tool: nextest@0.9.78
-
       - run: rustup toolchain install stable --profile minimal
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
+      - name: Restore cargo dependencies
+        id: restore-cargo
+        uses: tespkg/actions-cache/restore@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target/debug/deps
 
       - name: Build and archive tests
         run: cargo nextest archive --verbose --workspace --all-features --archive-file nextest-archive.tar.zst
 
-      - name: Upload archive
-        uses: actions/upload-artifact@v4
+      - name: Save cargo dependencies
+        if: steps.restore-cargo.outputs.cache-hit != 'true'
+        uses: tespkg/actions-cache/save@v1
         with:
-          name: nextest-archive
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/debug/deps
+
+      - name: Save nextest archive to S3
+        uses: tespkg/actions-cache/save@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: nextest-archive-${{ github.sha }}
           path: nextest-archive.tar.zst
 
   check:
     name: Cargo Check
-    runs-on: ziserv-2
+    runs-on: arc-sh-runners
+    needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:latest  # Your pre-built Docker image
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
 
       - name: Cargo Check
         run: |
           cargo check --all-features
           cargo check --tests --all-features
 
-      - name: Output clippy to Github
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-targets
-
   test:
     name: Tests
-    needs: build-test-artifacts
-    runs-on: ziserv-2
+    needs: [compute-tag, build-test-artifacts]
+    runs-on: arc-sh-runners
     container:
-      image: zingodevops/zaino-ci:latest  # Your pre-built Docker image
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     strategy:
       fail-fast: false
       matrix:
-        partition: 
+        partition:
           - "integration-tests::fetch_service"
           - "integration-tests::state_service"
           - "integration-tests::local_cache"
@@ -87,28 +134,39 @@ jobs:
           - "zaino-testutils"
 
     steps:
-
       - uses: actions/checkout@v4
 
       - run: rustup toolchain install stable --profile minimal
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+      - name: Restore cargo dependencies
+        uses: tespkg/actions-cache/restore@v1
         with:
-          cache-provider: buildjet
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target/debug/deps
 
       - name: Copy bins into test_binaries
         run: |
           mkdir -p ./test_binaries/bins
           cp /usr/local/bin/* ./test_binaries/bins/
 
-      - name: Download archive
-        uses: actions/download-artifact@v4
+      - name: Restore nextest archive from S3
+        uses: tespkg/actions-cache/restore@v1
         with:
-          name: nextest-archive
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: nextest-archive-${{ github.sha }}
+          path: nextest-archive.tar.zst
 
       - name: Run Tests (Nextest)
-        # continue-on-error: true
         run: |
           cargo nextest run --verbose --profile ci --retries 2 --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}
@@ -121,7 +179,10 @@ jobs:
 
   fmt:
     name: Rustfmt
-    runs-on: ziserv-2
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -129,17 +190,28 @@ jobs:
         with:
           components: clippy
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
   clippy:
     name: Clippy
-    runs-on: ziserv-2
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -147,10 +219,18 @@ jobs:
         with:
           components: clippy
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
 
       - name: Run clippy with console output
         run: cargo clippy --all-targets
@@ -158,7 +238,6 @@ jobs:
 
       - name: Output clippy to Github
         uses: actions-rs/clippy-check@v1
-        # Remove when clippy is green in local dev environments
         continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -166,115 +245,28 @@ jobs:
 
   whitespace:
     name: Whitespace check
-    runs-on: ziserv-2
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with: 
-          cache-provider: buildjet
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
 
       - name: Check trailing whitespace
         run: ./utils/trailing-whitespace.sh reject
         working-directory: .
-
-  docker:
-    name: Build Docker images
-    runs-on: ziserv-2
-    env:
-      PUSH_IMAGES: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata for Docker (default image)
-        id: meta-default
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}
-          tags: |
-            type=semver,pattern={{version}}, prefix=v
-
-      - name: Build and Push Default Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
-          tags: ${{ steps.meta-default.outputs.tags }}
-          labels: ${{ steps.meta-default.outputs.labels }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache,mode=max
-            type=gha,mode=max
-
-
-      - name: Extract metadata for Docker (no-tls image)
-        id: meta-no-tls
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}
-          flavor: |
-            suffix=-no-tls
-          tags: |
-            type=semver,pattern={{version}}, prefix=v
-
-      - name: Build and Push No-TLS Image
-        uses: docker/build-push-action@v5
-        with:
-          build-args: NO_TLS=true
-          context: .
-          platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
-          tags: "${{ steps.meta-no-tls.outputs.tags }}"
-          labels: ${{ steps.meta-no-tls.outputs.labels }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache-no-tls
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache-no-tls,mode=max
-            type=gha,mode=max
-
-  create-release:
-    needs: docker
-    name: Create GitHub Release
-    runs-on: ziserv-2
-    if: startsWith(github.ref, 'refs/tags/') && github.token != ''
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate Changelog
-        id: changelog
-        run: |
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -z "$PREVIOUS_TAG" ]; then
-            git log --pretty=format:"* %s" > CHANGELOG.md
-          else
-            git log --pretty=format:"* %s" $PREVIOUS_TAG..HEAD > CHANGELOG.md
-          fi
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            CHANGELOG.md
-          body_path: CHANGELOG.md
-          draft: false
-          prerelease: false
-          token: ${{ secrets.GITHUB_TOKEN }}

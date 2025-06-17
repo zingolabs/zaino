@@ -63,6 +63,8 @@ async fn create_test_manager_and_fetch_service(
                 canopy: Some(1),
                 nu5: Some(1),
                 nu6: Some(1),
+                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
+                nu6_1: None,
                 nu7: None,
             },
         ),
@@ -521,6 +523,26 @@ async fn fetch_service_get_block(validator: &ValidatorKind) {
         .await
         .unwrap();
     assert_eq!(fetch_service_get_block_by_hash.hash, block_id_by_hash.hash);
+
+    test_manager.close().await;
+}
+
+async fn fetch_service_get_block_count(validator: &ValidatorKind) {
+    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
+        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+
+    test_manager.local_net.generate_blocks(5).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    let block_id = BlockId {
+        height: 6,
+        hash: Vec::new(),
+    };
+
+    let fetch_service_get_block_count =
+        dbg!(fetch_service_subscriber.get_block_count().await.unwrap());
+
+    assert_eq!(fetch_service_get_block_count.0 as u64, block_id.height);
 
     test_manager.close().await;
 }
@@ -1161,6 +1183,7 @@ mod zcashd {
         }
 
         #[tokio::test]
+        #[ignore = "We no longer use chain caches. See zcashd::launch::regtest_no_cache."]
         pub(crate) async fn regtest_with_cache() {
             launch_fetch_service(
                 &ValidatorKind::Zcashd,
@@ -1232,6 +1255,11 @@ mod zcashd {
         #[tokio::test]
         pub(crate) async fn block() {
             fetch_service_get_block(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test]
+        pub(crate) async fn block_count() {
+            fetch_service_get_block_count(&ValidatorKind::Zcashd).await;
         }
 
         #[tokio::test]
@@ -1325,6 +1353,7 @@ mod zebrad {
         }
 
         #[tokio::test]
+        #[ignore = "We no longer use chain caches. See zebrad::launch::regtest_no_cache."]
         pub(crate) async fn regtest_with_cache() {
             launch_fetch_service(
                 &ValidatorKind::Zebrad,
@@ -1396,6 +1425,11 @@ mod zebrad {
         #[tokio::test]
         pub(crate) async fn block() {
             fetch_service_get_block(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test]
+        pub(crate) async fn block_count() {
+            fetch_service_get_block_count(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]

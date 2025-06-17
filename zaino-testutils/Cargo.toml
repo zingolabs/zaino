@@ -41,3 +41,13 @@ tempfile = { workspace = true }
 portpicker = { workspace = true }
 once_cell = { workspace = true }
 
+# We don't need this as a direct dependency.
+# Rather, we need to pin this version of proptest.
+# if we don't, cargo update will update to the semver-compatible
+# version 1.7, which depends on rand-0.9.1.
+# This causes compiler errors in incrementalmerkletree, due a conflict
+# with its rand version of 0.8.5.
+# TODO: Investigate whether proptest has violated semver guarentees with
+# its rand version update.
+proptest = "~1.2"
+

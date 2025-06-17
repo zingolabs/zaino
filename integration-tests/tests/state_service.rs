@@ -60,6 +60,8 @@ async fn create_test_manager_and_services(
                     canopy: Some(1),
                     nu5: Some(1),
                     nu6: Some(1),
+                    // TODO: What is network upgrade 6.1? What does a minor version NU mean?
+                    nu6_1: None,
                     nu7: None,
                 },
             ),
@@ -1048,6 +1050,40 @@ mod zebrad {
         }
 
         #[tokio::test]
+        async fn state_service_chaintip_update_subscriber() {
+            let (
+                test_manager,
+                _fetch_service,
+                _fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                Some(services::network::Network::Regtest),
+            )
+            .await;
+            let mut chaintip_subscriber = state_service_subscriber.chaintip_update_subscriber();
+            for _ in 0..5 {
+                test_manager.generate_blocks_with_delay(1).await;
+                assert_eq!(
+                    chaintip_subscriber.next_tip_hash().await.unwrap().0,
+                    <[u8; 32]>::try_from(
+                        state_service_subscriber
+                            .get_latest_block()
+                            .await
+                            .unwrap()
+                            .hash
+                    )
+                    .unwrap()
+                )
+            }
+        }
+
+        #[tokio::test]
+        #[ignore = "We no longer use chain caches. See zcashd::check_info::regtest_no_cache."]
         async fn regtest_with_cache() {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
@@ -1104,6 +1140,32 @@ mod zebrad {
         #[tokio::test]
         async fn raw_transaction_testnet() {
             state_service_get_raw_transaction_testnet().await;
+        }
+
+        #[tokio::test]
+        async fn block_count() {
+            let (
+                test_manager,
+                _fetch_service,
+                fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                Some(services::network::Network::Regtest),
+            )
+            .await;
+            test_manager.local_net.generate_blocks(2).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let fetch_service_block_count =
+                dbg!(fetch_service_subscriber.get_block_count().await.unwrap());
+            let state_service_block_count =
+                dbg!(state_service_subscriber.get_block_count().await.unwrap());
+            assert_eq!(fetch_service_block_count, state_service_block_count);
         }
 
         mod z {

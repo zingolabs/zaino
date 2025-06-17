@@ -240,6 +240,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error>;
 
+    /// Returns the current block count in the best valid block chain.
+    ///
+    /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_count(&self) -> Result<Height, Self::Error>;
+
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)

@@ -1,0 +1,154 @@
+env_files = [".env.testing-artifacts"]
+
+[config]
+default_to_workspace = false
+
+[env]
+IMAGE_NAME = "zingodevops/zaino-ci"
+
+[tasks.help]
+description = "List available commands and usage notes"
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+echo ""
+echo "Zaino CI Image Tasks"
+echo "---------------------"
+echo ""
+echo "Common usage:"
+echo "  cargo make test"
+echo ""
+echo "If you modify '.env.testing-artifacts', the test command will automatically:"
+echo "  - Recompute the image tag"
+echo "  - Build a new local Docker image if needed"
+echo ""
+echo "Available commands:"
+echo ""
+echo "  test                Run integration tests using the local image"
+echo "  build-image         Build the Docker image with current artifact versions"
+echo "  push-image          Push the image (used in CI, can be used manually)"
+echo "  compute-image-tag   Compute the tag for the Docker image based on versions"
+echo "  ensure-image-exists Check if the required image exists locally, build if not"
+echo "  copy-bins           Extract binaries from the image to ./test_binaries/bins"
+echo ""
+echo "Environment:"
+echo "  Defined by: .env.testing-artifacts"
+echo "  Affects:    RUST_VERSION, ZCASH_VERSION, ZEBRA_VERSION"
+echo ""
+echo "Helpers:"
+echo "  - utils/get-ci-image-tag.sh: computes the version-based image tag"
+echo "  - utils/helpers.sh: logging and helper functions"
+echo ""
+'''
+
+[tasks.base-script]
+script.pre = '''
+source "./utils/helpers.sh"
+TAG=$(./utils/get-ci-image-tag.sh)
+'''
+script.main = "err 'default main script. define a proper script to skip this one'"
+script.post = ""
+
+# -------------------------------------------------------------------
+
+[tasks.compute-image-tag]
+description = "Compute image tag from version vars"
+script = '''
+TAG=$(./utils/get-ci-image-tag.sh)
+echo "CARGO_MAKE_IMAGE_TAG=$TAG"
+export CARGO_MAKE_IMAGE_TAG=$TAG
+'''
+# -------------------------------------------------------------------
+
+[tasks.ensure-image-exists]
+description = "Check if image with current version tag exists locally"
+extend = "base-script"
+script.main = '''
+if ! docker image inspect ${IMAGE_NAME}:${TAG} > /dev/null 2>&1; then
+  warn "Image not found locally. Triggering build..."
+  cargo make build-image
+else
+  info "Image ${IMAGE_NAME}:${TAG} available locally"
+fi
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.build-image]
+description = "Build the Docker image for testing artifacts"
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+TARGET=$(resolve_build_target "$ZCASH_VERSION" "$ZEBRA_VERSION")
+
+info "Building image"
+info "Tag: ${TAG}"
+info "Target: $TARGET"
+
+docker build -f Dockerfile.ci \
+  --target "$TARGET" \
+  --build-arg ZCASH_VERSION=$ZCASH_VERSION \
+  --build-arg ZEBRA_VERSION=$ZEBRA_VERSION \
+  --build-arg RUST_VERSION=$RUST_VERSION \
+  -t ${IMAGE_NAME}:$TAG .
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.push-image]
+description = "Push image if running in CI"
+# condition = { env_set = ["CI"] }
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+info "Pushing image: ${IMAGE_NAME}:$TAG"
+
+docker push ${IMAGE_NAME}:$TAG
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.test]
+clear = true
+description = "Run integration tests using the local image"
+dependencies = ["ensure-image-exists"]
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+TAG=$(./utils/get-ci-image-tag.sh)
+
+info "Running tests using image: ${IMAGE_NAME}:$TAG"
+
+docker run --rm \
+  --name zaino-testing \
+  -v "$PWD":/app \
+  -v "$PWD/target":/root/target \
+  -v "$PWD/docker_cargo/git":/root/.cargo/git \
+  -v "$PWD/docker_cargo/registry":/root/.cargo/registry \
+  -w /app \
+  "${IMAGE_NAME}:$TAG" \
+  cargo nextest run --profile ci "${@}"
+'''
+script.post = '''
+docker stop zaino-testing
+'''
+
+[tasks.copy-bins]
+description = "Copy bins from image into test_binaries/bins"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+docker create --name my_zaino_container zingodevops/zaino-ci:"$TAG"
+docker cp my_zaino_container:/usr/local/bin ./test_binaries/
+cp -r ./test_binaries/bin ./test_binaries/bins
+docker rm my_zaino_container
+'''

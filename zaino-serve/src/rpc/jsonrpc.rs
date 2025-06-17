@@ -1,3 +1,3 @@
-//! Grpc service implementations.
+//! JsonRPC service implementations.
 
 pub mod service;

@@ -318,6 +318,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .try_into()?)
     }
 
+    /// Returns the current block count in the best valid block chain.
+    ///
+    /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_count(&self) -> Result<Height, Self::Error> {
+        Ok(self.fetcher.get_block_count().await?.into())
+    }
+
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)

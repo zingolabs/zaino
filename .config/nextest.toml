@@ -3,8 +3,16 @@ test-threads = 6
 fail-fast = false
 # retries = 1
 
+# All the following tests keep failing because of zebra with the following error message:
+# "Serialization/Deserialization Error: data did not match any variant of untagged enum Input at line 1 column <X>"
+# We will ignore these tests for now in CI, until zebra releases the fix
+
 [profile.ci]
-default-filter = "not test(testnet) & not test(regtest) & not test(client_rpcs)"
+default-filter = """
+    not test(testnet)
+    & not test(regtest)
+    & not test(client_rpcs)
+"""
 
 [profile.ci.junit]  # this can be some other profile, too
 path = "junit.xml"

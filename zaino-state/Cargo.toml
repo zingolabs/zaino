@@ -16,6 +16,10 @@ bench = []
 zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
+# LibRustZcash
+zcash_primitives = { workspace = true }
+zcash_protocol = { workspace = true }
+
 # Zebra
 zebra-chain = { workspace = true }
 zebra-state = { workspace = true }
@@ -44,6 +48,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 jsonrpsee-core = { workspace = true }
 prost = { workspace = true }
+primitive-types = { workspace = true }
+dcbor = { workspace = true }
 nonempty = "0.11.0"
 
 [dev-dependencies]
@@ -54,3 +60,5 @@ zingolib = { workspace = true }
 
 [build-dependencies]
 whoami = { workspace = true }
+cargo-lock = "10.1.0"
+

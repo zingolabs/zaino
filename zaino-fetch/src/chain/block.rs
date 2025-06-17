@@ -216,6 +216,11 @@ impl FullBlockHeader {
         self.raw_block_header.hash_merkle_root.clone()
     }
 
+    /// Returns the final sapling root of the block.
+    pub fn final_sapling_root(&self) -> Vec<u8> {
+        self.raw_block_header.hash_final_sapling_root.clone()
+    }
+
     /// Returns the time when the miner started hashing the header (according to the miner).
     pub fn time(&self) -> u32 {
         self.raw_block_header.time
@@ -340,6 +345,16 @@ impl FullBlock {
         self.height
     }
 
+    /// Returns the Orchard `authDataRoot` of the block, taken from the coinbase transaction's anchorOrchard field.
+    ///
+    /// If the coinbase transaction is v5 and includes an Orchard bundle, this is the root of the Orchard commitment tree
+    /// after applying all Orchard actions in the block.
+    ///
+    /// Returns `Some(Vec<u8>)` if present, else `None`.
+    pub fn auth_data_root(&self) -> Option<Vec<u8>> {
+        self.vtx.first().and_then(|tx| tx.anchor_orchard())
+    }
+
     /// Decodes a hex encoded zcash full block into a FullBlock struct.
     pub fn parse_from_hex(data: &[u8], txid: Option<Vec<Vec<u8>>>) -> Result<Self, ParseError> {
         let (remaining_data, full_block) = Self::parse_from_slice(data, txid, None)?;
@@ -396,7 +411,8 @@ impl FullBlock {
     /// Extracts the block height from the coinbase transaction.
     fn get_block_height(transactions: &[FullTransaction]) -> Result<i32, ParseError> {
         let transparent_inputs = transactions[0].transparent_inputs();
-        let coinbase_script = transparent_inputs[0].as_slice();
+        let (_, _, script_sig) = transparent_inputs[0].clone();
+        let coinbase_script = script_sig.as_slice();
 
         let mut cursor = Cursor::new(coinbase_script);
 

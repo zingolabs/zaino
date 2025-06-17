@@ -18,10 +18,10 @@ pub enum IndexerError {
     JsonRpSeeConnectorError(#[from] JsonRpSeeConnectorError),
     /// FetchService errors.
     #[error("FetchService error: {0}")]
-    FetchServiceError(#[from] FetchServiceError),
+    FetchServiceError(Box<FetchServiceError>),
     /// FetchService errors.
-    #[error("FetchService error: {0}")]
-    StateServiceError(#[from] StateServiceError),
+    #[error("StateService error: {0}")]
+    StateServiceError(Box<StateServiceError>),
     /// HTTP related errors due to invalid URI.
     #[error("HTTP error: Invalid URI {0}")]
     HttpError(#[from] http::Error),
@@ -34,4 +34,15 @@ pub enum IndexerError {
     /// Zaino restart signal.
     #[error("Restart Zaino")]
     Restart,
+}
+
+impl From<StateServiceError> for IndexerError {
+    fn from(value: StateServiceError) -> Self {
+        IndexerError::StateServiceError(Box::new(value))
+    }
+}
+impl From<FetchServiceError> for IndexerError {
+    fn from(value: FetchServiceError) -> Self {
+        IndexerError::FetchServiceError(Box::new(value))
+    }
 }

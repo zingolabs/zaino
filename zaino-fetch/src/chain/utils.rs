@@ -63,6 +63,14 @@ pub(crate) fn read_u32(cursor: &mut Cursor<&[u8]>, error_msg: &str) -> Result<u3
         .map_err(|_| ParseError::InvalidData(error_msg.to_string()))
 }
 
+/// Reads the next 8 bytes from cursor into an i64, returns error message given if eof is reached.
+pub(crate) fn read_i64(cursor: &mut Cursor<&[u8]>, error_msg: &str) -> Result<i64, ParseError> {
+    cursor
+        .read_i64::<LittleEndian>()
+        .map_err(ParseError::from)
+        .map_err(|_| ParseError::InvalidData(error_msg.to_string()))
+}
+
 /// Reads the next 4 bytes from cursor into an i32, returns error message given if eof is reached.
 pub(crate) fn read_i32(cursor: &mut Cursor<&[u8]>, error_msg: &str) -> Result<i32, ParseError> {
     cursor
@@ -163,7 +171,7 @@ impl CompactSize {
         }
     }
 
-    /// Reads an integer encoded in contact form and performs checked conversion
+    /// Reads an integer encoded in compact form and performs checked conversion
     /// to the target type.
     #[allow(dead_code)]
     pub(crate) fn read_t<R: Read, T: TryFrom<u64>>(mut reader: R) -> io::Result<T> {

@@ -23,9 +23,9 @@ use tracing::error;
 use crate::jsonrpsee::{
     error::JsonRpSeeConnectorError,
     response::{
-        GetBalanceResponse, GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse,
-        GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse, GetUtxosResponse,
-        SendTransactionResponse, TxidsResponse,
+        GetBalanceResponse, GetBlockCountResponse, GetBlockResponse, GetBlockchainInfoResponse,
+        GetInfoResponse, GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse,
+        GetUtxosResponse, SendTransactionResponse, TxidsResponse,
     },
 };
 
@@ -41,7 +41,7 @@ struct RpcRequest<T> {
 struct RpcResponse<T> {
     id: i64,
     jsonrpc: Option<String>,
-    result: T,
+    result: Option<T>,
     error: Option<RpcError>,
 }
 
@@ -96,6 +96,24 @@ impl fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
+// Helper function to read and parse the cookie file content.
+// Zebra's RPC server expects Basic Auth with username "__cookie__"
+// and the token from the cookie file as the password.
+// The cookie file itself is formatted as "__cookie__:<token>".
+// This function extracts just the <token> part.
+fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, JsonRpSeeConnectorError> {
+    let cookie_content =
+        fs::read_to_string(cookie_path).map_err(JsonRpSeeConnectorError::IoError)?;
+    let trimmed_content = cookie_content.trim();
+    if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
+        Ok(stripped.to_string())
+    } else {
+        // If the prefix is not present, use the entire trimmed content.
+        // This maintains compatibility with older formats or other cookie sources.
+        Ok(trimmed_content.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 enum AuthMethod {
     Basic { username: String, password: String },
@@ -138,9 +156,7 @@ impl JsonRpSeeConnector {
         url: Url,
         cookie_path: &Path,
     ) -> Result<Self, JsonRpSeeConnectorError> {
-        let cookie_content =
-            fs::read_to_string(cookie_path).map_err(JsonRpSeeConnectorError::IoError)?;
-        let cookie = cookie_content.trim().to_string();
+        let cookie_password = read_and_parse_cookie_token(cookie_path)?;
 
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
@@ -154,7 +170,9 @@ impl JsonRpSeeConnector {
             url,
             id_counter: Arc::new(AtomicI32::new(0)),
             client,
-            auth_method: AuthMethod::Cookie { cookie },
+            auth_method: AuthMethod::Cookie {
+                cookie: cookie_password,
+            },
         })
     }
 
@@ -289,12 +307,15 @@ impl JsonRpSeeConnector {
             let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
                 .map_err(JsonRpSeeConnectorError::SerdeJsonError)?;
 
-            return match response.error {
-                Some(error) => Err(JsonRpSeeConnectorError::new(format!(
+            return match (response.error, response.result) {
+                (Some(error), _) => Err(JsonRpSeeConnectorError::new(format!(
                     "Error: Error from node's rpc server: {} - {}",
                     error.code, error.message
                 ))),
-                None => Ok(response.result),
+                (None, Some(result)) => Ok(result),
+                (None, None) => Err(JsonRpSeeConnectorError::new(
+                    "error: no response body".to_string(),
+                )),
             };
         }
     }
@@ -388,6 +409,17 @@ impl JsonRpSeeConnector {
                 .await
                 .map(GetBlockResponse::Object)
         }
+    }
+
+    /// Returns the height of the most recent block in the best valid block chain
+    /// (equivalently, the number of blocks in this chain excluding the genesis block).
+    ///
+    /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_block_count(&self) -> Result<GetBlockCountResponse, JsonRpSeeConnectorError> {
+        self.send_request::<(), GetBlockCountResponse>("getblockcount", ())
+            .await
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
@@ -571,12 +603,11 @@ pub async fn test_node_and_return_url(
 ) -> Result<Url, JsonRpSeeConnectorError> {
     let auth_method = match rpc_cookie_auth {
         true => {
-            let cookie_content =
-                fs::read_to_string(cookie_path.expect("validator rpc cookie path missing"))
-                    .map_err(JsonRpSeeConnectorError::IoError)?;
-            let cookie = cookie_content.trim().to_string();
-
-            AuthMethod::Cookie { cookie }
+            let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
+            let cookie_password = read_and_parse_cookie_token(Path::new(&cookie_file_path_str))?;
+            AuthMethod::Cookie {
+                cookie: cookie_password,
+            }
         }
         false => AuthMethod::Basic {
             username: user.unwrap_or_else(|| "xxxxxx".to_string()),

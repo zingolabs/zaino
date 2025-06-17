@@ -351,8 +351,7 @@ impl TestManager {
         enable_clients: bool,
     ) -> Result<Self, std::io::Error> {
         if (validator == &ValidatorKind::Zcashd) && (backend == &BackendType::State) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Cannot use state backend with zcashd.",
             ));
         }
@@ -366,8 +365,7 @@ impl TestManager {
 
         let network = network.unwrap_or(services::network::Network::Regtest);
         if enable_clients && !enable_zaino {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Cannot enable clients when zaino is not enabled.",
             ));
         }

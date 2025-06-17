@@ -7,13 +7,11 @@
 ### Tests
 1) Symlink or copy compiled `zebrad`, `zcashd` and `zcash-cli` binaries to `zaino/test_binaries/bins/*`
 
-**Chain Cache** _Several tests rely on a cached chain to run, for these tests to pass the chain must first be generated:_
-
-2) Generate the zcashd chain cache `cargo nextest run generate_zcashd_chain_cache --run-ignored ignored-only`
-3) Generate the zebrad chain cache `cargo nextest run generate_zebrad_large_chain_cache --run-ignored ignored-only`
-
 **Client Rpc Tests** _For the client rpc tests to pass a Zaino release binary must be built and added to PATH.
 WARNING: these tests do not use the binary built by cargo nextest._
+
+Note: Recently the newest GCC version on Arch has broken a build script in the `rocksdb` dependency. A workaround is:
+`export CXXFLAGS="$CXXFLAGS -include cstdint"`
 
 4) Build release binary `cargo build --release` and add to PATH. For example, `export PATH=./target/release:$PATH`
 
