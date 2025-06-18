@@ -12,6 +12,47 @@ use zebra_chain::{
 };
 use zebra_rpc::methods::{opthex, types::get_blockchain_info::Balance};
 
+/// Response to a `zvalidateaddress` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ZValidateAddressResponse {
+    /// If the address is valid or not. If not, this is the only property returned.
+    #[serde(default)]
+    pub isvalid: bool,
+
+    /// The address that was validated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+
+    /// The address type: "p2pkh", "p2sh", "sprout", or "sapling".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address_type: Option<String>,
+
+    /// Legacy field, same values as `address_type`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
+    pub legacy_type: Option<String>,
+
+    /// Whether the address belongs to the wallet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ismine: Option<bool>,
+
+    /// [Sprout] Hex value of the paying key (a_pk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payingkey: Option<String>,
+
+    /// [Sprout] Hex value of the transmission key (pk_enc).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transmissionkey: Option<String>,
+
+    /// [Sapling] Hex value of the diversifier (d).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diversifier: Option<String>,
+
+    /// [Sapling] Hex value of the diversified transmission key (pk_d).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diversifiedtransmissionkey: Option<String>,
+}
+
 /// Response to a `getinfo` RPC request.
 ///
 /// This is used for the output parameter of [`JsonRpcConnector::get_info`].
