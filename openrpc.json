@@ -1,0 +1,11 @@
+{
+	"openrpc": "1.0.0-rc1",
+	"info": {
+		"version": "1.0.0",
+		"title": "rpc.zaino",
+		"license": {
+			"name": "MIT"
+		}
+	},
+	"methods": []
+}
