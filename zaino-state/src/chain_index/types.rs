@@ -2,459 +2,11 @@
 //!
 //! Held here to ensure serialisation consistency for ZainoDB.
 
-use dcbor::{CBORCase, CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Tag, CBOR};
 use hex::{FromHex, ToHex};
 use primitive_types::U256;
 use std::fmt;
 
-/// DCBOR serialisation schema tags.
-///
-/// All structs in this module should be included in this enum.
-///
-/// Items should use the range 510 - 599 (500 - 509 are reserved for database validation.).
-#[repr(u64)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CborTag {
-    ChainBlock = 510,
-    BlockIndex = 511,
-    Hash = 512,
-    Height = 513,
-    Index = 514,
-    ChainWork = 515,
-    BlockData = 516,
-    CommitmentTreeRoots = 517,
-    CommitmentTreeSizes = 518,
-    TxData = 519,
-    TransparentCompactTx = 520,
-    TxInCompact = 521,
-    ScriptType = 522,
-    TxOutCompact = 523,
-    SaplingCompactTx = 524,
-    CompactSaplingSpend = 525,
-    CompactSaplingOutput = 526,
-    CompactOrchardAction = 527,
-    SpentOutpoint = 528,
-    ShardRoot = 529,
-}
-
-impl CborTag {
-    pub fn tag(self) -> dcbor::Tag {
-        dcbor::Tag::with_value(self as u64)
-    }
-}
-
-/// Represents the indexing data of a single compact Zcash block used internally by Zaino.
-/// Provides efficient indexing for blockchain state queries and updates.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct ChainBlock {
-    /// Metadata and indexing information for this block.
-    index: BlockIndex,
-    /// Essential header and metadata information for the block.
-    data: BlockData,
-    /// Compact representations of transactions in this block.
-    tx: Vec<TxData>,
-    /// Explicitly recorded UTXOs spent in this block, speeding up reorgs and delta indexing.
-    spent_outpoints: Vec<SpentOutpoint>,
-}
-
-impl ChainBlock {
-    /// Creates a new `ChainBlock`.
-    pub fn new(
-        index: BlockIndex,
-        data: BlockData,
-        tx: Vec<TxData>,
-        spent_outpoints: Vec<SpentOutpoint>,
-    ) -> Self {
-        Self {
-            index,
-            data,
-            tx,
-            spent_outpoints,
-        }
-    }
-
-    /// Returns a reference to the block index metadata.
-    pub fn index(&self) -> &BlockIndex {
-        &self.index
-    }
-
-    /// Returns a reference to the header and auxiliary block data.
-    pub fn data(&self) -> &BlockData {
-        &self.data
-    }
-
-    /// Returns a reference to the compact transactions in this block.
-    pub fn transactions(&self) -> &[TxData] {
-        &self.tx
-    }
-
-    /// Returns a reference to the spent transparent outpoints.
-    pub fn spent_outpoints(&self) -> &[SpentOutpoint] {
-        &self.spent_outpoints
-    }
-
-    /// Returns the block hash.
-    pub fn hash(&self) -> &Hash {
-        self.index.hash()
-    }
-
-    /// Returns the block height if available.
-    pub fn height(&self) -> Option<Height> {
-        self.index.height()
-    }
-
-    /// Returns true if this block is part of the best chain.
-    pub fn is_on_best_chain(&self) -> bool {
-        self.index.is_on_best_chain()
-    }
-
-    /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &ChainWork {
-        self.index.chainwork()
-    }
-
-    /// Returns the raw work value (targeted work contribution).
-    pub fn work(&self) -> U256 {
-        self.data.work()
-    }
-
-    /// Converts this `ChainBlock` into a CompactBlock protobuf message using proto v4 format.
-    pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
-        // NOTE: Returns u64::MAX if the block is not in the best chain.
-        let height: u64 = self.height().map(|h| h.0.into()).unwrap_or(u64::MAX);
-
-        let hash = self.hash().0.to_vec();
-        let prev_hash = self.index().parent_hash().0.to_vec();
-
-        let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = self
-            .transactions()
-            .iter()
-            .map(|tx| tx.to_compact_tx(None))
-            .collect();
-
-        let sapling_commitment_tree_size = self.data().commitment_tree_size().sapling();
-        let orchard_commitment_tree_size = self.data().commitment_tree_size().orchard();
-
-        zaino_proto::proto::compact_formats::CompactBlock {
-            proto_version: 4,
-            height,
-            hash,
-            prev_hash,
-            time: self.data().time() as u32,
-            // Header not currently used by CompactBlocks.
-            header: vec![],
-            vtx,
-            chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
-                sapling_commitment_tree_size,
-                orchard_commitment_tree_size,
-            }),
-        }
-    }
-}
-
-/// TryFrom inputs:
-/// - FullBlock:
-///   - Holds block data.
-/// - parent_block_chain_work:
-///   - Used to calculate cumulative chain work.
-/// - Final sapling root:
-///  - Must be fetched from separate RPC.
-/// - Final orchard root:
-///  - Must be fetched from separate RPC.
-/// - parent_block_sapling_tree_size:
-///   - Used to calculate sapling tree size.
-/// - parent_block_orchard_tree_size:
-///   - Used to calculate sapling tree size.
-impl
-    TryFrom<(
-        zaino_fetch::chain::block::FullBlock,
-        ChainWork,
-        [u8; 32],
-        [u8; 32],
-        u32,
-        u32,
-    )> for ChainBlock
-{
-    type Error = String;
-
-    fn try_from(
-        (
-            full_block,
-            parent_chainwork,
-            final_sapling_root,
-            final_orchard_root,
-            parent_sapling_size,
-            parent_orchard_size,
-        ): (
-            zaino_fetch::chain::block::FullBlock,
-            ChainWork,
-            [u8; 32],
-            [u8; 32],
-            u32,
-            u32,
-        ),
-    ) -> Result<Self, Self::Error> {
-        // --- Block Header Info ---
-        let header = full_block.header();
-        let height = Height::try_from(full_block.height() as u32)
-            .map_err(|e| format!("Invalid block height: {e}"))?;
-
-        let hash: [u8; 32] = header
-            .cached_hash()
-            .try_into()
-            .map_err(|_| "Block hash must be 32 bytes")?;
-        let parent_hash: [u8; 32] = header
-            .hash_prev_block()
-            .try_into()
-            .map_err(|_| "Parent block hash must be 32 bytes")?;
-
-        let n_bits_bytes = header.n_bits_bytes();
-        if n_bits_bytes.len() != 4 {
-            return Err("nBits must be 4 bytes".to_string());
-        }
-        let bits = u32::from_le_bytes(n_bits_bytes.try_into().unwrap());
-
-        // --- Fetch AuthDataRoot ---
-        let auth_data_root = full_block
-            .auth_data_root()
-            .and_then(|v| v.try_into().ok())
-            .unwrap_or([0u8; 32]);
-
-        let mut sapling_note_count = 0;
-        let mut orchard_note_count = 0;
-
-        // --- Convert transactions ---
-        let full_transactions = full_block.transactions();
-        let mut tx = Vec::with_capacity(full_transactions.len());
-        let mut spent_outpoints = Vec::new();
-
-        for (i, ftx) in full_transactions.into_iter().enumerate() {
-            let txdata = TxData::try_from((i as u64, ftx))
-                .map_err(|e| format!("TxData conversion failed at index {}: {e}", i))?;
-
-            sapling_note_count += txdata.sapling().outputs().len();
-            orchard_note_count += txdata.orchard().len();
-
-            for input in txdata.transparent().inputs() {
-                spent_outpoints.push(SpentOutpoint::new(
-                    *input.prevout_txid(),
-                    input.prevout_index(),
-                ));
-            }
-
-            tx.push(txdata);
-        }
-
-        // --- Compute commitment trees ---
-        let sapling_root = final_sapling_root;
-        let orchard_root = final_orchard_root;
-
-        let commitment_tree_roots = CommitmentTreeRoots::new(sapling_root, orchard_root);
-
-        let commitment_tree_size = CommitmentTreeSizes::new(
-            parent_sapling_size + sapling_note_count as u32,
-            parent_orchard_size + orchard_note_count as u32,
-        );
-
-        // --- Compute chainwork ---
-        let block_data = BlockData::new(
-            header.version() as u32,
-            header.time() as i64,
-            header.hash_merkle_root().try_into().unwrap(),
-            auth_data_root,
-            commitment_tree_roots,
-            commitment_tree_size,
-            bits,
-        );
-        let chainwork = parent_chainwork.add(&ChainWork::from(block_data.work()));
-
-        // --- Final index and block data ---
-        let index = BlockIndex::new(
-            Hash::from(hash),
-            Hash::from(parent_hash),
-            chainwork,
-            Some(height),
-        );
-
-        Ok(ChainBlock::new(index, block_data, tx, spent_outpoints))
-    }
-}
-
-impl CBORTagged for ChainBlock {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::ChainBlock.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for ChainBlock {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            self.index.tagged_cbor(),
-            self.data.tagged_cbor(),
-            CBOR::from(self.tx.iter().map(|t| t.tagged_cbor()).collect::<Vec<_>>()),
-            CBOR::from(
-                self.spent_outpoints
-                    .iter()
-                    .map(|s| s.tagged_cbor())
-                    .collect::<Vec<_>>(),
-            ),
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for ChainBlock {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 4 => {
-                let index = BlockIndex::try_from(arr[0].clone())?;
-                let data = BlockData::try_from(arr[1].clone())?;
-
-                let tx_arr = match arr[2].clone().into_case() {
-                    CBORCase::Array(inner) => inner,
-                    _ => return Err(dcbor::Error::WrongType),
-                };
-                let tx = tx_arr
-                    .into_iter()
-                    .map(TxData::try_from)
-                    .collect::<Result<_, _>>()?;
-
-                let spent_arr = match arr[3].clone().into_case() {
-                    CBORCase::Array(inner) => inner,
-                    _ => return Err(dcbor::Error::WrongType),
-                };
-                let spent_outpoints = spent_arr
-                    .into_iter()
-                    .map(SpentOutpoint::try_from)
-                    .collect::<Result<_, _>>()?;
-
-                Ok(Self {
-                    index,
-                    data,
-                    tx,
-                    spent_outpoints,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for ChainBlock {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
-
-/// Metadata about the block used to identify and navigate the blockchain.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct BlockIndex {
-    /// The hash identifying this block uniquely.
-    hash: Hash,
-    /// The hash of this block's parent block (previous block in chain).
-    parent_hash: Hash,
-    /// The cumulative proof-of-work of the blockchain up to this block, used for chain selection.
-    chainwork: ChainWork,
-    /// The height of this block if it's in the current best chain. None if it's part of a fork.
-    height: Option<Height>,
-}
-
-impl BlockIndex {
-    /// Constructs a new `BlockIndex`.
-    pub fn new(
-        hash: Hash,
-        parent_hash: Hash,
-        chainwork: ChainWork,
-        height: Option<Height>,
-    ) -> Self {
-        Self {
-            hash,
-            parent_hash,
-            chainwork,
-            height,
-        }
-    }
-
-    /// Returns the hash of this block.
-    pub fn hash(&self) -> &Hash {
-        &self.hash
-    }
-
-    /// Returns the hash of the parent block.
-    pub fn parent_hash(&self) -> &Hash {
-        &self.parent_hash
-    }
-
-    /// Returns the cumulative chainwork up to this block.
-    pub fn chainwork(&self) -> &ChainWork {
-        &self.chainwork
-    }
-
-    /// Returns the height of this block if it’s part of the best chain.
-    pub fn height(&self) -> Option<Height> {
-        self.height
-    }
-
-    /// Returns true if this block is part of the best chain.
-    pub fn is_on_best_chain(&self) -> bool {
-        self.height.is_some()
-    }
-}
-
-impl CBORTagged for BlockIndex {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::BlockIndex.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for BlockIndex {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            self.hash.untagged_cbor(),
-            self.parent_hash.untagged_cbor(),
-            self.chainwork.untagged_cbor(),
-            match self.height {
-                Some(h) => h.untagged_cbor(),
-                None => CBOR::null(), // ✅ CORRECT for dCBOR
-            },
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for BlockIndex {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 4 => {
-                let hash = Hash::from_untagged_cbor(arr[0].clone())?;
-                let parent_hash = Hash::from_untagged_cbor(arr[1].clone())?;
-                let chainwork = ChainWork::from_untagged_cbor(arr[2].clone())?;
-
-                let height = if arr[3].is_null() {
-                    None
-                } else {
-                    Some(Height::from_untagged_cbor(arr[3].clone())?)
-                };
-
-                Ok(BlockIndex {
-                    hash,
-                    parent_hash,
-                    chainwork,
-                    height,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for BlockIndex {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
+// *** Key Objects ***
 
 /// Block hash (SHA256d hash of the block header).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -551,34 +103,10 @@ impl From<zcash_primitives::block::BlockHash> for Hash {
     }
 }
 
-impl CBORTagged for Hash {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::Hash.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for Hash {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(&self.0[..])
-    }
-}
-
-impl CBORTaggedDecodable for Hash {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        let bytes: Vec<u8> = cbor.try_into()?;
-        let array: [u8; 32] = bytes.try_into().map_err(|_| dcbor::Error::WrongType)?;
-        Ok(Hash(array))
-    }
-}
-
-impl TryFrom<CBOR> for Hash {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
-
 /// Block height.
+///
+/// NOTE: Encoded as 4-byte big-endian byte-string to ensure height ordering
+/// for keys in Lexicographically sorted B-Tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct Height(u32);
@@ -645,58 +173,157 @@ impl TryFrom<zcash_protocol::consensus::BlockHeight> for Height {
     }
 }
 
-impl CBORTagged for Height {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::Height.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for Height {
-    fn untagged_cbor(&self) -> CBOR {
-        self.0.into()
-    }
-}
-
-impl CBORTaggedDecodable for Height {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        Ok(Height(cbor.try_into()?))
-    }
-}
-
-impl TryFrom<CBOR> for Height {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
-
 /// Numerical index of subtree / shard roots.
+///
+/// NOTE: Encoded as 4-byte big-endian byte-string to ensure height ordering
+/// for keys in Lexicographically sorted B-Tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct Index(pub u32);
 
-impl CBORTagged for Index {
-    fn cbor_tags() -> Vec<dcbor::Tag> {
-        vec![CborTag::Index.tag()]
+/// 20-byte hash (RIPEMD-160 or Blake2b-160) of a transparent output script.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct AddrScript([u8; 20]);
+
+impl AddrScript {
+    /// Create from raw bytes.
+    pub fn new(bytes: [u8; 20]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the inner bytes.
+    pub fn as_bytes(&self) -> &[u8; 20] {
+        &self.0
     }
 }
 
-impl CBORTaggedEncodable for Index {
-    fn untagged_cbor(&self) -> CBOR {
-        self.0.into()
+impl fmt::Display for AddrScript {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.encode_hex::<String>())
     }
 }
 
-impl CBORTaggedDecodable for Index {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        Ok(Index(cbor.try_into()?))
+impl ToHex for &AddrScript {
+    fn encode_hex<T: FromIterator<char>>(&self) -> T {
+        self.0.encode_hex()
+    }
+    fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
+        self.0.encode_hex_upper()
+    }
+}
+impl ToHex for AddrScript {
+    fn encode_hex<T: FromIterator<char>>(&self) -> T {
+        (&self).encode_hex()
+    }
+    fn encode_hex_upper<T: FromIterator<char>>(&self) -> T {
+        (&self).encode_hex_upper()
     }
 }
 
-impl TryFrom<CBOR> for Index {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
+impl FromHex for AddrScript {
+    type Error = <[u8; 20] as FromHex>::Error;
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        Ok(Self(<[u8; 20]>::from_hex(hex)?))
+    }
+}
+
+impl From<[u8; 20]> for AddrScript {
+    fn from(b: [u8; 20]) -> Self {
+        Self(b)
+    }
+}
+impl From<AddrScript> for [u8; 20] {
+    fn from(a: AddrScript) -> Self {
+        a.0
+    }
+}
+
+/// Reference to a spent transparent UTXO.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct Outpoint {
+    /// Transaction ID of the UTXO being spent.
+    prev_txid: [u8; 32],
+    /// Index of that output in the previous transaction.
+    prev_index: u32,
+}
+
+impl Outpoint {
+    /// Construct a new outpoint.
+    pub fn new(prev_txid: [u8; 32], prev_index: u32) -> Self {
+        Self {
+            prev_txid,
+            prev_index,
+        }
+    }
+
+    /// Returns the txid of the transaction being spent.
+    pub fn prev_txid(&self) -> &[u8; 32] {
+        &self.prev_txid
+    }
+
+    /// Returns the outpoint index withing the transaction.
+    pub fn prev_index(&self) -> u32 {
+        self.prev_index
+    }
+}
+
+// *** Block Level Objects ***
+
+/// Metadata about the block used to identify and navigate the blockchain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct BlockIndex {
+    /// The hash identifying this block uniquely.
+    hash: Hash,
+    /// The hash of this block's parent block (previous block in chain).
+    parent_hash: Hash,
+    /// The cumulative proof-of-work of the blockchain up to this block, used for chain selection.
+    chainwork: ChainWork,
+    /// The height of this block if it's in the current best chain. None if it's part of a fork.
+    height: Option<Height>,
+}
+
+impl BlockIndex {
+    /// Constructs a new `BlockIndex`.
+    pub fn new(
+        hash: Hash,
+        parent_hash: Hash,
+        chainwork: ChainWork,
+        height: Option<Height>,
+    ) -> Self {
+        Self {
+            hash,
+            parent_hash,
+            chainwork,
+            height,
+        }
+    }
+
+    /// Returns the hash of this block.
+    pub fn hash(&self) -> &Hash {
+        &self.hash
+    }
+
+    /// Returns the hash of the parent block.
+    pub fn parent_hash(&self) -> &Hash {
+        &self.parent_hash
+    }
+
+    /// Returns the cumulative chainwork up to this block.
+    pub fn chainwork(&self) -> &ChainWork {
+        &self.chainwork
+    }
+
+    /// Returns the height of this block if it’s part of the best chain.
+    pub fn height(&self) -> Option<Height> {
+        self.height
+    }
+
+    /// Returns true if this block is part of the best chain.
+    pub fn is_on_best_chain(&self) -> bool {
+        self.height.is_some()
     }
 }
 
@@ -752,34 +379,11 @@ impl fmt::Display for ChainWork {
     }
 }
 
-impl CBORTagged for ChainWork {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::ChainWork.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for ChainWork {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(&self.0[..])
-    }
-}
-
-impl CBORTaggedDecodable for ChainWork {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        let bytes: Vec<u8> = cbor.try_into()?;
-        let array: [u8; 32] = bytes.try_into().map_err(|_| dcbor::Error::WrongType)?;
-        Ok(ChainWork(array))
-    }
-}
-
-impl TryFrom<CBOR> for ChainWork {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
-
-/// Essential block header fields required for quick indexing and client-serving.
+/// Essential block header fields required for chain validation and serving block header data.
+///
+/// NOTE: Optional fields may be added for:
+/// - hashLightClientRoot (FlyClient proofs)
+/// - hashAuthDataRoot (ZIP-244 witness commitments)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockData {
@@ -790,15 +394,15 @@ pub struct BlockData {
     /// Merkle root hash of all transaction IDs in the block (used for quick tx inclusion proofs).
     merkle_root: [u8; 32],
     /// Digest representing the block-commitments Merkle root (commitment to note states).
-    ///
-    /// [`hashAuthDataRoot`]
-    auth_data_root: [u8; 32],
-    /// Roots of the Sapling and Orchard note-commitment trees (for shielded tx verification).
-    commitment_tree_roots: CommitmentTreeRoots,
-    /// Number of leaves in Sapling/Orchard note commitment trees at this block.
-    commitment_tree_size: CommitmentTreeSizes,
+    /// - < V4: [`hashFinalSaplingRoot`] - Sapling note commitment tree root.
+    /// - => V4: [`hashBlockCommitments`] - digest over hashLightClientRoot and hashAuthDataRoot.``
+    block_commitments: [u8; 32],
     /// Compact difficulty target used for proof-of-work and difficulty calculation.
     bits: u32,
+    /// Equihash nonse.
+    nonse: [u8; 32],
+    /// Equihash solution
+    solution: EquihashSolution,
 }
 
 impl BlockData {
@@ -808,19 +412,19 @@ impl BlockData {
         version: u32,
         time: i64,
         merkle_root: [u8; 32],
-        auth_data_root: [u8; 32],
-        commitment_tree_roots: CommitmentTreeRoots,
-        commitment_tree_size: CommitmentTreeSizes,
+        block_commitments: [u8; 32],
         bits: u32,
+        nonse: [u8; 32],
+        solution: EquihashSolution,
     ) -> Self {
         Self {
             version,
             time,
             merkle_root,
-            auth_data_root,
-            commitment_tree_roots,
-            commitment_tree_size,
+            block_commitments,
             bits,
+            nonse,
+            solution,
         }
     }
 
@@ -839,19 +443,9 @@ impl BlockData {
         &self.merkle_root
     }
 
-    /// Returns blocks authDataRoot.
-    pub fn auth_data_root(&self) -> &[u8; 32] {
-        &self.auth_data_root
-    }
-
-    /// Returns commitment tree roots.
-    pub fn commitment_tree_roots(&self) -> &CommitmentTreeRoots {
-        &self.commitment_tree_roots
-    }
-
-    /// Returns commitment tree sizes.
-    pub fn commitment_tree_size(&self) -> &CommitmentTreeSizes {
-        &self.commitment_tree_size
+    /// Returns block finalSaplingRoot or authDataRoot depending on version.
+    pub fn block_commitments(&self) -> &[u8; 32] {
+        &self.block_commitments
     }
 
     /// Returns nbits.
@@ -901,64 +495,93 @@ impl BlockData {
         }
         result
     }
-}
 
-impl CBORTagged for BlockData {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::BlockData.tag()]
+    /// Returns Equihash Nonse.
+    pub fn nonse(&self) -> [u8; 32] {
+        self.nonse
+    }
+
+    /// Returns Equihash Nonse.
+    pub fn solution(&self) -> EquihashSolution {
+        self.solution
     }
 }
 
-impl CBORTaggedEncodable for BlockData {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(self.version),
-            CBOR::from(self.time),
-            CBOR::from(&self.merkle_root[..]),
-            CBOR::from(&self.auth_data_root[..]),
-            self.commitment_tree_roots.untagged_cbor(),
-            self.commitment_tree_size.untagged_cbor(),
-            CBOR::from(self.bits),
-        ])
-    }
+/// Equihash solution as it appears in a block header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+// NOTE: if memory usage becomes too large we could move this data to the heap.
+#[allow(clippy::large_enum_variant)]
+pub enum EquihashSolution {
+    /// 200-9 solution (mainnet / testnet).
+    #[cfg_attr(test, serde(with = "serde_arrays::fixed_1344"))]
+    Standard([u8; 1344]),
+    /// 48-5 solution (regtest).
+    #[cfg_attr(test, serde(with = "serde_arrays::fixed_36"))]
+    Regtest([u8; 36]),
 }
 
-impl CBORTaggedDecodable for BlockData {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 7 => {
-                let version = arr[0].clone().try_into()?;
-                let time = arr[1].clone().try_into()?;
-                let merkle_root_vec: Vec<u8> = arr[2].clone().try_into()?;
-                let commitment_digest_vec: Vec<u8> = arr[3].clone().try_into()?;
-                let commitment_tree_roots =
-                    CommitmentTreeRoots::from_untagged_cbor(arr[4].clone())?;
-                let commitment_tree_size = CommitmentTreeSizes::from_untagged_cbor(arr[5].clone())?;
-                let bits = arr[6].clone().try_into()?;
-
-                Ok(Self {
-                    version,
-                    time,
-                    merkle_root: merkle_root_vec
-                        .try_into()
-                        .map_err(|_| dcbor::Error::WrongType)?,
-                    auth_data_root: commitment_digest_vec
-                        .try_into()
-                        .map_err(|_| dcbor::Error::WrongType)?,
-                    commitment_tree_roots,
-                    commitment_tree_size,
-                    bits,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
+impl EquihashSolution {
+    /// Return a slice view (convenience).
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Standard(b) => b,
+            Self::Regtest(b) => b,
         }
     }
 }
 
-impl TryFrom<CBOR> for BlockData {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
+impl TryFrom<Vec<u8>> for EquihashSolution {
+    type Error = &'static str;
+
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::try_from(bytes.as_slice())
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for EquihashSolution {
+    type Error = &'static str;
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        match bytes.len() {
+            1344 => {
+                let mut arr = [0u8; 1344];
+                arr.copy_from_slice(bytes);
+                Ok(EquihashSolution::Standard(arr))
+            }
+            36 => {
+                let mut arr = [0u8; 36];
+                arr.copy_from_slice(bytes);
+                Ok(EquihashSolution::Regtest(arr))
+            }
+            _ => Err("invalid Equihash solution length (expected 32 or 1344 bytes)"),
+        }
+    }
+}
+
+/// Pair of commitment-tree roots and their corresponding leaf counts
+/// after the current block has been applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct CommitmentTreeData {
+    roots: CommitmentTreeRoots,
+    sizes: CommitmentTreeSizes,
+}
+
+impl CommitmentTreeData {
+    /// Returns a new CommitmentTreeData instance.
+    pub fn new(roots: CommitmentTreeRoots, sizes: CommitmentTreeSizes) -> Self {
+        Self { roots, sizes }
+    }
+
+    /// Returns the commitment tree roots for the block.
+    pub fn roots(&self) -> &CommitmentTreeRoots {
+        &self.roots
+    }
+
+    /// Returns the commitment tree sizes for the block.
+    pub fn sizes(&self) -> &CommitmentTreeSizes {
+        &self.sizes
     }
 }
 
@@ -989,44 +612,6 @@ impl CommitmentTreeRoots {
     }
 }
 
-impl CBORTagged for CommitmentTreeRoots {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::CommitmentTreeRoots.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for CommitmentTreeRoots {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(&self.sapling[..]),
-            CBOR::from(&self.orchard[..]),
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for CommitmentTreeRoots {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 2 => {
-                let sapling: Vec<u8> = arr[0].clone().try_into()?;
-                let orchard: Vec<u8> = arr[1].clone().try_into()?;
-                Ok(Self {
-                    sapling: sapling.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    orchard: orchard.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for CommitmentTreeRoots {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
-
 /// Sizes of commitment trees, indicating total number of shielded notes created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
@@ -1054,70 +639,285 @@ impl CommitmentTreeSizes {
     }
 }
 
-impl CBORTagged for CommitmentTreeSizes {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::CommitmentTreeSizes.tag()]
-    }
+/// Represents the indexing data of a single compact Zcash block used internally by Zaino.
+/// Provides efficient indexing for blockchain state queries and updates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct ChainBlock {
+    /// Metadata and indexing information for this block.
+    index: BlockIndex,
+    /// Essential header and metadata information for the block.
+    data: BlockData,
+    /// Compact representations of transactions in this block.
+    tx: Vec<CompactTxData>,
+    /// Sapling and orchard commitment tree data for the chain
+    /// *after this block has been applied.
+    commitment_tree_data: CommitmentTreeData,
 }
 
-impl CBORTaggedEncodable for CommitmentTreeSizes {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![CBOR::from(self.sapling), CBOR::from(self.orchard)])
+impl ChainBlock {
+    /// Creates a new `ChainBlock`.
+    pub fn new(
+        index: BlockIndex,
+        data: BlockData,
+        tx: Vec<CompactTxData>,
+        commitment_tree_data: CommitmentTreeData,
+    ) -> Self {
+        Self {
+            index,
+            data,
+            tx,
+            commitment_tree_data,
+        }
     }
-}
 
-impl CBORTaggedDecodable for CommitmentTreeSizes {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 2 => {
-                let sapling: u32 = arr[0].clone().try_into()?;
-                let orchard: u32 = arr[1].clone().try_into()?;
-                Ok(Self { sapling, orchard })
-            }
-            _ => Err(dcbor::Error::WrongType),
+    /// Returns a reference to the block index metadata.
+    pub fn index(&self) -> &BlockIndex {
+        &self.index
+    }
+
+    /// Returns a reference to the header and auxiliary block data.
+    pub fn data(&self) -> &BlockData {
+        &self.data
+    }
+
+    /// Returns a reference to the compact transactions in this block.
+    pub fn transactions(&self) -> &[CompactTxData] {
+        &self.tx
+    }
+
+    /// Returns the commitment tree data for this block.
+    pub fn commitment_tree_data(&self) -> &CommitmentTreeData {
+        &self.commitment_tree_data
+    }
+
+    /// Returns the block hash.
+    pub fn hash(&self) -> &Hash {
+        self.index.hash()
+    }
+
+    /// Returns the block height if available.
+    pub fn height(&self) -> Option<Height> {
+        self.index.height()
+    }
+
+    /// Returns true if this block is part of the best chain.
+    pub fn is_on_best_chain(&self) -> bool {
+        self.index.is_on_best_chain()
+    }
+
+    /// Returns the cumulative chainwork.
+    pub fn chainwork(&self) -> &ChainWork {
+        self.index.chainwork()
+    }
+
+    /// Returns the raw work value (targeted work contribution).
+    pub fn work(&self) -> U256 {
+        self.data.work()
+    }
+
+    /// Converts this `ChainBlock` into a CompactBlock protobuf message using proto v4 format.
+    pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
+        // NOTE: Returns u64::MAX if the block is not in the best chain.
+        let height: u64 = self.height().map(|h| h.0.into()).unwrap_or(u64::MAX);
+
+        let hash = self.hash().0.to_vec();
+        let prev_hash = self.index().parent_hash().0.to_vec();
+
+        let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = self
+            .transactions()
+            .iter()
+            .map(|tx| tx.to_compact_tx(None))
+            .collect();
+
+        let sapling_commitment_tree_size = self.commitment_tree_data().sizes().sapling();
+        let orchard_commitment_tree_size = self.commitment_tree_data().sizes().orchard();
+
+        zaino_proto::proto::compact_formats::CompactBlock {
+            proto_version: 4,
+            height,
+            hash,
+            prev_hash,
+            time: self.data().time() as u32,
+            // Header not currently used by CompactBlocks.
+            header: vec![],
+            vtx,
+            chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
+                sapling_commitment_tree_size,
+                orchard_commitment_tree_size,
+            }),
         }
     }
 }
 
-impl TryFrom<CBOR> for CommitmentTreeSizes {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
+/// TryFrom inputs:
+/// - FullBlock:
+///   - Holds block data.
+/// - parent_block_chain_work:
+///   - Used to calculate cumulative chain work.
+/// - Final sapling root:
+///  - Must be fetched from separate RPC.
+/// - Final orchard root:
+///  - Must be fetched from separate RPC.
+/// - parent_block_sapling_tree_size:
+///   - Used to calculate sapling tree size.
+/// - parent_block_orchard_tree_size:
+///   - Used to calculate sapling tree size.
+impl
+    TryFrom<(
+        zaino_fetch::chain::block::FullBlock,
+        ChainWork,
+        [u8; 32],
+        [u8; 32],
+        u32,
+        u32,
+    )> for ChainBlock
+{
+    type Error = String;
+
+    fn try_from(
+        (
+            full_block,
+            parent_chainwork,
+            final_sapling_root,
+            final_orchard_root,
+            parent_sapling_size,
+            parent_orchard_size,
+        ): (
+            zaino_fetch::chain::block::FullBlock,
+            ChainWork,
+            [u8; 32],
+            [u8; 32],
+            u32,
+            u32,
+        ),
+    ) -> Result<Self, Self::Error> {
+        // --- Block Header Info ---
+        let header = full_block.header();
+        let height = Height::try_from(full_block.height() as u32)
+            .map_err(|e| format!("Invalid block height: {e}"))?;
+
+        let hash: [u8; 32] = header
+            .cached_hash()
+            .try_into()
+            .map_err(|_| "Block hash must be 32 bytes")?;
+        let parent_hash: [u8; 32] = header
+            .hash_prev_block()
+            .try_into()
+            .map_err(|_| "Parent block hash must be 32 bytes")?;
+
+        let merkle_root: [u8; 32] = header
+            .hash_merkle_root()
+            .try_into()
+            .map_err(|v: Vec<u8>| format!("merkle root must be 32 bytes, got {}", v.len()))?;
+
+        let block_commitments: [u8; 32] = header
+            .final_sapling_root()
+            .try_into()
+            .map_err(|v: Vec<u8>| format!("block commitment must be 32 bytes, got {}", v.len()))?;
+
+        let n_bits_bytes = header.n_bits_bytes();
+        if n_bits_bytes.len() != 4 {
+            return Err("nBits must be 4 bytes".to_string());
+        }
+        let bits = u32::from_le_bytes(n_bits_bytes.try_into().unwrap());
+
+        let nonse: [u8; 32] = header
+            .nonce()
+            .try_into()
+            .map_err(|v: Vec<u8>| format!("nonse must be 32 bytes, got {}", v.len()))?;
+
+        let solution = EquihashSolution::try_from(header.solution()).map_err(|_| {
+            format!(
+                "solution must be 32 or 1344 bytes, got {}",
+                header.solution().len()
+            )
+        })?;
+
+        // --- Convert transactions ---
+        let mut sapling_note_count = 0;
+        let mut orchard_note_count = 0;
+
+        let full_transactions = full_block.transactions();
+        let mut tx = Vec::with_capacity(full_transactions.len());
+
+        for (i, ftx) in full_transactions.into_iter().enumerate() {
+            let txdata = CompactTxData::try_from((i as u64, ftx))
+                .map_err(|e| format!("TxData conversion failed at index {}: {e}", i))?;
+
+            sapling_note_count += txdata.sapling().outputs().len();
+            orchard_note_count += txdata.orchard().actions().len();
+
+            tx.push(txdata);
+        }
+
+        // --- Compute commitment trees ---
+        let sapling_root = final_sapling_root;
+        let orchard_root = final_orchard_root;
+
+        let commitment_tree_data = CommitmentTreeData::new(
+            CommitmentTreeRoots::new(sapling_root, orchard_root),
+            CommitmentTreeSizes::new(
+                parent_sapling_size + sapling_note_count as u32,
+                parent_orchard_size + orchard_note_count as u32,
+            ),
+        );
+
+        // --- Compute chainwork ---
+        let block_data = BlockData::new(
+            header.version() as u32,
+            header.time() as i64,
+            merkle_root,
+            block_commitments,
+            bits,
+            nonse,
+            solution,
+        );
+
+        let chainwork = parent_chainwork.add(&ChainWork::from(block_data.work()));
+
+        // --- Final index and block data ---
+        let index = BlockIndex::new(
+            Hash::from(hash),
+            Hash::from(parent_hash),
+            chainwork,
+            Some(height),
+        );
+
+        Ok(ChainBlock::new(index, block_data, tx, commitment_tree_data))
     }
 }
+
+// *** Transaction Objects ***
 
 /// Compact indexed representation of a transaction within a block, supporting quick queries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct TxData {
+pub struct CompactTxData {
     /// The index (position) of this transaction within its block (0-based).
     index: u64,
     /// Unique identifier (hash) of the transaction, used for lookup and indexing.
     txid: [u8; 32],
-    /// Sapling and Orchard value balances, (Sapling, Orchard).
-    value_balances: (Option<i64>, Option<i64>),
     /// Compact representation of transparent inputs/outputs in the transaction.
     transparent: TransparentCompactTx,
     /// Compact representation of Sapling shielded data.
     sapling: SaplingCompactTx,
     /// Compact representation of Orchard actions (shielded pool transactions).
-    orchard: Vec<CompactOrchardAction>,
+    orchard: OrchardCompactTx,
 }
 
-impl TxData {
+impl CompactTxData {
     /// Creates a new TxData instance.
     pub fn new(
         index: u64,
         txid: [u8; 32],
-        value_balances: (Option<i64>, Option<i64>),
         transparent: TransparentCompactTx,
         sapling: SaplingCompactTx,
-        orchard: Vec<CompactOrchardAction>,
+        orchard: OrchardCompactTx,
     ) -> Self {
         Self {
             index,
             txid,
-            value_balances,
             transparent,
             sapling,
             orchard,
@@ -1136,7 +936,7 @@ impl TxData {
 
     /// Returns sapling and orchard value balances.
     pub fn balances(&self) -> (Option<i64>, Option<i64>) {
-        self.value_balances
+        (self.sapling.value, self.orchard.value)
     }
 
     /// Returns compact transparent tx data.
@@ -1150,7 +950,7 @@ impl TxData {
     }
 
     /// Returns compact orchard tx data.
-    pub fn orchard(&self) -> &[CompactOrchardAction] {
+    pub fn orchard(&self) -> &OrchardCompactTx {
         &self.orchard
     }
 
@@ -1187,6 +987,7 @@ impl TxData {
 
         let actions = self
             .orchard()
+            .actions()
             .iter()
             .map(
                 |a| zaino_proto::proto::compact_formats::CompactOrchardAction {
@@ -1212,7 +1013,7 @@ impl TxData {
 /// TryFrom inputs:
 /// - Transaction Index
 /// - Full Transaction
-impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for TxData {
+impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for CompactTxData {
     type Error = String;
 
     fn try_from(
@@ -1223,7 +1024,7 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for TxData
             .try_into()
             .map_err(|_| "txid must be 32 bytes".to_string())?;
 
-        let value_balances = tx.value_balances();
+        let (sapling_balance, orchard_balance) = tx.value_balances();
 
         let vin: Vec<TxInCompact> = tx
             .transparent_inputs()
@@ -1290,9 +1091,9 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for TxData
             })
             .collect::<Result<_, _>>()?;
 
-        let sapling = SaplingCompactTx::new(spends, outputs);
+        let sapling = SaplingCompactTx::new(sapling_balance, spends, outputs);
 
-        let orchard = tx
+        let actions: Vec<CompactOrchardAction> = tx
             .orchard_actions()
             .into_iter()
             .map(|(nf, cmx, epk, ct)| {
@@ -1314,98 +1115,15 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for TxData
             })
             .collect::<Result<_, _>>()?;
 
-        Ok(TxData::new(
+        let orchard = OrchardCompactTx::new(orchard_balance, actions);
+
+        Ok(CompactTxData::new(
             index,
             txid,
-            value_balances,
             transparent,
             sapling,
             orchard,
         ))
-    }
-}
-
-impl CBORTagged for TxData {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::TxData.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for TxData {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(self.index),
-            CBOR::from(&self.txid[..]),
-            match self.value_balances.0 {
-                Some(v) => CBOR::from(v),
-                None => CBOR::null(),
-            },
-            match self.value_balances.1 {
-                Some(v) => CBOR::from(v),
-                None => CBOR::null(),
-            },
-            self.transparent.tagged_cbor(),
-            self.sapling.tagged_cbor(),
-            CBOR::from(
-                self.orchard
-                    .iter()
-                    .map(|a| a.tagged_cbor())
-                    .collect::<Vec<_>>(),
-            ),
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for TxData {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 7 => {
-                let index: u64 = arr[0].clone().try_into()?;
-                let txid_vec: Vec<u8> = arr[1].clone().try_into()?;
-                let txid: [u8; 32] = txid_vec.try_into().map_err(|_| dcbor::Error::WrongType)?;
-
-                let sapling_value = if arr[2].is_null() {
-                    None
-                } else {
-                    Some(arr[2].clone().try_into()?)
-                };
-                let orchard_value = if arr[3].is_null() {
-                    None
-                } else {
-                    Some(arr[3].clone().try_into()?)
-                };
-
-                let transparent = TransparentCompactTx::try_from(arr[4].clone())?;
-                let sapling = SaplingCompactTx::try_from(arr[5].clone())?;
-
-                let orchard_arr = match arr[6].clone().into_case() {
-                    CBORCase::Array(a) => a,
-                    _ => return Err(dcbor::Error::WrongType),
-                };
-
-                let orchard = orchard_arr
-                    .into_iter()
-                    .map(CompactOrchardAction::try_from)
-                    .collect::<Result<_, _>>()?;
-
-                Ok(Self {
-                    index,
-                    txid,
-                    value_balances: (sapling_value, orchard_value),
-                    transparent,
-                    sapling,
-                    orchard,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for TxData {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
     }
 }
 
@@ -1436,61 +1154,6 @@ impl TransparentCompactTx {
     }
 }
 
-impl CBORTagged for TransparentCompactTx {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::TransparentCompactTx.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for TransparentCompactTx {
-    fn untagged_cbor(&self) -> CBOR {
-        let vin_cbor = self.vin.iter().map(|i| i.tagged_cbor()).collect::<Vec<_>>();
-        let vout_cbor = self
-            .vout
-            .iter()
-            .map(|o| o.tagged_cbor())
-            .collect::<Vec<_>>();
-        CBOR::from(vec![CBOR::from(vin_cbor), CBOR::from(vout_cbor)])
-    }
-}
-
-impl CBORTaggedDecodable for TransparentCompactTx {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 2 => {
-                let vin_arr = match arr[0].clone().into_case() {
-                    CBORCase::Array(inner) => inner,
-                    _ => return Err(dcbor::Error::WrongType),
-                };
-                let vout_arr = match arr[1].clone().into_case() {
-                    CBORCase::Array(inner) => inner,
-                    _ => return Err(dcbor::Error::WrongType),
-                };
-
-                let vin = vin_arr
-                    .into_iter()
-                    .map(TxInCompact::try_from)
-                    .collect::<Result<_, _>>()?;
-
-                let vout = vout_arr
-                    .into_iter()
-                    .map(TxOutCompact::try_from)
-                    .collect::<Result<_, _>>()?;
-
-                Ok(Self { vin, vout })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for TransparentCompactTx {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
-
 /// A compact reference to a previously created transparent UTXO being spent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
@@ -1518,44 +1181,6 @@ impl TxInCompact {
     /// Returns the index of the output being sent within the transaction.
     pub fn prevout_index(&self) -> u32 {
         self.prevout_index
-    }
-}
-
-impl CBORTagged for TxInCompact {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::TxInCompact.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for TxInCompact {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(&self.prevout_txid[..]),
-            CBOR::from(self.prevout_index),
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for TxInCompact {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 2 => {
-                let txid: Vec<u8> = arr[0].clone().try_into()?;
-                let index: u32 = arr[1].clone().try_into()?;
-                Ok(Self {
-                    prevout_txid: txid.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    prevout_index: index,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for TxInCompact {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
     }
 }
 
@@ -1592,32 +1217,6 @@ impl ScriptType {
             ScriptType::P2SH => "P2SH",
             ScriptType::NonStandard => "NonStandard",
         }
-    }
-}
-
-impl CBORTagged for ScriptType {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::ScriptType.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for ScriptType {
-    fn untagged_cbor(&self) -> CBOR {
-        (*self as u8).into()
-    }
-}
-
-impl CBORTaggedDecodable for ScriptType {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        let value: u8 = cbor.try_into()?;
-        ScriptType::try_from(value).map_err(|_| dcbor::Error::WrongType)
-    }
-}
-
-impl TryFrom<CBOR> for ScriptType {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
     }
 }
 
@@ -1668,129 +1267,45 @@ impl TxOutCompact {
     }
 }
 
-impl CBORTagged for TxOutCompact {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::TxOutCompact.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for TxOutCompact {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(self.value),
-            CBOR::from(&self.script_hash[..]),
-            CBOR::from(self.script_type),
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for TxOutCompact {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 3 => {
-                let value = arr[0].clone().try_into()?;
-                let hash: Vec<u8> = arr[1].clone().try_into()?;
-                let stype: u8 = arr[2].clone().try_into()?;
-                Ok(Self {
-                    value,
-                    script_hash: hash.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    script_type: stype,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for TxOutCompact {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
-
 /// Compact representation of Sapling shielded transaction data for wallet scanning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct SaplingCompactTx {
+    /// Net Sapling value balance (before fees); `None` if no Sapling component.
+    value: Option<i64>,
     /// Shielded spends (notes being consumed).
-    spend: Vec<CompactSaplingSpend>,
+    spends: Vec<CompactSaplingSpend>,
     /// Shielded outputs (new notes created).
-    output: Vec<CompactSaplingOutput>,
+    outputs: Vec<CompactSaplingOutput>,
 }
 
 impl SaplingCompactTx {
     /// Creates a new SaplingCompactTx instance.
-    pub fn new(spend: Vec<CompactSaplingSpend>, output: Vec<CompactSaplingOutput>) -> Self {
-        Self { spend, output }
+    pub fn new(
+        value: Option<i64>,
+        spends: Vec<CompactSaplingSpend>,
+        outputs: Vec<CompactSaplingOutput>,
+    ) -> Self {
+        Self {
+            value,
+            spends,
+            outputs,
+        }
+    }
+
+    /// Returns the net sapling value balance (before fees); `None` if no sapling component.
+    pub fn value(&self) -> Option<i64> {
+        self.value
     }
 
     /// Returns sapling spends.
     pub fn spends(&self) -> &[CompactSaplingSpend] {
-        &self.spend
+        &self.spends
     }
 
     /// Returns sapling outputs
     pub fn outputs(&self) -> &[CompactSaplingOutput] {
-        &self.output
-    }
-}
-
-impl CBORTagged for SaplingCompactTx {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::SaplingCompactTx.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for SaplingCompactTx {
-    fn untagged_cbor(&self) -> CBOR {
-        let spend_cbor = self
-            .spend
-            .iter()
-            .map(|s| s.tagged_cbor())
-            .collect::<Vec<_>>();
-        let output_cbor = self
-            .output
-            .iter()
-            .map(|o| o.tagged_cbor())
-            .collect::<Vec<_>>();
-        CBOR::from(vec![CBOR::from(spend_cbor), CBOR::from(output_cbor)])
-    }
-}
-
-impl CBORTaggedDecodable for SaplingCompactTx {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 2 => {
-                let spend_arr = match arr[0].clone().into_case() {
-                    CBORCase::Array(inner) => inner,
-                    _ => return Err(dcbor::Error::WrongType),
-                };
-                let output_arr = match arr[1].clone().into_case() {
-                    CBORCase::Array(inner) => inner,
-                    _ => return Err(dcbor::Error::WrongType),
-                };
-
-                let spend = spend_arr
-                    .into_iter()
-                    .map(CompactSaplingSpend::try_from)
-                    .collect::<Result<_, _>>()?;
-                let output = output_arr
-                    .into_iter()
-                    .map(CompactSaplingOutput::try_from)
-                    .collect::<Result<_, _>>()?;
-
-                Ok(Self { spend, output })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for SaplingCompactTx {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
+        &self.outputs
     }
 }
 
@@ -1811,34 +1326,6 @@ impl CompactSaplingSpend {
     /// Returns sapling nullifier.
     pub fn nullifier(&self) -> &[u8; 32] {
         &self.nf
-    }
-}
-
-impl CBORTagged for CompactSaplingSpend {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::CompactSaplingSpend.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for CompactSaplingSpend {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(&self.nf[..])
-    }
-}
-
-impl CBORTaggedDecodable for CompactSaplingSpend {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        let nf: Vec<u8> = cbor.try_into()?;
-        Ok(Self {
-            nf: nf.try_into().map_err(|_| dcbor::Error::WrongType)?,
-        })
-    }
-}
-
-impl TryFrom<CBOR> for CompactSaplingSpend {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
     }
 }
 
@@ -1881,44 +1368,30 @@ impl CompactSaplingOutput {
     }
 }
 
-impl CBORTagged for CompactSaplingOutput {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::CompactSaplingOutput.tag()]
-    }
+/// Compact summary of all shielded activity in a transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct OrchardCompactTx {
+    /// Net Orchard value balance (before fees); `None` if no Orchard component.
+    value: Option<i64>,
+    /// Orchard actions (may be empty).
+    actions: Vec<CompactOrchardAction>,
 }
 
-impl CBORTaggedEncodable for CompactSaplingOutput {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(&self.cmu[..]),
-            CBOR::from(&self.ephemeral_key[..]),
-            CBOR::from(&self.ciphertext[..]),
-        ])
+impl OrchardCompactTx {
+    /// Creates a new CompactOrchardTx instance.
+    pub fn new(value: Option<i64>, actions: Vec<CompactOrchardAction>) -> Self {
+        Self { value, actions }
     }
-}
 
-impl CBORTaggedDecodable for CompactSaplingOutput {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 3 => {
-                let cmu: Vec<u8> = arr[0].clone().try_into()?;
-                let epk: Vec<u8> = arr[1].clone().try_into()?;
-                let ct: Vec<u8> = arr[2].clone().try_into()?;
-                Ok(Self {
-                    cmu: cmu.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    ephemeral_key: epk.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    ciphertext: ct.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
+    /// Returns the net orchard value balance (before fees); `None` if no Orchard component.
+    pub fn value(&self) -> Option<i64> {
+        self.value
     }
-}
 
-impl TryFrom<CBOR> for CompactSaplingOutput {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
+    /// Returns the orchard actions in this transaction.
+    pub fn actions(&self) -> &[CompactOrchardAction] {
+        &self.actions
     }
 }
 
@@ -1974,113 +1447,159 @@ impl CompactOrchardAction {
     }
 }
 
-impl CBORTagged for CompactOrchardAction {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::CompactOrchardAction.tag()]
-    }
+/// Identifies a transaction by its (block_position, tx_position) pair,
+/// used to locate transactions within Zaino's internal DB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct TxIndex {
+    /// Block Height in chain.
+    block_index: u32,
+    /// Transaction index in block.
+    tx_index: u16,
 }
 
-impl CBORTaggedEncodable for CompactOrchardAction {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(&self.nullifier[..]),
-            CBOR::from(&self.cmx[..]),
-            CBOR::from(&self.ephemeral_key[..]),
-            CBOR::from(&self.ciphertext[..]),
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for CompactOrchardAction {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 4 => {
-                let nullifier: Vec<u8> = arr[0].clone().try_into()?;
-                let cmx: Vec<u8> = arr[1].clone().try_into()?;
-                let ephemeral_key: Vec<u8> = arr[2].clone().try_into()?;
-                let ciphertext: Vec<u8> = arr[3].clone().try_into()?;
-                Ok(Self {
-                    nullifier: nullifier.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    cmx: cmx.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    ephemeral_key: ephemeral_key
-                        .try_into()
-                        .map_err(|_| dcbor::Error::WrongType)?,
-                    ciphertext: ciphertext.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
+impl TxIndex {
+    /// Creates a new TxIndex instance.
+    pub fn new(block_index: u32, tx_index: u16) -> Self {
+        Self {
+            block_index,
+            tx_index,
         }
     }
-}
 
-impl TryFrom<CBOR> for CompactOrchardAction {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
+    /// Returns the block height held in the TxIndex.
+    pub fn block_index(&self) -> u32 {
+        self.block_index
+    }
+
+    /// Returns the transaction index held in the TxIndex.
+    pub fn tx_index(&self) -> u16 {
+        self.tx_index
     }
 }
 
-/// Represents explicitly recorded spent transparent outputs within a block, facilitating fast indexing and rollbacks.
+/// Single transparent-address activity record (input or output).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct SpentOutpoint {
-    /// Transaction ID of the output that was spent.
-    txid: [u8; 32],
-    /// The index of the output within the previous transaction being spent.
-    vout: u32,
+pub struct AddrHistRecord {
+    tx_index: TxIndex,
+    out_index: u16,
+    value: u64,
+    flags: u8,
 }
 
-impl SpentOutpoint {
-    /// Creates a new SpentOutpoint instance.
-    pub fn new(txid: [u8; 32], vout: u32) -> Self {
-        Self { txid, vout }
-    }
+/* ----- flag helpers ----- */
+impl AddrHistRecord {
+    /// Flag mask for is_mined.
+    pub const FLAG_MINED: u8 = 0x01;
 
-    /// Returns the Txid of the transaction the outpoint was spent in.
-    pub fn txid(&self) -> &[u8; 32] {
-        &self.txid
-    }
+    /// Flag mask for is_spent.
+    pub const FLAG_SPENT: u8 = 0x02;
 
-    /// Index of the output within the transaction.
-    pub fn vout(&self) -> u32 {
-        self.vout
-    }
-}
+    /// Flag mask for is_input.
+    pub const FLAG_IS_INPUT: u8 = 0x04;
 
-impl CBORTagged for SpentOutpoint {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::SpentOutpoint.tag()]
-    }
-}
-
-impl CBORTaggedEncodable for SpentOutpoint {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![CBOR::from(&self.txid[..]), CBOR::from(self.vout)])
-    }
-}
-
-impl CBORTaggedDecodable for SpentOutpoint {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 2 => {
-                let txid: Vec<u8> = arr[0].clone().try_into()?;
-                let vout: u32 = arr[1].clone().try_into()?;
-                Ok(Self {
-                    txid: txid.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    vout,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
+    /// Creatues a new AddrHistRecord instance.
+    pub fn new(tx_index: TxIndex, out_index: u16, value: u64, flags: u8) -> Self {
+        Self {
+            tx_index,
+            out_index,
+            value,
+            flags,
         }
     }
-}
 
-impl TryFrom<CBOR> for SpentOutpoint {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
+    /// Returns the TxIndex in this record.
+    pub fn tx_index(&self) -> TxIndex {
+        self.tx_index
+    }
+
+    /// Returns the out index of this record.
+    pub fn out_index(&self) -> u16 {
+        self.out_index
+    }
+
+    /// Returns the value of this record.
+    pub fn value(&self) -> u64 {
+        self.value
+    }
+
+    /// Returns the flag byte of this record.
+    pub fn flags(&self) -> u8 {
+        self.flags
+    }
+
+    /// Returns true if this record is from a mined block.
+    pub fn is_mined(&self) -> bool {
+        self.flags & Self::FLAG_MINED != 0
+    }
+
+    /// Returns true if this record is a spend.
+    pub fn is_spent(&self) -> bool {
+        self.flags & Self::FLAG_SPENT != 0
+    }
+
+    /// Returns true if this record is an input.
+    pub fn is_input(&self) -> bool {
+        self.flags & Self::FLAG_IS_INPUT != 0
     }
 }
+
+/// AddrHistRecord database byte array.
+///
+/// EXACTLY 17 bytes – duplicate value in `addr_hist` DBI.
+///
+/// Layout (all big-endian except `value`):
+/// [0..4]  height
+/// [4..6]  tx_index
+/// [6..8]  vout
+/// [8]     flags
+/// [9..17] value  (little-endian, matches Zcashd)
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub(crate) struct AddrEventBytes([u8; 17]);
+
+impl AddrEventBytes {
+    const LEN: usize = 17;
+
+    /// Create an [`AddrEventBytes`] from an [`AddrHistRecord`].
+    #[allow(dead_code)]
+    pub(crate) fn from_record(rec: &AddrHistRecord) -> Self {
+        use byteorder::{BigEndian, ByteOrder, LittleEndian};
+
+        let mut buf = [0u8; Self::LEN];
+        BigEndian::write_u32(&mut buf[0..4], rec.tx_index.block_index);
+        BigEndian::write_u16(&mut buf[4..6], rec.tx_index.tx_index);
+        BigEndian::write_u16(&mut buf[6..8], rec.out_index);
+        buf[8] = rec.flags;
+        LittleEndian::write_u64(&mut buf[9..17], rec.value);
+        Self(buf)
+    }
+
+    /// Create an [`AddrHistRecord`] from an [`AddrEventBytes`].
+    #[allow(dead_code)]
+    pub(crate) fn as_record(&self) -> AddrHistRecord {
+        use byteorder::{BigEndian, ByteOrder, LittleEndian};
+        let b = &self.0;
+        AddrHistRecord {
+            tx_index: TxIndex {
+                block_index: BigEndian::read_u32(&b[0..4]),
+                tx_index: BigEndian::read_u16(&b[4..6]),
+            },
+            out_index: BigEndian::read_u16(&b[6..8]),
+            flags: b[8],
+            value: LittleEndian::read_u64(&b[9..17]),
+        }
+    }
+
+    /// Borrow the raw bytes.
+    #[allow(dead_code)]
+    pub(crate) fn as_bytes(&self) -> &[u8; Self::LEN] {
+        &self.0
+    }
+}
+
+// *** Sharding ***
 
 /// Root commitment for a state shard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2120,52 +1639,32 @@ impl ShardRoot {
     }
 }
 
-impl CBORTagged for ShardRoot {
-    fn cbor_tags() -> Vec<Tag> {
-        vec![CborTag::ShardRoot.tag()]
-    }
-}
+// *** Wrapper Objects ***
 
-impl CBORTaggedEncodable for ShardRoot {
-    fn untagged_cbor(&self) -> CBOR {
-        CBOR::from(vec![
-            CBOR::from(&self.hash[..]),
-            CBOR::from(&self.final_block_hash[..]),
-            CBOR::from(self.final_block_height),
-        ])
-    }
-}
-
-impl CBORTaggedDecodable for ShardRoot {
-    fn from_untagged_cbor(cbor: CBOR) -> dcbor::Result<Self> {
-        match cbor.into_case() {
-            CBORCase::Array(arr) if arr.len() == 3 => {
-                let hash: Vec<u8> = arr[0].clone().try_into()?;
-                let final_block_hash: Vec<u8> = arr[1].clone().try_into()?;
-                let final_block_height: u32 = arr[2].clone().try_into()?;
-                Ok(Self {
-                    hash: hash.try_into().map_err(|_| dcbor::Error::WrongType)?,
-                    final_block_hash: final_block_hash
-                        .try_into()
-                        .map_err(|_| dcbor::Error::WrongType)?,
-                    final_block_height,
-                })
-            }
-            _ => Err(dcbor::Error::WrongType),
-        }
-    }
-}
-
-impl TryFrom<CBOR> for ShardRoot {
-    type Error = dcbor::Error;
-    fn try_from(cbor: CBOR) -> dcbor::Result<Self> {
-        Self::from_tagged_cbor(cbor)
-    }
-}
+// *** Custom serde based debug serialisation ***
 
 #[cfg(test)]
 pub mod serde_arrays {
     use serde::{Deserialize, Deserializer, Serializer};
+
+    pub mod fixed_36 {
+        use super::*;
+        pub fn serialize<S>(val: &[u8; 36], s: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            s.serialize_bytes(val)
+        }
+
+        pub fn deserialize<'de, D>(d: D) -> Result<[u8; 36], D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let v: &[u8] = Deserialize::deserialize(d)?;
+            v.try_into()
+                .map_err(|_| serde::de::Error::custom("invalid length for [u8; 36]"))
+        }
+    }
 
     pub mod fixed_52 {
         use super::*;
@@ -2183,6 +1682,25 @@ pub mod serde_arrays {
             let v: &[u8] = Deserialize::deserialize(d)?;
             v.try_into()
                 .map_err(|_| serde::de::Error::custom("invalid length for [u8; 52]"))
+        }
+    }
+
+    pub mod fixed_1344 {
+        use super::*;
+        pub fn serialize<S>(val: &[u8; 1344], s: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            s.serialize_bytes(val)
+        }
+
+        pub fn deserialize<'de, D>(d: D) -> Result<[u8; 1344], D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let v: &[u8] = Deserialize::deserialize(d)?;
+            v.try_into()
+                .map_err(|_| serde::de::Error::custom("invalid length for [u8; 1344]"))
         }
     }
 }
