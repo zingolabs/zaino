@@ -1,0 +1,40 @@
+name: Auto RC Tag
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - 'rc/*'
+
+jobs:
+  auto-tag-rc:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get next RC tag
+        id: tagger
+        run: |
+          VERSION=$(echo "${{ github.ref }}" | sed -E 's#refs/heads/rc/##')
+          PREFIX="$VERSION-rc"
+
+          echo "Looking for previous tags matching $PREFIX.*"
+          git fetch --tags
+
+          LATEST=$(git tag -l "$PREFIX.*" | sed -E "s/.*rc\.//" | sort -n | tail -1)
+          NEXT=$((LATEST + 1))
+          TAG="$PREFIX.$NEXT"
+
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create and push tag
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git tag ${{ steps.tagger.outputs.TAG }}
+          git push origin ${{ steps.tagger.outputs.TAG }}

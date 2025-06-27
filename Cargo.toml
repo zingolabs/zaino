@@ -25,13 +25,15 @@ version = "0.1.2"
 [workspace.dependencies]
 # Zingolabs
 # Should be updated to crates.io releases when available.
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2", features = [ "test-elevation" ] }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2", features = [
+    "test-elevation",
+] }
 testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
 zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cca5d0705111e1e7064a691724c8501560c84782" }
 zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cca5d0705111e1e7064a691724c8501560c84782" }
 
 # Librustzcash
-zcash_client_backend = { version = "0.18.0" , features = [ "lightwalletd-tonic" ] }
+zcash_client_backend = { version = "0.18.0", features = ["lightwalletd-tonic"] }
 zcash_protocol = "0.5.1"
 zcash_primitives = "0.22"
 
@@ -50,13 +52,20 @@ clap = "4.0"
 
 # Tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "time"] }
+tracing-subscriber = { version = "0.3", features = [
+    "fmt",
+    "env-filter",
+    "time",
+] }
 tracing-futures = "0.2"
 
 # Network / RPC
 http = "1.1"
 url = "2.5"
-reqwest = { version = "0.12", default-features = false, features = ["cookies", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "cookies",
+    "rustls-tls",
+] }
 tower = { version = "0.4", features = ["buffer", "util"] }
 tonic = "0.12"
 tonic-build = "0.12"
@@ -95,7 +104,6 @@ sha2 = "0.10"
 hex = "0.4"
 toml = "0.5"
 primitive-types = "0.13"
-dcbor = "0.19"
 
 # Test
 portpicker = "0.1"

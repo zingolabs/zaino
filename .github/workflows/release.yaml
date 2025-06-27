@@ -1,15 +1,16 @@
+name: Zaino Release
+
 on:
-  pull_request:
-    types:
-      - closed
-    branches:
-      - dev
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+  workflow_dispatch:
 
 jobs:
   docker:
-    name: Build Docker images
-    runs-on: ziserv-2
-    if: ${{ github.event.pull_request.merged == true }}
+    name: Docker images (build+push)
+    runs-on: ubuntu-latest
     env:
       PUSH_IMAGES: true
     steps:
@@ -22,15 +23,15 @@ jobs:
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
       - name: Extract metadata for Docker (default image)
         id: meta-default
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}
           tags: |
-            type=semver,pattern={{version}}, prefix=v
+            type=semver,pattern={{version}}
 
       - name: Build and Push Default Image
         uses: docker/build-push-action@v5
@@ -41,22 +42,21 @@ jobs:
           tags: ${{ steps.meta-default.outputs.tags }}
           labels: ${{ steps.meta-default.outputs.labels }}
           cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}:buildcache
             type=gha
           cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache,mode=max
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}:buildcache,mode=max
             type=gha,mode=max
-
 
       - name: Extract metadata for Docker (no-tls image)
         id: meta-no-tls
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}
           flavor: |
             suffix=-no-tls
           tags: |
-            type=semver,pattern={{version}}, prefix=v
+            type=semver,pattern={{version}}
 
       - name: Build and Push No-TLS Image
         uses: docker/build-push-action@v5
@@ -68,18 +68,16 @@ jobs:
           tags: "${{ steps.meta-no-tls.outputs.tags }}"
           labels: ${{ steps.meta-no-tls.outputs.labels }}
           cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache-no-tls
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}:buildcache-no-tls
             type=gha
           cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_REPO || 'zaino' }}:buildcache-no-tls,mode=max
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}:buildcache-no-tls,mode=max
             type=gha,mode=max
 
   create-release:
     needs: docker
     name: Create GitHub Release
-    if: ${{ github.event.pull_request.merged == true }} && startsWith(github.ref, 'refs/tags/') && github.token != ''
-    runs-on: ziserv-2
-
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,5 +100,5 @@ jobs:
             CHANGELOG.md
           body_path: CHANGELOG.md
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref, '-rc.') }}
           token: ${{ secrets.GITHUB_TOKEN }}
