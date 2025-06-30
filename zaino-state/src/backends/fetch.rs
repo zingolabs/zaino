@@ -217,6 +217,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
             })?)
     }
 
+    /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
+    ///
+    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_difficulty(&self) -> Result<f64, Self::Error> {
+        Ok(self.fetcher.get_difficulty().await?.0)
+    }
+
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)

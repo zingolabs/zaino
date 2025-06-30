@@ -186,6 +186,10 @@ pub struct GetBlockchainInfoResponse {
     commitments: u64,
 }
 
+/// Response to a `getdifficulty` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetDifficultyResponse(pub f64);
+
 fn default_header() -> Height {
     Height(0)
 }
