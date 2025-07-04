@@ -28,6 +28,9 @@ zebra-rpc = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# openRPC
+schemars = { workspace = true }
+
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
 thiserror = { workspace = true }
@@ -61,4 +64,6 @@ zingolib = { workspace = true }
 [build-dependencies]
 whoami = { workspace = true }
 cargo-lock = "10.1.0"
+syn = "2"
+quote = "1"
 
