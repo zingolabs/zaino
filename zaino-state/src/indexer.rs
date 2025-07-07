@@ -161,7 +161,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error>;
+    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
@@ -297,7 +297,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
-    async fn z_get_treestate(&self, hash_or_height: String) -> Result<GetTreestate, Self::Error>;
+    async fn z_get_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<GetTreestateResponse, Self::Error>;
 
     /// Returns information about a range of Sapling or Orchard subtrees.
     ///
@@ -322,7 +325,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, Self::Error>;
+    ) -> Result<GetSubtreesByIndexResponse, Self::Error>;
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
@@ -401,43 +404,49 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ) -> Result<Vec<String>, Self::Error> {
         let chain_height = self.chain_height().await?;
         let (start, end) = match request.range {
-            Some(range) => match (range.start, range.end) {
-                (Some(start), Some(end)) => {
-                    let start = match u32::try_from(start.height) {
-                        Ok(height) => height.min(chain_height.0),
+            Some(range) => {
+                let start = if let Some(start) = range.start {
+                    match u32::try_from(start.height) {
+                        Ok(height) => Some(height.min(chain_height.0)),
                         Err(_) => {
                             return Err(Self::Error::from(tonic::Status::invalid_argument(
                                 "Error: Start height out of range. Failed to convert to u32.",
                             )))
                         }
-                    };
-                    let end = match u32::try_from(end.height) {
-                        Ok(height) => height.min(chain_height.0),
+                    }
+                } else {
+                    None
+                };
+                let end = if let Some(end) = range.end {
+                    match u32::try_from(end.height) {
+                        Ok(height) => Some(height.min(chain_height.0)),
                         Err(_) => {
                             return Err(Self::Error::from(tonic::Status::invalid_argument(
                                 "Error: End height out of range. Failed to convert to u32.",
                             )))
                         }
-                    };
-                    if start > end {
-                        (end, start)
-                    } else {
-                        (start, end)
                     }
+                } else {
+                    None
+                };
+                match (start, end) {
+                    (Some(start), Some(end)) => {
+                        if start > end {
+                            (Some(end), Some(start))
+                        } else {
+                            (Some(start), Some(end))
+                        }
+                    }
+                    _ => (start, end),
                 }
-                _ => {
-                    return Err(Self::Error::from(tonic::Status::invalid_argument(
-                        "Error: Incomplete block range given.",
-                    )))
-                }
-            },
+            }
             None => {
                 return Err(Self::Error::from(tonic::Status::invalid_argument(
                     "Error: No block range given.",
                 )))
             }
         };
-        self.get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
+        self.get_address_tx_ids(GetAddressTxIdsRequest::new(
             vec![request.address],
             start,
             end,
@@ -573,13 +582,13 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let timeout = timeout(
                 std::time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for subtree in subtrees.subtrees {
+                    for subtree in subtrees.subtrees() {
                         match service_clone
                             .z_get_block(subtree.end_height.0.to_string(), Some(1))
                             .await
                         {
-                            Ok(GetBlock::Object { hash, height, .. }) => {
-                                let checked_height = match height {
+                            Ok(GetBlock::Object (block_object)) => {
+                                let checked_height = match block_object.height() {
                                     Some(h) => h.0 as u64,
                                     None => {
                                         match channel_tx
@@ -622,8 +631,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                 if channel_tx
                                     .send(Ok(SubtreeRoot {
                                         root_hash: checked_root_hash,
-                                        completing_block_hash: hash
-                                            .0
+                                        completing_block_hash: block_object.hash()
                                             .bytes_in_display_order()
                                             .to_vec(),
                                         completing_block_height: checked_height,
@@ -720,14 +728,14 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
 ) -> Result<(), mpsc::error::SendError<Result<RawTransaction, tonic::Status>>> {
     match transaction {
         Ok(GetRawTransaction::Object(transaction_obj)) => {
-            let height: u64 = match transaction_obj.height {
+            let height: u64 = match transaction_obj.height() {
                 Some(h) => h as u64,
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
                 None => chain_height,
             };
             transmitter
                 .send(Ok(RawTransaction {
-                    data: transaction_obj.hex.as_ref().to_vec(),
+                    data: transaction_obj.hex().as_ref().to_vec(),
                     height,
                 }))
                 .await

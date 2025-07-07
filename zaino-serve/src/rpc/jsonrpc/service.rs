@@ -49,7 +49,7 @@ pub trait ZcashIndexerRpc {
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     #[method(name = "getblockchaininfo")]
-    async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, ErrorObjectOwned>;
+    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, ErrorObjectOwned>;
 
     /// Returns details on the active state of the TX memory pool.
     ///
@@ -200,7 +200,7 @@ pub trait ZcashIndexerRpc {
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
-    ) -> Result<GetTreestate, ErrorObjectOwned>;
+    ) -> Result<GetTreestateResponse, ErrorObjectOwned>;
 
     /// Returns information about a range of Sapling or Orchard subtrees.
     ///
@@ -226,7 +226,7 @@ pub trait ZcashIndexerRpc {
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, ErrorObjectOwned>;
+    ) -> Result<GetSubtreesByIndexResponse, ErrorObjectOwned>;
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
@@ -454,7 +454,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
-    ) -> Result<GetTreestate, ErrorObjectOwned> {
+    ) -> Result<GetTreestateResponse, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .z_get_treestate(hash_or_height)
@@ -473,7 +473,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, ErrorObjectOwned> {
+    ) -> Result<GetSubtreesByIndexResponse, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .z_get_subtrees_by_index(pool, start_index, limit)

@@ -240,9 +240,9 @@ async fn try_state_path(
                 GetBlock::Raw(_) => Err(BlockCacheError::Custom(
                     "Found transaction of `Raw` type, expected only `Hash` types.".to_string(),
                 )),
-                GetBlock::Object {
-                    hash, tx, trees, ..
-                } => Ok((hash, tx, trees)),
+                GetBlock::Object(block_obj) => {
+                    Ok((block_obj.hash(), block_obj.tx().clone(), block_obj.trees()))
+                }
             })?;
 
     StateServiceSubscriber::get_block_inner(state, network, hash_or_height, Some(0))
@@ -267,7 +267,7 @@ async fn try_state_path(
                     .collect::<Vec<String>>();
 
                 Ok((
-                    hash.0,
+                    hash,
                     FullBlock::parse_from_hex(
                         block_hex.as_ref(),
                         Some(display_txids_to_server(txid_strings)?),

@@ -779,8 +779,8 @@ impl BlockchainSource {
                     sapling, orchard, ..
                 } = tree_responses;
                 let sapling_frontier = sapling
-                    .inner()
-                    .inner()
+                    .commitments()
+                    .final_state()
                     .as_ref()
                     .map(hex::decode)
                     .transpose()
@@ -795,8 +795,8 @@ impl BlockchainSource {
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let orchard_frontier = orchard
-                    .inner()
-                    .inner()
+                    .commitments()
+                    .final_state()
                     .as_ref()
                     .map(hex::decode)
                     .transpose()

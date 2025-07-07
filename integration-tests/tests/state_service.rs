@@ -192,7 +192,7 @@ async fn state_service_check_info(
         errors,
         _,
     ) = fetch_service_info.into_parts();
-    let cleaned_fetch_info = GetInfo::from_parts(
+    let cleaned_fetch_info = GetInfo::new(
         version,
         build,
         subversion,
@@ -223,7 +223,7 @@ async fn state_service_check_info(
         errors,
         _,
     ) = state_service_info.into_parts();
-    let cleaned_state_info = GetInfo::from_parts(
+    let cleaned_state_info = GetInfo::new(
         version,
         build,
         subversion,
@@ -314,12 +314,12 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     let recipient_balance = clients.recipient.do_balance().await;
 
     let fetch_service_balance = fetch_service_subscriber
-        .z_get_address_balance(AddressStrings::new_valid(vec![recipient_taddr.clone()]).unwrap())
+        .z_get_address_balance(AddressStrings::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
 
     let state_service_balance = state_service_subscriber
-        .z_get_address_balance(AddressStrings::new_valid(vec![recipient_taddr]).unwrap())
+        .z_get_address_balance(AddressStrings::new(vec![recipient_taddr]))
         .await
         .unwrap();
 
@@ -333,7 +333,7 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     );
     assert_eq!(
         recipient_balance.confirmed_transparent_balance.unwrap(),
-        fetch_service_balance.balance,
+        fetch_service_balance.balance(),
     );
     assert_eq!(fetch_service_balance, state_service_balance);
 
@@ -358,7 +358,7 @@ async fn state_service_get_address_balance_testnet() {
 
     let address = "tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i";
 
-    let address_request = AddressStrings::new_valid(vec![address.to_string()]).unwrap();
+    let address_request = AddressStrings::new(vec![address.to_string()]);
 
     let fetch_service_balance = dbg!(
         fetch_service_subscriber
@@ -444,7 +444,7 @@ async fn state_service_get_block_object(
 
     let hash = match fetch_service_block {
         zebra_rpc::methods::GetBlock::Raw(_) => panic!("expected object"),
-        zebra_rpc::methods::GetBlock::Object { hash, .. } => hash.0.to_string(),
+        zebra_rpc::methods::GetBlock::Object(obj) => obj.hash().to_string(),
     };
     let state_service_get_block_by_hash = state_service_subscriber
         .z_get_block(hash.clone(), Some(1))
@@ -861,19 +861,19 @@ async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
     dbg!(&chain_height);
 
     let fetch_service_txids = fetch_service_subscriber
-        .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
+        .get_address_tx_ids(GetAddressTxIdsRequest::new(
             vec![recipient_taddr.clone()],
-            chain_height - 2,
-            chain_height,
+            Some(chain_height - 2),
+            Some(chain_height),
         ))
         .await
         .unwrap();
 
     let state_service_txids = state_service_subscriber
-        .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
+        .get_address_tx_ids(GetAddressTxIdsRequest::new(
             vec![recipient_taddr],
-            chain_height - 2,
-            chain_height,
+            Some(chain_height - 2),
+            Some(chain_height),
         ))
         .await
         .unwrap();
@@ -907,7 +907,7 @@ async fn state_service_get_address_tx_ids_testnet() {
     let address = "tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i";
 
     let address_request =
-        GetAddressTxIdsRequest::from_parts(vec![address.to_string()], 2000000, 3000000);
+        GetAddressTxIdsRequest::new(vec![address.to_string()], Some(2000000), Some(3000000));
 
     let fetch_service_tx_ids = dbg!(
         fetch_service_subscriber
@@ -966,13 +966,13 @@ async fn state_service_get_address_utxos(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     let fetch_service_utxos = fetch_service_subscriber
-        .z_get_address_utxos(AddressStrings::new_valid(vec![recipient_taddr.clone()]).unwrap())
+        .z_get_address_utxos(AddressStrings::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
     let (_, fetch_service_txid, ..) = fetch_service_utxos[0].into_parts();
 
     let state_service_utxos = state_service_subscriber
-        .z_get_address_utxos(AddressStrings::new_valid(vec![recipient_taddr]).unwrap())
+        .z_get_address_utxos(AddressStrings::new(vec![recipient_taddr]))
         .await
         .unwrap();
     let (_, state_service_txid, ..) = state_service_utxos[0].into_parts();
@@ -1009,7 +1009,7 @@ async fn state_service_get_address_utxos_testnet() {
 
     let address = "tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i";
 
-    let address_request = AddressStrings::new_valid(vec![address.to_string()]).unwrap();
+    let address_request = AddressStrings::new(vec![address.to_string()]);
 
     let fetch_service_utxos = dbg!(
         fetch_service_subscriber
@@ -1736,16 +1736,16 @@ mod zebrad {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let state_service_taddress_txids = state_service_subscriber
-                .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
+                .get_address_tx_ids(GetAddressTxIdsRequest::new(
                     vec![taddr.clone()],
-                    2,
-                    5,
+                    Some(2),
+                    Some(5),
                 ))
                 .await
                 .unwrap();
             dbg!(&state_service_taddress_txids);
             let fetch_service_taddress_txids = fetch_service_subscriber
-                .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(vec![taddr], 2, 5))
+                .get_address_tx_ids(GetAddressTxIdsRequest::new(vec![taddr], Some(2), Some(5)))
                 .await
                 .unwrap();
             dbg!(&fetch_service_taddress_txids);

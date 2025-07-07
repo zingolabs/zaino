@@ -40,3 +40,4 @@ base64 = { workspace = true }
 byteorder = { workspace = true }
 sha2 = { workspace = true }
 jsonrpsee-types = { workspace = true }
+derive_more = { version = "2.0.1", features = ["from"] }
