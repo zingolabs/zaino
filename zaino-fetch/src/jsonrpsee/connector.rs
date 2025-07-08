@@ -516,7 +516,8 @@ impl JsonRpSeeConnector {
         raw_transaction_hex: String,
     ) -> Result<SendTransactionResponse, RpcRequestError<SendTransactionError>> {
         let params =
-            vec![serde_json::to_value(raw_transaction_hex).map_err(RpcRequestError::JsonRpc)?];
+            vec![serde_json::to_value(raw_transaction_hex)
+                .map_err(InternalRpcRequestError::JsonRpc)?];
         self.send_request("sendrawtransaction", params).await
     }
 
@@ -539,8 +540,8 @@ impl JsonRpSeeConnector {
     ) -> Result<GetBlockResponse, RpcRequestError<GetBlockError>> {
         let v = verbosity.unwrap_or(1);
         let params = [
-            serde_json::to_value(hash_or_height).map_err(RpcRequestError::JsonRpc)?,
-            serde_json::to_value(v).map_err(RpcRequestError::JsonRpc)?,
+            serde_json::to_value(hash_or_height).map_err(InternalRpcRequestError::JsonRpc)?,
+            serde_json::to_value(v).map_err(InternalRpcRequestError::JsonRpc)?,
         ];
 
         if v == 0 {
@@ -590,7 +591,8 @@ impl JsonRpSeeConnector {
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, RpcRequestError<GetTreestateError>> {
-        let params = vec![serde_json::to_value(hash_or_height).map_err(RpcRequestError::JsonRpc)?];
+        let params =
+            vec![serde_json::to_value(hash_or_height).map_err(InternalRpcRequestError::JsonRpc)?];
         self.send_request("z_gettreestate", params).await
     }
 
@@ -613,13 +615,13 @@ impl JsonRpSeeConnector {
     ) -> Result<GetSubtreesResponse, RpcRequestError<GetSubtreesError>> {
         let params = match limit {
             Some(v) => vec![
-                serde_json::to_value(pool).map_err(RpcRequestError::JsonRpc)?,
-                serde_json::to_value(start_index).map_err(RpcRequestError::JsonRpc)?,
-                serde_json::to_value(v).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(pool).map_err(InternalRpcRequestError::JsonRpc)?,
+                serde_json::to_value(start_index).map_err(InternalRpcRequestError::JsonRpc)?,
+                serde_json::to_value(v).map_err(InternalRpcRequestError::JsonRpc)?,
             ],
             None => vec![
-                serde_json::to_value(pool).map_err(RpcRequestError::JsonRpc)?,
-                serde_json::to_value(start_index).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(pool).map_err(InternalRpcRequestError::JsonRpc)?,
+                serde_json::to_value(start_index).map_err(InternalRpcRequestError::JsonRpc)?,
             ],
         };
         self.send_request("z_getsubtreesbyindex", params).await
@@ -642,12 +644,12 @@ impl JsonRpSeeConnector {
     ) -> Result<GetTransactionResponse, RpcRequestError<GetTransactionError>> {
         let params = match verbose {
             Some(v) => vec![
-                serde_json::to_value(txid_hex).map_err(RpcRequestError::JsonRpc)?,
-                serde_json::to_value(v).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(txid_hex).map_err(InternalRpcRequestError::JsonRpc)?,
+                serde_json::to_value(v).map_err(InternalRpcRequestError::JsonRpc)?,
             ],
             None => vec![
-                serde_json::to_value(txid_hex).map_err(RpcRequestError::JsonRpc)?,
-                serde_json::to_value(0).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(txid_hex).map_err(InternalRpcRequestError::JsonRpc)?,
+                serde_json::to_value(0).map_err(InternalRpcRequestError::JsonRpc)?,
             ],
         };
 
