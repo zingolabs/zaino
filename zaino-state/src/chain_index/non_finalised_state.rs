@@ -707,7 +707,7 @@ impl BlockchainSource {
                     Ok(_) => unreachable!(),
                     Err(e) => match e {
                         RpcRequestError::Method(GetBlockError::MissingBlock(_)) => Ok(None),
-                        RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
+                        RpcRequestError::ServerBusy => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
                         _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
                     },
                 }
@@ -766,13 +766,11 @@ impl BlockchainSource {
                     // As MethodError contains a GetTreestateError, which is an enum with no variants,
                     // we don't need to account for it at all here
                     .map_err(|e| match e {
-                        RpcRequestError::ServerWorkQueueFull => {
-                            BlockchainSourceError::Unrecoverable(
-                                "Not yet implemented: handle backing validator\
+                        RpcRequestError::ServerBusy => BlockchainSourceError::Unrecoverable(
+                            "Not yet implemented: handle backing validator\
                                 full queue"
-                                    .to_string(),
-                            )
-                        }
+                                .to_string(),
+                        ),
                         _ => BlockchainSourceError::Unrecoverable(e.to_string()),
                     })?;
                 let GetTreestateResponse {
