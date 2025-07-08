@@ -136,9 +136,74 @@ pub trait ResponseToError: Sized {
     }
 }
 
+/// An error that occurred while performing an RPC request.
+///
+/// This enum distinguishes between transport-level issues,
+/// known method-specific failures, and unexpected or fatal situations.
+///
+/// Consumers should inspect the error variant to decide whether retrying,
+/// fixing input, or escalating is appropriate.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum RpcRequestError<M> {
+    /// The request failed due to a transport-level error (e.g., connection refused, timeout).
+    ///
+    /// This may be transient and suitable for retry with backoff.
+    #[error("Network transport failure")]
+    Transport,
+
+    /// The server was busy and rejected the request, and client-side retry attempts were exhausted.
+    ///
+    /// May indicate overload or aggressive rate-limiting.
+    #[error("Work queue full (retries exhausted)")]
+    ServerBusy,
+
+    /// The method returned a known error response specific to its semantics.
+    ///
+    /// Consumers are expected to match on the method error type `M`.
+    #[error("Invalid method result: {0:?}")]
+    Method(M),
+
+    /// The server returned a response that could not be parsed or recognized as a valid error.
+    ///
+    /// Indicates a protocol mismatch, server bug, or schema violation.
+    #[error("Unexpected/malformed error response: {0}")]
+    UnexpectedErrorResponse(Box<dyn std::error::Error + Send + Sync>),
+
+    /// An internal bug or invalid client state was encountered.
+    ///
+    /// This should never happen under correct operation and typically indicates a logic bug.
+    #[error("Unrecoverable client-side bug")]
+    InternalUnrecoverable,
+}
+
+impl<M> From<InternalRpcRequestError<M>> for RpcRequestError<M> {
+    fn from(err: InternalRpcRequestError<M>) -> Self {
+        match err {
+            InternalRpcRequestError::Transport(_) => RpcRequestError::Transport,
+
+            InternalRpcRequestError::ServerWorkQueueFull => RpcRequestError::ServerBusy,
+
+            InternalRpcRequestError::Method(e) => RpcRequestError::Method(e),
+
+            InternalRpcRequestError::UnexpectedErrorResponse(e) => {
+                RpcRequestError::UnexpectedErrorResponse(e)
+            }
+
+            InternalRpcRequestError::JsonRpc(e) => {
+                RpcRequestError::UnexpectedErrorResponse(Box::new(e))
+            }
+
+            InternalRpcRequestError::InternalUnrecoverable => {
+                RpcRequestError::InternalUnrecoverable
+            }
+        }
+    }
+}
+
 /// Error type for JSON-RPC requests.
 #[derive(Debug, thiserror::Error)]
-pub enum RpcRequestError<MethodError> {
+pub enum InternalRpcRequestError<MethodError> {
     /// Error variant for errors related to the transport layer.
     #[error("Transport error: {0}")]
     Transport(#[from] TransportError),
@@ -323,20 +388,20 @@ impl JsonRpSeeConnector {
                 .body(request_body)
                 .send()
                 .await
-                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
+                .map_err(|e| InternalRpcRequestError::Transport(TransportError::ReqwestError(e)))?;
 
             let status = response.status();
 
             let body_bytes = response
                 .bytes()
                 .await
-                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
+                .map_err(|e| InternalRpcRequestError::Transport(TransportError::ReqwestError(e)))?;
 
             let body_str = String::from_utf8_lossy(&body_bytes);
 
             if body_str.contains("Work queue depth exceeded") {
                 if attempts >= max_attempts {
-                    return Err(RpcRequestError::ServerWorkQueueFull);
+                    return Err(InternalRpcRequestError::ServerWorkQueueFull)?;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
@@ -345,37 +410,41 @@ impl JsonRpSeeConnector {
             let code = status.as_u16();
             return match code {
                 // Invalid
-                ..100 | 600.. => Err(RpcRequestError::Transport(
+                ..100 | 600.. => Err(InternalRpcRequestError::Transport(
                     TransportError::InvalidStatusCode(code),
-                )),
+                ))?,
                 // Informational | Redirection
-                100..200 | 300..400 => Err(RpcRequestError::Transport(
+                100..200 | 300..400 => Err(InternalRpcRequestError::Transport(
                     TransportError::UnexpectedStatusCode(code),
-                )),
+                ))?,
                 // Success
                 200..300 => {
-                    let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
-                        .map_err(|e| TransportError::BadNodeData(Box::new(e)))?;
+                    let response: RpcResponse<R> =
+                        serde_json::from_slice(&body_bytes).map_err(|e| {
+                            InternalRpcRequestError::Transport(TransportError::BadNodeData(
+                                Box::new(e),
+                            ))
+                        })?;
 
                     match (response.error, response.result) {
                         (Some(error), _) => Err(RpcRequestError::Method(
                             R::RpcError::try_from(error).map_err(|e| {
-                                RpcRequestError::UnexpectedErrorResponse(Box::new(e))
+                                InternalRpcRequestError::UnexpectedErrorResponse(Box::new(e))
                             })?,
                         )),
                         (None, Some(result)) => match result.to_error() {
                             Ok(r) => Ok(r),
                             Err(e) => Err(RpcRequestError::Method(e)),
                         },
-                        (None, None) => Err(RpcRequestError::Transport(
+                        (None, None) => Err(InternalRpcRequestError::Transport(
                             TransportError::EmptyResponseBody,
-                        )),
+                        ))?,
                     }
                     // Error
                 }
-                400..600 => Err(RpcRequestError::Transport(TransportError::ErrorStatusCode(
-                    code,
-                ))),
+                400..600 => Err(InternalRpcRequestError::Transport(
+                    TransportError::ErrorStatusCode(code),
+                ))?,
             };
         }
     }
