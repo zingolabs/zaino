@@ -14,7 +14,7 @@ use tracing::info;
 use zaino_fetch::{
     chain::block::FullBlock,
     jsonrpsee::{
-        connector::{JsonRpSeeConnector, RpcRequestError},
+        connector::{InternalRpcRequestError, JsonRpSeeConnector, RpcRequestError},
         error::TransportError,
         response::{GetBlockError, GetBlockResponse},
     },
@@ -290,11 +290,12 @@ async fn try_fetcher_path(
         .get_block(hash_or_height.to_string(), Some(1))
         .await
         .and_then(|response| match response {
-            GetBlockResponse::Raw(_) => {
-                Err(RpcRequestError::Transport(TransportError::BadNodeData(
-                    Box::new(std::io::Error::other("unexpected raw block response")),
-                )))
-            }
+            GetBlockResponse::Raw(_) => Err(InternalRpcRequestError::Transport(
+                TransportError::BadNodeData(Box::new(std::io::Error::other(
+                    "unexpected raw block response",
+                ))),
+            )
+            .into()),
             GetBlockResponse::Object(block) => Ok((block.hash, block.tx, block.trees)),
         })?;
 
@@ -302,30 +303,33 @@ async fn try_fetcher_path(
         .get_block(hash.0.to_string(), Some(0))
         .await
         .and_then(|response| match response {
-            GetBlockResponse::Object { .. } => {
-                Err(RpcRequestError::Transport(TransportError::BadNodeData(
-                    Box::new(std::io::Error::other("unexpected object block response")),
-                )))
-            }
+            GetBlockResponse::Object { .. } => Err(InternalRpcRequestError::Transport(
+                TransportError::BadNodeData(Box::new(std::io::Error::other(
+                    "unexpected object block response",
+                ))),
+            )
+            .into()),
             GetBlockResponse::Raw(block_hex) => Ok((
                 hash.0,
                 FullBlock::parse_from_hex(
                     block_hex.as_ref(),
                     Some(display_txids_to_server(tx).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        InternalRpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
                     })?),
                 )
-                .map_err(|e| RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e))))?
+                .map_err(|e| {
+                    InternalRpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                })?
                 .into_compact(
                     u32::try_from(trees.sapling()).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        InternalRpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
                     })?,
                     u32::try_from(trees.orchard()).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        InternalRpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
                     })?,
                 )
                 .map_err(|e| {
-                    RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                    InternalRpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
                 })?,
             )),
         })
