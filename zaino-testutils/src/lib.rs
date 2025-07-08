@@ -306,7 +306,7 @@ pub struct TestManager {
 }
 
 fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
-    format!("http://127.0.0.1:{}", indexer_port)
+    format!("http://127.0.0.1:{indexer_port}")
         .try_into()
         .unwrap()
 }

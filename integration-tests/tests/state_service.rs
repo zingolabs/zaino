@@ -1145,7 +1145,7 @@ mod zebrad {
         #[tokio::test]
         async fn block_count() {
             let (
-                test_manager,
+                mut test_manager,
                 _fetch_service,
                 fetch_service_subscriber,
                 _state_service,
@@ -1166,6 +1166,49 @@ mod zebrad {
             let state_service_block_count =
                 dbg!(state_service_subscriber.get_block_count().await.unwrap());
             assert_eq!(fetch_service_block_count, state_service_block_count);
+
+            test_manager.close().await;
+        }
+
+        #[tokio::test]
+        async fn difficulty() {
+            let (
+                mut test_manager,
+                _fetch_service,
+                fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                Some(services::network::Network::Regtest),
+            )
+            .await;
+
+            let initial_fetch_service_difficulty =
+                fetch_service_subscriber.get_difficulty().await.unwrap();
+            let initial_state_service_difficulty =
+                state_service_subscriber.get_difficulty().await.unwrap();
+            assert_eq!(
+                initial_fetch_service_difficulty,
+                initial_state_service_difficulty
+            );
+
+            test_manager.local_net.generate_blocks(2).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let final_fetch_service_difficulty =
+                fetch_service_subscriber.get_difficulty().await.unwrap();
+            let final_state_service_difficulty =
+                state_service_subscriber.get_difficulty().await.unwrap();
+            assert_eq!(
+                final_fetch_service_difficulty,
+                final_state_service_difficulty
+            );
+
+            test_manager.close().await;
         }
 
         mod z {

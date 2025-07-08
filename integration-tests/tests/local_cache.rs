@@ -118,7 +118,7 @@ async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, b
         // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
         //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
         for height in 1..=100 {
-            println!("Generating block at height: {}", height);
+            println!("Generating block at height: {height}");
             test_manager.local_net.generate_blocks(1).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }

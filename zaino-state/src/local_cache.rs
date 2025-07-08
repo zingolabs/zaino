@@ -13,7 +13,11 @@ use non_finalised_state::{NonFinalisedState, NonFinalisedStateSubscriber};
 use tracing::info;
 use zaino_fetch::{
     chain::block::FullBlock,
-    jsonrpsee::{connector::JsonRpSeeConnector, response::GetBlockResponse},
+    jsonrpsee::{
+        connector::{JsonRpSeeConnector, RpcRequestError},
+        error::TransportError,
+        response::{GetBlockError, GetBlockResponse},
+    },
 };
 use zaino_proto::proto::compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction};
 use zebra_chain::{
@@ -142,14 +146,14 @@ impl BlockCacheSubscriber {
             self.non_finalised_state
                 .get_compact_block(hash_or_height)
                 .await
-                .map_err(BlockCacheError::NonFinalisedStateError)
+                .map_err(Into::into)
         } else {
             match &self.finalised_state {
                 // Fetch from finalised state.
                 Some(finalised_state) => finalised_state
                     .get_compact_block(hash_or_height)
                     .await
-                    .map_err(BlockCacheError::FinalisedStateError),
+                    .map_err(Into::into),
                 // Fetch from Validator.
                 None => {
                     let (_, block) = fetch_block_from_node(
@@ -158,7 +162,8 @@ impl BlockCacheSubscriber {
                         &self.fetcher,
                         hash_or_height,
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| BlockCacheError::Custom(e.to_string()))?;
                     Ok(block)
                 }
             }
@@ -208,7 +213,7 @@ pub(crate) async fn fetch_block_from_node(
     network: Option<&Network>,
     fetcher: &JsonRpSeeConnector,
     hash_or_height: HashOrHeight,
-) -> Result<(Hash, CompactBlock), BlockCacheError> {
+) -> Result<(Hash, CompactBlock), RpcRequestError<GetBlockError>> {
     if let (Some(state), Some(network)) = (state, network) {
         match try_state_path(state, network, hash_or_height).await {
             Ok(result) => return Ok(result),
@@ -280,33 +285,48 @@ async fn try_state_path(
 async fn try_fetcher_path(
     fetcher: &JsonRpSeeConnector,
     hash_or_height: HashOrHeight,
-) -> Result<(Hash, CompactBlock), BlockCacheError> {
+) -> Result<(Hash, CompactBlock), RpcRequestError<GetBlockError>> {
     let (hash, tx, trees) = fetcher
         .get_block(hash_or_height.to_string(), Some(1))
         .await
-        .map_err(BlockCacheError::from)
         .and_then(|response| match response {
-            GetBlockResponse::Raw(_) => Err(BlockCacheError::Custom(
-                "Found transaction of `Raw` type, expected only `Hash` types.".to_string(),
-            )),
+            GetBlockResponse::Raw(_) => {
+                Err(RpcRequestError::Transport(TransportError::BadNodeData(
+                    Box::new(std::io::Error::other("unexpected raw block response")),
+                )))
+            }
             GetBlockResponse::Object(block) => Ok((block.hash, block.tx, block.trees)),
         })?;
 
     fetcher
         .get_block(hash.0.to_string(), Some(0))
         .await
-        .map_err(BlockCacheError::from)
         .and_then(|response| match response {
-            GetBlockResponse::Object { .. } => Err(BlockCacheError::Custom(
-                "Found transaction of `Object` type, expected only `Hash` types.".to_string(),
-            )),
+            GetBlockResponse::Object { .. } => {
+                Err(RpcRequestError::Transport(TransportError::BadNodeData(
+                    Box::new(std::io::Error::other("unexpected object block response")),
+                )))
+            }
             GetBlockResponse::Raw(block_hex) => Ok((
                 hash.0,
-                FullBlock::parse_from_hex(block_hex.as_ref(), Some(display_txids_to_server(tx)?))?
-                    .into_compact(
-                        u32::try_from(trees.sapling())?,
-                        u32::try_from(trees.orchard())?,
-                    )?,
+                FullBlock::parse_from_hex(
+                    block_hex.as_ref(),
+                    Some(display_txids_to_server(tx).map_err(|e| {
+                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                    })?),
+                )
+                .map_err(|e| RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e))))?
+                .into_compact(
+                    u32::try_from(trees.sapling()).map_err(|e| {
+                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                    })?,
+                    u32::try_from(trees.orchard()).map_err(|e| {
+                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                    })?,
+                )
+                .map_err(|e| {
+                    RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                })?,
             )),
         })
 }

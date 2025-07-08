@@ -362,8 +362,7 @@ impl FinalisedState {
                                 }
                             }
                             Err(_) => Err(FinalisedStateError::MissingData(format!(
-                                "Block {:?} not found in finalised state or validator.",
-                                hash_or_height
+                                "Block {hash_or_height:?} not found in finalised state or validator."
                             ))),
                         }
                     }
@@ -618,8 +617,7 @@ impl FinalisedState {
             Ok(bytes) => bytes,
             Err(lmdb::Error::NotFound) => {
                 return Err(FinalisedStateError::MissingData(format!(
-                    "No hash found for height {}",
-                    height
+                    "No hash found for height {height}"
                 )));
             }
             Err(e) => return Err(FinalisedStateError::LmdbError(e)),

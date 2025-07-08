@@ -62,7 +62,12 @@ impl NonFinalisedState {
 
         non_finalised_state.wait_on_server().await?;
 
-        let chain_height = fetcher.get_blockchain_info().await?.blocks.0;
+        let chain_height = fetcher
+            .get_blockchain_info()
+            .await
+            .map_err(|_| NonFinalisedStateError::Custom("Failed to fetch blockchain info".into()))?
+            .blocks
+            .0;
         // We do not fetch pre sapling activation.
         for height in chain_height.saturating_sub(99).max(
             non_finalised_state
@@ -263,7 +268,13 @@ impl NonFinalisedState {
         // Refill from max(reorg_height[+1], sapling_activation_height).
         //
         // reorg_height + 1 is used here as reorg_height represents the last "valid" block known.
-        let validator_height = self.fetcher.get_blockchain_info().await?.blocks.0;
+        let validator_height = self
+            .fetcher
+            .get_blockchain_info()
+            .await
+            .map_err(|e| NonFinalisedStateError::Custom(e.to_string()))?
+            .blocks
+            .0;
         for block_height in ((reorg_height.0 + 1)
             .max(self.config.network.sapling_activation_height().0))
             ..=validator_height
@@ -350,7 +361,9 @@ impl NonFinalisedState {
         if self.config.no_db && !self.config.network.is_regtest() && !self.config.no_sync {
             self.status.store(StatusType::Syncing.into());
             loop {
-                let blockchain_info = self.fetcher.get_blockchain_info().await?;
+                let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {
+                    NonFinalisedStateError::Custom(format!("Failed to fetch blockchain info: {e}"))
+                })?;
                 if (blockchain_info.blocks.0 as i64 - blockchain_info.estimated_height.0 as i64)
                     .abs()
                     <= 10
@@ -440,7 +453,7 @@ impl NonFinalisedStateSubscriber {
             .get(&hash)
             .map(|block| block.as_ref().clone())
             .ok_or_else(|| {
-                NonFinalisedStateError::MissingData(format!("Block not found for hash: {}", hash))
+                NonFinalisedStateError::MissingData(format!("Block not found for hash: {hash}"))
             })
     }
 

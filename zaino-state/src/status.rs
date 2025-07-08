@@ -105,7 +105,7 @@ impl fmt::Display for StatusType {
             StatusType::RecoverableError => "RecoverableError",
             StatusType::CriticalError => "CriticalError",
         };
-        write!(f, "{}", status_str)
+        write!(f, "{status_str}")
     }
 }
 

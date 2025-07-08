@@ -30,7 +30,7 @@ where
 {
     let s = String::deserialize(deserializer)?;
     fetch_socket_addr_from_hostname(&s)
-        .map_err(|e| de::Error::custom(format!("Invalid socket address string '{}': {}", s, e)))
+        .map_err(|e| de::Error::custom(format!("Invalid socket address string '{s}': {e}")))
 }
 
 /// Custom deserialization function for `BackendType` from a String.
@@ -46,8 +46,7 @@ where
         "state" => Ok(zaino_state::BackendType::State),
         "fetch" => Ok(zaino_state::BackendType::Fetch),
         _ => Err(de::Error::custom(format!(
-            "Invalid backend type '{}', valid options are 'state' or 'fetch'",
-            s
+            "Invalid backend type '{s}', valid options are 'state' or 'fetch'"
         ))),
     }
 }
@@ -141,8 +140,7 @@ impl IndexerConfig {
             if let Some(ref cert_path) = self.tls_cert_path {
                 if !std::path::Path::new(cert_path).exists() {
                     return Err(IndexerError::ConfigError(format!(
-                        "TLS is enabled, but certificate path '{}' does not exist.",
-                        cert_path
+                        "TLS is enabled, but certificate path '{cert_path}' does not exist."
                     )));
                 }
             } else {
@@ -154,8 +152,7 @@ impl IndexerConfig {
             if let Some(ref key_path) = self.tls_key_path {
                 if !std::path::Path::new(key_path).exists() {
                     return Err(IndexerError::ConfigError(format!(
-                        "TLS is enabled, but key path '{}' does not exist.",
-                        key_path
+                        "TLS is enabled, but key path '{key_path}' does not exist."
                     )));
                 }
             } else {
@@ -170,7 +167,7 @@ impl IndexerConfig {
             if let Some(ref cookie_path) = self.validator_cookie_path {
                 if !std::path::Path::new(cookie_path).exists() {
                     return Err(IndexerError::ConfigError(
-                        format!("Validator cookie authentication is enabled, but cookie path '{}' does not exist.", cookie_path),
+                        format!("Validator cookie authentication is enabled, but cookie path '{cookie_path}' does not exist."),
                     ));
                 }
             } else {
@@ -330,15 +327,13 @@ fn fetch_socket_addr_from_hostname(address: &str) -> Result<SocketAddr, IndexerE
     address.parse::<SocketAddr>().or_else(|_| {
         let addrs: Vec<_> = address
             .to_socket_addrs()
-            .map_err(|e| {
-                IndexerError::ConfigError(format!("Invalid address '{}': {}", address, e))
-            })?
+            .map_err(|e| IndexerError::ConfigError(format!("Invalid address '{address}': {e}")))?
             .collect();
         if let Some(ipv4_addr) = addrs.iter().find(|addr| addr.is_ipv4()) {
             Ok(*ipv4_addr)
         } else {
             addrs.into_iter().next().ok_or_else(|| {
-                IndexerError::ConfigError(format!("Unable to resolve address '{}'", address))
+                IndexerError::ConfigError(format!("Unable to resolve address '{address}'"))
             })
         }
     })

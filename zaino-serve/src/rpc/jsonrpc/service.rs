@@ -48,6 +48,14 @@ pub trait ZcashIndexerRpc {
     #[method(name = "getblockchaininfo")]
     async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, ErrorObjectOwned>;
 
+    /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
+    ///
+    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "getdifficulty")]
+    async fn get_difficulty(&self) -> Result<f64, ErrorObjectOwned>;
+
     /// Returns the current block count in the best valid block chain.
     ///
     /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
@@ -283,6 +291,20 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_blockchain_info()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_difficulty(&self) -> Result<f64, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_difficulty()
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

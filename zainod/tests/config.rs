@@ -1,3 +1,5 @@
+#![allow(clippy::bool_assert_comparison)]
+
 use figment::Jail;
 use std::path::PathBuf;
 
@@ -32,32 +34,26 @@ fn test_deserialize_full_valid_config() {
             enable_json_server = true
             json_rpc_listen_address = "127.0.0.1:8000"
             enable_cookie_auth = true
-            cookie_dir = "{}"
+            cookie_dir = "{zaino_cookie_dir_name}"
             grpc_listen_address = "0.0.0.0:9000"
             grpc_tls = true
-            tls_cert_path = "{}"
-            tls_key_path = "{}"
+            tls_cert_path = "{cert_file_name}"
+            tls_key_path = "{key_file_name}"
             validator_listen_address = "192.168.1.10:18232"
             validator_cookie_auth = true
-            validator_cookie_path = "{}"
+            validator_cookie_path = "{validator_cookie_file_name}"
             validator_user = "user"
             validator_password = "password"
             map_capacity = 10000
             map_shard_amount = 16
-            zaino_db_path = "{}"
-            zebra_db_path = "{}"
+            zaino_db_path = "{zaino_db_dir_name}"
+            zebra_db_path = "{zebra_db_dir_name}"
             db_size = 100
             network = "Mainnet"
             no_sync = false
             no_db = false
             slow_sync = false
-        "#,
-            zaino_cookie_dir_name,
-            cert_file_name,
-            key_file_name,
-            validator_cookie_file_name,
-            zaino_db_dir_name,
-            zebra_db_dir_name
+        "#
         );
 
         let temp_toml_path = jail.directory().join("full_config.toml");
@@ -380,7 +376,7 @@ fn test_figment_env_override_toml_and_defaults() {
         assert!(config.enable_json_server);
         assert_eq!(config.map_capacity, Some(12345));
         assert_eq!(config.cookie_dir, Some(PathBuf::from("/env/cookie/path")));
-        assert!(!config.grpc_tls);
+        assert_eq!(!config.grpc_tls, true);
         Ok(())
     });
 }
@@ -428,9 +424,9 @@ fn test_figment_invalid_env_var_type() {
         assert!(result.is_err());
         if let Err(IndexerError::ConfigError(msg)) = result {
             assert!(msg.to_lowercase().contains("map_capacity") && msg.contains("invalid type"),
-                    "Error message should mention 'map_capacity' (case-insensitive) and 'invalid type'. Got: {}", msg);
+                    "Error message should mention 'map_capacity' (case-insensitive) and 'invalid type'. Got: {msg}");
         } else {
-            panic!("Expected ConfigError, got {:?}", result);
+            panic!("Expected ConfigError, got {result:?}");
         }
         Ok(())
     });

@@ -50,7 +50,10 @@ jsonrpsee-core = { workspace = true }
 prost = { workspace = true }
 primitive-types = { workspace = true }
 byteorder = { workspace = true }
+core2 = { workspace = true }
 nonempty = "0.11.0"
+arc-swap = "1.7.1"
+reqwest.workspace = true
 
 [dev-dependencies]
 zingo-infra-services = { workspace = true }

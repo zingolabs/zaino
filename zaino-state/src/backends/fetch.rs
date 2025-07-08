@@ -31,7 +31,7 @@ use zaino_proto::proto::{
 
 use crate::{
     config::FetchServiceConfig,
-    error::FetchServiceError,
+    error::{BlockCacheError, FetchServiceError},
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
@@ -95,9 +95,15 @@ impl ZcashService for FetchService {
         );
         info!("Using Zcash build: {}", data);
 
-        let block_cache = BlockCache::spawn(&fetcher, None, config.clone().into()).await?;
+        let block_cache = BlockCache::spawn(&fetcher, None, config.clone().into())
+            .await
+            .map_err(|e| {
+                FetchServiceError::BlockCacheError(BlockCacheError::Custom(e.to_string()))
+            })?;
 
-        let mempool = Mempool::spawn(&fetcher, None).await?;
+        let mempool = Mempool::spawn(&fetcher, None).await.map_err(|e| {
+            FetchServiceError::BlockCacheError(BlockCacheError::Custom(e.to_string()))
+        })?;
 
         let fetch_service = Self {
             fetcher,
@@ -215,6 +221,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     ),
                 )
             })?)
+    }
+
+    /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
+    ///
+    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_difficulty(&self) -> Result<f64, Self::Error> {
+        Ok(self.fetcher.get_difficulty().await?.0)
     }
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
@@ -530,9 +545,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
-                            "Error: Height out of range [{}]. Height requested \
-                                is greater than the best chain tip [{}].",
-                            hash_or_height, chain_height,
+                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is greater than the best chain tip [{chain_height}].",
                         ))),
                     ),
                     HashOrHeight::Height(height)
@@ -540,9 +554,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     {
                         Err(FetchServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{}]. Height requested \
-                                is below sapling activation height [{}].",
-                                hash_or_height, chain_height,
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is below sapling activation height [{chain_height}].",
                             )),
                         ))
                     }
@@ -550,10 +563,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                     {
                         Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                            format!(
-                                "Error: Failed to retrieve block from node. Server Error: {}",
-                                e,
-                            ),
+                            format!("Error: Failed to retrieve block from node. Server Error: {e}",),
                         )))
                     }
                 }
@@ -586,17 +596,13 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 if height >= chain_height {
                     Err(FetchServiceError::TonicStatusError(tonic::Status::out_of_range(
                             format!(
-                                "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
-                                height, chain_height,
+                                "Error: Height out of range [{height}]. Height requested is greater than the best chain tip [{chain_height}].",
                             )
                         )))
                 } else {
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                     Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                        format!(
-                            "Error: Failed to retrieve block from node. Server Error: {}",
-                            e,
-                        ),
+                        format!("Error: Failed to retrieve block from node. Server Error: {e}",),
                     )))
                 }
             }
@@ -672,8 +678,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                 if height >= chain_height {
                                     match channel_tx
                                         .send(Err(tonic::Status::out_of_range(format!(
-                                            "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
-                                            height, chain_height,
+                                            "Error: Height out of range [{height}]. Height requested is greater than the best chain tip [{chain_height}].",
                                         ))))
                                         .await
 
@@ -768,9 +773,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     .map_err(|e| {
                                         if height >= chain_height {
                                             tonic::Status::out_of_range(format!(
-                                            "Error: Height out of range [{}]. Height requested \
-                                            is greater than the best chain tip [{}].",
-                                            height, chain_height,
+                                            "Error: Height out of range [{height}]. Height requested \
+                                            is greater than the best chain tip [{chain_height}].",
                                         ))
                                         } else {
                                             // TODO: Hide server error from clients before release. Currently useful for dev purposes.
@@ -961,7 +965,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 while let Some(address_result) = request.next().await {
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                     let address = address_result.map_err(|e| {
-                        tonic::Status::unknown(format!("Failed to read from stream: {}", e))
+                        tonic::Status::unknown(format!("Failed to read from stream: {e}"))
                     })?;
                     if channel_tx.send(address.address).await.is_err() {
                         // TODO: Hide server error from clients before release. Currently useful for dev purposes.
@@ -1008,7 +1012,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Ok(Err(e)) => Err(FetchServiceError::TonicStatusError(e)),
             // TODO: Hide server error from clients before release. Currently useful for dev purposes.
             Err(e) => Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                format!("Fetcher Task failed: {}", e),
+                format!("Fetcher Task failed: {e}"),
             ))),
         }
     }
@@ -1191,8 +1195,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             Err(e) => {
                                 channel_tx
                                     .send(Err(tonic::Status::internal(format!(
-                                        "Error in mempool stream: {:?}",
-                                        e
+                                        "Error in mempool stream: {e:?}"
                                     ))))
                                     .await
                                     .ok();
@@ -1265,10 +1268,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Err(e) => {
                 // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                 Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                    format!(
-                        "Error: Failed to retrieve treestate from node. Server Error: {}",
-                        e,
-                    ),
+                    format!("Error: Failed to retrieve treestate from node. Server Error: {e}",),
                 )))
             }
         }
@@ -1295,10 +1295,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Err(e) => {
                 // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                 Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                    format!(
-                        "Error: Failed to retrieve treestate from node. Server Error: {}",
-                        e,
-                    ),
+                    format!("Error: Failed to retrieve treestate from node. Server Error: {e}",),
                 )))
             }
         }

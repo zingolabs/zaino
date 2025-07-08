@@ -465,8 +465,7 @@ impl TransactionData {
     ) -> Result<(&[u8], Self), ParseError> {
         if n_version_group_id != 0x892F2085 {
             return Err(ParseError::InvalidData(format!(
-                "version group ID {:x} must be 0x892F2085 for v4 transactions",
-                n_version_group_id
+                "version group ID {n_version_group_id:x} must be 0x892F2085 for v4 transactions"
             )));
         }
         let mut cursor = Cursor::new(data);
@@ -558,8 +557,7 @@ impl TransactionData {
     ) -> Result<(&[u8], Self), ParseError> {
         if n_version_group_id != 0x26A7270A {
             return Err(ParseError::InvalidData(format!(
-                "version group ID {:x} must be 0x892F2085 for v5 transactions",
-                n_version_group_id
+                "version group ID {n_version_group_id:x} must be 0x892F2085 for v5 transactions"
             )));
         }
         let mut cursor = Cursor::new(data);
@@ -583,8 +581,7 @@ impl TransactionData {
         let spend_count = CompactSize::read(&mut cursor)?;
         if spend_count >= (1 << 16) {
             return Err(ParseError::InvalidData(format!(
-                "spendCount ({}) must be less than 2^16",
-                spend_count
+                "spendCount ({spend_count}) must be less than 2^16"
             )));
         }
         let mut shielded_spends = Vec::with_capacity(spend_count as usize);
@@ -597,8 +594,7 @@ impl TransactionData {
         let output_count = CompactSize::read(&mut cursor)?;
         if output_count >= (1 << 16) {
             return Err(ParseError::InvalidData(format!(
-                "outputCount ({}) must be less than 2^16",
-                output_count
+                "outputCount ({output_count}) must be less than 2^16"
             )));
         }
         let mut shielded_outputs = Vec::with_capacity(output_count as usize);
@@ -652,8 +648,7 @@ impl TransactionData {
         let actions_count = CompactSize::read(&mut cursor)?;
         if actions_count >= (1 << 16) {
             return Err(ParseError::InvalidData(format!(
-                "actionsCount ({}) must be less than 2^16",
-                actions_count
+                "actionsCount ({actions_count}) must be less than 2^16"
             )));
         }
         let mut orchard_actions = Vec::with_capacity(actions_count as usize);
@@ -761,8 +756,7 @@ impl ParseFromSlice for FullTransaction {
         let version = header & 0x7FFFFFFF;
         if version < 4 {
             return Err(ParseError::InvalidData(format!(
-                "version number {} must be greater or equal to 4",
-                version
+                "version number {version} must be greater or equal to 4"
             )));
         }
         let n_version_group_id = read_u32(

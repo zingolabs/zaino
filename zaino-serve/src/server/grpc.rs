@@ -40,7 +40,7 @@ impl TonicServer {
         let mut server_builder = Server::builder();
         if let Some(tls_config) = server_config.get_valid_tls().await? {
             server_builder = server_builder.tls_config(tls_config).map_err(|e| {
-                ServerError::ServerConfigError(format!("TLS configuration error: {}", e))
+                ServerError::ServerConfigError(format!("TLS configuration error: {e}"))
             })?;
         }
 

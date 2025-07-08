@@ -1,8 +1,37 @@
 //! Holds error types for Zaino-state.
 
+use std::any::type_name;
+
+use zaino_fetch::jsonrpsee::connector::RpcRequestError;
+
+impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match value {
+            RpcRequestError::Transport(transport_error) => {
+                Self::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestError::Method(e) => Self::UnhandledRpcError(format!(
+                "{}: {}",
+                std::any::type_name::<T>(),
+                e.to_string()
+            )),
+            RpcRequestError::JsonRpc(error) => Self::Custom(format!("bad argument: {error}")),
+            RpcRequestError::InternalUnrecoverable => {
+                Self::Custom("TODO: useless crash message".to_string())
+            }
+            RpcRequestError::ServerWorkQueueFull => {
+                Self::Custom("Server queue full. Handling for this not yet implemented".to_string())
+            }
+            RpcRequestError::UnexpectedErrorResponse(error) => Self::Custom(format!("{error}")),
+        }
+    }
+}
 /// Errors related to the `StateService`.
 #[derive(Debug, thiserror::Error)]
 pub enum StateServiceError {
+    /// An rpc-specific error we haven't accounted for
+    #[error("unhandled fallible RPC call {0}")]
+    UnhandledRpcError(String),
     /// Custom Errors. *Remove before production.
     #[error("Custom error: {0}")]
     Custom(String),
@@ -13,7 +42,7 @@ pub enum StateServiceError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
     /// RPC error in compatibility with zcashd.
     #[error("RPC error: {0:?}")]
@@ -67,35 +96,65 @@ impl From<StateServiceError> for tonic::Status {
         match error {
             StateServiceError::Custom(message) => tonic::Status::internal(message),
             StateServiceError::JoinError(err) => {
-                tonic::Status::internal(format!("Join error: {}", err))
+                tonic::Status::internal(format!("Join error: {err}"))
             }
             StateServiceError::JsonRpcConnectorError(err) => {
-                tonic::Status::internal(format!("JsonRpcConnector error: {}", err))
+                tonic::Status::internal(format!("JsonRpcConnector error: {err}"))
             }
             StateServiceError::RpcError(err) => {
-                tonic::Status::internal(format!("RPC error: {:?}", err))
+                tonic::Status::internal(format!("RPC error: {err:?}"))
             }
             StateServiceError::BlockCacheError(err) => {
-                tonic::Status::internal(format!("BlockCache error: {:?}", err))
+                tonic::Status::internal(format!("BlockCache error: {err:?}"))
             }
             StateServiceError::MempoolError(err) => {
-                tonic::Status::internal(format!("Mempool error: {:?}", err))
+                tonic::Status::internal(format!("Mempool error: {err:?}"))
             }
             StateServiceError::TonicStatusError(err) => err,
             StateServiceError::SerializationError(err) => {
-                tonic::Status::internal(format!("Serialization error: {}", err))
+                tonic::Status::internal(format!("Serialization error: {err}"))
             }
             StateServiceError::TryFromIntError(err) => {
-                tonic::Status::internal(format!("Integer conversion error: {}", err))
+                tonic::Status::internal(format!("Integer conversion error: {err}"))
             }
-            StateServiceError::IoError(err) => {
-                tonic::Status::internal(format!("IO error: {}", err))
-            }
+            StateServiceError::IoError(err) => tonic::Status::internal(format!("IO error: {err}")),
             StateServiceError::Generic(err) => {
-                tonic::Status::internal(format!("Generic error: {}", err))
+                tonic::Status::internal(format!("Generic error: {err}"))
             }
             ref err @ StateServiceError::ZebradVersionMismatch { .. } => {
                 tonic::Status::internal(err.to_string())
+            }
+            StateServiceError::UnhandledRpcError(e) => tonic::Status::internal(e.to_string()),
+        }
+    }
+}
+
+impl<T: ToString> From<RpcRequestError<T>> for FetchServiceError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match value {
+            RpcRequestError::Transport(transport_error) => {
+                FetchServiceError::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestError::JsonRpc(error) => {
+                FetchServiceError::Critical(format!("argument failed to serialze: {error}"))
+            }
+            RpcRequestError::InternalUnrecoverable => {
+                FetchServiceError::Critical("Something unspecified went wrong".to_string())
+            }
+            RpcRequestError::ServerWorkQueueFull => FetchServiceError::Critical(
+                "Server queue full. Handling for this not yet implemented".to_string(),
+            ),
+            RpcRequestError::Method(e) => FetchServiceError::Critical(format!(
+                "unhandled rpc-specific {} error: {}",
+                type_name::<T>(),
+                e.to_string()
+            )),
+            RpcRequestError::UnexpectedErrorResponse(error) => {
+                FetchServiceError::Critical(format!(
+                    "unhandled rpc-specific {} error: {}",
+                    type_name::<T>(),
+                    error
+                ))
             }
         }
     }
@@ -110,7 +169,7 @@ pub enum FetchServiceError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
     /// Error from the block cache.
     #[error("Mempool error: {0}")]
@@ -138,21 +197,51 @@ impl From<FetchServiceError> for tonic::Status {
         match error {
             FetchServiceError::Critical(message) => tonic::Status::internal(message),
             FetchServiceError::JsonRpcConnectorError(err) => {
-                tonic::Status::internal(format!("JsonRpcConnector error: {}", err))
+                tonic::Status::internal(format!("JsonRpcConnector error: {err}"))
             }
             FetchServiceError::BlockCacheError(err) => {
-                tonic::Status::internal(format!("BlockCache error: {}", err))
+                tonic::Status::internal(format!("BlockCache error: {err}"))
             }
             FetchServiceError::MempoolError(err) => {
-                tonic::Status::internal(format!("Mempool error: {}", err))
+                tonic::Status::internal(format!("Mempool error: {err}"))
             }
             FetchServiceError::RpcError(err) => {
-                tonic::Status::internal(format!("RPC error: {:?}", err))
+                tonic::Status::internal(format!("RPC error: {err:?}"))
             }
             FetchServiceError::TonicStatusError(err) => err,
             FetchServiceError::SerializationError(err) => {
-                tonic::Status::internal(format!("Serialization error: {}", err))
+                tonic::Status::internal(format!("Serialization error: {err}"))
             }
+        }
+    }
+}
+/// These aren't the best conversions, but the MempoolError should go away
+/// in favor of a new type with the new chain cache is complete
+impl<T: ToString> From<RpcRequestError<T>> for MempoolError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match value {
+            RpcRequestError::Transport(transport_error) => {
+                MempoolError::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestError::JsonRpc(error) => {
+                MempoolError::Critical(format!("argument failed to serialze: {error}"))
+            }
+            RpcRequestError::InternalUnrecoverable => {
+                MempoolError::Critical("Something unspecified went wrong".to_string())
+            }
+            RpcRequestError::ServerWorkQueueFull => MempoolError::Critical(
+                "Server queue full. Handling for this not yet implemented".to_string(),
+            ),
+            RpcRequestError::Method(e) => MempoolError::Critical(format!(
+                "unhandled rpc-specific {} error: {}",
+                type_name::<T>(),
+                e.to_string()
+            )),
+            RpcRequestError::UnexpectedErrorResponse(error) => MempoolError::Critical(format!(
+                "unhandled rpc-specific {} error: {}",
+                type_name::<T>(),
+                error
+            )),
         }
     }
 }
@@ -166,7 +255,7 @@ pub enum MempoolError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
     /// Error from a Tokio Watch Receiver.
     #[error("Join error: {0}")]
@@ -198,7 +287,7 @@ pub enum BlockCacheError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
     /// Chain parse error.
     #[error("Chain parse error: {0}")]
@@ -220,6 +309,38 @@ pub enum BlockCacheError {
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
 }
+/// These aren't the best conversions, but the NonFinalizedStateError should go away
+/// in favor of a new type with the new chain cache is complete
+impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match value {
+            RpcRequestError::Transport(transport_error) => {
+                NonFinalisedStateError::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestError::JsonRpc(error) => {
+                NonFinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
+            }
+            RpcRequestError::InternalUnrecoverable => {
+                NonFinalisedStateError::Custom("Something unspecified went wrong".to_string())
+            }
+            RpcRequestError::ServerWorkQueueFull => NonFinalisedStateError::Custom(
+                "Server queue full. Handling for this not yet implemented".to_string(),
+            ),
+            RpcRequestError::Method(e) => NonFinalisedStateError::Custom(format!(
+                "unhandled rpc-specific {} error: {}",
+                type_name::<T>(),
+                e.to_string()
+            )),
+            RpcRequestError::UnexpectedErrorResponse(error) => {
+                NonFinalisedStateError::Custom(format!(
+                    "unhandled rpc-specific {} error: {}",
+                    type_name::<T>(),
+                    error
+                ))
+            }
+        }
+    }
+}
 
 /// Errors related to the `NonFinalisedState`.
 #[derive(Debug, thiserror::Error)]
@@ -238,11 +359,43 @@ pub enum NonFinalisedStateError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
     /// Unexpected status-related error.
     #[error("Status error: {0:?}")]
     StatusError(StatusError),
+}
+/// These aren't the best conversions, but the FinalizedStateError should go away
+/// in favor of a new type with the new chain cache is complete
+impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match value {
+            RpcRequestError::Transport(transport_error) => {
+                FinalisedStateError::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestError::JsonRpc(error) => {
+                FinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
+            }
+            RpcRequestError::InternalUnrecoverable => {
+                FinalisedStateError::Custom("Something unspecified went wrong".to_string())
+            }
+            RpcRequestError::ServerWorkQueueFull => FinalisedStateError::Custom(
+                "Server queue full. Handling for this not yet implemented".to_string(),
+            ),
+            RpcRequestError::Method(e) => FinalisedStateError::Custom(format!(
+                "unhandled rpc-specific {} error: {}",
+                type_name::<T>(),
+                e.to_string()
+            )),
+            RpcRequestError::UnexpectedErrorResponse(error) => {
+                FinalisedStateError::Custom(format!(
+                    "unhandled rpc-specific {} error: {}",
+                    type_name::<T>(),
+                    error
+                ))
+            }
+        }
+    }
 }
 
 /// Errors related to the `FinalisedState`.
@@ -274,7 +427,7 @@ pub enum FinalisedStateError {
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError),
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
     /// std::io::Error
     #[error("IO error: {0}")]

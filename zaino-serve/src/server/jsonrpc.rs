@@ -49,7 +49,7 @@ impl JsonRpcServer {
             let cookie = Cookie::default();
             if let Some(dir) = &server_config.cookie_dir {
                 write_to_disk(&cookie, dir).map_err(|e| {
-                    ServerError::ServerConfigError(format!("Failed to write cookie: {}", e))
+                    ServerError::ServerConfigError(format!("Failed to write cookie: {e}"))
                 })?;
             } else {
                 return Err(ServerError::ServerConfigError(
@@ -76,7 +76,7 @@ impl JsonRpcServer {
             .build(server_config.json_rpc_listen_address)
             .await
             .map_err(|e| {
-                ServerError::ServerConfigError(format!("JSON-RPC server build error: {}", e))
+                ServerError::ServerConfigError(format!("JSON-RPC server build error: {e}"))
             })?;
 
         let server_handle = server.start(rpc_impl.into_rpc());

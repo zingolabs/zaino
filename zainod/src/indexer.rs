@@ -283,5 +283,5 @@ fn startup_message() {
 
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
     "#;
-    println!("{}", welcome_message);
+    println!("{welcome_message}");
 }

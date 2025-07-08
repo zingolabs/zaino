@@ -163,6 +163,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error>;
 
+    /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
+    ///
+    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_difficulty(&self) -> Result<f64, Self::Error>;
+
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
@@ -577,8 +584,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                     Err(e) => {
                                         match channel_tx
                                             .send(Err(tonic::Status::unknown(format!(
-                                                "Error: Failed to hex decode root hash: {}.",
-                                                e
+                                                "Error: Failed to hex decode root hash: {e}."
                                             ))))
                                             .await
                                         {

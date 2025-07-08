@@ -870,6 +870,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "core2"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b49ba7ef1ad6107f8824dbe97de947cbaac53c44e7f9756a1fba0d37c1eec505"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,7 +1219,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca4f333d4ccc9d23c06593733673026efa71a332e028b00f12cf427b9677dce9"
 dependencies = [
  "blake2b_simd",
- "core2",
+ "core2 0.3.3",
  "document-features",
 ]
 
@@ -2793,7 +2802,7 @@ dependencies = [
  "aes",
  "bitvec",
  "blake2b_simd",
- "core2",
+ "core2 0.3.3",
  "ff",
  "fpe",
  "getset",
@@ -3935,7 +3944,7 @@ dependencies = [
  "blake2b_simd",
  "blake2s_simd",
  "bls12_381",
- "core2",
+ "core2 0.3.3",
  "document-features",
  "ff",
  "fpe",
@@ -5807,10 +5816,12 @@ dependencies = [
 name = "zaino-state"
 version = "0.1.2"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "byteorder",
  "cargo-lock",
  "chrono",
+ "core2 0.4.0",
  "dashmap",
  "futures",
  "hex",
@@ -5822,6 +5833,7 @@ dependencies = [
  "nonempty",
  "primitive-types 0.13.1",
  "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5899,7 +5911,7 @@ checksum = "71591bb4eb2fd7622e88eed42e7d7d8501cd1e920a0698c7fb08723a8c1d0b4f"
 dependencies = [
  "bech32",
  "bs58",
- "core2",
+ "core2 0.3.3",
  "f4jumble",
  "zcash_encoding",
  "zcash_protocol",
@@ -5958,7 +5970,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bca38087e6524e5f51a5b0fb3fc18f36d7b84bf67b2056f494ca0c281590953d"
 dependencies = [
- "core2",
+ "core2 0.3.3",
  "nonempty",
 ]
 
@@ -5985,7 +5997,7 @@ dependencies = [
  "bls12_381",
  "bs58",
  "byteorder",
- "core2",
+ "core2 0.3.3",
  "document-features",
  "group",
  "memuse",
@@ -6025,7 +6037,7 @@ dependencies = [
  "bip32",
  "blake2b_simd",
  "bs58",
- "core2",
+ "core2 0.3.3",
  "document-features",
  "equihash",
  "ff",
@@ -6085,7 +6097,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f116cd111d813b7afc814be013566b16e32a7b887597f906ac42b0f7f6a1681"
 dependencies = [
- "core2",
+ "core2 0.3.3",
  "document-features",
  "hex",
  "memuse",
@@ -6119,7 +6131,7 @@ dependencies = [
  "bip32",
  "blake2b_simd",
  "bs58",
- "core2",
+ "core2 0.3.3",
  "document-features",
  "getset",
  "hex",

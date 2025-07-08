@@ -45,6 +45,10 @@ pub use local_cache::mempool::{MempoolKey, MempoolValue};
 #[cfg(feature = "bench")]
 /// allow public access to additional APIs, for testing
 pub mod bench {
+    /// Testing export of chain_index
+    pub mod chain_index {
+        pub use crate::chain_index::*;
+    }
     pub use crate::{config::BlockCacheConfig, local_cache::*};
 }
 

@@ -46,8 +46,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - run: rustup toolchain install stable --profile minimal
-
       - name: Restore cargo dependencies
         id: restore-cargo
         uses: tespkg/actions-cache/restore@v1
@@ -97,8 +95,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
         with:
@@ -135,8 +131,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - run: rustup toolchain install stable --profile minimal
 
       - name: Restore cargo dependencies
         uses: tespkg/actions-cache/restore@v1
@@ -186,10 +180,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy
-
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
         with:
@@ -214,10 +204,6 @@ jobs:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -251,8 +237,6 @@ jobs:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
