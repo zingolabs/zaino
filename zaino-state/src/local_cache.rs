@@ -1,5 +1,7 @@
 //! Holds Zaino's local compact block cache implementation.
 
+use std::any::type_name;
+
 use crate::{
     config::BlockCacheConfig, error::BlockCacheError, status::StatusType, StateServiceSubscriber,
 };
@@ -292,6 +294,7 @@ async fn try_fetcher_path(
             GetBlockResponse::Raw(_) => {
                 Err(RpcRequestError::Transport(TransportError::BadNodeData(
                     Box::new(std::io::Error::other("unexpected raw block response")),
+                    type_name::<GetBlockError>(),
                 )))
             }
             GetBlockResponse::Object(block) => Ok((block.hash, block.tx, block.trees)),
@@ -304,6 +307,7 @@ async fn try_fetcher_path(
             GetBlockResponse::Object { .. } => {
                 Err(RpcRequestError::Transport(TransportError::BadNodeData(
                     Box::new(std::io::Error::other("unexpected object block response")),
+                    type_name::<GetBlockError>(),
                 )))
             }
             GetBlockResponse::Raw(block_hex) => Ok((
@@ -311,20 +315,37 @@ async fn try_fetcher_path(
                 FullBlock::parse_from_hex(
                     block_hex.as_ref(),
                     Some(display_txids_to_server(tx).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        RpcRequestError::Transport(TransportError::BadNodeData(
+                            Box::new(e),
+                            type_name::<GetBlockError>(),
+                        ))
                     })?),
                 )
-                .map_err(|e| RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e))))?
+                .map_err(|e| {
+                    RpcRequestError::Transport(TransportError::BadNodeData(
+                        Box::new(e),
+                        type_name::<GetBlockError>(),
+                    ))
+                })?
                 .into_compact(
                     u32::try_from(trees.sapling()).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        RpcRequestError::Transport(TransportError::BadNodeData(
+                            Box::new(e),
+                            type_name::<GetBlockError>(),
+                        ))
                     })?,
                     u32::try_from(trees.orchard()).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        RpcRequestError::Transport(TransportError::BadNodeData(
+                            Box::new(e),
+                            type_name::<GetBlockError>(),
+                        ))
                     })?,
                 )
                 .map_err(|e| {
-                    RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                    RpcRequestError::Transport(TransportError::BadNodeData(
+                        Box::new(e),
+                        type_name::<GetBlockError>(),
+                    ))
                 })?,
             )),
         })

@@ -6324,7 +6324,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caf6e76f310bb2d3cc233086a97c1710ba1de7ffbbf8198b8113407d0f427dfc"
 dependencies = [
- "bindgen 0.72.0",
+ "bindgen 0.69.5",
  "bitflags 2.9.1",
  "cc",
  "enum_primitive",

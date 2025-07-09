@@ -50,8 +50,11 @@ pub enum TransportError {
     ErrorStatusCode(u16),
 
     /// The data returned by the validator was invalid.
-    #[error("validator returned invalid data: {0}")]
-    BadNodeData(Box<dyn std::error::Error + Send + Sync + 'static>),
+    #[error("validator returned invalid {1} data: {0}")]
+    BadNodeData(
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+        &'static str,
+    ),
 
     /// Validator returned empty response body
     #[error("no response body")]

@@ -314,6 +314,11 @@ impl<'de> Deserialize<'de> for ChainBalance {
             "orchard" => Ok(ChainBalance(GetBlockchainInfoBalance::orchard(
                 amount, None, /*TODO: handle optional delta*/
             ))),
+            // TODO: Investigate source of undocument 'lockbox' value
+            // that likely is intended to be 'deferred'
+            "lockbox" | "deferred" => Ok(ChainBalance(GetBlockchainInfoBalance::deferred(
+                amount, None,
+            ))),
             "" => Ok(ChainBalance(GetBlockchainInfoBalance::chain_supply(
                 // The pools are immediately summed internally, which pool we pick doesn't matter here
                 ValueBalance::from_transparent_amount(amount),
@@ -1079,6 +1084,8 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
 
         let tx_value = serde_json::Value::deserialize(deserializer)?;
 
+        println!("got txvalue");
+
         if let Some(hex_value) = tx_value.get("hex") {
             let hex_str = hex_value
                 .as_str()
@@ -1136,40 +1143,78 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 let value_balance_zat: i64 = tx_value["valueBalanceZat"];
                 let size: i64 = tx_value["size"];
                 let time: i64 = tx_value["time"];
-                let txid: zebra_chain::transaction::Hash = tx_value["txid"];
-                let auth_digest: zebra_chain::transaction::AuthDigest = tx_value["authdigest"];
+                let txid: String = tx_value["txid"];
+                let auth_digest: String = tx_value["authdigest"];
                 let overwintered: bool = tx_value["overwintered"];
                 let version: u32 = tx_value["version"];
-                let version_group_id: Vec<u8> = tx_value["versiongroupid"];
+                let version_group_id: String = tx_value["versiongroupid"];
                 let lock_time: u32 = tx_value["locktime"];
                 let expiry_height: Height = tx_value["expiryheight"];
-                let block_hash: zebra_chain::block::Hash = tx_value["blockhash"];
+                let block_hash: String = tx_value["blockhash"];
                 let block_time: i64 = tx_value["blocktime"];
             }
 
+            println!("got fields");
+
+            let txid = txid.ok_or(DeserError::missing_field("txid"))?;
+
+            let txid = zebra_chain::transaction::Hash::from_hex(txid)
+                .map_err(|e| DeserError::custom(format!("txid was not valid hash: {e}")))?;
+            let block_hash = block_hash
+                .map(|bh| {
+                    zebra_chain::block::Hash::from_hex(bh).map_err(|e| {
+                        DeserError::custom(format!("blockhash was not valid hash: {e}"))
+                    })
+                })
+                .transpose()?;
+            let auth_digest = auth_digest
+                .map(|ad| {
+                    zebra_chain::transaction::AuthDigest::from_hex(ad).map_err(|e| {
+                        DeserError::custom(format!("authdigest was not valid hash: {e}"))
+                    })
+                })
+                .transpose()?;
+            let version_group_id = version_group_id
+                .map(hex::decode)
+                .transpose()
+                .map_err(|e| DeserError::custom(format!("txid was not valid hash: {e}")))?;
+
             Ok(GetTransactionResponse::Object(Box::new(
                 TransactionObject::new(
+                    // optional
                     in_active_chain,
                     hex,
+                    // optional
                     height,
+                    // optional
                     confirmations,
                     inputs.unwrap_or_default(),
                     outputs.unwrap_or_default(),
                     shielded_spends.unwrap_or_default(),
                     shielded_outputs.unwrap_or_default(),
+                    // optional
                     orchard,
+                    // optional
                     value_balance,
+                    // optional
                     value_balance_zat,
+                    // optional
                     size,
+                    // optional
                     time,
-                    txid.ok_or(DeserError::missing_field("txid"))?,
+                    txid,
+                    // optional
                     auth_digest,
                     overwintered.unwrap_or(false),
                     version.ok_or(DeserError::missing_field("version"))?,
+                    // optional
                     version_group_id,
                     lock_time.ok_or(DeserError::missing_field("locktime"))?,
+                    // optional
                     expiry_height,
+                    // optional
                     block_hash,
+                    // optional
                     block_time,
                 ),
             )))

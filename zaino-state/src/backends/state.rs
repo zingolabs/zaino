@@ -202,14 +202,18 @@ impl ZcashService for StateService {
             )
             .await??;
 
+        info!("chain syncer launched!");
+
         // Wait for ReadStateService to catch up to primary database:
         loop {
             let server_height = rpc_client.get_blockchain_info().await?.blocks;
+            info!("got blockchain info!");
 
             let syncer_response = read_state_service
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await?;
+            info!("got tip!");
             let (syncer_height, _) = expected_read_response!(syncer_response, Tip).ok_or(
                 RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
             )?;
