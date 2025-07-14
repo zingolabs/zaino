@@ -54,6 +54,7 @@ core2 = { workspace = true }
 nonempty = "0.11.0"
 arc-swap = "1.7.1"
 reqwest.workspace = true
+derive_more = { version = "2.0.1", features = ["from"] }
 
 [dev-dependencies]
 zingo-infra-services = { workspace = true }

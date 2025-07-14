@@ -658,7 +658,7 @@ pub enum UpdateError {
 }
 
 /// A connection to a validator.
-#[derive(Clone)]
+#[derive(Clone, derive_more::From)]
 pub enum BlockchainSource {
     /// The connection is via direct read access to a zebrad's data file
     State(ReadStateService),
