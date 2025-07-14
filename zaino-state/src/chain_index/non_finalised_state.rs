@@ -44,9 +44,38 @@ pub struct NonfinalizedBlockCacheSnapshot {
     /// all blocks known to have been on-chain before being
     /// removed by a reorg. Blocks reorged away have no height.
     pub blocks: HashMap<Hash, ChainBlock>,
+    /// hashes indexed by height
+    pub heights_to_hashes: HashMap<Height, Hash>,
     // Do we need height here?
     /// The highest known block
     pub best_tip: (Height, Hash),
+}
+
+impl NonfinalizedBlockCacheSnapshot {
+    pub(crate) fn get_block_by_hash(
+        &self,
+        target_hash: &super::types::Hash,
+    ) -> Option<&ChainBlock> {
+        self.blocks.iter().find_map(|(hash, chainblock)| {
+            if hash == target_hash {
+                Some(chainblock)
+            } else {
+                None
+            }
+        })
+    }
+    pub(crate) fn get_block_by_height(
+        &self,
+        target_height: &super::types::Height,
+    ) -> Option<&ChainBlock> {
+        self.heights_to_hashes.iter().find_map(|(height, hash)| {
+            if height == target_height {
+                self.get_block_by_hash(hash)
+            } else {
+                None
+            }
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -280,12 +309,16 @@ impl NonFinalizedState {
         let best_tip = (Height(1), chainblock.index().hash);
 
         let mut blocks = HashMap::new();
-        blocks.insert(chainblock.index().hash, chainblock);
+        let mut heights_to_hashes = HashMap::new();
+        let hash = chainblock.index().hash;
+        blocks.insert(hash, chainblock);
+        heights_to_hashes.insert(Height(1), hash);
 
         dbg!(&best_tip);
         dbg!(&blocks);
         let current = ArcSwap::new(Arc::new(NonfinalizedBlockCacheSnapshot {
             blocks,
+            heights_to_hashes,
             best_tip,
         }));
         Ok(Self {
@@ -630,10 +663,23 @@ impl NonFinalizedState {
                 _ => acc,
             }
         });
+        let heights_to_hashes = blocks
+            .iter()
+            .filter_map(|(hash, chainblock)| {
+                chainblock
+                    .index()
+                    .height
+                    .map(|height| (height, hash.clone()))
+            })
+            .collect();
         // Need to get best hash at some point in this process
         let stored = self.current.compare_and_swap(
             &snapshot,
-            Arc::new(NonfinalizedBlockCacheSnapshot { blocks, best_tip }),
+            Arc::new(NonfinalizedBlockCacheSnapshot {
+                blocks,
+                heights_to_hashes,
+                best_tip,
+            }),
         );
         if Arc::ptr_eq(&stored, &snapshot) {
             Ok(())

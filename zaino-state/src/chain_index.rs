@@ -25,6 +25,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::{stream, Stream};
 use non_finalised_state::{BlockchainSource, NonFinalizedState, NonfinalizedBlockCacheSnapshot};
+use types::ChainBlock;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_state::{HashOrHeight, ReadStateService};
 
@@ -65,11 +66,78 @@ impl ChainIndex {
     /// by hash or height.
     pub fn get_block_range(
         &self,
-        snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
+        nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot> + Clone,
         start: Option<HashOrHeight>,
         end: Option<HashOrHeight>,
-    ) -> impl Stream<Item = Box<[u8]>> {
-        tokio_stream::iter(vec![todo!()])
+    ) -> Result<impl Stream<Item = Box<[u8]>>, GetBlockRangeError> {
+        let Some(start_block) = (match start {
+            Some(HashOrHeight::Hash(hash)) => {
+                self.get_block_by_hash(nonfinalized_snapshot.clone(), &hash.into())
+            }
+            Some(HashOrHeight::Height(height)) => {
+                self.get_block_by_height(nonfinalized_snapshot.clone(), types::Height(height.0))
+            }
+            // start from the beginning
+            None => self.get_block_by_height(nonfinalized_snapshot.clone(), types::Height(1)),
+        }) else {
+            return Err(GetBlockRangeError::MissingStartBlock);
+        };
+        let Some(end_block) = (match end {
+            Some(HashOrHeight::Hash(hash)) => {
+                self.get_block_by_hash(nonfinalized_snapshot.clone(), &hash.into())
+            }
+            Some(HashOrHeight::Height(height)) => {
+                self.get_block_by_height(nonfinalized_snapshot.clone(), types::Height(height.0))
+            }
+            //
+            None => self.get_block_by_height(
+                nonfinalized_snapshot.clone(),
+                nonfinalized_snapshot.as_ref().best_tip.0,
+            ),
+        }) else {
+            return Err(GetBlockRangeError::MissingEndBlock);
+        };
+
+        let mut nonfinalized_block = nonfinalized_snapshot
+            .as_ref()
+            .get_block_by_hash(end_block.hash());
+        let first_nonfinalized_hash = nonfinalized_snapshot
+            .as_ref()
+            .get_block_by_hash(start_block.hash())
+            .map(|block| block.index().hash());
+
+        let mut nonfinalized_range = vec![];
+        while let Some(block) = nonfinalized_block {
+            nonfinalized_range.push(block.hash().clone());
+            nonfinalized_block = if Some(block.index().parent_hash()) != first_nonfinalized_hash {
+                nonfinalized_snapshot
+                    .as_ref()
+                    .get_block_by_hash(block.index().parent_hash())
+            } else {
+                None
+            }
+        }
+        // At this point, nonfinalized_range should contain all of the requested
+        // range's blocks in reverse order. One the finalized state has finished streaming, these
+        // will be streamed from the top of the vec down.
+
+        Ok(tokio_stream::iter(vec![todo!()]))
+    }
+
+    fn get_block_by_hash(
+        &self,
+        snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
+        block_hash: &types::Hash,
+    ) -> Option<ChainBlock> {
+        todo!()
+    }
+
+    fn get_block_by_height(
+        &self,
+        nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
+        height: types::Height,
+    ) -> Option<ChainBlock> {
+        todo!()
     }
 
     /// Finds the newest ancestor of the given block on the main
@@ -100,4 +168,9 @@ impl ChainIndex {
     ) -> HashMap<zebra_chain::block::Hash, Option<zebra_chain::block::Height>> {
         todo!()
     }
+}
+
+pub enum GetBlockRangeError {
+    MissingStartBlock,
+    MissingEndBlock,
 }
