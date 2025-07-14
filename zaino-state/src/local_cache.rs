@@ -16,7 +16,7 @@ use zaino_fetch::{
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcRequestError},
         error::TransportError,
-        response::{GetBlockError, GetBlockResponse},
+        response::GetBlockError,
     },
 };
 use zaino_proto::proto::compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction};
@@ -24,7 +24,7 @@ use zebra_chain::{
     block::{Hash, Height},
     parameters::Network,
 };
-use zebra_rpc::methods::{GetBlock, GetBlockTransaction};
+use zebra_rpc::methods::{GetBlock, GetBlockResponse, GetBlockTransaction};
 use zebra_state::{HashOrHeight, ReadStateService};
 
 /// Zaino's internal compact block cache.
@@ -241,9 +241,12 @@ async fn try_state_path(
                 GetBlock::Raw(_) => Err(BlockCacheError::Custom(
                     "Found transaction of `Raw` type, expected only `Hash` types.".to_string(),
                 )),
-                GetBlock::Object {
-                    hash, tx, trees, ..
-                } => Ok((hash, tx, trees)),
+                GetBlock::Object { 0: block } => {
+                    let hash = block.hash().clone();
+                    let tx = block.tx().clone();
+                    let trees = block.trees().clone();
+                    Ok((hash, tx, trees))
+                }
             })?;
 
     StateServiceSubscriber::get_block_inner(state, network, hash_or_height, Some(0))
@@ -268,7 +271,7 @@ async fn try_state_path(
                     .collect::<Vec<String>>();
 
                 Ok((
-                    hash.0,
+                    zebra_chain::block::Hash::from(hash.0),
                     FullBlock::parse_from_hex(
                         block_hex.as_ref(),
                         Some(display_txids_to_server(txid_strings)?),
@@ -295,11 +298,15 @@ async fn try_fetcher_path(
                     Box::new(std::io::Error::other("unexpected raw block response")),
                 )))
             }
-            GetBlockResponse::Object(block) => Ok((block.hash, block.tx, block.trees)),
+            GetBlockResponse::Object(block) => Ok((
+                block.hash().clone(),
+                block.tx().clone(),
+                block.trees().clone(),
+            )),
         })?;
 
     fetcher
-        .get_block(hash.0.to_string(), Some(0))
+        .get_block(hash.to_string(), Some(0))
         .await
         .and_then(|response| match response {
             GetBlockResponse::Object { .. } => {
@@ -308,12 +315,25 @@ async fn try_fetcher_path(
                 )))
             }
             GetBlockResponse::Raw(block_hex) => Ok((
-                hash.0,
+                zebra_chain::block::Hash::from(hash.0),
                 FullBlock::parse_from_hex(
                     block_hex.as_ref(),
-                    Some(display_txids_to_server(tx).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
-                    })?),
+                    Some(
+                        display_txids_to_server(
+                            tx.iter()
+                                .filter_map(|t| {
+                                    if let GetBlockTransaction::Hash(h) = t {
+                                        Some(h.to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<String>>(),
+                        )
+                        .map_err(|e| {
+                            RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        })?,
+                    ),
                 )
                 .map_err(|e| RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e))))?
                 .into_compact(

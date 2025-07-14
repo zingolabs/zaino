@@ -9,10 +9,12 @@ use tracing::{info, warn};
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
-use zebra_rpc::methods::{
-    trees::{GetSubtrees, GetTreestate},
-    AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-    GetBlockChainInfo, GetInfo, GetRawTransaction, SentTransactionHash,
+use zebra_rpc::{
+    client::{GetBlockchainInfoResponse, GetSubtreesByIndexResponse, GetTreestateResponse},
+    methods::{
+        AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetInfo,
+        GetRawTransaction, SentTransactionHash,
+    },
 };
 
 use zaino_fetch::{
@@ -208,7 +210,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error> {
+    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
         Ok(self
             .fetcher
             .get_blockchain_info()
@@ -326,11 +328,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_block(hash_or_height, verbosity)
-            .await?
-            .try_into()?)
+        Ok(self.fetcher.get_block(hash_or_height, verbosity).await?)
     }
 
     /// Returns the current block count in the best valid block chain.
@@ -374,12 +372,11 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
-    async fn z_get_treestate(&self, hash_or_height: String) -> Result<GetTreestate, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_treestate(hash_or_height)
-            .await?
-            .try_into()?)
+    async fn z_get_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<GetTreestateResponse, Self::Error> {
+        Ok(self.fetcher.get_treestate(hash_or_height).await?.into())
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.
@@ -405,7 +402,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, Self::Error> {
+    ) -> Result<GetSubtreesByIndexResponse, Self::Error> {
         Ok(self
             .fetcher
             .get_subtrees_by_index(pool, start_index.0, limit.map(|limit_index| limit_index.0))
@@ -469,11 +466,12 @@ impl ZcashIndexer for FetchServiceSubscriber {
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<String>, Self::Error> {
         let (addresses, start, end) = request.into_parts();
-        Ok(self
+        let r: Vec<String> = self
             .fetcher
             .get_address_txids(addresses, start, end)
-            .await?
-            .transactions)
+            .await
+            .unwrap();
+        Ok(r)
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -811,13 +809,16 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let hash_hex = hex::encode(reversed_hash);
             let tx = self.get_raw_transaction(hash_hex, Some(1)).await?;
 
-            let (hex, height) = if let GetRawTransaction::Object(tx_object) = tx {
-                (tx_object.hex, tx_object.height)
+            let tx_object = if let GetRawTransaction::Object(obj) = tx {
+                obj
             } else {
                 return Err(FetchServiceError::TonicStatusError(
                     tonic::Status::not_found("Error: Transaction not received"),
                 ));
             };
+
+            let (hex, height) = (tx_object.hex(), tx_object.height());
+
             let height: u64 = match height {
                 Some(h) => h as u64,
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
@@ -901,7 +902,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             ))
         })?;
         let balance = self.z_get_address_balance(taddrs).await?;
-        let checked_balance: i64 = match i64::try_from(balance.balance) {
+        let checked_balance: i64 = match i64::try_from(balance.balance()) {
             Ok(balance) => balance,
             Err(_) => {
                 return Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
@@ -940,7 +941,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     })?;
                                 let balance =
                                     fetch_service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance += balance.balance;
+                                total_balance += balance.balance();
                             }
                             None => {
                                 return Ok(total_balance);
@@ -1064,7 +1065,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     }
                                 };
                                 match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                                    transaction_object.hex.as_ref(),
+                                    transaction_object.hex().as_ref(),
                                     Some(vec!(txid_bytes)), None)
                                 {
                                     Ok(transaction) => {
@@ -1170,7 +1171,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     GetRawTransaction::Object(transaction_object) => {
                                         if channel_tx
                                             .send(Ok(RawTransaction {
-                                                data: transaction_object.hex.as_ref().to_vec(),
+                                                data: transaction_object.hex().as_ref().to_vec(),
                                                 height: mempool_height as u64,
                                             }))
                                             .await
@@ -1257,7 +1258,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Ok(state) => {
                 let (hash, height, time, sapling, orchard) = state.into_parts();
                 Ok(TreeState {
-                    network: chain_info.chain(),
+                    network: chain_info.chain().clone(),
                     height: height.0 as u64,
                     hash: hash.to_string(),
                     time,
@@ -1284,7 +1285,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Ok(state) => {
                 let (hash, height, time, sapling, orchard) = state.into_parts();
                 Ok(TreeState {
-                    network: chain_info.chain(),
+                    network: chain_info.chain().clone(),
                     height: height.0 as u64,
                     hash: hash.to_string(),
                     time,
@@ -1475,7 +1476,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             version: self.data.build_info().version(),
             vendor: "ZingoLabs ZainoD".to_string(),
             taddr_support: true,
-            chain_name: blockchain_info.chain(),
+            chain_name: blockchain_info.chain().clone(),
             sapling_activation_height: sapling_activation_height.0 as u64,
             consensus_branch_id,
             block_height: blockchain_info.blocks().0 as u64,

@@ -152,7 +152,14 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 
     println!("\n\nFetching Chain Height!\n");
 
-    let height = dbg!(fetch_service.get_blockchain_info().await.unwrap().blocks.0);
+    let height = dbg!(
+        fetch_service
+            .get_blockchain_info()
+            .await
+            .unwrap()
+            .blocks()
+            .0
+    );
 
     println!("\n\nFetching Tx From Unfinalized Chain!\n");
 
@@ -438,7 +445,7 @@ async fn monitor_unverified_mempool_for_validator(
     println!("\n\nFetching Mempool Tx 1!\n");
     let _transaction_1 = dbg!(
         fetch_service
-            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
+            .get_raw_transaction(mempool_txids[0].clone(), Some(1))
             .await
     );
 

@@ -295,7 +295,7 @@ async fn z_get_address_balance_inner() {
     );
     assert_eq!(
         recipient_balance.confirmed_transparent_balance.unwrap(),
-        zcashd_service_balance.balance,
+        zcashd_service_balance.balance(),
     );
     assert_eq!(zcashd_service_balance, zaino_service_balance);
 
@@ -332,7 +332,7 @@ async fn z_get_block_inner() {
 
     let hash = match zcashd_block {
         zebra_rpc::methods::GetBlock::Raw(_) => panic!("expected object"),
-        zebra_rpc::methods::GetBlock::Object { hash, .. } => hash.0.to_string(),
+        zebra_rpc::methods::GetBlock::Object { 0: hash } => hash.hash().to_string(),
     };
     let zaino_get_block_by_hash = zaino_subscriber
         .z_get_block(hash.clone(), Some(1))

@@ -43,15 +43,16 @@ use zebra_chain::{
     subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
+    client::{
+        BlockObject, GetBlockchainInfoBalance, GetBlockchainInfoResponse,
+        GetSubtreesByIndexResponse, GetTreestateResponse, HexData, SubtreeRpcData,
+        TransactionObject,
+    },
     methods::{
-        chain_tip_difficulty,
-        hex_data::HexData,
-        trees::{GetSubtrees, GetTreestate, SubtreeRpcData},
-        types::transaction::TransactionObject,
-        AddressBalance, AddressStrings, ConsensusBranchIdHex, GetAddressTxIdsRequest,
-        GetAddressUtxos, GetBlock, GetBlockChainInfo, GetBlockHash, GetBlockHeader,
-        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetInfo, GetRawTransaction,
-        NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
+        chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
+        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHeader, GetBlockHeaderObject,
+        GetBlockTransaction, GetBlockTrees, GetInfo, GetRawTransaction, NetworkUpgradeInfo,
+        NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
@@ -203,7 +204,7 @@ impl ZcashService for StateService {
 
         // Wait for ReadStateService to catch up to primary database:
         loop {
-            let server_height = rpc_client.get_blockchain_info().await?.blocks;
+            let server_height = rpc_client.get_blockchain_info().await?.blocks();
 
             let syncer_response = read_state_service
                 .ready()
@@ -459,23 +460,23 @@ impl StateServiceSubscriber {
             let block_commitments =
                 header_to_block_commitments(&header, &network, height, final_sapling_root)?;
 
-            let block_header = GetBlockHeaderObject {
-                hash: GetBlockHash(hash),
+            let block_header = GetBlockHeaderObject::new(
+                hash,
                 confirmations,
                 height,
-                version: header.version,
-                merkle_root: header.merkle_root,
+                header.version,
+                header.merkle_root,
+                block_commitments,
                 final_sapling_root,
                 sapling_tree_size,
-                time: header.time.timestamp(),
+                header.time.timestamp(),
                 nonce,
-                solution: header.solution,
-                bits: header.difficulty_threshold,
+                header.solution,
+                header.difficulty_threshold,
                 difficulty,
-                previous_block_hash: GetBlockHash(header.previous_block_hash),
-                next_block_hash: next_block_hash.map(GetBlockHash),
-                block_commitments,
-            };
+                header.previous_block_hash,
+                next_block_hash,
+            );
 
             GetBlockHeader::Object(Box::new(block_header))
         };
@@ -712,23 +713,22 @@ impl StateServiceSubscriber {
                     ),
                     GetBlockHeader::Object(get_block_header_object) => get_block_header_object,
                 };
-                let GetBlockHeaderObject {
-                    hash,
-                    confirmations,
-                    height,
-                    version,
-                    merkle_root,
-                    final_sapling_root,
-                    sapling_tree_size,
-                    time,
-                    nonce,
-                    solution,
-                    bits,
-                    difficulty,
-                    previous_block_hash,
-                    next_block_hash,
-                    block_commitments,
-                } = *header_obj;
+
+                let hash = header_obj.hash();
+                let confirmations = header_obj.confirmations();
+                let height = header_obj.height();
+                let version = header_obj.version();
+                let merkle_root = header_obj.merkle_root();
+                let final_sapling_root = header_obj.final_sapling_root();
+                let sapling_tree_size = header_obj.sapling_tree_size();
+                let time = header_obj.time();
+                let nonce = header_obj.nonce();
+                let solution = header_obj.solution();
+                let bits = header_obj.bits();
+                let difficulty = header_obj.difficulty();
+                let previous_block_hash = header_obj.previous_block_hash();
+                let next_block_hash = header_obj.next_block_hash();
+                let block_commitments = header_obj.block_commitments();
 
                 let transactions_response: Vec<GetBlockTransaction> = match txids_or_fullblock {
                     Ok(ReadResponse::TransactionIdsForBlock(Some(txids))) => Ok(txids
@@ -747,6 +747,9 @@ impl StateServiceSubscriber {
                                     Some(confirmations as u32),
                                     network,
                                     DateTime::<Utc>::from_timestamp(time, 0),
+                                    Some(block.hash()),
+                                    None,
+                                    transaction.hash(),
                                 ),
                             ))
                         })
@@ -780,26 +783,28 @@ impl StateServiceSubscriber {
 
                 let trees = GetBlockTrees::new(sapling_tree_size, orchard_tree.count());
 
-                Ok(GetBlock::Object {
+                Ok(GetBlock::Object(Box::new(BlockObject::new(
                     hash,
                     confirmations,
-                    height: Some(height),
-                    version: Some(version),
-                    merkle_root: Some(merkle_root),
-                    time: Some(time),
-                    nonce: Some(nonce),
-                    solution: Some(solution),
-                    bits: Some(bits),
-                    difficulty: Some(difficulty),
-                    tx: transactions_response,
-                    trees,
-                    size: None,
-                    final_sapling_root: Some(final_sapling_root),
+                    None,
+                    Some(height),
+                    Some(version),
+                    Some(merkle_root),
+                    Some(block_commitments),
+                    Some(final_sapling_root),
                     final_orchard_root,
-                    previous_block_hash: Some(previous_block_hash),
+                    transactions_response,
+                    Some(time),
+                    Some(nonce),
+                    Some(solution),
+                    Some(bits),
+                    Some(difficulty),
+                    None, // chain_supply,
+                    None, // value_pools,
+                    trees,
+                    Some(previous_block_hash),
                     next_block_hash,
-                    block_commitments: Some(block_commitments),
-                })
+                ))))
             }
             more_than_two => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
                 LegacyCode::InvalidParameter,
@@ -838,7 +843,9 @@ impl ZcashIndexer for StateServiceSubscriber {
         })
     }
 
-    async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error> {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<zebra_rpc::client::GetBlockchainInfoResponse, Self::Error> {
         let mut state = self.read_state_service.clone();
 
         let response = state
@@ -946,13 +953,13 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
-        Ok(GetBlockChainInfo::new(
+        Ok(GetBlockchainInfoResponse::new(
             self.config.network.bip70_network_name(),
             height,
             hash,
             estimated_height,
-            zebra_rpc::methods::types::get_blockchain_info::Balance::chain_supply(balance),
-            zebra_rpc::methods::types::get_blockchain_info::Balance::value_pools(balance),
+            GetBlockchainInfoBalance::chain_supply(balance),
+            GetBlockchainInfoBalance::value_pools(balance, None),
             upgrades,
             consensus,
             height,
@@ -989,9 +996,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        Ok(AddressBalance {
-            balance: u64::from(balance),
-        })
+        Ok(AddressBalance::new(u64::from(balance), 0))
     }
 
     async fn send_raw_transaction(
@@ -1033,7 +1038,10 @@ impl ZcashIndexer for StateServiceSubscriber {
             .collect())
     }
 
-    async fn z_get_treestate(&self, hash_or_height: String) -> Result<GetTreestate, Self::Error> {
+    async fn z_get_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<GetTreestateResponse, Self::Error> {
         let mut state = self.read_state_service.clone();
 
         let hash_or_height = HashOrHeight::from_str(&hash_or_height)?;
@@ -1079,7 +1087,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
         });
 
-        Ok(GetTreestate::from_parts(
+        Ok(GetTreestateResponse::from_parts(
             hash,
             height,
             // If the timestamp is pre-unix epoch, something has gone terribly wrong
@@ -1103,7 +1111,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, Self::Error> {
+    ) -> Result<GetSubtreesByIndexResponse, Self::Error> {
         let mut state = self.read_state_service.clone();
 
         match pool.as_str() {
@@ -1122,11 +1130,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                     })
                     .collect();
 
-                Ok(GetSubtrees {
-                    pool,
-                    start_index,
-                    subtrees,
-                })
+                Ok(GetSubtreesByIndexResponse::new(pool, start_index, subtrees))
             }
             "orchard" => {
                 let request = zebra_state::ReadRequest::OrchardSubtrees { start_index, limit };
@@ -1143,11 +1147,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                     })
                     .collect();
 
-                Ok(GetSubtrees {
-                    pool,
-                    start_index,
-                    subtrees,
-                })
+                Ok(GetSubtreesByIndexResponse::new(pool, start_index, subtrees))
             }
             otherwise => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
                 LegacyCode::Misc,
@@ -1214,6 +1214,9 @@ impl ZcashIndexer for StateServiceSubscriber {
                                 Some(tx.confirmations),
                                 &self.config.network,
                                 Some(tx.block_time),
+                                None, // block_hash: Option<block::Hash>,
+                                None, // in_active_chain: Option<bool>,
+                                tx.tx.hash(),
                             ),
                         )),
                         None => GetRawTransaction::Raw(tx.tx.into()),
@@ -1448,8 +1451,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     "unreachable, verbose transaction expected".to_string(),
                 )),
                 GetRawTransaction::Object(transaction_object) => Ok(RawTransaction {
-                    data: transaction_object.hex.as_ref().to_vec(),
-                    height: transaction_object.height.unwrap_or(0) as u64,
+                    data: transaction_object.hex().as_ref().to_vec(),
+                    height: transaction_object.height().unwrap_or(0) as u64,
                 }),
             })
     }
@@ -1522,7 +1525,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             ))
         })?;
         let balance = self.z_get_address_balance(taddrs).await?;
-        let checked_balance: i64 = match i64::try_from(balance.balance) {
+        let checked_balance: i64 = match i64::try_from(balance.balance()) {
             Ok(balance) => balance,
             Err(_) => {
                 return Err(Self::Error::TonicStatusError(tonic::Status::unknown(
@@ -1562,7 +1565,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                                     })?;
                                 let balance =
                                     fetch_service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance += balance.balance;
+                                total_balance += balance.balance();
                             }
                             None => {
                                 return Ok(total_balance);
@@ -1686,7 +1689,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                                     }
                                 };
                                 match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                                    transaction_object.hex.as_ref(),
+                                    transaction_object.hex().as_ref(),
                                     Some(vec![txid_bytes]),
                                     None,
                                 ) {
@@ -1793,7 +1796,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                                 GetRawTransaction::Object(transaction_object) => {
                                     if channel_tx
                                         .send(Ok(RawTransaction {
-                                            data: transaction_object.hex.as_ref().to_vec(),
+                                            data: transaction_object.hex().as_ref().to_vec(),
                                             height: mempool_height as u64,
                                         }))
                                         .await
@@ -1989,7 +1992,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             version: self.data.build_info().version(),
             vendor: "ZingoLabs ZainoD".to_string(),
             taddr_support: true,
-            chain_name: blockchain_info.chain(),
+            chain_name: blockchain_info.chain().to_string(),
             sapling_activation_height: sapling_activation_height.0 as u64,
             consensus_branch_id,
             block_height: blockchain_info.blocks().0 as u64,

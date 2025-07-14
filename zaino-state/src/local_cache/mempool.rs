@@ -111,7 +111,7 @@ impl Mempool {
             loop {
                 match mempool.fetcher.get_blockchain_info().await {
                     Ok(chain_info) => {
-                        best_block_hash = chain_info.best_block_hash;
+                        best_block_hash = chain_info.best_block_hash();
                         break;
                     }
                     Err(e) => {
@@ -126,7 +126,7 @@ impl Mempool {
             loop {
                 match mempool.fetcher.get_blockchain_info().await {
                     Ok(chain_info) => {
-                        check_block_hash = chain_info.best_block_hash;
+                        check_block_hash = chain_info.best_block_hash();
                     }
                     Err(e) => {
                         status.store(StatusType::RecoverableError.into());
@@ -178,13 +178,39 @@ impl Mempool {
     ) -> Result<Vec<(MempoolKey, MempoolValue)>, MempoolError> {
         let mut transactions = Vec::new();
 
-        for txid in self.fetcher.get_raw_mempool().await?.transactions {
-            let transaction = self
-                .fetcher
-                .get_raw_transaction(txid.clone(), Some(1))
-                .await?;
-            transactions.push((MempoolKey(txid), MempoolValue(transaction.into())));
+        match self.fetcher.get_raw_mempool().await? {
+            zebra_rpc::client::GetRawMempoolResponse::TxIds(txids) => {
+                for txid in txids {
+                    let transaction = self
+                        .fetcher
+                        .get_raw_transaction(txid.clone(), Some(1))
+                        .await?;
+                    transactions.push((MempoolKey(txid), MempoolValue(transaction.into())));
+                }
+            }
+            zebra_rpc::client::GetRawMempoolResponse::Verbose(raw_mempool) => {
+                for (txid, _transaction) in raw_mempool.iter() {
+                    let transaction = self
+                        .fetcher
+                        .get_raw_transaction(txid.clone(), Some(1))
+                        .await?;
+
+                    // TODO: Should use _transactions somehow
+                    transactions.push((
+                        MempoolKey(txid.to_string()),
+                        MempoolValue(transaction.into()),
+                    ));
+                }
+            }
         }
+
+        // for txid in self.fetcher.get_raw_mempool().await? {
+        //     let transaction = self
+        //         .fetcher
+        //         .get_raw_transaction(txid.clone(), Some(1))
+        //         .await?;
+        //     transactions.push((MempoolKey(txid), MempoolValue(transaction.into())));
+        // }
 
         Ok(transactions)
     }

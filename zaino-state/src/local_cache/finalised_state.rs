@@ -15,6 +15,8 @@ use zebra_state::{HashOrHeight, ReadStateService};
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 
+use zebra_rpc::client::GetBlockResponse;
+
 use crate::{
     config::BlockCacheConfig,
     error::FinalisedStateError,
@@ -397,7 +399,7 @@ impl FinalisedState {
             .get_block(reorg_height.0.to_string(), Some(1))
             .await?
         {
-            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
+            GetBlockResponse::Object(block) => block.hash().0,
             _ => {
                 return Err(FinalisedStateError::Custom(
                     "Unexpected block response type".to_string(),
@@ -408,7 +410,7 @@ impl FinalisedState {
         // Find reorg height.
         //
         // Here this is the latest height at which the internal block hash matches the server block hash.
-        while reorg_hash != check_hash {
+        while reorg_hash.0 != check_hash {
             match reorg_height.previous() {
                 Ok(height) => reorg_height = height,
                 // Underflow error meaning reorg_height = start of chain.
@@ -431,7 +433,7 @@ impl FinalisedState {
                 .get_block(reorg_height.0.to_string(), Some(1))
                 .await?
             {
-                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
+                GetBlockResponse::Object(block) => block.hash().0,
                 _ => {
                     return Err(FinalisedStateError::Custom(
                         "Unexpected block response type".to_string(),
@@ -445,7 +447,7 @@ impl FinalisedState {
             .fetcher
             .get_blockchain_info()
             .await?
-            .blocks
+            .blocks()
             .0
             .saturating_sub(99);
         for block_height in ((reorg_height.0 + 1)
@@ -486,7 +488,7 @@ impl FinalisedState {
             self.status.store(StatusType::Syncing.into());
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await?;
-                let server_height = blockchain_info.blocks.0;
+                let server_height = blockchain_info.blocks().0;
                 for block_height in (sync_height + 1)..(server_height - 99) {
                     if self.get_hash(block_height).is_ok() {
                         self.delete_block(Height(block_height))?;
@@ -517,7 +519,7 @@ impl FinalisedState {
                     }
                 }
                 sync_height = server_height - 99;
-                if (blockchain_info.blocks.0 as i64 - blockchain_info.estimated_height.0 as i64)
+                if (blockchain_info.blocks().0 as i64 - blockchain_info.estimated_height().0 as i64)
                     .abs()
                     <= 10
                 {
@@ -525,8 +527,8 @@ impl FinalisedState {
                 } else {
                     info!(" - Validator syncing with network. ZainoDB chain height: {}, Validator chain height: {}, Estimated Network chain height: {}",
                             &sync_height,
-                            &blockchain_info.blocks.0,
-                            &blockchain_info.estimated_height.0
+                            &blockchain_info.blocks().0,
+                            &blockchain_info.estimated_height().0
                         );
                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     continue;

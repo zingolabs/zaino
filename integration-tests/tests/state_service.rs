@@ -333,7 +333,7 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     );
     assert_eq!(
         recipient_balance.confirmed_transparent_balance.unwrap(),
-        fetch_service_balance.balance,
+        fetch_service_balance.balance(),
     );
     assert_eq!(fetch_service_balance, state_service_balance);
 
@@ -444,7 +444,7 @@ async fn state_service_get_block_object(
 
     let hash = match fetch_service_block {
         zebra_rpc::methods::GetBlock::Raw(_) => panic!("expected object"),
-        zebra_rpc::methods::GetBlock::Object { hash, .. } => hash.0.to_string(),
+        zebra_rpc::methods::GetBlock::Object { 0: hash } => hash.hash().to_string(),
     };
     let state_service_get_block_by_hash = state_service_subscriber
         .z_get_block(hash.clone(), Some(1))

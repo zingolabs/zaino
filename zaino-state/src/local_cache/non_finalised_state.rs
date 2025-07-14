@@ -8,6 +8,8 @@ use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_chain::block::{Hash, Height};
 use zebra_state::{HashOrHeight, ReadStateService};
 
+use zebra_rpc::client::GetBlockResponse;
+
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
     config::BlockCacheConfig,
@@ -66,7 +68,7 @@ impl NonFinalisedState {
             .get_blockchain_info()
             .await
             .map_err(|_| NonFinalisedStateError::Custom("Failed to fetch blockchain info".into()))?
-            .blocks
+            .blocks()
             .0;
         // We do not fetch pre sapling activation.
         for height in chain_height.saturating_sub(99).max(
@@ -128,7 +130,7 @@ impl NonFinalisedState {
             loop {
                 match non_finalised_state.fetcher.get_blockchain_info().await {
                     Ok(chain_info) => {
-                        best_block_hash = chain_info.best_block_hash;
+                        best_block_hash = chain_info.best_block_hash();
                         non_finalised_state.status.store(StatusType::Ready.into());
                         break;
                     }
@@ -148,7 +150,7 @@ impl NonFinalisedState {
 
                 match non_finalised_state.fetcher.get_blockchain_info().await {
                     Ok(chain_info) => {
-                        check_block_hash = chain_info.best_block_hash;
+                        check_block_hash = chain_info.best_block_hash();
                     }
                     Err(e) => {
                         non_finalised_state.update_status_and_notify(StatusType::RecoverableError);
@@ -221,7 +223,7 @@ impl NonFinalisedState {
             .get_block(reorg_height.0.to_string(), Some(1))
             .await?
         {
-            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
+            GetBlockResponse::Object(block) => block.hash().0,
             _ => {
                 return Err(NonFinalisedStateError::Custom(
                     "Unexpected block response type".to_string(),
@@ -232,7 +234,7 @@ impl NonFinalisedState {
         // Find reorg height.
         //
         // Here this is the latest height at which the internal block hash matches the server block hash.
-        while reorg_hash != check_hash.into() {
+        while reorg_hash.0 != check_hash {
             match reorg_height.previous() {
                 Ok(height) => reorg_height = height,
                 // Underflow error meaning reorg_height = start of chain.
@@ -256,7 +258,7 @@ impl NonFinalisedState {
                 .get_block(reorg_height.0.to_string(), Some(1))
                 .await?
             {
-                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
+                GetBlockResponse::Object(block) => block.hash().0,
                 _ => {
                     return Err(NonFinalisedStateError::Custom(
                         "Unexpected block response type".to_string(),
@@ -273,7 +275,7 @@ impl NonFinalisedState {
             .get_blockchain_info()
             .await
             .map_err(|e| NonFinalisedStateError::Custom(e.to_string()))?
-            .blocks
+            .blocks()
             .0;
         for block_height in ((reorg_height.0 + 1)
             .max(self.config.network.sapling_activation_height().0))
@@ -364,15 +366,15 @@ impl NonFinalisedState {
                 let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {
                     NonFinalisedStateError::Custom(format!("Failed to fetch blockchain info: {e}"))
                 })?;
-                if (blockchain_info.blocks.0 as i64 - blockchain_info.estimated_height.0 as i64)
+                if (blockchain_info.blocks().0 as i64 - blockchain_info.estimated_height().0 as i64)
                     .abs()
                     <= 10
                 {
                     break;
                 } else {
                     info!(" - Validator syncing with network. Validator chain height: {}, Estimated Network chain height: {}",
-                        &blockchain_info.blocks.0,
-                        &blockchain_info.estimated_height.0
+                        &blockchain_info.blocks().0,
+                        &blockchain_info.estimated_height().0
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     continue;

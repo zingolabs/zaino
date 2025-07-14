@@ -126,7 +126,7 @@ async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, b
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
         // Check chain height in validator, non-finalised state and finalised state.
-        let validator_height = dbg!(json_service.get_blockchain_info().await.unwrap().blocks.0);
+        let validator_height = dbg!(json_service.get_blockchain_info().await.unwrap().blocks().0);
         let non_finalised_state_height =
             dbg!(block_cache_subscriber.get_chain_height().await.unwrap().0);
         let finalised_state_height =

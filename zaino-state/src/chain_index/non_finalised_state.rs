@@ -13,10 +13,11 @@ use tokio::sync::mpsc;
 use tower::Service;
 use zaino_fetch::jsonrpsee::{
     connector::{JsonRpSeeConnector, RpcRequestError},
-    response::{GetBlockError, GetBlockResponse, GetTreestateResponse},
+    response::GetBlockError,
 };
 use zcash_primitives::merkle_tree::read_commitment_tree;
 use zebra_chain::{parameters::Network, serialization::ZcashDeserialize};
+use zebra_rpc::client::{GetBlockResponse, GetTreestateResponse};
 use zebra_state::{HashOrHeight, ReadResponse, ReadStateService};
 
 use crate::ChainBlock;
@@ -775,9 +776,8 @@ impl BlockchainSource {
                         }
                         _ => BlockchainSourceError::Unrecoverable(e.to_string()),
                     })?;
-                let GetTreestateResponse {
-                    sapling, orchard, ..
-                } = tree_responses;
+                let (sapling, orchard) = (tree_responses.sapling(), tree_responses.orchard());
+
                 let sapling_frontier = sapling
                     .inner()
                     .inner()

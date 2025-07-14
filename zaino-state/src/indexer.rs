@@ -15,10 +15,12 @@ use zaino_proto::proto::{
     },
 };
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
-use zebra_rpc::methods::{
-    trees::{GetSubtrees, GetTreestate},
-    AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-    GetBlockChainInfo, GetInfo, GetRawTransaction, SentTransactionHash,
+use zebra_rpc::{
+    client::{GetBlockchainInfoResponse, GetSubtreesByIndexResponse, GetTreestateResponse},
+    methods::{
+        AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetInfo,
+        GetRawTransaction, SentTransactionHash,
+    },
 };
 
 use crate::{
@@ -161,7 +163,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error>;
+    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
@@ -277,7 +279,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
-    async fn z_get_treestate(&self, hash_or_height: String) -> Result<GetTreestate, Self::Error>;
+    async fn z_get_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<GetTreestateResponse, Self::Error>;
 
     /// Returns information about a range of Sapling or Orchard subtrees.
     ///
@@ -302,7 +307,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, Self::Error>;
+    ) -> Result<GetSubtreesByIndexResponse, Self::Error>;
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
@@ -553,12 +558,13 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let timeout = timeout(
                 std::time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for subtree in subtrees.subtrees {
+                    for subtree in subtrees.subtrees() {
                         match service_clone
                             .z_get_block(subtree.end_height.0.to_string(), Some(1))
                             .await
                         {
-                            Ok(GetBlock::Object { hash, height, .. }) => {
+                            Ok(GetBlock::Object { 0: block }) => {
+                                let (hash, height) = (block.hash(), block.height());
                                 let checked_height = match height {
                                     Some(h) => h.0 as u64,
                                     None => {
@@ -603,7 +609,6 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                     .send(Ok(SubtreeRoot {
                                         root_hash: checked_root_hash,
                                         completing_block_hash: hash
-                                            .0
                                             .bytes_in_display_order()
                                             .to_vec(),
                                         completing_block_height: checked_height,
@@ -700,14 +705,14 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
 ) -> Result<(), mpsc::error::SendError<Result<RawTransaction, tonic::Status>>> {
     match transaction {
         Ok(GetRawTransaction::Object(transaction_obj)) => {
-            let height: u64 = match transaction_obj.height {
+            let height: u64 = match transaction_obj.height() {
                 Some(h) => h as u64,
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
                 None => chain_height,
             };
             transmitter
                 .send(Ok(RawTransaction {
-                    data: transaction_obj.hex.as_ref().to_vec(),
+                    data: transaction_obj.hex().as_ref().to_vec(),
                     height,
                 }))
                 .await

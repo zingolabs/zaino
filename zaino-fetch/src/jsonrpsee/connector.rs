@@ -19,19 +19,19 @@ use std::{
     time::Duration,
 };
 use tracing::error;
+use zebra_rpc::client::{
+    GetAddressTxIdsRequest, GetAddressUtxosResponse, GetBlockResponse, GetBlockchainInfoResponse,
+    GetRawMempoolResponse, GetSubtreesByIndexResponse, GetTreestateResponse,
+};
 
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetSubtreesError,
-        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
-        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
-        TxidsResponse,
+        GetBalanceError, GetBlockCountResponse, GetBlockError, GetDifficultyResponse,
+        GetInfoResponse, GetSubtreesError, GetTransactionResponse, GetTreestateError,
+        GetUtxosError, SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
-
-use super::response::GetDifficultyResponse;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest<T> {
@@ -397,9 +397,12 @@ impl JsonRpSeeConnector {
     /// tags: blockchain
     pub async fn get_blockchain_info(
         &self,
-    ) -> Result<GetBlockchainInfoResponse, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetBlockchainInfoResponse>("getblockchaininfo", ())
-            .await
+    ) -> Result<zebra_rpc::client::GetBlockchainInfoResponse, RpcRequestError<Infallible>> {
+        self.send_request::<(), zebra_rpc::client::GetBlockchainInfoResponse>(
+            "getblockchaininfo",
+            (),
+        )
+        .await
     }
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
@@ -427,7 +430,8 @@ impl JsonRpSeeConnector {
     pub async fn get_address_balance(
         &self,
         addresses: Vec<String>,
-    ) -> Result<GetBalanceResponse, RpcRequestError<GetBalanceError>> {
+    ) -> Result<zebra_rpc::methods::GetAddressBalanceResponse, RpcRequestError<GetBalanceError>>
+    {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressbalance", params).await
     }
@@ -475,9 +479,7 @@ impl JsonRpSeeConnector {
         ];
 
         if v == 0 {
-            self.send_request("getblock", params)
-                .await
-                .map(GetBlockResponse::Raw)
+            self.send_request("getblock", params).await
         } else {
             self.send_request("getblock", params)
                 .await
@@ -503,8 +505,10 @@ impl JsonRpSeeConnector {
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
-    pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, RpcRequestError<TxidsError>> {
-        self.send_request::<(), TxidsResponse>("getrawmempool", ())
+    pub async fn get_raw_mempool(
+        &self,
+    ) -> Result<GetRawMempoolResponse, RpcRequestError<TxidsError>> {
+        self.send_request::<(), GetRawMempoolResponse>("getrawmempool", ())
             .await
     }
 
@@ -541,7 +545,7 @@ impl JsonRpSeeConnector {
         pool: String,
         start_index: u16,
         limit: Option<u16>,
-    ) -> Result<GetSubtreesResponse, RpcRequestError<GetSubtreesError>> {
+    ) -> Result<GetSubtreesByIndexResponse, RpcRequestError<GetSubtreesError>> {
         let params = match limit {
             Some(v) => vec![
                 serde_json::to_value(pool).map_err(RpcRequestError::JsonRpc)?,
@@ -602,7 +606,7 @@ impl JsonRpSeeConnector {
         addresses: Vec<String>,
         start: u32,
         end: u32,
-    ) -> Result<TxidsResponse, RpcRequestError<TxidsError>> {
+    ) -> Result<Vec<String>, RpcRequestError<TxidsError>> {
         let params = serde_json::json!({
             "addresses": addresses,
             "start": start,
@@ -624,7 +628,7 @@ impl JsonRpSeeConnector {
     pub async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
-    ) -> Result<Vec<GetUtxosResponse>, RpcRequestError<GetUtxosError>> {
+    ) -> Result<GetAddressUtxosResponse, RpcRequestError<GetUtxosError>> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressutxos", params).await
     }

@@ -141,7 +141,7 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
     );
     assert_eq!(
         recipient_balance.confirmed_transparent_balance.unwrap(),
-        fetch_service_balance.balance,
+        fetch_service_balance.balance(),
     );
 
     test_manager.close().await;
@@ -231,7 +231,7 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let mut fetch_service_mempool = fetch_service_subscriber.get_raw_mempool().await.unwrap();
-    let mut json_service_mempool = json_service.get_raw_mempool().await.unwrap().transactions;
+    let mut json_service_mempool = json_service.get_raw_mempool().await.unwrap();
 
     dbg!(&fetch_service_mempool);
     dbg!(&json_service_mempool);
@@ -486,8 +486,8 @@ async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
     let json_service_blockchain_info = json_service.get_blockchain_info().await.unwrap();
 
     let json_service_get_latest_block = dbg!(BlockId {
-        height: json_service_blockchain_info.blocks.0 as u64,
-        hash: json_service_blockchain_info.best_block_hash.0.to_vec(),
+        height: json_service_blockchain_info.blocks().0 as u64,
+        hash: json_service_blockchain_info.best_block_hash().0.to_vec(),
     });
 
     assert_eq!(fetch_service_get_latest_block.height, 2);
