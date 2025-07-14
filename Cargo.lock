@@ -4952,8 +4952,8 @@ dependencies = [
 
 [[package]]
 name = "tower-batch-control"
-version = "0.2.41-beta.22"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "0.2.41"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "futures",
  "futures-core",
@@ -4979,8 +4979,8 @@ dependencies = [
 
 [[package]]
 name = "tower-fallback"
-version = "0.2.41-beta.22"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "0.2.41"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -5953,9 +5953,9 @@ dependencies = [
  "url",
  "zaino-proto",
  "zcash_protocol",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-rpc 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-state 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
+ "zebra-rpc 1.0.0",
+ "zebra-state 1.0.0",
 ]
 
 [[package]]
@@ -5989,9 +5989,9 @@ dependencies = [
  "zaino-fetch",
  "zaino-proto",
  "zaino-state",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-rpc 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-state 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
+ "zebra-rpc 1.0.0",
+ "zebra-state 1.0.0",
 ]
 
 [[package]]
@@ -6064,7 +6064,7 @@ dependencies = [
  "zainod",
  "zcash_client_backend",
  "zcash_protocol",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
  "zingo-infra-services",
  "zingo-infra-testutils",
  "zingolib",
@@ -6088,8 +6088,8 @@ dependencies = [
  "zaino-fetch",
  "zaino-serve",
  "zaino-state",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-state 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
+ "zebra-state 1.0.0",
 ]
 
 [[package]]
@@ -6451,8 +6451,8 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "1.0.0-beta.46"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "1.0.0"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "bech32",
  "bitflags 2.9.1",
@@ -6531,22 +6531,22 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control 0.2.41-beta.22 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "tower-fallback 0.2.41-beta.22 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
+ "tower-batch-control 0.2.41-beta.22",
+ "tower-fallback 0.2.41-beta.22",
  "tracing",
  "tracing-futures",
  "wagyu-zcash-parameters",
  "zcash_proofs",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-node-services 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-script 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-state 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
+ "zebra-chain 1.0.0-beta.46",
+ "zebra-node-services 1.0.0-beta.46",
+ "zebra-script 1.0.0-beta.46",
+ "zebra-state 1.0.0-beta.46",
 ]
 
 [[package]]
 name = "zebra-consensus"
-version = "1.0.0-beta.46"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "1.0.0"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6567,16 +6567,16 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control 0.2.41-beta.22 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "tower-fallback 0.2.41-beta.22 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "tower-batch-control 0.2.41",
+ "tower-fallback 0.2.41",
  "tracing",
  "tracing-futures",
  "wagyu-zcash-parameters",
  "zcash_proofs",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-node-services 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-script 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-state 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
+ "zebra-node-services 1.0.0",
+ "zebra-script 1.0.0",
+ "zebra-state 1.0.0",
 ]
 
 [[package]]
@@ -6612,13 +6612,13 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-futures",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
+ "zebra-chain 1.0.0-beta.46",
 ]
 
 [[package]]
 name = "zebra-network"
-version = "1.0.0-beta.46"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "1.0.0"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "bitflags 2.9.1",
  "byteorder",
@@ -6648,7 +6648,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-futures",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
 ]
 
 [[package]]
@@ -6662,13 +6662,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
+ "zebra-chain 1.0.0-beta.46",
 ]
 
 [[package]]
 name = "zebra-node-services"
-version = "1.0.0-beta.46"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "1.0.0"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6676,7 +6676,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
 ]
 
 [[package]]
@@ -6706,18 +6706,18 @@ dependencies = [
  "zcash_address 0.7.1",
  "zcash_primitives",
  "zcash_protocol",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-consensus 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-network 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-node-services 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-script 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
- "zebra-state 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
+ "zebra-chain 1.0.0-beta.46",
+ "zebra-consensus 1.0.0-beta.46",
+ "zebra-network 1.0.0-beta.46",
+ "zebra-node-services 1.0.0-beta.46",
+ "zebra-script 1.0.0-beta.46",
+ "zebra-state 1.0.0-beta.46",
 ]
 
 [[package]]
 name = "zebra-rpc"
-version = "1.0.0-beta.46"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "1.0.0"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "base64",
  "chrono",
@@ -6750,12 +6750,12 @@ dependencies = [
  "zcash_primitives",
  "zcash_protocol",
  "zcash_transparent",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-consensus 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-network 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-node-services 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-script 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
- "zebra-state 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
+ "zebra-consensus 1.0.0",
+ "zebra-network 1.0.0",
+ "zebra-node-services 1.0.0",
+ "zebra-script 1.0.0",
+ "zebra-state 1.0.0",
 ]
 
 [[package]]
@@ -6765,17 +6765,17 @@ source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0#b0e7fd4a9a
 dependencies = [
  "thiserror 2.0.12",
  "zcash_script 0.2.0",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
+ "zebra-chain 1.0.0-beta.46",
 ]
 
 [[package]]
 name = "zebra-script"
-version = "1.0.0-beta.46"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "1.0.0"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "thiserror 2.0.12",
  "zcash_script 0.3.2",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
 ]
 
 [[package]]
@@ -6808,13 +6808,13 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "tracing",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?tag=v2.3.0)",
+ "zebra-chain 1.0.0-beta.46",
 ]
 
 [[package]]
 name = "zebra-state"
-version = "1.0.0-beta.46"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d#70909ebf2a0359fb202c8b71c9d09c5131419a0d"
+version = "1.0.0"
+source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
 dependencies = [
  "bincode",
  "chrono",
@@ -6841,7 +6841,7 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "tracing",
- "zebra-chain 1.0.0-beta.46 (git+https://github.com/ZcashFoundation/zebra.git?rev=70909ebf2a0359fb202c8b71c9d09c5131419a0d)",
+ "zebra-chain 1.0.0",
 ]
 
 [[package]]
