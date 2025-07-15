@@ -25,7 +25,7 @@ use crate::ChainBlock;
 pub struct NonFinalizedState {
     /// We need access to the validator's best block hash, as well
     /// as a source of blocks
-    source: BlockchainSource,
+    pub(super) source: BlockchainSource,
     staged: Mutex<mpsc::Receiver<ChainBlock>>,
     staging_sender: mpsc::Sender<ChainBlock>,
     /// This lock should not be exposed to consumers. Rather,
@@ -713,7 +713,7 @@ pub enum BlockchainSource {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum BlockchainSourceError {
+pub(crate) enum BlockchainSourceError {
     // TODO: Add logic for handling recoverable errors if any are identified
     // one candidate may be ephemerable network hiccoughs
     #[error("critical error in backing block source: {0}")]
@@ -724,7 +724,7 @@ type BlockchainSourceResult<T> = Result<T, BlockchainSourceError>;
 
 /// Methods that will dispatch to a ReadStateService or JsonRpSeeConnector
 impl BlockchainSource {
-    async fn get_block(
+    pub(super) async fn get_block(
         &self,
         id: HashOrHeight,
     ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>> {

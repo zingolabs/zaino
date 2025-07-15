@@ -21,13 +21,19 @@ pub mod non_finalised_state;
 /// Common types used by the rest of this module
 pub mod types;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 
-use futures::{stream, Stream};
+use futures::Stream;
 use non_finalised_state::{BlockchainSource, NonFinalizedState, NonfinalizedBlockCacheSnapshot};
+use tokio_stream::StreamExt;
 use types::ChainBlock;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
-use zebra_state::{HashOrHeight, ReadStateService};
+use zebra_chain::serialization::ZcashSerialize;
+use zebra_state::HashOrHeight;
 
 /// The combined index. Contains a view of the mempool, and the full
 /// chain state, both finalized and non-finalized, to allow queries over
@@ -64,38 +70,43 @@ impl ChainIndex {
     /// Given inclusive start and end indexes, stream all blocks
     /// between the given indexes. Can be specified
     /// by hash or height.
-    pub fn get_block_range(
-        &self,
-        nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot> + Clone,
+    pub fn get_block_range<'snapshot: 'future, 'slef: 'future, 'future>(
+        &'slef self,
+        nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot> + Clone + 'snapshot,
         start: Option<HashOrHeight>,
         end: Option<HashOrHeight>,
-    ) -> Result<impl Stream<Item = Box<[u8]>>, GetBlockRangeError> {
+    ) -> Result<impl Stream<Item = Result<Vec<u8>, GetBlockRangeError>> + 'future, GetBlockRangeError>
+    {
         let Some(start_block) = (match start {
             Some(HashOrHeight::Hash(hash)) => {
-                self.get_block_by_hash(nonfinalized_snapshot.clone(), &hash.into())
+                self.get_chainblock_by_hash(nonfinalized_snapshot.clone(), &hash.into())
             }
-            Some(HashOrHeight::Height(height)) => {
-                self.get_block_by_height(nonfinalized_snapshot.clone(), types::Height(height.0))
-            }
-            // start from the beginning
-            None => self.get_block_by_height(nonfinalized_snapshot.clone(), types::Height(1)),
+            Some(HashOrHeight::Height(height)) => self
+                .get_chainblock_by_height(nonfinalized_snapshot.clone(), types::Height(height.0)),
+            // with no start supplied, start from genesis
+            None => self.get_chainblock_by_height(nonfinalized_snapshot.clone(), types::Height(1)),
         }) else {
-            return Err(GetBlockRangeError::MissingStartBlock);
+            return Err(GetBlockRangeError {
+                kind: GetBlockRangeErrorKind::MissingStartBlock,
+                details: None,
+            });
         };
         let Some(end_block) = (match end {
             Some(HashOrHeight::Hash(hash)) => {
-                self.get_block_by_hash(nonfinalized_snapshot.clone(), &hash.into())
+                self.get_chainblock_by_hash(nonfinalized_snapshot.clone(), &hash.into())
             }
-            Some(HashOrHeight::Height(height)) => {
-                self.get_block_by_height(nonfinalized_snapshot.clone(), types::Height(height.0))
-            }
-            //
-            None => self.get_block_by_height(
+            Some(HashOrHeight::Height(height)) => self
+                .get_chainblock_by_height(nonfinalized_snapshot.clone(), types::Height(height.0)),
+            // with no end supplied, end at the tip of the chain
+            None => self.get_chainblock_by_height(
                 nonfinalized_snapshot.clone(),
                 nonfinalized_snapshot.as_ref().best_tip.0,
             ),
         }) else {
-            return Err(GetBlockRangeError::MissingEndBlock);
+            return Err(GetBlockRangeError {
+                kind: GetBlockRangeErrorKind::MissingEndBlock,
+                details: None,
+            });
         };
 
         let mut nonfinalized_block = nonfinalized_snapshot
@@ -117,14 +128,37 @@ impl ChainIndex {
                 None
             }
         }
-        // At this point, nonfinalized_range should contain all of the requested
-        // range's blocks in reverse order. One the finalized state has finished streaming, these
-        // will be streamed from the top of the vec down.
 
-        Ok(tokio_stream::iter(vec![todo!()]))
+        Ok(tokio_stream::iter(nonfinalized_range).then(async |hash| {
+            self.get_fullblock_bytes_from_node(HashOrHeight::Hash(hash.into()))
+                .await
+                .map_err(|e| GetBlockRangeError {
+                    kind: GetBlockRangeErrorKind::BackingNodeFailure,
+                    details: Some(e.to_string()),
+                })?
+                .ok_or(GetBlockRangeError {
+                    kind: GetBlockRangeErrorKind::BackingNodeFailure,
+                    details: Some(format!("hole in validator database, missing block {hash}")),
+                })
+        }))
     }
 
-    fn get_block_by_hash(
+    async fn get_fullblock_bytes_from_node(
+        &self,
+        id: HashOrHeight,
+    ) -> Result<Option<Vec<u8>>, GetFullBlockError> {
+        match self.non_finalized_state.source.get_block(id).await {
+            Ok(block) => block
+                .map(|bk| {
+                    bk.zcash_serialize_to_vec()
+                        .map_err(|e| GetFullBlockError::BackingNodeFailure(Box::new(e)))
+                })
+                .transpose(),
+            Err(e) => Err(GetFullBlockError::BackingNodeFailure(Box::new(e))),
+        }
+    }
+
+    fn get_chainblock_by_hash(
         &self,
         snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
         block_hash: &types::Hash,
@@ -132,7 +166,7 @@ impl ChainIndex {
         todo!()
     }
 
-    fn get_block_by_height(
+    fn get_chainblock_by_height(
         &self,
         nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
         height: types::Height,
@@ -170,7 +204,32 @@ impl ChainIndex {
     }
 }
 
-pub enum GetBlockRangeError {
-    MissingStartBlock,
-    MissingEndBlock,
+/// The full error
+pub struct GetBlockRangeError {
+    /// What went wrong
+    pub kind: GetBlockRangeErrorKind,
+    /// How it went wrong
+    pub details: Option<String>,
 }
+
+/// The things that can go wrong getting a block range
+pub enum GetBlockRangeErrorKind {
+    /// The block at the provided start index could not be found. Likely, an incorrect hash
+    /// was supplied
+    MissingStartBlock,
+    /// The block at the provided start end could not be found. Likely, an incorrect hash
+    /// was supplied
+    MissingEndBlock,
+    /// The query to the validator failed. This is likely unrecoverable,
+    /// TODO make sure to separate transitive network errors
+    BackingNodeFailure,
+}
+
+#[derive(thiserror::Error, Debug)]
+enum GetFullBlockError {
+    #[error("0")]
+    BackingNodeFailure(Box<dyn Disbug + Send + Sync + 'static>),
+}
+
+trait Disbug: Display + Debug {}
+impl<T: Display + Debug> Disbug for T {}
