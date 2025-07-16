@@ -52,7 +52,20 @@ pub struct NonfinalizedBlockCacheSnapshot {
 }
 
 impl NonfinalizedBlockCacheSnapshot {
-    pub(crate) fn get_block_by_hash(
+    pub(crate) fn get_chainblock_by_hashorheight(
+        &self,
+        target: &HashOrHeight,
+    ) -> Option<&ChainBlock> {
+        match target {
+            HashOrHeight::Hash(hash) => {
+                self.get_chainblock_by_hash(&super::types::Hash::from(*hash))
+            }
+            HashOrHeight::Height(height) => {
+                self.get_chainblock_by_height(&super::types::Height(height.0))
+            }
+        }
+    }
+    pub(crate) fn get_chainblock_by_hash(
         &self,
         target_hash: &super::types::Hash,
     ) -> Option<&ChainBlock> {
@@ -64,13 +77,13 @@ impl NonfinalizedBlockCacheSnapshot {
             }
         })
     }
-    pub(crate) fn get_block_by_height(
+    pub(crate) fn get_chainblock_by_height(
         &self,
         target_height: &super::types::Height,
     ) -> Option<&ChainBlock> {
         self.heights_to_hashes.iter().find_map(|(height, hash)| {
             if height == target_height {
-                self.get_block_by_hash(hash)
+                self.get_chainblock_by_hash(hash)
             } else {
                 None
             }

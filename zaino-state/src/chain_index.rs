@@ -70,39 +70,27 @@ impl ChainIndex {
     /// Given inclusive start and end indexes, stream all blocks
     /// between the given indexes. Can be specified
     /// by hash or height.
-    pub fn get_block_range<'snapshot: 'future, 'slef: 'future, 'future>(
-        &'slef self,
+    pub fn get_block_range<'snapshot: 'future, 'self_lt: 'future, 'future>(
+        &'self_lt self,
         nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot> + Clone + 'snapshot,
         start: Option<HashOrHeight>,
         end: Option<HashOrHeight>,
     ) -> Result<impl Stream<Item = Result<Vec<u8>, GetBlockRangeError>> + 'future, GetBlockRangeError>
     {
-        let Some(start_block) = (match start {
-            Some(HashOrHeight::Hash(hash)) => {
-                self.get_chainblock_by_hash(nonfinalized_snapshot.clone(), &hash.into())
-            }
-            Some(HashOrHeight::Height(height)) => self
-                .get_chainblock_by_height(nonfinalized_snapshot.clone(), types::Height(height.0)),
-            // with no start supplied, start from genesis
-            None => self.get_chainblock_by_height(nonfinalized_snapshot.clone(), types::Height(1)),
-        }) else {
+        // with no start supplied, start from genesis
+        let Some(start_block) = self.get_chainblock_by_hashorheight(
+            nonfinalized_snapshot.as_ref(),
+            &start.unwrap_or(HashOrHeight::Height(zebra_chain::block::Height(1))),
+        ) else {
             return Err(GetBlockRangeError {
                 kind: GetBlockRangeErrorKind::MissingStartBlock,
                 details: None,
             });
         };
-        let Some(end_block) = (match end {
-            Some(HashOrHeight::Hash(hash)) => {
-                self.get_chainblock_by_hash(nonfinalized_snapshot.clone(), &hash.into())
-            }
-            Some(HashOrHeight::Height(height)) => self
-                .get_chainblock_by_height(nonfinalized_snapshot.clone(), types::Height(height.0)),
-            // with no end supplied, end at the tip of the chain
-            None => self.get_chainblock_by_height(
-                nonfinalized_snapshot.clone(),
-                nonfinalized_snapshot.as_ref().best_tip.0,
-            ),
-        }) else {
+        let Some(end_block) = self.get_chainblock_by_hashorheight(
+            nonfinalized_snapshot.as_ref(),
+            &end.unwrap_or(HashOrHeight::Height(zebra_chain::block::Height(1))),
+        ) else {
             return Err(GetBlockRangeError {
                 kind: GetBlockRangeErrorKind::MissingEndBlock,
                 details: None,
@@ -111,10 +99,10 @@ impl ChainIndex {
 
         let mut nonfinalized_block = nonfinalized_snapshot
             .as_ref()
-            .get_block_by_hash(end_block.hash());
+            .get_chainblock_by_hash(end_block.hash());
         let first_nonfinalized_hash = nonfinalized_snapshot
             .as_ref()
-            .get_block_by_hash(start_block.hash())
+            .get_chainblock_by_hash(start_block.hash())
             .map(|block| block.index().hash());
 
         let mut nonfinalized_range = vec![];
@@ -123,7 +111,7 @@ impl ChainIndex {
             nonfinalized_block = if Some(block.index().parent_hash()) != first_nonfinalized_hash {
                 nonfinalized_snapshot
                     .as_ref()
-                    .get_block_by_hash(block.index().parent_hash())
+                    .get_chainblock_by_hash(block.index().parent_hash())
             } else {
                 None
             }
@@ -158,22 +146,6 @@ impl ChainIndex {
         }
     }
 
-    fn get_chainblock_by_hash(
-        &self,
-        snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
-        block_hash: &types::Hash,
-    ) -> Option<ChainBlock> {
-        todo!()
-    }
-
-    fn get_chainblock_by_height(
-        &self,
-        nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
-        height: types::Height,
-    ) -> Option<ChainBlock> {
-        todo!()
-    }
-
     /// Finds the newest ancestor of the given block on the main
     /// chain, or the block itself if it is on the main chain.
     /// Returns None if there is no common ancestor
@@ -201,6 +173,15 @@ impl ChainIndex {
         txid: zebra_chain::transaction::Hash,
     ) -> HashMap<zebra_chain::block::Hash, Option<zebra_chain::block::Height>> {
         todo!()
+    }
+
+    fn get_chainblock_by_hashorheight<'snapshot: 'future, 'self_lt: 'future, 'future>(
+        &'self_lt self,
+        non_finalized_snapshot: &'snapshot NonfinalizedBlockCacheSnapshot,
+        height: &HashOrHeight,
+    ) -> Option<&'future ChainBlock> {
+        //TODO: finalized state
+        non_finalized_snapshot.get_chainblock_by_hashorheight(height)
     }
 }
 
