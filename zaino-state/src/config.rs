@@ -28,6 +28,8 @@ pub struct StateServiceConfig {
     pub validator_config: zebra_state::Config,
     /// Validator JsonRPC address.
     pub validator_rpc_address: std::net::SocketAddr,
+    /// Validator gRPC address.
+    pub validator_indexer_rpc_address: std::net::SocketAddr,
     /// Enable validator rpc cookie authentification.
     pub validator_cookie_auth: bool,
     /// Path to the validator cookie file.
@@ -67,6 +69,7 @@ impl StateServiceConfig {
     pub fn new(
         validator_config: zebra_state::Config,
         validator_rpc_address: std::net::SocketAddr,
+        validator_indexer_rpc_address: std::net::SocketAddr,
         validator_cookie_auth: bool,
         validator_cookie_path: Option<String>,
         validator_rpc_user: Option<String>,
@@ -84,6 +87,7 @@ impl StateServiceConfig {
         StateServiceConfig {
             validator_config,
             validator_rpc_address,
+            validator_indexer_rpc_address,
             validator_cookie_auth,
             validator_cookie_path,
             validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),

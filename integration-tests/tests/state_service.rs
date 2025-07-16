@@ -111,6 +111,7 @@ async fn create_test_manager_and_services(
             debug_validity_check_interval: None,
         },
         test_manager.zebrad_rpc_listen_address,
+        test_manager.zebrad_grpc_listen_address,
         false,
         None,
         None,

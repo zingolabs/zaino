@@ -289,6 +289,8 @@ pub struct TestManager {
     pub network: Network,
     /// Zebrad/Zcashd JsonRpc listen address.
     pub zebrad_rpc_listen_address: SocketAddr,
+    /// Zebrad/Zcashd gRpc listen address.
+    pub zebrad_grpc_listen_address: SocketAddr,
     /// Zaino Indexer JoinHandle.
     pub zaino_handle: Option<tokio::task::JoinHandle<Result<(), zainodlib::error::IndexerError>>>,
     /// Zingo-Indexer JsonRPC listen address.
@@ -368,8 +370,11 @@ impl TestManager {
 
         // Launch LocalNet:
         let zebrad_rpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
+        let zebrad_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
         let zebrad_rpc_listen_address =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zebrad_rpc_listen_port);
+        let zebrad_grpc_listen_address =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zebrad_grpc_listen_port);
 
         let validator_config = match validator {
             ValidatorKind::Zcashd => {
@@ -388,6 +393,7 @@ impl TestManager {
                     zebrad_bin: ZEBRAD_BIN.clone(),
                     network_listen_port: None,
                     rpc_listen_port: Some(zebrad_rpc_listen_port),
+                    indexer_listen_port: Some(zebrad_grpc_listen_port),
                     activation_heights: zingo_infra_services::network::ActivationHeights::default(),
                     miner_address: zingo_infra_services::validator::ZEBRAD_DEFAULT_MINER,
                     chain_cache: chain_cache.clone(),
@@ -433,6 +439,7 @@ impl TestManager {
                 tls_cert_path: None,
                 tls_key_path: None,
                 validator_listen_address: zebrad_rpc_listen_address,
+                validator_grpc_listen_address: zebrad_grpc_listen_address,
                 validator_cookie_auth: false,
                 validator_cookie_path: None,
                 validator_user: Some("xxxxxx".to_string()),
@@ -487,6 +494,7 @@ impl TestManager {
             data_dir,
             network,
             zebrad_rpc_listen_address,
+            zebrad_grpc_listen_address,
             zaino_handle,
             zaino_json_rpc_listen_address: zaino_json_listen_address,
             zaino_grpc_listen_address,

@@ -80,6 +80,9 @@ pub struct IndexerConfig {
     /// Full node / validator listen port.
     #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
     pub validator_listen_address: SocketAddr,
+    /// Full node / validator gprc listen port.
+    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
+    pub validator_grpc_listen_address: SocketAddr,
     /// Enable validator rpc cookie authentification.
     pub validator_cookie_auth: bool,
     /// Path to the validator cookie file.
@@ -278,6 +281,7 @@ impl Default for IndexerConfig {
             tls_cert_path: None,
             tls_key_path: None,
             validator_listen_address: "127.0.0.1:18232".parse().unwrap(),
+            validator_grpc_listen_address: "127.0.0.1:18230".parse().unwrap(),
             validator_cookie_auth: false,
             validator_cookie_path: None,
             validator_user: Some("xxxxxx".to_string()),
@@ -415,6 +419,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                     debug_validity_check_interval: None,
                 },
                 validator_rpc_address: cfg.validator_listen_address,
+                validator_indexer_rpc_address: cfg.validator_grpc_listen_address,
                 validator_cookie_auth: cfg.validator_cookie_auth,
                 validator_cookie_path: cfg.validator_cookie_path,
                 validator_rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
