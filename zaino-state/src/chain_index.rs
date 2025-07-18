@@ -22,6 +22,7 @@ pub mod non_finalised_state;
 pub mod types;
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fmt::{Debug, Display},
     sync::Arc,
@@ -148,13 +149,20 @@ impl ChainIndex {
 
     /// Finds the newest ancestor of the given block on the main
     /// chain, or the block itself if it is on the main chain.
-    /// Returns None if there is no common ancestor
-    pub async fn find_fork_point(
+    pub fn find_fork_point(
         &self,
         snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
-        block_hash: zebra_chain::block::Hash,
-    ) -> Option<(zebra_chain::block::Hash, zebra_chain::block::Height)> {
-        todo!()
+        block_hash: &types::Hash,
+    ) -> Result<(types::Hash, types::Height), FindForkPointError> {
+        let block = snapshot
+            .as_ref()
+            .get_chainblock_by_hash(&block_hash)
+            .ok_or(FindForkPointError::MissingBlock)?;
+        if let Some(height) = block.height() {
+            return Ok((*block.hash(), height));
+        } else {
+            self.find_fork_point(&snapshot, block.index().parent_hash())
+        }
     }
 
     /// given a transaction id, returns the transaction
@@ -183,6 +191,14 @@ impl ChainIndex {
         //TODO: finalized state
         non_finalized_snapshot.get_chainblock_by_hashorheight(height)
     }
+}
+
+/// Fork point errors
+pub enum FindForkPointError {
+    /// A block in the fork chain could not be found in the non-finalized state
+    /// NOTE: Non-best chains are not currently stored in the finalized state. If the fork point
+    /// is in the finalized state, this will cause a MissingBlock error
+    MissingBlock,
 }
 
 /// The full error
