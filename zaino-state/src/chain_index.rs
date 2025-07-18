@@ -61,7 +61,7 @@ impl ChainIndex {
         })
     }
 
-    /// Takes a snapshot of the non_finalized state. All query
+    /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
     pub fn snapshot_nonfinalized_state(&self) -> Arc<NonfinalizedBlockCacheSnapshot> {
@@ -106,6 +106,7 @@ impl ChainIndex {
             .get_chainblock_by_hash(start_block.hash())
             .map(|block| block.index().hash());
 
+        // TODO: combine with finalized state when available
         let mut nonfinalized_range = vec![];
         while let Some(block) = nonfinalized_block {
             nonfinalized_range.push(block.hash().clone());
@@ -170,8 +171,34 @@ impl ChainIndex {
         &self,
         snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
         txid: zebra_chain::transaction::Hash,
-    ) -> Option<Box<[u8]>> {
-        todo!()
+    ) -> Result<Option<Vec<u8>>, ()> {
+        let Some((block, txindex)) = snapshot.as_ref().blocks.values().find_map(|block| {
+            block.transactions().iter().find_map(|transaction| {
+                if *transaction.txid() == txid.0 {
+                    Some((block, transaction.index()))
+                } else {
+                    None
+                }
+            })
+        }) else {
+            return Ok(None);
+        };
+        let full_block = self
+            .non_finalized_state
+            .source
+            .get_block(HashOrHeight::Hash((*block.index().hash()).into()))
+            .await
+            //TODO: error handle
+            .map_err(|_| ())?
+            .ok_or_else(|| todo!("hole in zebra database"))?;
+        full_block
+            .transactions
+            .iter()
+            .find(|transaction| transaction.hash() == txid)
+            .map(ZcashSerialize::zcash_serialize_to_vec)
+            .ok_or_else(|| todo!("hole in zebra database"))?
+            .map_err(|e| todo!("write to vec failed???"))
+            .map(Some)
     }
 
     /// Given a transaction ID, returns all known
