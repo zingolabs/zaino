@@ -1143,6 +1143,32 @@ mod zebrad {
         }
 
         #[tokio::test]
+        async fn best_blockhash() {
+            let (
+                test_manager,
+                _fetch_service,
+                fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                Some(services::network::Network::Regtest),
+            )
+            .await;
+            test_manager.local_net.generate_blocks(2).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(999)).await;
+
+            let fetch_service_bbh =
+                dbg!(fetch_service_subscriber.get_best_blockhash().await.unwrap());
+            let state_service_bbh =
+                dbg!(state_service_subscriber.get_best_blockhash().await.unwrap());
+            assert_eq!(fetch_service_bbh, state_service_bbh);
+        }
+
+        #[tokio::test]
         async fn block_count() {
             let (
                 mut test_manager,

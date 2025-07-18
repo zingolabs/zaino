@@ -5,6 +5,7 @@ default_to_workspace = false
 
 [env]
 IMAGE_NAME = "zingodevops/zaino-ci"
+TEST_BINARIES_DIR = "/usr/local/bin"
 
 [tasks.help]
 description = "List available commands and usage notes"
@@ -31,7 +32,6 @@ echo "  build-image         Build the Docker image with current artifact version
 echo "  push-image          Push the image (used in CI, can be used manually)"
 echo "  compute-image-tag   Compute the tag for the Docker image based on versions"
 echo "  ensure-image-exists Check if the required image exists locally, build if not"
-echo "  copy-bins           Extract binaries from the image to ./test_binaries/bins"
 echo ""
 echo "Environment:"
 echo "  Defined by: .env.testing-artifacts"
@@ -63,14 +63,19 @@ export CARGO_MAKE_IMAGE_TAG=$TAG
 # -------------------------------------------------------------------
 
 [tasks.ensure-image-exists]
-description = "Check if image with current version tag exists locally"
+description = "Ensure the image exists locally or on Docker Hub before building"
 extend = "base-script"
 script.main = '''
 if ! docker image inspect ${IMAGE_NAME}:${TAG} > /dev/null 2>&1; then
-  warn "Image not found locally. Triggering build..."
-  cargo make build-image
+  warn "Image not found locally. Attempting to pull from Docker Hub..."
+  if docker pull ${IMAGE_NAME}:${TAG}; then
+    info "Image ${IMAGE_NAME}:${TAG} pulled successfully."
+  else
+    warn "Image not found on Docker Hub. Building image..."
+    cargo make build-image
+  fi
 else
-  info "Image ${IMAGE_NAME}:${TAG} available locally"
+  info "Image ${IMAGE_NAME}:${TAG} already exists locally."
 fi
 '''
 
@@ -125,7 +130,10 @@ set -euo pipefail
 
 TAG=$(./utils/get-ci-image-tag.sh)
 
-info "Running tests using image: ${IMAGE_NAME}:$TAG"
+info "Running tests using:"
+info "-- IMAGE             = ${IMAGE_NAME}"
+info "-- TAG               = $TAG"
+# info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
 docker run --rm \
   --name zaino-testing \
@@ -133,22 +141,42 @@ docker run --rm \
   -v "$PWD/target":/root/target \
   -v "$PWD/docker_cargo/git":/root/.cargo/git \
   -v "$PWD/docker_cargo/registry":/root/.cargo/registry \
+  -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -w /app \
   "${IMAGE_NAME}:$TAG" \
   cargo nextest run --profile ci "${@}"
 '''
-script.post = '''
-docker stop zaino-testing
-'''
 
-[tasks.copy-bins]
-description = "Copy bins from image into test_binaries/bins"
+# -------------------------------------------------------------------
+
+[tasks.check-matching-zebras]
+description = "Check that zebra versions in .env.testing-artifacts match what's in Cargo.toml"
 extend = "base-script"
+script_runner = "bash"
 script.main = '''
 set -euo pipefail
 
-docker create --name my_zaino_container zingodevops/zaino-ci:"$TAG"
-docker cp my_zaino_container:/usr/local/bin ./test_binaries/
-cp -r ./test_binaries/bin ./test_binaries/bins
-docker rm my_zaino_container
+# source .env.testing-artifacts
+
+# Normalize Cargo.toml (stripping comments, whitespace)
+cargo_toml=$(sed 's/#.*//' Cargo.toml | tr -d '[:space:]')
+
+# Check Zebra rev
+zebra_revs=$(echo "$cargo_toml" | grep -o 'zebra-[a-z]*={[^}]*rev="[^"]*"' | grep -o 'rev="[^"]*"' | cut -d'"' -f2 | sort -u)
+
+if [[ $(echo "$zebra_revs" | wc -l) -ne 1 ]]; then
+  err "❌ Multiple Zebra revs detected in Cargo.toml:"
+  echo "$zebra_revs"
+  exit 1
+fi
+
+actual_rev="$zebra_revs"
+
+# Accept short SHA from env if it matches prefix of actual
+if [[ "$actual_rev" != "$ZEBRA_VERSION" && "${actual_rev:0:${#ZEBRA_VERSION}}" != "$ZEBRA_VERSION" ]]; then
+  err "❌ Mismatch for Zebra git rev: Cargo.toml has $actual_rev, but .env.testing-artifacts has $ZEBRA_VERSION"
+  exit 1
+fi
+
+info "✅ All versions match between Cargo.toml and .env.testing-artifacts"
 '''

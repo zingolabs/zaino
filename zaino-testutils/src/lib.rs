@@ -21,40 +21,27 @@ pub use zingolib::{
     get_base_address_macro, lightclient::LightClient, testutils::lightclient::from_inputs,
 };
 
+/// Helper to get the test binary path from the TEST_BINARIES_DIR env var.
+fn binary_path(binary_name: &str) -> Option<PathBuf> {
+    std::env::var("TEST_BINARIES_DIR")
+        .ok()
+        .map(|dir| PathBuf::from(dir).join(binary_name))
+}
+
 /// Path for zcashd binary.
-pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("test_binaries/bins/zcashd"))
-});
+pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcashd"));
 
 /// Path for zcash-cli binary.
-pub static ZCASH_CLI_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("test_binaries/bins/zcash-cli"))
-});
+pub static ZCASH_CLI_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcash-cli"));
 
 /// Path for zebrad binary.
-pub static ZEBRAD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("test_binaries/bins/zebrad"))
-});
+pub static ZEBRAD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zebrad"));
 
 /// Path for lightwalletd binary.
-pub static LIGHTWALLETD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("test_binaries/bins/lightwalletd"))
-});
+pub static LIGHTWALLETD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("lightwalletd"));
 
 /// Path for zainod binary.
-pub static ZAINOD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("target/release/zainod"))
-});
+pub static ZAINOD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zainod"));
 
 /// Path for zcashd chain cache.
 pub static ZCASHD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
