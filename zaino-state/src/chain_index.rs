@@ -49,9 +49,76 @@ pub struct ChainIndex {
 }
 
 impl ChainIndex {
+    async fn get_fullblock_bytes_from_node(
+        &self,
+        id: HashOrHeight,
+    ) -> Result<Option<Vec<u8>>, GetFullBlockError> {
+        match self.non_finalized_state.source.get_block(id).await {
+            Ok(block) => block
+                .map(|bk| {
+                    bk.zcash_serialize_to_vec()
+                        .map_err(|e| GetFullBlockError::BackingNodeFailure(Box::new(e)))
+                })
+                .transpose(),
+            Err(e) => Err(GetFullBlockError::BackingNodeFailure(Box::new(e))),
+        }
+    }
+    fn get_chainblock_by_hashorheight<'snapshot: 'future, 'self_lt: 'future, 'future>(
+        &'self_lt self,
+        non_finalized_snapshot: &'snapshot NonfinalizedBlockCacheSnapshot,
+        height: &HashOrHeight,
+    ) -> Option<&'future ChainBlock> {
+        //TODO: finalized state
+        non_finalized_snapshot.get_chainblock_by_hashorheight(height)
+    }
+}
+
+/// The interface to the chain index
+pub trait Index: Sized {
     /// Creates a new chainindex from a connection to a validator
     /// Currently this is a ReadStateService or JsonRpSeeConnector
-    pub async fn new<T: Into<BlockchainSource>>(
+    async fn new<T: Into<BlockchainSource>>(
+        source: T,
+        network: ZebraNetwork,
+    ) -> Result<Self, non_finalised_state::InitError>;
+    /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
+    /// methods take a snapshot. The query will check the index
+    /// it existed at the moment the snapshot was taken.
+    fn snapshot_nonfinalized_state(&self) -> Arc<NonfinalizedBlockCacheSnapshot>;
+    /// Given inclusive start and end indexes, stream all blocks
+    /// between the given indexes. Can be specified
+    /// by hash or height.
+    fn get_block_range<'snapshot: 'future, 'self_lt: 'future, 'future>(
+        &'self_lt self,
+        nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot> + Clone + 'snapshot,
+        start: Option<HashOrHeight>,
+        end: Option<HashOrHeight>,
+    ) -> Result<impl Stream<Item = Result<Vec<u8>, GetBlockRangeError>> + 'future, GetBlockRangeError>;
+    /// Finds the newest ancestor of the given block on the main
+    /// chain, or the block itself if it is on the main chain.
+    fn find_fork_point(
+        &self,
+        snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
+        block_hash: &types::Hash,
+    ) -> Result<Option<(types::Hash, types::Height)>, FindForkPointError>;
+    /// given a transaction id, returns the transaction
+    async fn get_raw_transaction(
+        &self,
+        snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
+        txid: zebra_chain::transaction::Hash,
+    ) -> Result<Option<Vec<u8>>, ()>;
+    /// Given a transaction ID, returns all known
+    async fn get_transaction_status(
+        &self,
+        snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
+        txid: zebra_chain::transaction::Hash,
+    ) -> HashMap<zebra_chain::block::Hash, Option<zebra_chain::block::Height>>;
+}
+
+impl Index for ChainIndex {
+    /// Creates a new chainindex from a connection to a validator
+    /// Currently this is a ReadStateService or JsonRpSeeConnector
+    async fn new<T: Into<BlockchainSource>>(
         source: T,
         network: ZebraNetwork,
     ) -> Result<Self, non_finalised_state::InitError> {
@@ -63,14 +130,14 @@ impl ChainIndex {
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
-    pub fn snapshot_nonfinalized_state(&self) -> Arc<NonfinalizedBlockCacheSnapshot> {
+    fn snapshot_nonfinalized_state(&self) -> Arc<NonfinalizedBlockCacheSnapshot> {
         self.non_finalized_state.get_snapshot()
     }
 
     /// Given inclusive start and end indexes, stream all blocks
     /// between the given indexes. Can be specified
     /// by hash or height.
-    pub fn get_block_range<'snapshot: 'future, 'self_lt: 'future, 'future>(
+    fn get_block_range<'snapshot: 'future, 'self_lt: 'future, 'future>(
         &'self_lt self,
         nonfinalized_snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot> + Clone + 'snapshot,
         start: Option<HashOrHeight>,
@@ -132,49 +199,35 @@ impl ChainIndex {
         }))
     }
 
-    async fn get_fullblock_bytes_from_node(
-        &self,
-        id: HashOrHeight,
-    ) -> Result<Option<Vec<u8>>, GetFullBlockError> {
-        match self.non_finalized_state.source.get_block(id).await {
-            Ok(block) => block
-                .map(|bk| {
-                    bk.zcash_serialize_to_vec()
-                        .map_err(|e| GetFullBlockError::BackingNodeFailure(Box::new(e)))
-                })
-                .transpose(),
-            Err(e) => Err(GetFullBlockError::BackingNodeFailure(Box::new(e))),
-        }
-    }
-
     /// Finds the newest ancestor of the given block on the main
     /// chain, or the block itself if it is on the main chain.
-    pub fn find_fork_point(
+    fn find_fork_point(
         &self,
         snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
         block_hash: &types::Hash,
-    ) -> Result<(types::Hash, types::Height), FindForkPointError> {
-        let block = snapshot
-            .as_ref()
-            .get_chainblock_by_hash(block_hash)
-            .ok_or(FindForkPointError::MissingBlock)?;
+    ) -> Result<Option<(types::Hash, types::Height)>, FindForkPointError> {
+        let Some(block) = snapshot.as_ref().get_chainblock_by_hash(block_hash) else {
+            // No fork point found. This is not an error,
+            // as zaino does not guarentee knowledge of all sidechain data.
+            return Ok(None);
+        };
         if let Some(height) = block.height() {
-            Ok((*block.hash(), height))
+            Ok(Some((*block.hash(), height)))
         } else {
             self.find_fork_point(&snapshot, block.index().parent_hash())
         }
     }
 
     /// given a transaction id, returns the transaction
-    pub async fn get_raw_transaction(
+    async fn get_raw_transaction(
         &self,
         snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
         txid: zebra_chain::transaction::Hash,
     ) -> Result<Option<Vec<u8>>, ()> {
-        let Some((block, txindex)) = snapshot.as_ref().blocks.values().find_map(|block| {
+        let Some(block) = snapshot.as_ref().blocks.values().find_map(|block| {
             block.transactions().iter().find_map(|transaction| {
                 if *transaction.txid() == txid.0 {
-                    Some((block, transaction.index()))
+                    Some(block)
                 } else {
                     None
                 }
@@ -196,26 +249,17 @@ impl ChainIndex {
             .find(|transaction| transaction.hash() == txid)
             .map(ZcashSerialize::zcash_serialize_to_vec)
             .ok_or_else::<(), _>(|| todo!("hole in zebra database"))?
-            .map_err(|e| todo!("write to vec failed???"))
+            .map_err(|_e| todo!("write to vec failed???"))
             .map(Some)
     }
 
     /// Given a transaction ID, returns all known
-    pub async fn get_transaction_status(
+    async fn get_transaction_status(
         &self,
         snapshot: impl AsRef<NonfinalizedBlockCacheSnapshot>,
         txid: zebra_chain::transaction::Hash,
     ) -> HashMap<zebra_chain::block::Hash, Option<zebra_chain::block::Height>> {
         todo!()
-    }
-
-    fn get_chainblock_by_hashorheight<'snapshot: 'future, 'self_lt: 'future, 'future>(
-        &'self_lt self,
-        non_finalized_snapshot: &'snapshot NonfinalizedBlockCacheSnapshot,
-        height: &HashOrHeight,
-    ) -> Option<&'future ChainBlock> {
-        //TODO: finalized state
-        non_finalized_snapshot.get_chainblock_by_hashorheight(height)
     }
 }
 
