@@ -656,27 +656,8 @@ async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
         .await
         .unwrap();
 
-    let ret: Option<GetBlockHash> = match inspected_block {
-        GetBlock::Object {
-            hash,
-            confirmations: _,
-            size: _,
-            height: _,
-            version: _,
-            merkle_root: _,
-            block_commitments: _,
-            final_sapling_root: _,
-            final_orchard_root: _,
-            tx: _,
-            time: _,
-            nonce: _,
-            solution: _,
-            bits: _,
-            difficulty: _,
-            trees: _,
-            previous_block_hash: _,
-            next_block_hash: _,
-        } => Some(hash),
+    let ret = match inspected_block {
+        GetBlock::Object(obj) => Some(obj.hash()),
         _ => None,
     };
 
@@ -684,7 +665,7 @@ async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
         dbg!(fetch_service_subscriber.get_best_blockhash().await.unwrap());
 
     assert_eq!(
-        fetch_service_get_best_blockhash,
+        fetch_service_get_best_blockhash.hash(),
         ret.expect("ret to be Some(GetBlockHash) not None")
     );
 

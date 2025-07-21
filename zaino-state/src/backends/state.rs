@@ -470,8 +470,8 @@ impl StateServiceSubscriber {
                 height,
                 header.version,
                 header.merkle_root,
-                final_sapling_root,
                 block_commitments,
+                final_sapling_root,
                 sapling_tree_size,
                 header.time.timestamp(),
                 nonce,
@@ -681,13 +681,8 @@ impl StateServiceSubscriber {
                 let state_2 = state.clone();
                 let state_3 = state.clone();
 
-                let txids_or_fullblock_request = match verbosity {
-                    1 => ReadRequest::TransactionIdsForBlock(hash_or_height),
-                    2 => ReadRequest::Block(hash_or_height),
-                    _ => unreachable!("verbosity is known to be 1 or 2"),
-                };
                 let txids_future = {
-                    let req = txids_or_fullblock_request;
+                    let req = ReadRequest::Block(hash_or_height);
                     async move { state_1.ready().and_then(|service| service.call(req)).await }
                 };
                 let orchard_future = {
@@ -700,7 +695,7 @@ impl StateServiceSubscriber {
                             .await
                     }
                 };
-                let (txids_or_fullblock, orchard_tree_response, header) = futures::join!(
+                let (fullblock, orchard_tree_response, header) = futures::join!(
                     txids_future,
                     orchard_future,
                     StateServiceSubscriber::get_block_header(
@@ -718,34 +713,36 @@ impl StateServiceSubscriber {
                     GetBlockHeader::Object(get_block_header_object) => get_block_header_object,
                 };
 
-                let transactions_response: Vec<GetBlockTransaction> = match txids_or_fullblock {
-                    Ok(ReadResponse::TransactionIdsForBlock(Some(txids))) => Ok(txids
-                        .iter()
-                        .copied()
-                        .map(GetBlockTransaction::Hash)
-                        .collect()),
-                    Ok(ReadResponse::Block(Some(block))) => Ok(block
-                        .transactions
-                        .iter()
-                        .map(|transaction| {
-                            GetBlockTransaction::Object(Box::new(
-                                TransactionObject::from_transaction(
-                                    transaction.clone(),
-                                    Some(header_obj.height()),
-                                    Some(header_obj.confirmations() as u32),
-                                    network,
-                                    DateTime::<Utc>::from_timestamp(header_obj.time(), 0),
-                                    Some(header_obj.hash()),
-                                    // block header has a non-optional height, which indicates
-                                    // a mainchain block. It is implied this method cannot return sidechain
-                                    // data, at least for now. This is subject to change: TODO
-                                    // return Some(true/false) after this assumption is resolved
-                                    None,
-                                    transaction.hash(),
-                                ),
-                            ))
-                        })
-                        .collect()),
+                let (transactions_response, size): (Vec<GetBlockTransaction>, _) = match fullblock {
+                    Ok(ReadResponse::Block(Some(block))) => Ok((
+                        block
+                            .transactions
+                            .iter()
+                            .map(|transaction| {
+                                match verbosity {
+                                    1 => GetBlockTransaction::Hash(transaction.hash()),
+                                    2 => GetBlockTransaction::Object(Box::new(
+                                        TransactionObject::from_transaction(
+                                            transaction.clone(),
+                                            Some(header_obj.height()),
+                                            Some(header_obj.confirmations() as u32),
+                                            network,
+                                            DateTime::<Utc>::from_timestamp(header_obj.time(), 0),
+                                            Some(header_obj.hash()),
+                                            // block header has a non-optional height, which indicates
+                                            // a mainchain block. It is implied this method cannot return sidechain
+                                            // data, at least for now. This is subject to change: TODO
+                                            // return Some(true/false) after this assumption is resolved
+                                            None,
+                                            transaction.hash(),
+                                        ),
+                                    )),
+                                    _ => unreachable!("verbosity known to be 1 or 2"),
+                                }
+                            })
+                            .collect(),
+                        block.zcash_serialized_size(),
+                    )),
                     Ok(ReadResponse::TransactionIdsForBlock(None))
                     | Ok(ReadResponse::Block(None)) => {
                         Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
@@ -780,8 +777,7 @@ impl StateServiceSubscriber {
                     zebra_rpc::client::BlockObject::new(
                         header_obj.hash(),
                         header_obj.confirmations(),
-                        // TODO
-                        None,
+                        Some(size as i64),
                         Some(header_obj.height()),
                         Some(header_obj.version()),
                         Some(header_obj.merkle_root()),
@@ -1278,26 +1274,30 @@ impl ZcashIndexer for StateServiceSubscriber {
                     .map_err(|_| not_found_error())?
                 {
                     zebra_state::ReadResponse::Transaction(Some(tx)) => Ok(match verbose {
-                        Some(_verbosity) => GetRawTransaction::Object(Box::new(
-                            TransactionObject::from_transaction(
-                                tx.tx.clone(),
-                                Some(tx.height),
-                                Some(tx.confirmations),
-                                &self.config.network,
-                                Some(tx.block_time),
-                                Some(zebra_chain::block::Hash::from_bytes(
-                                    self.block_cache
-                                        .get_compact_block(
-                                            HashOrHeight::Height(tx.height).to_string(),
-                                        )
-                                        .await?
-                                        .hash,
-                                )),
-                                // TODO indicate Some(true/false for sidechain blocks)
-                                None,
-                                tx.tx.hash(),
-                            ),
-                        )),
+                        Some(_verbosity) => {
+                            // This should be None for sidechain transactions,
+                            // which currently aren't returned by ReadResponse::Transaction
+                            let best_chain_height = Some(tx.height);
+                            GetRawTransaction::Object(Box::new(
+                                TransactionObject::from_transaction(
+                                    tx.tx.clone(),
+                                    best_chain_height,
+                                    Some(tx.confirmations),
+                                    &self.config.network,
+                                    Some(tx.block_time),
+                                    Some(zebra_chain::block::Hash::from_bytes(
+                                        self.block_cache
+                                            .get_compact_block(
+                                                HashOrHeight::Height(tx.height).to_string(),
+                                            )
+                                            .await?
+                                            .hash,
+                                    )),
+                                    Some(best_chain_height.is_some()),
+                                    tx.tx.hash(),
+                                ),
+                            ))
+                        }
                         None => GetRawTransaction::Raw(tx.tx.into()),
                     }),
                     zebra_state::ReadResponse::Transaction(None) => Err(not_found_error()),

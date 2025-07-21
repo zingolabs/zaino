@@ -1133,7 +1133,10 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
             //     }
             // }
             get_tx_value_fields! {
-                let in_active_chain: bool = tx_value["in_active_chain"];
+                // We don't need this, as it should always be true if and only if height is Some
+                // There's no reason to rely on this field being present when we can determine
+                // it correctly in all cases
+                let _in_active_chain: bool = tx_value["in_active_chain"];
                 let inputs: Vec<Input> = tx_value["vin"];
                 let outputs: Vec<Output> = tx_value["vout"];
                 let shielded_spends: Vec<ShieldedSpend> = tx_value["vShieldedSpend"];
@@ -1181,8 +1184,8 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
 
             Ok(GetTransactionResponse::Object(Box::new(
                 TransactionObject::new(
-                    // optional
-                    in_active_chain,
+                    // optional, but we can infer from height
+                    Some(height.is_some()),
                     hex,
                     // optional
                     height,
