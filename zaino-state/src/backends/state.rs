@@ -49,9 +49,10 @@ use zebra_rpc::{
     },
     methods::{
         chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
-        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHeader, GetBlockHeaderObject,
-        GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
-        NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
+        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader,
+        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
+        GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
+        TipConsensusBranch,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
@@ -1143,7 +1144,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         // Zebra displays transaction and block hashes in big-endian byte-order,
         // following the u256 convention set by Bitcoin and zcashd.
         match self.read_state_service.best_tip() {
-            Some(x) => return Ok(GetBlockHash(x.1)),
+            Some(x) => return Ok(GetBlockHash::new(x.1)),
             None => {
                 // try RPC if state read fails:
                 Ok(self.rpc_client.get_best_blockhash().await?.into())
