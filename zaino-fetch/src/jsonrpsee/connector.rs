@@ -294,7 +294,7 @@ impl JsonRpSeeConnector {
 
             let request_builder = self
                 .build_request(method, &params, id)
-                .map_err(|e| RpcRequestError::JsonRpc(e))?;
+                .map_err(RpcRequestError::JsonRpc)?;
 
             let response = request_builder
                 .send()

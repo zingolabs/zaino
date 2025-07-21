@@ -682,7 +682,7 @@ impl NonFinalizedState {
                 chainblock
                     .index()
                     .height
-                    .map(|height| (height, hash.clone()))
+                    .map(|height| (height, *hash))
             })
             .collect();
         // Need to get best hash at some point in this process

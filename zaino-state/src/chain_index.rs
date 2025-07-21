@@ -22,7 +22,6 @@ pub mod non_finalised_state;
 pub mod types;
 
 use std::{
-    borrow::Cow,
     collections::HashMap,
     fmt::{Debug, Display},
     sync::Arc,
@@ -109,7 +108,7 @@ impl ChainIndex {
         // TODO: combine with finalized state when available
         let mut nonfinalized_range = vec![];
         while let Some(block) = nonfinalized_block {
-            nonfinalized_range.push(block.hash().clone());
+            nonfinalized_range.push(*block.hash());
             nonfinalized_block = if Some(block.index().parent_hash()) != first_nonfinalized_hash {
                 nonfinalized_snapshot
                     .as_ref()
@@ -157,10 +156,10 @@ impl ChainIndex {
     ) -> Result<(types::Hash, types::Height), FindForkPointError> {
         let block = snapshot
             .as_ref()
-            .get_chainblock_by_hash(&block_hash)
+            .get_chainblock_by_hash(block_hash)
             .ok_or(FindForkPointError::MissingBlock)?;
         if let Some(height) = block.height() {
-            return Ok((*block.hash(), height));
+            Ok((*block.hash(), height))
         } else {
             self.find_fork_point(&snapshot, block.index().parent_hash())
         }
@@ -190,13 +189,13 @@ impl ChainIndex {
             .await
             //TODO: error handle
             .map_err(|_| ())?
-            .ok_or_else(|| todo!("hole in zebra database"))?;
+            .ok_or_else::<(), _>(|| todo!("hole in zebra database"))?;
         full_block
             .transactions
             .iter()
             .find(|transaction| transaction.hash() == txid)
             .map(ZcashSerialize::zcash_serialize_to_vec)
-            .ok_or_else(|| todo!("hole in zebra database"))?
+            .ok_or_else::<(), _>(|| todo!("hole in zebra database"))?
             .map_err(|e| todo!("write to vec failed???"))
             .map(Some)
     }
