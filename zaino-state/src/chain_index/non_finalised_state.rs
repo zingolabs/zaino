@@ -61,7 +61,7 @@ pub enum NodeConnectionError {
     ConnectionFailure(reqwest::Error),
     /// The Zebrad provided invalid or corrupt data. Something has gone wrong
     /// and we need to shut down.
-    UnrecoverableError(Box<dyn std::error::Error>),
+    UnrecoverableError(Box<dyn std::error::Error + Send>),
 }
 
 #[derive(Debug)]

@@ -3,6 +3,7 @@ use std::{
     fmt::{Debug, Display},
     future::Future,
     sync::Arc,
+    time::Duration,
 };
 
 use super::non_finalised_state::{
@@ -25,19 +26,37 @@ use zebra_state::HashOrHeight;
 pub struct NodeBackedChainIndex {
     // TODO: finalized state
     // TODO: mempool
-    non_finalized_state: NonFinalizedState,
+    non_finalized_state: Arc<NonFinalizedState>,
 }
 
 impl NodeBackedChainIndex {
     /// Creates a new chainindex from a connection to a validator
     /// Currently this is a ReadStateService or JsonRpSeeConnector
-    pub async fn new<T: Into<BlockchainSource>>(
-        source: T,
-        network: ZebraNetwork,
-    ) -> Result<Self, InitError> {
-        Ok(Self {
-            non_finalized_state: NonFinalizedState::initialize(source.into(), network).await?,
-        })
+    pub async fn new<T>(source: T, network: ZebraNetwork) -> Result<Self, InitError>
+    where
+        T: Into<BlockchainSource> + Send + Sync + 'static,
+    {
+        let chain_index = Self {
+            non_finalized_state: Arc::new(
+                NonFinalizedState::initialize(source.into(), network).await?,
+            ),
+        };
+        chain_index.start_sync_loop();
+        Ok(chain_index)
+    }
+
+    fn start_sync_loop(
+        &self,
+    ) -> tokio::task::JoinHandle<
+        Result<std::convert::Infallible, super::non_finalised_state::SyncError>,
+    > {
+        let nfs = self.non_finalized_state.clone();
+        tokio::task::spawn((|| async move {
+            loop {
+                nfs.sync().await?;
+                tokio::time::sleep(Duration::from_secs(1)).await
+            }
+        })())
     }
     async fn get_fullblock_bytes_from_node(
         &self,
@@ -264,6 +283,7 @@ pub enum FindForkPointError {
 }
 
 /// The full error
+#[derive(Debug)]
 pub struct GetBlockRangeError {
     /// What went wrong
     pub kind: GetBlockRangeErrorKind,
@@ -272,6 +292,7 @@ pub struct GetBlockRangeError {
 }
 
 /// The things that can go wrong getting a block range
+#[derive(Debug)]
 pub enum GetBlockRangeErrorKind {
     /// The block at the provided start index could not be found. Likely, an incorrect hash
     /// was supplied
