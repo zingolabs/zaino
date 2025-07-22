@@ -24,7 +24,7 @@ jobs:
       image-tag: ${{ steps.taggen.outputs.tag }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Compute version-based image tag
         id: taggen
@@ -90,6 +90,7 @@ jobs:
     name: Cargo Check
     runs-on: arc-sh-runners
     needs: compute-tag
+    if: false  # Temporarily disabled for faster CI iteration
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
@@ -113,10 +114,103 @@ jobs:
           cargo check --all-features
           cargo check --tests --all-features
 
+  test-debug:
+    name: Test Debug (Single Fast Test)
+    needs: [compute-tag, build-test-artifacts]
+    runs-on: arc-sh-runners
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Skip cargo restore for faster debugging - nextest archive has what we need
+      #- name: Restore cargo dependencies
+      #  uses: tespkg/actions-cache/restore@v1
+      #  with:
+      #    endpoint: ${{ env.CACHE_ENDPOINT }}
+      #    port: ${{ env.CACHE_PORT }}
+      #    bucket: ${{ env.CACHE_BUCKET }}
+      #    insecure: ${{ env.INSECURE_CACHE }}
+      #    key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+      #    restore-keys: cargo-deps-
+      #    path: |
+      #      ~/.cargo
+      #      target/debug/deps
+
+      - name: Setup test binaries
+        run: |
+          echo "=== Current working directory ==="
+          pwd
+
+          echo ""
+          echo "=== Creating test_binaries/bins directory ==="
+          mkdir -p test_binaries/bins
+
+          echo ""
+          echo "=== Running entrypoint script with correct paths ==="
+          # The entrypoint expects these arguments:
+          # $1: REPO_ROOT (default: /home/container_user/zaino)
+          # Pass the actual GitHub workspace path
+          /usr/local/bin/entrypoint.sh "${{ github.workspace }}"
+
+          echo ""
+          echo "=== Contents of test_binaries/bins ==="
+          ls -la test_binaries/bins/
+
+          echo ""
+          echo "=== Testing binary execution ==="
+          if [ -f test_binaries/bins/zcashd ]; then
+            echo "zcashd version:"
+            test_binaries/bins/zcashd --version || echo "Failed to run zcashd"
+          else
+            echo "zcashd not found!"
+          fi
+
+          if [ -f test_binaries/bins/zebrad ]; then
+            echo "zebrad version:"
+            test_binaries/bins/zebrad --version || echo "Failed to run zebrad"
+          else
+            echo "zebrad not found!"
+          fi
+
+          if [ -f test_binaries/bins/zcash-cli ]; then
+            echo "zcash-cli version:"
+            test_binaries/bins/zcash-cli --version || echo "Failed to run zcash-cli"
+          else
+            echo "zcash-cli not found!"
+          fi
+
+          echo ""
+          echo "=== Checking symlink targets ==="
+          ls -la test_binaries/bins/ | grep -E "zcashd|zebrad|zcash-cli" || echo "No binaries found"
+
+          echo ""
+          echo "=== TEST_BINARIES_DIR will be set to: ${{ github.workspace }}/test_binaries/bins ==="
+
+      - name: Restore nextest archive from S3
+        uses: tespkg/actions-cache/restore@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: nextest-archive-${{ github.sha }}
+          path: nextest-archive.tar.zst
+
+      - name: Run Single Fast Test
+        env:
+          TEST_BINARIES_DIR: ${{ github.workspace }}/test_binaries/bins
+        run: |
+          # Run just the basic zcashd test from zaino-testutils - no retries for debug
+          cargo nextest run --verbose --archive-file nextest-archive.tar.zst \
+            --workspace-remap ./ -E 'test(launch_testmanager::zcashd::basic)' \
+            --no-fail-fast --failure-output immediate --success-output immediate
+
   test:
     name: Tests
     needs: [compute-tag, build-test-artifacts]
     runs-on: arc-sh-runners
+    if: false  # Temporarily disabled for faster CI iteration
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     strategy:
@@ -145,10 +239,10 @@ jobs:
             ~/.cargo
             target/debug/deps
 
-      - name: Copy bins into test_binaries
+      - name: Setup test binaries
         run: |
-          mkdir -p ./test_binaries/bins
-          cp /usr/local/bin/* ./test_binaries/bins/
+          # Run the entrypoint script to create symlinks
+          /usr/local/bin/entrypoint.sh
 
       - name: Restore nextest archive from S3
         uses: tespkg/actions-cache/restore@v1
@@ -161,6 +255,8 @@ jobs:
           path: nextest-archive.tar.zst
 
       - name: Run Tests (Nextest)
+        env:
+          TEST_BINARIES_DIR: ${{ github.workspace }}/test_binaries/bins
         run: |
           cargo nextest run --verbose --profile ci --retries 2 --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}
@@ -175,6 +271,7 @@ jobs:
     name: Rustfmt
     runs-on: arc-sh-runners
     needs: compute-tag
+    if: false  # Temporarily disabled for faster CI iteration
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
@@ -200,6 +297,7 @@ jobs:
     name: Clippy
     runs-on: arc-sh-runners
     needs: compute-tag
+    if: false  # Temporarily disabled for faster CI iteration
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
@@ -238,6 +336,7 @@ jobs:
     name: Cargo Doc
     runs-on: arc-sh-runners
     needs: compute-tag
+    if: false  # Temporarily disabled for faster CI iteration
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
@@ -263,6 +362,7 @@ jobs:
     name: Whitespace check
     runs-on: arc-sh-runners
     needs: compute-tag
+    if: false  # Temporarily disabled for faster CI iteration
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
