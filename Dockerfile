@@ -3,11 +3,11 @@
 # Set the build arguments used across the stages.
 # Each stage must define the build arguments (ARGs) it uses.
 
-# High UID/GID (10003) to avoid overlap with host system users.
-ARG UID=10003
+# Use UID/GID 1000 to match host user
+ARG UID=1000
 ARG GID=${UID}
-ARG USER="zaino"
-ARG HOME="/home/zaino"
+ARG USER="container_user"
+ARG HOME="/home/container_user"
 ARG CARGO_HOME="${HOME}/.cargo"
 ARG CARGO_TARGET_DIR="${HOME}/target"
 
@@ -47,8 +47,20 @@ ENV CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
 # This stage builds the zainod release binary.
 FROM deps AS builder
 
-ARG HOME
-WORKDIR ${HOME}
+# Create container_user for building
+ARG UID=1000
+ARG GID=1000
+ARG USER="container_user"
+ARG HOME="/home/container_user"
+
+RUN groupadd --gid ${GID} ${USER} && \
+    useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
+
+WORKDIR ${HOME}/zaino
+RUN chown -R ${UID}:${GID} ${HOME}
+
+# Switch to container_user for building
+USER ${USER}
 
 ARG CARGO_HOME
 ARG CARGO_TARGET_DIR
@@ -75,8 +87,8 @@ RUN --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
     else \
       cargo build --locked --release --package zainod --bin zainod; \
     fi && \
-    # Copy the built binary \
-    cp ${CARGO_TARGET_DIR}/release/zainod /usr/local/bin/
+    # Copy the built binary (need root temporarily to write to /usr/local/bin)\
+    cp ${CARGO_TARGET_DIR}/release/zainod /tmp/zainod
 
 # This stage prepares the runtime image.
 FROM debian:bookworm-slim AS runtime
@@ -101,7 +113,8 @@ WORKDIR ${HOME}
 RUN chown -R ${UID}:${GID} ${HOME}
 
 # Copy the zainod binary from the builder stage
-COPY --link --from=builder /usr/local/bin/zainod /usr/local/bin/
+COPY --link --from=builder /tmp/zainod /usr/local/bin/
+RUN chmod +x /usr/local/bin/zainod
 
 USER ${USER}
 
