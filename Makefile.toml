@@ -47,6 +47,28 @@ echo ""
 script.pre = '''
 source "./utils/helpers.sh"
 TAG=$(./utils/get-ci-image-tag.sh)
+
+# Generic cleanup function for docker containers
+docker_cleanup() {
+    # Kill all child processes
+    local pids=$(jobs -pr)
+    if [ -n "$pids" ]; then
+        kill $pids 2>/dev/null || true
+    fi
+    
+    # Stop any docker containers started by this script
+    if [ -n "${CONTAINER_ID:-}" ]; then
+        docker stop "$CONTAINER_ID" 2>/dev/null || true
+    fi
+    
+    # Also stop by name if CONTAINER_NAME is set
+    if [ -n "${CONTAINER_NAME:-}" ]; then
+        docker stop "$CONTAINER_NAME" 2>/dev/null || true
+    fi
+}
+
+# Set up cleanup trap
+trap docker_cleanup EXIT INT TERM
 '''
 script.main = "err 'default main script. define a proper script to skip this one'"
 script.post = ""
@@ -130,23 +152,32 @@ extend = "base-script"
 script.main = '''
 set -euo pipefail
 
-TAG=$(./utils/get-ci-image-tag.sh)
-
 info "Running tests using:"
 info "-- IMAGE             = ${IMAGE_NAME}"
 info "-- TAG               = $TAG"
 # info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
-docker run --rm \
-  --name zaino-testing \
-  -v "$PWD":/app \
-  -v "$PWD/target":/root/target \
-  -v "$PWD/docker_cargo/git":/root/.cargo/git \
-  -v "$PWD/docker_cargo/registry":/root/.cargo/registry \
+# Create directories with correct ownership before Docker creates them as root
+mkdir -p target docker_cargo/git docker_cargo/registry
+
+# Set container name for cleanup
+CONTAINER_NAME="zaino-testing"
+
+# Run container and capture its ID for cleanup
+CONTAINER_ID=$(docker run --rm -d \
+  --name "$CONTAINER_NAME" \
+  -v "$PWD":/home/container_user/zaino \
+  -v "$PWD/target":/home/container_user/zaino/target \
+  -v "$PWD/docker_cargo/git":/home/container_user/.cargo/git \
+  -v "$PWD/docker_cargo/registry":/home/container_user/.cargo/registry \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
-  -w /app \
+  -w /home/container_user/zaino \
+  -u container_user \
   "${IMAGE_NAME}:$TAG" \
-  cargo nextest run --profile ci "${@}"
+  cargo nextest run --profile ci "${@}")
+
+# Wait for container to finish and get its exit code
+docker wait "$CONTAINER_ID"
 '''
 
 # -------------------------------------------------------------------
