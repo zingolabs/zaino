@@ -197,7 +197,6 @@ mod chain_query_interface {
             let block = block
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
-            println!("{:?}", block.coinbase_height());
         }
     }
 }
