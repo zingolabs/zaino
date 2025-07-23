@@ -54,7 +54,8 @@ impl NodeBackedChainIndex {
         tokio::task::spawn((|| async move {
             loop {
                 nfs.sync().await?;
-                tokio::time::sleep(Duration::from_secs(1)).await
+                //TODO: configure
+                tokio::time::sleep(Duration::from_millis(500)).await
             }
         })())
     }

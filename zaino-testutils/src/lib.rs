@@ -491,7 +491,7 @@ impl TestManager {
     pub async fn generate_blocks_with_delay(&self, blocks: u32) {
         for _ in 0..blocks {
             self.local_net.generate_blocks(1).await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         }
     }
 

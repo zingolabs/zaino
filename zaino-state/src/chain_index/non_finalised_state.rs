@@ -287,8 +287,6 @@ impl NonFinalizedState {
         blocks.insert(hash, chainblock);
         heights_to_hashes.insert(Height(1), hash);
 
-        dbg!(&best_tip);
-        dbg!(&blocks);
         let current = ArcSwap::new(Arc::new(NonfinalizedBlockCacheSnapshot {
             blocks,
             heights_to_hashes,
@@ -624,7 +622,7 @@ impl NonFinalizedState {
         let (_newly_finalzed, blocks): (HashMap<_, _>, HashMap<Hash, _>) = new
             .into_iter()
             .partition(|(_hash, block)| match block.index().height() {
-                Some(height) => height <= finalized_height,
+                Some(height) => height < finalized_height,
                 None => false,
             });
         // TODO: At this point, we need to ensure the newly-finalized blocks are known

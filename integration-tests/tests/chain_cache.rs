@@ -117,6 +117,7 @@ async fn nfs_simple_sync() {
 }
 
 mod chain_query_interface {
+
     use futures::TryStreamExt as _;
     use zaino_state::bench::chain_index::interface::{ChainIndexInterface, NodeBackedChainIndex};
     use zebra_chain::serialization::ZcashDeserializeInto;
@@ -182,8 +183,10 @@ mod chain_query_interface {
         )
         .await;
 
+        // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
         let snapshot = chain_index.snapshot_nonfinalized_state();
+        assert_eq!(snapshot.blocks.len(), 6);
         let range = chain_index
             .get_block_range(&snapshot, None, None)
             .unwrap()
