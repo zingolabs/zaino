@@ -9,18 +9,18 @@ use zaino_proto::proto::compact_formats::{
     CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
 };
 
-/// Txin format as described in https://en.bitcoin.it/wiki/Transaction
+/// Txin format as described in <https://en.bitcoin.it/wiki/Transaction>
 #[derive(Debug, Clone)]
 struct TxIn {
-    // PrevTxHash - Size[bytes]: 32
+    // PrevTxHash - Size\[bytes\]: 32
     prev_txid: Vec<u8>,
-    // PrevTxOutIndex - Size[bytes]: 4
+    // PrevTxOutIndex - Size\[bytes\]: 4
     prev_index: u32,
     /// CompactSize-prefixed, could be a pubkey or a script
     ///
-    /// Size[bytes]: CompactSize
+    /// Size\[bytes\]: CompactSize
     script_sig: Vec<u8>,
-    // SequenceNumber [IGNORED] - Size[bytes]: 4
+    // SequenceNumber \[IGNORED\] - Size\[bytes\]: 4
 }
 
 impl TxIn {
@@ -70,14 +70,14 @@ impl ParseFromSlice for TxIn {
     }
 }
 
-/// Txout format as described in https://en.bitcoin.it/wiki/Transaction
+/// Txout format as described in <https://en.bitcoin.it/wiki/Transaction>
 #[derive(Debug, Clone)]
 struct TxOut {
     /// Non-negative int giving the number of zatoshis to be transferred
     ///
-    /// Size[bytes]: 8
+    /// Size\[bytes\]: 8
     value: u64,
-    // Script - Size[bytes]: CompactSize
+    // Script - Size\[bytes\]: CompactSize
     script_hash: Vec<u8>,
 }
 
@@ -150,15 +150,15 @@ fn parse_transparent(data: &[u8]) -> Result<(&[u8], Vec<TxIn>, Vec<TxOut>), Pars
 /// protocol specification.
 #[derive(Debug, Clone)]
 struct Spend {
-    // Cv [IGNORED] - Size[bytes]: 32
-    // Anchor [IGNORED] - Size[bytes]: 32
+    // Cv \[IGNORED\] - Size\[bytes\]: 32
+    // Anchor \[IGNORED\] - Size\[bytes\]: 32
     /// A nullifier to a sapling note.
     ///
-    /// Size[bytes]: 32
+    /// Size\[bytes\]: 32
     nullifier: Vec<u8>,
-    // Rk [IGNORED] - Size[bytes]: 32
-    // Zkproof [IGNORED] - Size[bytes]: 192
-    // SpendAuthSig [IGNORED] - Size[bytes]: 64
+    // Rk \[IGNORED\] - Size\[bytes\]: 32
+    // Zkproof \[IGNORED\] - Size\[bytes\]: 192
+    // SpendAuthSig \[IGNORED\] - Size\[bytes\]: 64
 }
 
 impl Spend {
@@ -204,22 +204,22 @@ impl ParseFromSlice for Spend {
 /// Zcash protocol spec.
 #[derive(Debug, Clone)]
 struct Output {
-    // Cv [IGNORED] - Size[bytes]: 32
+    // Cv \[IGNORED\] - Size\[bytes\]: 32
     /// U-coordinate of the note commitment, derived from the note's value, recipient, and a
     /// random value.
     ///
-    /// Size[bytes]: 32
+    /// Size\[bytes\]: 32
     cmu: Vec<u8>,
     /// Ephemeral public key for Diffie-Hellman key exchange.
     ///
-    /// Size[bytes]: 32
+    /// Size\[bytes\]: 32
     ephemeral_key: Vec<u8>,
     /// Encrypted transaction details including value transferred and an optional memo.
     ///
-    /// Size[bytes]: 580
+    /// Size\[bytes\]: 580
     enc_ciphertext: Vec<u8>,
-    // OutCiphertext [IGNORED] - Size[bytes]: 80
-    // Zkproof [IGNORED] - Size[bytes]: 192
+    // OutCiphertext \[IGNORED\] - Size\[bytes\]: 80
+    // Zkproof \[IGNORED\] - Size\[bytes\]: 192
 }
 
 impl Output {
@@ -273,16 +273,16 @@ impl ParseFromSlice for Output {
 /// NOTE: Legacy, no longer used but included for consistency.
 #[derive(Debug, Clone)]
 struct JoinSplit {
-    //vpubOld [IGNORED] - Size[bytes]: 8
-    //vpubNew [IGNORED] - Size[bytes]: 8
-    //anchor [IGNORED] - Size[bytes]: 32
-    //nullifiers [IGNORED] - Size[bytes]: 64/32
-    //commitments [IGNORED] - Size[bytes]: 64/32
-    //ephemeralKey [IGNORED] - Size[bytes]: 32
-    //randomSeed [IGNORED] - Size[bytes]: 32
-    //vmacs [IGNORED] - Size[bytes]: 64/32
-    //proofGroth16 [IGNORED] - Size[bytes]: 192
-    //encCiphertexts [IGNORED] - Size[bytes]: 1202
+    //vpubOld \[IGNORED\] - Size\[bytes\]: 8
+    //vpubNew \[IGNORED\] - Size\[bytes\]: 8
+    //anchor \[IGNORED\] - Size\[bytes\]: 32
+    //nullifiers \[IGNORED\] - Size\[bytes\]: 64/32
+    //commitments \[IGNORED\] - Size\[bytes\]: 64/32
+    //ephemeralKey \[IGNORED\] - Size\[bytes\]: 32
+    //randomSeed \[IGNORED\] - Size\[bytes\]: 32
+    //vmacs \[IGNORED\] - Size\[bytes\]: 64/32
+    //proofGroth16 \[IGNORED\] - Size\[bytes\]: 192
+    //encCiphertexts \[IGNORED\] - Size\[bytes\]: 1202
 }
 
 impl ParseFromSlice for JoinSplit {
@@ -325,25 +325,25 @@ impl ParseFromSlice for JoinSplit {
 /// An Orchard action.
 #[derive(Debug, Clone)]
 struct Action {
-    // Cv [IGNORED] - Size[bytes]: 32
+    // Cv \[IGNORED\] - Size\[bytes\]: 32
     /// A nullifier to a orchard note.
     ///
-    /// Size[bytes]: 32
+    /// Size\[bytes\]: 32
     nullifier: Vec<u8>,
-    // Rk [IGNORED] - Size[bytes]: 32
+    // Rk \[IGNORED\] - Size\[bytes\]: 32
     /// X-coordinate of the commitment to the note.
     ///
-    /// Size[bytes]: 32
+    /// Size\[bytes\]: 32
     cmx: Vec<u8>,
     /// Ephemeral public key.
     ///
-    /// Size[bytes]: 32
+    /// Size\[bytes\]: 32
     ephemeral_key: Vec<u8>,
     /// Encrypted details of the new note, including its value and recipient's data.
     ///
-    /// Size[bytes]: 580
+    /// Size\[bytes\]: 580
     enc_ciphertext: Vec<u8>,
-    // OutCiphertext [IGNORED] - Size[bytes]: 80
+    // OutCiphertext \[IGNORED\] - Size\[bytes\]: 80
 }
 
 impl Action {
@@ -400,57 +400,57 @@ impl ParseFromSlice for Action {
 struct TransactionData {
     /// Indicates if the transaction is an Overwinter-enabled transaction.
     ///
-    /// Size[bytes]: [in 4 byte header]
+    /// Size\[bytes\]: [in 4 byte header]
     f_overwintered: bool,
     /// The transaction format version.
     ///
-    /// Size[bytes]: [in 4 byte header]
+    /// Size\[bytes\]: [in 4 byte header]
     version: u32,
     /// Version group ID, used to specify transaction type and validate its components.
     ///
-    /// Size[bytes]: 4
+    /// Size\[bytes\]: 4
     n_version_group_id: u32,
     /// Consensus branch ID, used to identify the network upgrade that the transaction is valid for.
     ///
-    /// Size[bytes]: 4
+    /// Size\[bytes\]: 4
     consensus_branch_id: u32,
     /// List of transparent inputs in a transaction.
     ///
-    /// Size[bytes]: Vec<40+CompactSize>
+    /// Size\[bytes\]: Vec<40+CompactSize>
     transparent_inputs: Vec<TxIn>,
     /// List of transparent outputs in a transaction.
     ///
-    /// Size[bytes]: Vec<8+CompactSize>
+    /// Size\[bytes\]: Vec<8+CompactSize>
     transparent_outputs: Vec<TxOut>,
-    // NLockTime [IGNORED] - Size[bytes]: 4
-    // NExpiryHeight [IGNORED] - Size[bytes]: 4
-    // ValueBalanceSapling - Size[bytes]: 8
+    // NLockTime \[IGNORED\] - Size\[bytes\]: 4
+    // NExpiryHeight \[IGNORED\] - Size\[bytes\]: 4
+    // ValueBalanceSapling - Size\[bytes\]: 8
     /// Value balance for the Sapling pool (v4/v5). None if not present.
     value_balance_sapling: Option<i64>,
     /// List of shielded spends from the Sapling pool
     ///
-    /// Size[bytes]: Vec<384>
+    /// Size\[bytes\]: Vec<384>
     shielded_spends: Vec<Spend>,
     /// List of shielded outputs from the Sapling pool
     ///
-    /// Size[bytes]: Vec<948>
+    /// Size\[bytes\]: Vec<948>
     shielded_outputs: Vec<Output>,
     /// List of JoinSplit descriptions in a transaction, no longer supported.
     ///
-    /// Size[bytes]: Vec<1602-1698>
+    /// Size\[bytes\]: Vec<1602-1698>
     #[allow(dead_code)]
     join_splits: Vec<JoinSplit>,
-    /// joinSplitPubKey [IGNORED] - Size[bytes]: 32
-    /// joinSplitSig [IGNORED] - Size[bytes]: 64
-    /// bindingSigSapling [IGNORED] - Size[bytes]: 64
+    /// joinSplitPubKey \[IGNORED\] - Size\[bytes\]: 32
+    /// joinSplitSig \[IGNORED\] - Size\[bytes\]: 64
+    /// bindingSigSapling \[IGNORED\] - Size\[bytes\]: 64
     /// List of Orchard actions.
     ///
-    /// Size[bytes]: Vec<820>
+    /// Size\[bytes\]: Vec<820>
     orchard_actions: Vec<Action>,
-    /// ValueBalanceOrchard - Size[bytes]: 8
+    /// ValueBalanceOrchard - Size\[bytes\]: 8
     /// Value balance for the Orchard pool (v5 only). None if not present.
     value_balance_orchard: Option<i64>,
-    /// AnchorOrchard - Size[bytes]: 32
+    /// AnchorOrchard - Size\[bytes\]: 32
     /// In non-coinbase transactions, this is the anchor (authDataRoot) of a prior block's Orchard note commitment tree.
     /// In the coinbase transaction, this commits to the final Orchard tree state for the current block — i.e., it *is* the block's authDataRoot.
     /// Present in v5 transactions only, if any Orchard actions exist in the block.
@@ -829,7 +829,7 @@ impl FullTransaction {
 
     /// Returns sapling and orchard value balances for the transaction.
     ///
-    /// Returned as (Option<valueBalanceSapling>, Option<valueBalanceOrchard>).
+    /// Returned as (Option\<valueBalanceSapling\>, Option\<valueBalanceOrchard\>).
     pub fn value_balances(&self) -> (Option<i64>, Option<i64>) {
         (
             self.raw_transaction.value_balance_sapling,

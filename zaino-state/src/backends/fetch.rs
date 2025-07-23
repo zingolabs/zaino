@@ -54,7 +54,7 @@ use crate::{
 ///
 /// NOTE: We currently do not implement clone for chain fetch services as this service is responsible for maintaining and closing its child processes.
 ///       ServiceSubscribers are used to create separate chain fetch processes while allowing central state processes to be managed in a single place.
-///       If we want the ability to clone Service all JoinHandle's should be converted to Arc<JoinHandle>.
+///       If we want the ability to clone Service all JoinHandle's should be converted to Arc\<JoinHandle\>.
 #[derive(Debug)]
 pub struct FetchService {
     /// JsonRPC Client.
@@ -350,7 +350,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// The Zcash source code is considered canonical:
     /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
-    /// [The function in rpc/blockchain.cpp]https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325
+    /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error> {
         Ok(self.fetcher.get_best_blockhash().await?.into())

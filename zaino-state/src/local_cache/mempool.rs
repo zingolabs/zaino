@@ -237,7 +237,7 @@ impl MempoolSubscriber {
         self.subscriber.get_filtered_state(&HashSet::new())
     }
 
-    /// Returns all tx currently in the mempool filtered by [`exclude_list`].
+    /// Returns all tx currently in the mempool filtered by `exclude_list`.
     ///
     /// The transaction IDs in the Exclude list can be shortened to any number of bytes to make the request
     /// more bandwidth-efficient; if two or more transactions in the mempool

@@ -61,7 +61,7 @@ pub enum TransportError {
 impl TransportError {
     /// Converts TransportError to tonic::Status
     ///
-    /// TODO: This impl should be changed to return the correct status [https://github.com/zcash/lightwalletd/issues/497] before release,
+    /// TODO: This impl should be changed to return the correct status [per this issue](https://github.com/zcash/lightwalletd/issues/497) before release,
     ///       however propagating the server error is useful during development.
     pub fn to_grpc_status(&self) -> tonic::Status {
         // TODO: Hide server error from clients before release. Currently useful for dev purposes.

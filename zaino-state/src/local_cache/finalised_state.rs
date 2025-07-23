@@ -120,7 +120,7 @@ pub struct FinalisedState {
 }
 
 impl FinalisedState {
-    /// Spawns a new [`NonFinalisedState`] and syncs the FinalisedState to the servers finalised state.
+    /// Spawns a new [`Self`] and syncs the FinalisedState to the servers finalised state.
     ///
     /// Inputs:
     /// - fetcher: Json RPC client.
@@ -688,7 +688,7 @@ impl Drop for FinalisedState {
     }
 }
 
-/// A subscriber to a [`NonFinalisedState`].
+/// A subscriber to a [`crate::bench::chain_index::non_finalised_state::NonFinalizedState`].
 #[derive(Debug, Clone)]
 pub struct FinalisedStateSubscriber {
     request_sender: tokio::sync::mpsc::Sender<DbRequest>,

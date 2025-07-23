@@ -73,11 +73,11 @@ pub trait ZcashService: Sized {
     /// Service Config.
     type Config: Clone;
 
-    /// Spawns a [`Service`].
+    /// Spawns a [`ZcashIndexer`].
     async fn spawn(config: Self::Config)
         -> Result<Self, <Self::Subscriber as ZcashIndexer>::Error>;
 
-    /// Returns a [`ServiceSubscriber`].
+    /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
 
     /// Fetches the current status
@@ -260,8 +260,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: blockchain
     /// The Zcash source code is considered canonical:
     /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
-    /// [The function in rpc/blockchain.cpp]https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325
-    /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
+    /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
+    /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339) returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
