@@ -50,6 +50,18 @@ TAG=$(./utils/get-ci-image-tag.sh)
 
 # Generic cleanup function for docker containers
 docker_cleanup() {
+    # Prevent running cleanup twice
+    if [ "${CLEANUP_RAN:-0}" -eq 1 ]; then
+        return
+    fi
+    CLEANUP_RAN=1
+    
+    # Check if we're cleaning up due to interruption
+    if [ "$?" -eq 130 ] || [ "$?" -eq 143 ]; then
+        echo ""
+        warn "Task '${CARGO_MAKE_CURRENT_TASK_NAME}' interrupted! Cleaning up..."
+    fi
+    
     # Kill all child processes
     local pids=$(jobs -pr)
     if [ -n "$pids" ]; then
@@ -58,12 +70,14 @@ docker_cleanup() {
     
     # Stop any docker containers started by this script
     if [ -n "${CONTAINER_ID:-}" ]; then
-        docker stop "$CONTAINER_ID" 2>/dev/null || true
+        info "Stopping Docker container..."
+        docker stop "$CONTAINER_ID" >/dev/null 2>&1 || true
     fi
     
     # Also stop by name if CONTAINER_NAME is set
-    if [ -n "${CONTAINER_NAME:-}" ]; then
-        docker stop "$CONTAINER_NAME" 2>/dev/null || true
+    if [ -n "${CONTAINER_NAME:-}" ] && [ -z "${CONTAINER_ID:-}" ]; then
+        info "Stopping Docker container ${CONTAINER_NAME}..."
+        docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
 }
 
