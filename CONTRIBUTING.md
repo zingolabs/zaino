@@ -64,7 +64,7 @@ Certain situations may arise where experienced Zaino developers might bypass the
 Finally, see our [Software Philosophy](#software-philosophy), and understand you are contribuing to a project with these principles at work.
 
 ## Block Explorer Merge Requirements
-This is an evloving document: the following merge requirements are intended to be constrained to the specific case of implementations of Block Explorer RPCs.
+This is an evolving document: the following merge requirements are intended for the specific case of Block Explorer RPCs.
 
 Any use of `TODO`s makes a PR invalid for merging into `dev`.
 

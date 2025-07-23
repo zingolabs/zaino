@@ -31,7 +31,7 @@ impl Hash {
         reversed_bytes
     }
 
-    /// Convert bytes in big-endian byte-order into a [`block::Hash`](crate::block::Hash).
+    /// Convert bytes in big-endian byte-order into a [`block::Hash`](crate::Hash).
     pub fn from_bytes_in_display_order(bytes_in_display_order: &[u8; 32]) -> Hash {
         let mut internal_byte_order = *bytes_in_display_order;
         internal_byte_order.reverse();
@@ -559,8 +559,8 @@ pub struct BlockData {
     /// Merkle root hash of all transaction IDs in the block (used for quick tx inclusion proofs).
     pub(super) merkle_root: [u8; 32],
     /// Digest representing the block-commitments Merkle root (commitment to note states).
-    /// - < V4: [`hashFinalSaplingRoot`] - Sapling note commitment tree root.
-    /// - => V4: [`hashBlockCommitments`] - digest over hashLightClientRoot and hashAuthDataRoot.``
+    /// - < V4: `hashFinalSaplingRoot` - Sapling note commitment tree root.
+    /// - => V4: `hashBlockCommitments` - digest over hashLightClientRoot and hashAuthDataRoot.``
     pub(super) block_commitments: [u8; 32],
     /// Compact difficulty target used for proof-of-work and difficulty calculation.
     pub(super) bits: u32,
@@ -2138,11 +2138,11 @@ impl ZainoVersionedSerialise for AddrHistRecord {
 /// EXACTLY 17 bytes – duplicate value in `addr_hist` DBI.
 ///
 /// Layout (all big-endian except `value`):
-/// [0..4]  height
-/// [4..6]  tx_index
-/// [6..8]  vout
-/// [8]     flags
-/// [9..17] value  (little-endian, matches Zcashd)
+/// \[0..4\]  height
+/// \[4..6\]  tx_index
+/// \[6..8\]  vout
+/// \[8\]     flags
+/// \[9..17\] value  (little-endian, matches Zcashd)
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub(crate) struct AddrEventBytes([u8; 17]);

@@ -21,10 +21,10 @@ pub enum BackendConfig {
     Fetch(FetchServiceConfig),
 }
 
-/// Holds config data for [`StateService`].
+/// Holds config data for [crate::StateService].
 #[derive(Debug, Clone)]
 pub struct StateServiceConfig {
-    /// Zebra [`ReadStateService`] config data
+    /// Zebra [`zebra_state::ReadStateService`] config data
     pub validator_config: zebra_state::Config,
     /// Validator JsonRPC address.
     pub validator_rpc_address: std::net::SocketAddr,
@@ -101,7 +101,7 @@ impl StateServiceConfig {
     }
 }
 
-/// Holds config data for [`FetchService`].
+/// Holds config data for [crate::FetchService].
 #[derive(Debug, Clone)]
 pub struct FetchServiceConfig {
     /// Validator JsonRPC address.
@@ -178,7 +178,7 @@ impl FetchServiceConfig {
     }
 }
 
-/// Holds config data for [`FetchService`].
+/// Holds config data for [`crate::FetchService`].
 #[derive(Debug, Clone)]
 pub struct BlockCacheConfig {
     /// Capacity of the Dashmap.

@@ -486,7 +486,7 @@ impl TestManager {
         })
     }
 
-    /// Generates [blocks] regtest blocks.
+    /// Generates `blocks` regtest blocks.
     /// Adds a delay between blocks to allow zaino / zebra to catch up with test.
     pub async fn generate_blocks_with_delay(&self, blocks: u32) {
         for _ in 0..blocks {

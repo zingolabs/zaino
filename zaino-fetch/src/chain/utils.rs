@@ -34,7 +34,7 @@ pub(crate) fn skip_bytes(
     Ok(())
 }
 
-/// Reads the next n bytes from cursor into a vec<u8>, returns error message given if eof is reached.
+/// Reads the next n bytes from cursor into a `vec<u8>`, returns error message given if eof is reached.
 pub(crate) fn read_bytes(
     cursor: &mut Cursor<&[u8]>,
     n: usize,

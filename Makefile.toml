@@ -99,7 +99,9 @@ docker build -f Dockerfile.ci \
   --build-arg ZCASH_VERSION=$ZCASH_VERSION \
   --build-arg ZEBRA_VERSION=$ZEBRA_VERSION \
   --build-arg RUST_VERSION=$RUST_VERSION \
-  -t ${IMAGE_NAME}:$TAG .
+  -t ${IMAGE_NAME}:$TAG \
+  ${@} \
+  .
 '''
 
 # -------------------------------------------------------------------

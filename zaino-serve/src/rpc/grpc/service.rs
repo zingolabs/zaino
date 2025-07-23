@@ -81,15 +81,15 @@ macro_rules! client_method_helper {
 /// streaming/nonstreaming.
 ///
 /// Arguments:
-/// comment method_name(input_type) -> return [as streaming],
-/// [comment] A str literal to be used a doc-comment for the method.
-/// [method_name] The name of the method to implement
-/// [input_type] The type of the tonic Request to accept as an argument
-/// [as streaming/empty] the optional literal characters
+/// comment method_name(input_type) -> return \[as streaming\],
+/// \[comment\] A str literal to be used a doc-comment for the method.
+/// \[method_name\] The name of the method to implement
+/// \[input_type\] The type of the tonic Request to accept as an argument
+/// \[as streaming/empty\] the optional literal characters
 ///     'as streaming', 'as empty', or 'as streamingempty'
 ///     needed when the return type is a Streaming type, and/or
 ///     the argument type isn't used
-/// [return] the return type of the function
+/// \[return\] the return type of the function
 macro_rules! implement_client_methods {
     ($($comment:literal $method_name:ident($input_type:ty ) -> $return:ty $( as $streaming:ident)? ,)+) => {
         $(
@@ -185,7 +185,9 @@ where
         get_mempool_stream(Empty) -> Self::GetMempoolStreamStream as streamingempty,
         "Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production) [from zebrad] \
         This RPC has not been implemented as it is not currently used by zingolib. \
-        If you require this RPC please open an issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)."
+        If you require this RPC please open an issue or PR at [https://github.com/zingolabs/zaino]\
+        (https://github.com/zingolabs/zaino)."
+
         ping(Duration) -> PingResponse,
     );
 
