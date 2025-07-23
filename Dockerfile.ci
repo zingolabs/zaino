@@ -69,9 +69,6 @@ ENV CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
 ENV PATH="/usr/local/bin:${PATH}"
 ENV CARGO_TERM_COLOR=always
 
-# Use system rocksdb instead of building from source
-ENV ROCKSDB_LIB_DIR=/usr/lib/x86_64-linux-gnu
-ENV ROCKSDB_INCLUDE_DIR=/usr/include
 
 LABEL maintainer="nachog00"
 LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
@@ -81,7 +78,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libclang-dev \
     build-essential \
-    librocksdb-dev \
+    cmake \
+    libsnappy-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblz4-dev \
+    libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create container_user
