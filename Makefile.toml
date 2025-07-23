@@ -172,7 +172,7 @@ info "-- TAG               = $TAG"
 # info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
 # Create directories with correct ownership before Docker creates them as root
-mkdir -p target docker_cargo/git docker_cargo/registry
+mkdir -p container-target docker_cargo/git docker_cargo/registry
 
 # Set container name for cleanup
 CONTAINER_NAME="zaino-testing"
@@ -182,10 +182,11 @@ docker run --rm \
   --init \
   --name "$CONTAINER_NAME" \
   -v "$PWD":/home/container_user/zaino \
-  -v "$PWD/target":/home/container_user/zaino/target \
+  -v "$PWD/container-target":/home/container_user/zaino/target \
   -v "$PWD/docker_cargo/git":/home/container_user/.cargo/git \
   -v "$PWD/docker_cargo/registry":/home/container_user/.cargo/registry \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
+  -e "CARGO_TARGET_DIR=/home/container_user/zaino/target" \
   -w /home/container_user/zaino \
   -u container_user \
   "${IMAGE_NAME}:$TAG" \
