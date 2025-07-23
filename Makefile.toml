@@ -177,8 +177,9 @@ mkdir -p target docker_cargo/git docker_cargo/registry
 # Set container name for cleanup
 CONTAINER_NAME="zaino-testing"
 
-# Run container and capture its ID for cleanup
-CONTAINER_ID=$(docker run --rm -d \
+# Run docker in foreground with proper signal handling
+docker run --rm \
+  --init \
   --name "$CONTAINER_NAME" \
   -v "$PWD":/home/container_user/zaino \
   -v "$PWD/target":/home/container_user/zaino/target \
@@ -188,10 +189,13 @@ CONTAINER_ID=$(docker run --rm -d \
   -w /home/container_user/zaino \
   -u container_user \
   "${IMAGE_NAME}:$TAG" \
-  cargo nextest run --profile ci "${@}")
+  cargo nextest run --profile ci "${@}" &
 
-# Wait for container to finish and get its exit code
-docker wait "$CONTAINER_ID"
+# Capture the background job PID
+DOCKER_PID=$!
+
+# Wait for the docker process
+wait $DOCKER_PID
 '''
 
 # -------------------------------------------------------------------
