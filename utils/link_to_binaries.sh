@@ -5,15 +5,15 @@ set -e
 #
 # Arguments:
 #   REPO_ROOT     - Repository root directory (default: /home/container_user/zaino)
-#   ZCASHD_PATH   - Path to zcashd binary (default: /usr/local/bin/zcashd)
-#   ZEBRAD_PATH   - Path to zebrad binary (default: /usr/local/bin/zebrad)
-#   ZCASH_CLI_PATH - Path to zcash-cli binary (default: /usr/local/bin/zcash-cli)
+#   ZCASHD_PATH   - Path to zcashd binary (default: /home/container_user/artifacts/zcashd)
+#   ZEBRAD_PATH   - Path to zebrad binary (default: /home/container_user/artifacts/zebrad)
+#   ZCASH_CLI_PATH - Path to zcash-cli binary (default: /home/container_user/artifacts/zcash-cli)
 
 # Use provided arguments or defaults
 REPO_ROOT="${1:-/home/container_user/zaino}"
-ZCASHD_PATH="${2:-/usr/local/bin/zcashd}"
-ZEBRAD_PATH="${3:-/usr/local/bin/zebrad}"
-ZCASH_CLI_PATH="${4:-/usr/local/bin/zcash-cli}"
+ZCASHD_PATH="${2:-/home/container_user/artifacts/zcashd}"
+ZEBRAD_PATH="${3:-/home/container_user/artifacts/zebrad}"
+ZCASH_CLI_PATH="${4:-/home/container_user/artifacts/zcash-cli}"
 
 # Check if test_binaries/bins directory exists and create symlinks if binaries are missing
 BINS_DIR="${REPO_ROOT}/test_binaries/bins"
