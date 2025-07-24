@@ -44,3 +44,8 @@ if [ -d "$BINS_DIR" ]; then
 else
     echo "Warning: $BINS_DIR directory does not exist"
 fi
+
+# Execute any command passed to the entrypoint
+if [ $# -gt 0 ]; then
+    exec "$@"
+fi

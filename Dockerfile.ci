@@ -94,6 +94,10 @@ RUN groupadd --gid ${GID} ${USER} && \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 RUN rustup update stable
 
+# Copy and prepare entrypoint script
+COPY utils/link_to_binaries.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 WORKDIR ${HOME}/zaino
 RUN chown -R ${UID}:${GID} ${HOME}
 USER ${USER}
@@ -115,6 +119,9 @@ RUN chmod +x /usr/local/bin/zcashd /usr/local/bin/zcash-cli /usr/local/bin/zebra
 USER ${USER}
 RUN cargo install cargo-nextest --locked --verbose
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
+
 FROM base AS final-zcashd-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
@@ -127,6 +134,9 @@ COPY --from=zebra-downloader /usr/local/bin/zebrad /usr/local/bin/
 RUN chmod +x /usr/local/bin/zcashd /usr/local/bin/zcash-cli /usr/local/bin/zebrad
 USER ${USER}
 RUN cargo install cargo-nextest --locked --verbose
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
 
 FROM base AS final-zebrad-source
 ARG ZCASH_VERSION
@@ -141,6 +151,9 @@ RUN chmod +x /usr/local/bin/zcashd /usr/local/bin/zcash-cli /usr/local/bin/zebra
 USER ${USER}
 RUN cargo install cargo-nextest --locked --verbose
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
+
 FROM base AS final-all-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
@@ -153,3 +166,6 @@ COPY --from=zebra-builder /tmp/zebrad /usr/local/bin/
 RUN chmod +x /usr/local/bin/zcashd /usr/local/bin/zcash-cli /usr/local/bin/zebrad
 USER ${USER}
 RUN cargo install cargo-nextest --locked --verbose
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
