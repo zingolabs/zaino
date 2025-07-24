@@ -94,7 +94,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 RUN rustup update stable
 
 # Create artifacts directory
-RUN mkdir -p ${HOME}/artifacts
+RUN mkdir -p /home/container_user/artifacts
 
 # Copy and prepare entrypoint script
 COPY utils/link_to_binaries.sh /usr/local/bin/entrypoint.sh

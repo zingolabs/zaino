@@ -18,6 +18,7 @@
 !*.toml
 !*.lock
 !integration-tests
+!utils
 !utils-*
 !zaino-*
 !zainod

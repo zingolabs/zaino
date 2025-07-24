@@ -1,6 +1,5 @@
-# ./utils/get-ci-image-tag.sh
-
 #!/usr/bin/env bash
+# ./utils/get-ci-image-tag.sh
 set -euo pipefail
 
 # Accepts env vars already loaded in the calling context
