@@ -5,7 +5,7 @@ default_to_workspace = false
 
 [env]
 IMAGE_NAME = "zingodevops/zaino-ci"
-TEST_BINARIES_DIR = "/usr/local/bin"
+TEST_BINARIES_DIR = "/home/container_user/zaino/test_binaries/bins"
 
 [tasks.help]
 description = "List available commands and usage notes"
@@ -19,7 +19,7 @@ echo "Zaino CI Image Tasks"
 echo "---------------------"
 echo ""
 echo "Common usage:"
-echo "  makers test"
+echo "  makers container-test"
 echo ""
 echo "If you modify '.env.testing-artifacts', the test command will automatically:"
 echo "  - Recompute the image tag"
@@ -159,7 +159,7 @@ docker push ${IMAGE_NAME}:$TAG
 
 # -------------------------------------------------------------------
 
-[tasks.test]
+[tasks.container-test]
 clear = true
 description = "Run integration tests using the local image"
 dependencies = ["ensure-image-exists"]
@@ -272,7 +272,7 @@ fn main() {
 
 # -------------------------------------------------------------------
 
-[tasks.validate-all]
+[tasks.validate-makefile-tasks]
 description = "Validate all tasks work correctly with minimal execution"
 script_runner = "@rust"
 script = '''

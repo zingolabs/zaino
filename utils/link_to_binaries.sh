@@ -42,7 +42,7 @@ if [ -d "$BINS_DIR" ]; then
     echo "Binary setup complete. Contents of $BINS_DIR:"
     ls -la "$BINS_DIR"
 else
-    echo "Warning: $BINS_DIR directory does not exist"
+    echo "Info: $BINS_DIR directory does not exist, will be created when binaries are first accessed"
 fi
 
 # Execute any command passed to the entrypoint
