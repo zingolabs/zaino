@@ -124,6 +124,9 @@ extend = "base-script"
 script.main = '''
 set -euo pipefail
 
+# Create target directory with correct ownership before Docker creates it as root
+mkdir -p target
+
 TARGET=$(resolve_build_target "$ZCASH_VERSION" "$ZEBRA_VERSION")
 
 info "Building image"
