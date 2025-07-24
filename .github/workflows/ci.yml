@@ -21,7 +21,7 @@ jobs:
     name: Compute Docker Image Tag
     runs-on: ubuntu-latest
     outputs:
-      image-tag: ${{ steps.taggen.outputs.tag }}
+      image-tag: TEST_IMAGE_IN_CI
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
