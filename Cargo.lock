@@ -2193,9 +2193,9 @@ dependencies = [
 
 [[package]]
 name = "io-uring"
-version = "0.7.8"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b86e202f00093dcba4275d4636b93ef9dd75d025ae560d2521b45ea28ab49013"
+checksum = "d93587f37623a1a17d94ef2bc9ada592f5465fe7732084ab7beefabe5c77c0c4"
 dependencies = [
  "bitflags 2.9.1",
  "cfg-if",
@@ -4953,7 +4953,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "0.2.41"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "futures",
  "futures-core",
@@ -4980,7 +4980,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.41"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -5955,7 +5955,7 @@ dependencies = [
  "zcash_protocol",
  "zebra-chain 1.0.0",
  "zebra-rpc 1.0.0",
- "zebra-state 1.0.0",
+ "zebra-state 1.0.1",
 ]
 
 [[package]]
@@ -5991,7 +5991,7 @@ dependencies = [
  "zaino-state",
  "zebra-chain 1.0.0",
  "zebra-rpc 1.0.0",
- "zebra-state 1.0.0",
+ "zebra-state 1.0.1",
 ]
 
 [[package]]
@@ -6089,7 +6089,7 @@ dependencies = [
  "zaino-serve",
  "zaino-state",
  "zebra-chain 1.0.0",
- "zebra-state 1.0.0",
+ "zebra-state 1.0.1",
 ]
 
 [[package]]
@@ -6324,7 +6324,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caf6e76f310bb2d3cc233086a97c1710ba1de7ffbbf8198b8113407d0f427dfc"
 dependencies = [
- "bindgen 0.69.5",
+ "bindgen 0.72.0",
  "bitflags 2.9.1",
  "cc",
  "enum_primitive",
@@ -6452,7 +6452,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "1.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "bech32",
  "bitflags 2.9.1",
@@ -6546,7 +6546,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "1.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6576,7 +6576,7 @@ dependencies = [
  "zebra-chain 1.0.0",
  "zebra-node-services 1.0.0",
  "zebra-script 1.0.0",
- "zebra-state 1.0.0",
+ "zebra-state 1.0.1",
 ]
 
 [[package]]
@@ -6618,7 +6618,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "1.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "bitflags 2.9.1",
  "byteorder",
@@ -6668,7 +6668,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "1.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6717,7 +6717,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "1.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "base64",
  "chrono",
@@ -6755,7 +6755,7 @@ dependencies = [
  "zebra-network 1.0.0",
  "zebra-node-services 1.0.0",
  "zebra-script 1.0.0",
- "zebra-state 1.0.0",
+ "zebra-state 1.0.1",
 ]
 
 [[package]]
@@ -6771,7 +6771,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "1.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "thiserror 2.0.12",
  "zcash_script 0.3.2",
@@ -6813,8 +6813,8 @@ dependencies = [
 
 [[package]]
 name = "zebra-state"
-version = "1.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?tag=v2.4.0#3700e0930238161e98dbe2c62871eeee62396454"
+version = "1.0.1"
+source = "git+https://github.com/ZcashFoundation/zebra.git?rev=0893e1a7f499cadad1d9480216b3057dfd7900c7#0893e1a7f499cadad1d9480216b3057dfd7900c7"
 dependencies = [
  "bincode",
  "chrono",

@@ -44,8 +44,8 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{
-        GetSubtreesByIndexResponse, GetTreestateResponse, HexData, SubtreeRpcData,
-        TransactionObject,
+        GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData,
+        SubtreeRpcData, TransactionObject,
     },
     methods::{
         chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
@@ -680,9 +680,10 @@ impl StateServiceSubscriber {
             1 | 2 => {
                 let state_2 = state.clone();
                 let state_3 = state.clone();
+                let state_4 = state.clone();
 
-                let txids_future = {
-                    let req = ReadRequest::Block(hash_or_height);
+                let blockandsize_future = {
+                    let req = ReadRequest::BlockAndSize(hash_or_height);
                     async move { state_1.ready().and_then(|service| service.call(req)).await }
                 };
                 let orchard_future = {
@@ -695,15 +696,27 @@ impl StateServiceSubscriber {
                             .await
                     }
                 };
-                let (fullblock, orchard_tree_response, header) = futures::join!(
-                    txids_future,
+
+                let block_info_future = {
+                    let req = ReadRequest::BlockInfo(hash_or_height);
+                    async move {
+                        state_4
+                            .clone()
+                            .ready()
+                            .and_then(|service| service.call(req))
+                            .await
+                    }
+                };
+                let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
+                    blockandsize_future,
                     orchard_future,
                     StateServiceSubscriber::get_block_header(
                         &state_3,
                         network,
                         hash_or_height,
                         Some(true)
-                    )
+                    ),
+                    block_info_future
                 );
 
                 let header_obj = match header? {
@@ -713,48 +726,55 @@ impl StateServiceSubscriber {
                     GetBlockHeader::Object(get_block_header_object) => get_block_header_object,
                 };
 
-                let (transactions_response, size): (Vec<GetBlockTransaction>, _) = match fullblock {
-                    Ok(ReadResponse::Block(Some(block))) => Ok((
-                        block
-                            .transactions
-                            .iter()
-                            .map(|transaction| {
-                                match verbosity {
-                                    1 => GetBlockTransaction::Hash(transaction.hash()),
-                                    2 => GetBlockTransaction::Object(Box::new(
-                                        TransactionObject::from_transaction(
-                                            transaction.clone(),
-                                            Some(header_obj.height()),
-                                            Some(header_obj.confirmations() as u32),
-                                            network,
-                                            DateTime::<Utc>::from_timestamp(header_obj.time(), 0),
-                                            Some(header_obj.hash()),
-                                            // block header has a non-optional height, which indicates
-                                            // a mainchain block. It is implied this method cannot return sidechain
-                                            // data, at least for now. This is subject to change: TODO
-                                            // return Some(true/false) after this assumption is resolved
-                                            None,
-                                            transaction.hash(),
-                                        ),
-                                    )),
-                                    _ => unreachable!("verbosity known to be 1 or 2"),
-                                }
-                            })
-                            .collect(),
-                        block.zcash_serialized_size(),
-                    )),
-                    Ok(ReadResponse::TransactionIdsForBlock(None))
-                    | Ok(ReadResponse::Block(None)) => {
-                        Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                            LegacyCode::InvalidParameter,
-                            "block not found",
-                        )))
-                    }
-                    Ok(unexpected) => {
-                        unreachable!("Unexpected response from state service: {unexpected:?}")
-                    }
-                    Err(e) => Err(e.into()),
-                }?;
+                let (transactions_response, size, block_info): (Vec<GetBlockTransaction>, _, _) =
+                    match (fullblock, block_info) {
+                        (
+                            Ok(ReadResponse::BlockAndSize(Some((block, size)))),
+                            Ok(ReadResponse::BlockInfo(Some(block_info))),
+                        ) => Ok((
+                            block
+                                .transactions
+                                .iter()
+                                .map(|transaction| {
+                                    match verbosity {
+                                        1 => GetBlockTransaction::Hash(transaction.hash()),
+                                        2 => GetBlockTransaction::Object(Box::new(
+                                            TransactionObject::from_transaction(
+                                                transaction.clone(),
+                                                Some(header_obj.height()),
+                                                Some(header_obj.confirmations() as u32),
+                                                network,
+                                                DateTime::<Utc>::from_timestamp(
+                                                    header_obj.time(),
+                                                    0,
+                                                ),
+                                                Some(header_obj.hash()),
+                                                // block header has a non-optional height, which indicates
+                                                // a mainchain block. It is implied this method cannot return sidechain
+                                                // data, at least for now. This is subject to change: TODO
+                                                // return Some(true/false) after this assumption is resolved
+                                                None,
+                                                transaction.hash(),
+                                            ),
+                                        )),
+                                        _ => unreachable!("verbosity known to be 1 or 2"),
+                                    }
+                                })
+                                .collect(),
+                            size,
+                            block_info,
+                        )),
+                        (Ok(ReadResponse::Block(None)), Ok(ReadResponse::BlockInfo(None))) => {
+                            Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                                LegacyCode::InvalidParameter,
+                                "block not found",
+                            )))
+                        }
+                        (Ok(unexpected), Ok(unexpected2)) => {
+                            unreachable!("Unexpected responses from state service: {unexpected:?} {unexpected2:?}")
+                        }
+                        (Err(e), _) | (_, Err(e)) => Err(e.into()),
+                    }?;
 
                 let orchard_tree_response = orchard_tree_response?;
                 let orchard_tree = expected_read_response!(orchard_tree_response, OrchardTree)
@@ -773,6 +793,11 @@ impl StateServiceSubscriber {
                 let trees =
                     GetBlockTrees::new(header_obj.sapling_tree_size(), orchard_tree.count());
 
+                let (chain_supply, value_pools) = (
+                    GetBlockchainInfoBalance::chain_supply(*block_info.value_pools()),
+                    GetBlockchainInfoBalance::value_pools(*block_info.value_pools(), None),
+                );
+
                 Ok(GetBlock::Object(Box::new(
                     zebra_rpc::client::BlockObject::new(
                         header_obj.hash(),
@@ -790,10 +815,8 @@ impl StateServiceSubscriber {
                         Some(header_obj.solution()),
                         Some(header_obj.bits()),
                         Some(header_obj.difficulty()),
-                        //TODO: chain_supply
-                        None,
-                        //TODO: value_pools
-                        None,
+                        Some(chain_supply),
+                        Some(value_pools),
                         trees,
                         Some(header_obj.previous_block_hash()),
                         header_obj.next_block_hash(),
