@@ -101,7 +101,7 @@ impl NodeBackedChainIndex {
 }
 
 /// The interface to the chain index
-pub trait ChainIndexInterface: Sized {
+pub trait ChainIndex: Sized {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
     #[allow(missing_docs)]
@@ -144,7 +144,7 @@ pub trait ChainIndexInterface: Sized {
     ) -> HashMap<types::Hash, Option<types::Height>>;
 }
 
-impl ChainIndexInterface for NodeBackedChainIndex {
+impl ChainIndex for NodeBackedChainIndex {
     type Snapshot = NonfinalizedBlockCacheSnapshot;
     type FindForkPointError = std::convert::Infallible;
 
@@ -350,3 +350,9 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
         })
     }
 }
+
+pub struct GetRawTransactionError {
+    kind: GetRawTransactionErrorKind,
+}
+
+pub enum GetRawTransactionErrorKind {}

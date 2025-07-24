@@ -119,7 +119,7 @@ async fn nfs_simple_sync() {
 mod chain_query_interface {
 
     use futures::TryStreamExt as _;
-    use zaino_state::bench::chain_index::interface::{ChainIndexInterface, NodeBackedChainIndex};
+    use zaino_state::bench::chain_index::interface::{ChainIndex, NodeBackedChainIndex};
     use zebra_chain::serialization::ZcashDeserializeInto;
 
     use super::*;
