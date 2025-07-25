@@ -1,4 +1,5 @@
 # Zaino
+
 Zaino is an indexer for the Zcash blockchain implemented in Rust.
 
 Zaino provides all necessary functionality for "light" clients (wallets and other applications that don't rely on the complete history of blockchain) and "full" clients / wallets and block explorers providing access to both the finalized chain and the non-finalized best chain and mempool held by either a Zebra or Zcashd full validator.
