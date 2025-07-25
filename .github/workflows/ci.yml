@@ -205,20 +205,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # This is key to decide on te clippy job to run.
-      # The one from actions-rs prints nice annotations accross the pr, when browsing the changed files, right where the actual warning/error was found.
-      # It requires access to the GITHUB_TOKEN tho, a secret github automatically injects into every workflow run, but only for internally owned branches, not for forks.
-      # If that's the case, then we just run clippy with console output and that's it. One get's no annotations and has to check the actual job logs to see what went wrong.
-      - name: Check GITHUB_TOKEN accessibility
-        id: check_token
-        run: |
-          if [ -z "${{ secrets.GITHUB_TOKEN }}" ]; then
-            echo "GITHUB_TOKEN unavailable. If you are an external contributor, this is normal. If this is an internal PR, something is wrong."
-            echo "token_accessible=false" >> $GITHUB_ENV
-          else
-            echo "token_accessible=true" >> $GITHUB_ENV
-          fi
-
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
         with:
@@ -232,12 +218,21 @@ jobs:
             ~/.cargo
             target
 
+      # This is key to decide on the clippy job to run.
+      # The one from actions-rs prints nice annotations accross the pr, when browsing the changed files, right where the actual warning/error was found.
+      # It requires access to the GITHUB_TOKEN tho, a secret github automatically injects into every workflow run, but only for internally owned branches, not for forks.
+      # If that's the case, then we just run clippy with console output and that's it. One get's no annotations and has to check the actual job logs to see what went wrong.
+
       - name: Run clippy with console output (external contributors)
-        if: env.token_accessible == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: env.GITHUB_TOKEN == null
         run: cargo clippy --all-targets -- --deny warnings
 
       - name: Output clippy to Github
-        if: env.token_accessible == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: env.token_accessible != null
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
