@@ -226,13 +226,13 @@ jobs:
       - name: Run clippy with console output (external contributors)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: env.GITHUB_TOKEN == null
+        if: env.GITHUB_TOKEN == ''
         run: cargo clippy --all-targets -- --deny warnings
 
       - name: Output clippy to Github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: env.GITHUB_TOKEN != null
+        if: env.GITHUB_TOKEN != ''
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
