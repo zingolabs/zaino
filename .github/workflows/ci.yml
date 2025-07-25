@@ -224,15 +224,11 @@ jobs:
       # If that's the case, then we just run clippy with console output and that's it. One get's no annotations and has to check the actual job logs to see what went wrong.
 
       - name: Run clippy with console output (external contributors)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: env.GITHUB_TOKEN == ''
+        if: github.secret_source != 'Actions'
         run: cargo clippy --all-targets -- --deny warnings
 
       - name: Output clippy to Github
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: env.GITHUB_TOKEN != ''
+        if: github.secret_source == 'Actions'
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
