@@ -232,7 +232,7 @@ jobs:
       - name: Output clippy to Github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: env.token_accessible != null
+        if: env.GITHUB_TOKEN != null
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
