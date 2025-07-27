@@ -98,8 +98,8 @@ RUN rustup update stable
 RUN mkdir -p /home/container_user/artifacts
 
 # Copy and prepare entrypoint script
-COPY utils/link_to_binaries.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY utils/link_to_binaries.rs /usr/local/bin/entrypoint.rs
+RUN chmod +x /usr/local/bin/entrypoint.rs
 
 WORKDIR ${HOME}/zaino
 RUN chown -R ${UID}:${GID} ${HOME}
@@ -122,7 +122,7 @@ RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifa
 RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
     cargo install rust-script --locked --verbose --root /usr/local
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.rs"]
 CMD ["/bin/bash"]
 
 FROM base AS final-zcashd-source
@@ -138,7 +138,7 @@ RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifa
 RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
     cargo install rust-script --locked --verbose --root /usr/local
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.rs"]
 CMD ["/bin/bash"]
 
 FROM base AS final-zebrad-source
@@ -154,7 +154,7 @@ RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifa
 RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
     cargo install rust-script --locked --verbose --root /usr/local
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.rs"]
 CMD ["/bin/bash"]
 
 FROM base AS final-all-source
@@ -170,5 +170,5 @@ RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifa
 RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
     cargo install rust-script --locked --verbose --root /usr/local
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.rs"]
 CMD ["/bin/bash"]
