@@ -2,7 +2,7 @@
 //! ```cargo
 //! [dependencies]
 //! clap = { version = "4.0", features = ["derive"] }
-//! symlistow = { git = "https://github.com/zancas/rust_scripting/symlistow.git" }
+//! symlistow = { git = "https://github.com/zancas/rust_scripting.git" }
 //! ```
 
 use clap::Parser;
