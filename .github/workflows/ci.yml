@@ -148,10 +148,8 @@ jobs:
 
           echo ""
           echo "=== Running entrypoint script with correct paths ==="
-          # The entrypoint expects these arguments:
-          # $1: REPO_ROOT (default: /home/container_user/zaino)
-          # Pass the actual GitHub workspace path
-          /usr/local/bin/entrypoint.sh "${{ github.workspace }}"
+          # Run the rust-script entrypoint with interactive=false for CI
+          /usr/local/bin/entrypoint.rs --interactive=false --zaino_rootdir "${{ github.workspace }}"
 
           echo ""
           echo "=== Contents of test_binaries/bins ==="
