@@ -309,6 +309,25 @@ fn main() {
 
 # -------------------------------------------------------------------
 
+[tasks.debug-link-to-binaries]
+description = "Force recompile and run link_to_binaries.rs"
+category = "debug"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+
+echo "🔧 Forcing recompilation of link_to_binaries.rs..."
+
+# Remove any cached compilation artifacts
+rm -rf ~/.cache/rust-script/
+
+# Run with --help to test compilation
+echo "📦 Compiling and running link_to_binaries.rs..."
+./utils/link_to_binaries.rs --help
+
+echo "✅ Successfully compiled and ran link_to_binaries.rs"
+'''
+
 [tasks.validate-makefile-tasks]
 description = "Validate all tasks work correctly with minimal execution"
 dependencies = ["init-docker-volumes"]
