@@ -218,16 +218,21 @@ jobs:
             ~/.cargo
             target
 
-      - name: Run clippy with console output
+      # This is key to decide on the clippy job to run.
+      # The one from actions-rs prints nice annotations accross the pr, when browsing the changed files, right where the actual warning/error was found.
+      # It requires access to the GITHUB_TOKEN tho, a secret github automatically injects into every workflow run, but only for internally owned branches, not for forks.
+      # If that's the case, then we just run clippy with console output and that's it. One get's no annotations and has to check the actual job logs to see what went wrong.
+
+      - name: Run clippy with console output (external contributors)
+        if: github.secret_source != 'Actions'
         run: cargo clippy --all-targets -- --deny warnings
-        continue-on-error: true
 
       - name: Output clippy to Github
+        if: github.secret_source == 'Actions'
         uses: actions-rs/clippy-check@v1
-        continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-targets
+          args: --all-targets -- --deny warnings
 
   doc:
     name: Cargo Doc
