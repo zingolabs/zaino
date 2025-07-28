@@ -186,9 +186,9 @@ mod chain_query_interface {
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
         let snapshot = chain_index.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.blocks.len(), 6);
+        assert_eq!(snapshot.as_ref().blocks.len(), 6);
         let range = chain_index
-            .get_block_range(&snapshot, None, None)
+            .get_block_range(snapshot.as_ref(), None, None)
             .unwrap()
             .unwrap()
             .try_collect::<Vec<_>>()

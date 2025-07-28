@@ -111,7 +111,7 @@ pub trait ChainIndex: Sized {
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
-    fn snapshot_nonfinalized_state(&self) -> Arc<Self::Snapshot>;
+    fn snapshot_nonfinalized_state(&self) -> impl AsRef<Self::Snapshot>;
 
     /// Given inclusive start and end indexes, stream all blocks
     /// between the given indexes. Can be specified
@@ -153,7 +153,7 @@ impl ChainIndex for NodeBackedChainIndex {
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
-    fn snapshot_nonfinalized_state(&self) -> Arc<Self::Snapshot> {
+    fn snapshot_nonfinalized_state(&self) -> impl AsRef<Self::Snapshot> {
         self.non_finalized_state.get_snapshot()
     }
 
@@ -287,37 +287,6 @@ impl ChainIndex for NodeBackedChainIndex {
     }
 }
 
-/// Fork point errors
-pub enum FindForkPointError {
-    /// A block in the fork chain could not be found in the non-finalized state
-    /// NOTE: Non-best chains are not currently stored in the finalized state. If the fork point
-    /// is in the finalized state, this will cause a MissingBlock error
-    MissingBlock,
-}
-
-/// The full error
-#[derive(Debug)]
-pub struct GetBlockRangeError {
-    /// What went wrong
-    pub kind: GetBlockRangeErrorKind,
-    /// How it went wrong
-    pub details: Option<String>,
-}
-
-/// The things that can go wrong getting a block range
-#[derive(Debug)]
-pub enum GetBlockRangeErrorKind {
-    /// The block at the provided start index could not be found. Likely, an incorrect hash
-    /// was supplied
-    MissingStartBlock,
-    /// The block at the provided start end could not be found. Likely, an incorrect hash
-    /// was supplied
-    MissingEndBlock,
-    /// The query to the validator failed. This is likely unrecoverable,
-    /// TODO make sure to separate transitive network errors
-    BackingNodeFailure,
-}
-
 /// A snapshot of the non-finalized state, for consistent queries
 pub trait NonFinalizedSnapshot {
     /// Hash -> block
@@ -359,13 +328,31 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("{message}")]
+#[error("{kind}: {message}")]
 /// The set of errors that can occur during the public API calls
 /// of a NodeBackedChainIndex
 pub struct ChainIndexError {
     kind: ChainIndexErrorKind,
     message: String,
     source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+}
+
+#[derive(Debug)]
+/// The high-level kinds of thing that can fail
+pub enum ChainIndexErrorKind {
+    /// Zaino is in some way nonfunctional
+    InternalServerError,
+    /// The given snapshot contains invalid data.
+    InvalidSnapshot,
+}
+
+impl Display for ChainIndexErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ChainIndexErrorKind::InternalServerError => "internal server error",
+            ChainIndexErrorKind::InvalidSnapshot => "invalid snapshot",
+        })
+    }
 }
 
 impl ChainIndexError {
@@ -386,11 +373,4 @@ impl ChainIndexError {
             source: None,
         }
     }
-}
-
-#[derive(Debug)]
-/// The high-level kinds of thing that can fail
-pub enum ChainIndexErrorKind {
-    /// Something went seriously wrong internally
-    InternalServerError,
 }
