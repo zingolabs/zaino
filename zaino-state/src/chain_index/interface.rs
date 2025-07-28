@@ -62,16 +62,17 @@ impl NodeBackedChainIndex {
     async fn get_fullblock_bytes_from_node(
         &self,
         id: HashOrHeight,
-    ) -> Result<Option<Vec<u8>>, GetFullBlockError> {
-        match self.non_finalized_state.source.get_block(id).await {
-            Ok(block) => block
-                .map(|bk| {
-                    bk.zcash_serialize_to_vec()
-                        .map_err(|e| GetFullBlockError::BackingNodeFailure(Box::new(e)))
-                })
-                .transpose(),
-            Err(e) => Err(GetFullBlockError::BackingNodeFailure(Box::new(e))),
-        }
+    ) -> Result<Option<Vec<u8>>, ChainIndexError> {
+        self.non_finalized_state
+            .source
+            .get_block(id)
+            .await
+            .map_err(ChainIndexError::backing_validator)?
+            .map(|bk| {
+                bk.zcash_serialize_to_vec()
+                    .map_err(ChainIndexError::backing_validator)
+            })
+            .transpose()
     }
     fn get_chainblock_by_hashorheight<'snapshot: 'future, 'self_lt: 'future, 'future>(
         &'self_lt self,
@@ -104,8 +105,9 @@ impl NodeBackedChainIndex {
 pub trait ChainIndex: Sized {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
-    #[allow(missing_docs)]
-    type FindForkPointError;
+
+    /// How it can fail
+    type Error: std::error::Error;
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
@@ -119,7 +121,7 @@ pub trait ChainIndex: Sized {
         nonfinalized_snapshot: &'snapshot Self::Snapshot,
         start: Option<HashOrHeight>,
         end: Option<HashOrHeight>,
-    ) -> Result<impl Stream<Item = Result<Vec<u8>, GetBlockRangeError>> + 'future, GetBlockRangeError>
+    ) -> Result<Option<impl Stream<Item = Result<Vec<u8>, Self::Error>> + 'future>, Self::Error>
     where
         'snapshot: 'future,
         'self_lt: 'future;
@@ -129,24 +131,24 @@ pub trait ChainIndex: Sized {
         &self,
         snapshot: impl AsRef<Self::Snapshot>,
         block_hash: &types::Hash,
-    ) -> Result<Option<(types::Hash, types::Height)>, Self::FindForkPointError>;
+    ) -> Result<Option<(types::Hash, types::Height)>, Self::Error>;
     /// given a transaction id, returns the transaction
     fn get_raw_transaction(
         &self,
         snapshot: &Self::Snapshot,
         txid: [u8; 32],
-    ) -> impl Future<Output = Result<Option<Vec<u8>>, ()>>;
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, Self::Error>>;
     /// Given a transaction ID, returns all known
     fn get_transaction_status(
         &self,
         snapshot: &Self::Snapshot,
         txid: [u8; 32],
-    ) -> HashMap<types::Hash, Option<types::Height>>;
+    ) -> Result<HashMap<types::Hash, Option<types::Height>>, Self::Error>;
 }
 
 impl ChainIndex for NodeBackedChainIndex {
     type Snapshot = NonfinalizedBlockCacheSnapshot;
-    type FindForkPointError = std::convert::Infallible;
+    type Error = ChainIndexError;
 
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
@@ -157,32 +159,43 @@ impl ChainIndex for NodeBackedChainIndex {
 
     /// Given inclusive start and end indexes, stream all blocks
     /// between the given indexes. Can be specified
-    /// by hash or height.
+    /// by hash or height. Returns None if the start or end
+    /// block cannot be found
     fn get_block_range<'snapshot: 'future, 'self_lt: 'future, 'future>(
         &'self_lt self,
         nonfinalized_snapshot: &'snapshot Self::Snapshot,
         start: Option<HashOrHeight>,
         end: Option<HashOrHeight>,
-    ) -> Result<impl Stream<Item = Result<Vec<u8>, GetBlockRangeError>> + 'future, GetBlockRangeError>
+    ) -> Result<Option<impl Stream<Item = Result<Vec<u8>, Self::Error>> + 'future>, Self::Error>
     {
         // with no start supplied, start from genesis
         let Some(start_block) = self.get_chainblock_by_hashorheight(
             nonfinalized_snapshot,
             &start.unwrap_or(HashOrHeight::Height(zebra_chain::block::Height(1))),
         ) else {
-            return Err(GetBlockRangeError {
-                kind: GetBlockRangeErrorKind::MissingStartBlock,
-                details: None,
-            });
+            return if start.is_some() {
+                Ok(None)
+            } else {
+                Err(ChainIndexError {
+                    kind: ChainIndexErrorKind::InternalServerError,
+                    message: "genesis block missing from database".to_string(),
+                    source: None,
+                })
+            };
         };
         let Some(end_block) = self.get_chainblock_by_hashorheight(
             nonfinalized_snapshot,
-            &end.unwrap_or(HashOrHeight::Height(zebra_chain::block::Height(1))),
+            &end.unwrap_or(HashOrHeight::Hash(nonfinalized_snapshot.best_tip.1.into())),
         ) else {
-            return Err(GetBlockRangeError {
-                kind: GetBlockRangeErrorKind::MissingEndBlock,
-                details: None,
-            });
+            return if start.is_some() {
+                Ok(None)
+            } else {
+                Err(ChainIndexError {
+                    kind: ChainIndexErrorKind::InternalServerError,
+                    message: "chaintip missing from database".to_string(),
+                    source: None,
+                })
+            };
         };
 
         let mut nonfinalized_block = nonfinalized_snapshot.get_chainblock_by_hash(end_block.hash());
@@ -201,18 +214,14 @@ impl ChainIndex for NodeBackedChainIndex {
             }
         }
 
-        Ok(tokio_stream::iter(nonfinalized_range).then(async |hash| {
-            self.get_fullblock_bytes_from_node(HashOrHeight::Hash(hash.into()))
-                .await
-                .map_err(|e| GetBlockRangeError {
-                    kind: GetBlockRangeErrorKind::BackingNodeFailure,
-                    details: Some(e.to_string()),
-                })?
-                .ok_or(GetBlockRangeError {
-                    kind: GetBlockRangeErrorKind::BackingNodeFailure,
-                    details: Some(format!("hole in validator database, missing block {hash}")),
-                })
-        }))
+        Ok(Some(tokio_stream::iter(nonfinalized_range).then(
+            async |hash| {
+                self.get_fullblock_bytes_from_node(HashOrHeight::Hash(hash.into()))
+                    .await
+                    .map_err(ChainIndexError::backing_validator)?
+                    .ok_or(ChainIndexError::database_hole(hash))
+            },
+        )))
     }
 
     /// Finds the newest ancestor of the given block on the main
@@ -221,7 +230,7 @@ impl ChainIndex for NodeBackedChainIndex {
         &self,
         snapshot: impl AsRef<Self::Snapshot>,
         block_hash: &types::Hash,
-    ) -> Result<Option<(types::Hash, types::Height)>, Self::FindForkPointError> {
+    ) -> Result<Option<(types::Hash, types::Height)>, Self::Error> {
         let Some(block) = snapshot.as_ref().get_chainblock_by_hash(block_hash) else {
             // No fork point found. This is not an error,
             // as zaino does not guarentee knowledge of all sidechain data.
@@ -239,7 +248,7 @@ impl ChainIndex for NodeBackedChainIndex {
         &self,
         snapshot: &NonfinalizedBlockCacheSnapshot,
         txid: [u8; 32],
-    ) -> Result<Option<Vec<u8>>, ()> {
+    ) -> Result<Option<Vec<u8>>, Self::Error> {
         let Some(block) = self.blocks_containing_transaction(snapshot, txid).next() else {
             return Ok(None);
         };
@@ -248,16 +257,15 @@ impl ChainIndex for NodeBackedChainIndex {
             .source
             .get_block(HashOrHeight::Hash((*block.index().hash()).into()))
             .await
-            //TODO: error handle
-            .map_err(|_| ())?
-            .ok_or_else::<(), _>(|| todo!("hole in zebra database"))?;
+            .map_err(ChainIndexError::backing_validator)?
+            .ok_or_else(|| ChainIndexError::database_hole(block.index().hash()))?;
         full_block
             .transactions
             .iter()
             .find(|transaction| transaction.hash().0 == txid)
             .map(ZcashSerialize::zcash_serialize_to_vec)
-            .ok_or_else::<(), _>(|| todo!("hole in zebra database"))?
-            .map_err(|_e| todo!("write to vec failed???"))
+            .ok_or_else(|| ChainIndexError::database_hole(block.index().hash()))?
+            .map_err(ChainIndexError::backing_validator)
             .map(Some)
     }
 
@@ -268,10 +276,14 @@ impl ChainIndex for NodeBackedChainIndex {
         &self,
         snapshot: &NonfinalizedBlockCacheSnapshot,
         txid: [u8; 32],
-    ) -> HashMap<types::Hash, Option<types::Height>> {
-        self.blocks_containing_transaction(snapshot, txid)
+    ) -> Result<
+        HashMap<super::types::Hash, std::option::Option<super::types::Height>>,
+        ChainIndexError,
+    > {
+        Ok(self
+            .blocks_containing_transaction(snapshot, txid)
             .map(|block| (*block.hash(), block.height()))
-            .collect()
+            .collect())
     }
 }
 
@@ -305,15 +317,6 @@ pub enum GetBlockRangeErrorKind {
     /// TODO make sure to separate transitive network errors
     BackingNodeFailure,
 }
-
-#[derive(thiserror::Error, Debug)]
-enum GetFullBlockError {
-    #[error("0")]
-    BackingNodeFailure(Box<dyn Disbug + Send + Sync + 'static>),
-}
-
-trait Disbug: Display + Debug {}
-impl<T: Display + Debug> Disbug for T {}
 
 /// A snapshot of the non-finalized state, for consistent queries
 pub trait NonFinalizedSnapshot {
@@ -351,8 +354,39 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
     }
 }
 
-pub struct GetRawTransactionError {
-    kind: GetRawTransactionErrorKind,
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+/// The set of errors that can occur during the public API calls
+/// of a NodeBackedChainIndex
+pub struct ChainIndexError {
+    kind: ChainIndexErrorKind,
+    message: String,
+    source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-pub enum GetRawTransactionErrorKind {}
+impl ChainIndexError {
+    fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message: "InternalServerError: error receiving data from backing node".to_string(),
+            source: Some(Box::new(value)),
+        }
+    }
+
+    fn database_hole(missing_block: impl Display) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message: format!(
+                "InternalServerError: hole in validator database, missing block {missing_block}"
+            ),
+            source: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+/// The high-level kinds of thing that can fail
+pub enum ChainIndexErrorKind {
+    /// Something went seriously wrong internally
+    InternalServerError,
+}

@@ -190,6 +190,7 @@ mod chain_query_interface {
         let range = chain_index
             .get_block_range(&snapshot, None, None)
             .unwrap()
+            .unwrap()
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
