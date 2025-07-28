@@ -320,18 +320,22 @@ pub enum GetBlockRangeErrorKind {
 
 /// A snapshot of the non-finalized state, for consistent queries
 pub trait NonFinalizedSnapshot {
-    /// Convenience fn
+    /// Hash -> block
+    fn get_chainblock_by_hash(&self, target_hash: &types::Hash) -> Option<&ChainBlock>;
+    /// Height -> block
+    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&ChainBlock>;
+}
+
+trait NonFinalizedSnapshotGetHashOrHeight: NonFinalizedSnapshot {
     fn get_chainblock_by_hashorheight(&self, target: &HashOrHeight) -> Option<&ChainBlock> {
         match target {
             HashOrHeight::Hash(hash) => self.get_chainblock_by_hash(&types::Hash::from(*hash)),
             HashOrHeight::Height(height) => self.get_chainblock_by_height(&types::Height(height.0)),
         }
     }
-    /// Hash -> block
-    fn get_chainblock_by_hash(&self, target_hash: &types::Hash) -> Option<&ChainBlock>;
-    /// Height -> block
-    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&ChainBlock>;
 }
+
+impl<T: NonFinalizedSnapshot> NonFinalizedSnapshotGetHashOrHeight for T {}
 
 impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
     fn get_chainblock_by_hash(&self, target_hash: &types::Hash) -> Option<&ChainBlock> {
