@@ -82,6 +82,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev \
     build-essential \
     librocksdb-dev \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 # Install rustup (Rust toolchain manager) and set up the Rust toolchain
