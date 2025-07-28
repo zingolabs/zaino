@@ -87,6 +87,12 @@ impl From<AtomicStatus> for StatusType {
     }
 }
 
+impl From<&AtomicStatus> for StatusType {
+    fn from(status: &AtomicStatus) -> Self {
+        status.load().into()
+    }
+}
+
 impl From<StatusType> for u16 {
     fn from(status: StatusType) -> Self {
         status as u16

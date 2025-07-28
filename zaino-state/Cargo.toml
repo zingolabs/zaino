@@ -19,6 +19,7 @@ zaino-proto = { workspace = true }
 # LibRustZcash
 zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
+zcash_transparent = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
@@ -44,13 +45,17 @@ http = { workspace = true }
 lazy-regex = { workspace = true }
 dashmap = { workspace = true }
 lmdb = { workspace = true }
+lmdb-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 jsonrpsee-core = { workspace = true }
 prost = { workspace = true }
 primitive-types = { workspace = true }
+blake2 = { workspace = true }
+sha2 = { workspace = true }
 byteorder = { workspace = true }
 core2 = { workspace = true }
+bs58 = { workspace = true }
 nonempty = "0.11.0"
 arc-swap = "1.7.1"
 reqwest.workspace = true
@@ -58,6 +63,7 @@ derive_more = { version = "2.0.1", features = ["from"] }
 
 [dev-dependencies]
 zingo-infra-services = { workspace = true }
+tempfile = { workspace = true }
 
 # ZingoLib
 zingolib = { workspace = true }

@@ -1,5 +1,7 @@
 //! Holds error types for Zaino-state.
 
+use crate::Hash;
+
 use std::any::type_name;
 
 use zaino_fetch::jsonrpsee::connector::RpcRequestError;
@@ -26,6 +28,7 @@ impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
         }
     }
 }
+
 /// Errors related to the `StateService`.
 #[derive(Debug, thiserror::Error)]
 pub enum StateServiceError {
@@ -399,6 +402,7 @@ impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
 }
 
 /// Errors related to the `FinalisedState`.
+// TODO: Update name to DbError when ZainoDB replaces legacy finalised state.
 #[derive(Debug, thiserror::Error)]
 pub enum FinalisedStateError {
     /// Custom Errors. *Remove before production.
@@ -409,15 +413,30 @@ pub enum FinalisedStateError {
     #[error("Missing data: {0}")]
     MissingData(String),
 
+    /// A block is present on disk but failed internal validation.
+    ///
+    /// *Typically means: checksum mismatch, corrupt CBOR, Merkle check
+    /// failed, etc.*  The caller should fetch the correct data and
+    /// overwrite the faulty block.
+    #[error("invalid block @ height {height} (hash {hash}): {reason}")]
+    InvalidBlock {
+        height: u32,
+        hash: Hash,
+        reason: String,
+    },
+
+    // TODO: Add `InvalidRequestError` and return for invalid requests.
     /// Critical Errors, Restart Zaino.
     #[error("Critical error: {0}")]
     Critical(String),
 
     /// Error from the LMDB database.
+    // NOTE: Should this error type be here or should we handle all LMDB errors internally?
     #[error("LMDB database error: {0}")]
     LmdbError(#[from] lmdb::Error),
 
     /// Serde Json serialisation / deserialisation errors.
+    // TODO: Remove when ZainoDB replaces legacy finalised state.
     #[error("LMDB database error: {0}")]
     SerdeJsonError(#[from] serde_json::Error),
 
@@ -426,6 +445,7 @@ pub enum FinalisedStateError {
     StatusError(StatusError),
 
     /// Error from JsonRpcConnector.
+    // TODO: Remove when ZainoDB replaces legacy finalised state.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 

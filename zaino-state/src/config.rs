@@ -178,7 +178,8 @@ impl FetchServiceConfig {
     }
 }
 
-/// Holds config data for [`crate::FetchService`].
+/// Holds config data for [`ChainIndex`].
+/// TODO: Rename when ChainIndex update is complete.
 #[derive(Debug, Clone)]
 pub struct BlockCacheConfig {
     /// Capacity of the Dashmap.
