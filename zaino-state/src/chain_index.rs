@@ -22,3 +22,6 @@ pub mod mempool;
 pub mod non_finalised_state;
 /// Common types used by the rest of this module
 pub mod types;
+
+#[cfg(test)]
+mod tests;

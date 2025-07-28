@@ -1,0 +1,69 @@
+# ZainoDB v1 schema
+# Version: 1
+# All values are encoded in canonical dCBOR.
+#
+# ── Databases ───────────────────────────────────────────────────────────────
+#
+# 1. headers
+#    key   : [u8;32]  block hash (internal byte-order)
+#    value : StoredEntry<BlockHeaderData> (tag 500)
+#            BlockHeaderData (tag 519) = [BlockIndex, BlockData]
+#            BlockIndex      (tag 511) = [Hash, Hash, ChainWork, Height|null]
+#              Hash          (tag 512) = bytes[32]
+#              ChainWork     (tag 515) = bytes[32]
+#              Height        (tag 513) = u32
+#            BlockData       (tag 516) = [
+#                                 u32 version,
+#                                 i64 time,
+#                                 merkle_root[32],
+#                                 auth_data_root[32],
+#                                 CommitmentTreeRoots,
+#                                 CommitmentTreeSizes,
+#                                 u32 bits
+#                             ]
+#              CommitmentTreeRoots (tag 517) = [sapling[32], orchard[32]]
+#              CommitmentTreeSizes (tag 518) = [u32 sapling, u32 orchard]
+#
+# 2. transactions
+#    key   : [u8;32]  block hash
+#    value : StoredEntry<TxList> (tag 500)
+#            TxList (tag 531) = array<TxData>
+#              TxData (tag 520) = [
+#                           u64 index,
+#                           txid[32],
+#                           sapling_balance|null,
+#                           orchard_balance|null,
+#                           TransparentCompactTx,
+#                           SaplingCompactTx,
+#                           array<CompactOrchardAction>
+#                       ]
+#                TransparentCompactTx   (tag 521) = [array<TxInCompact>, array<TxOutCompact>]
+#                  TxInCompact          (tag 522) = [prev_txid[32], u32 prev_index]
+#                  TxOutCompact         (tag 524) = [u64 value, script_hash[20], u8 script_type]
+#                SaplingCompactTx       (tag 525) = [array<CompactSaplingSpend>, array<CompactSaplingOutput>]
+#                  CompactSaplingSpend  (tag 526) = nf[32]
+#                  CompactSaplingOutput (tag 527) = [cmu[32], epk[32], ct[52]]
+#                CompactOrchardAction   (tag 528) = [nf[32], cmx[32], epk[32], ct[52]]
+#
+# 3. spent
+#    key   : [u8;32]  block hash
+#    value : StoredEntry<SpentList> (tag 500)
+#            SpentList     (tag 532) = array<SpentOutpoint>
+#              SpentOutpoint (tag 529) = [txid[32], u32 vout]
+#
+# 4. best_chain (INTEGER_KEY)
+#    key   : Height u32 (native-endian)
+#    value : block hash [u8;32]
+#
+# 5. roots (INTEGER_KEY)
+#    key   : Index u32 (native-endian)
+#    value : StoredEntry<ShardRoot> (tag 500)
+#            ShardRoot (tag 530) = [hash[32], final_block_hash[32], u32 final_block_height]
+#
+# 6. metadata
+#    key   : "metadata" UTF-8
+#    value : StoredEntry<DbMetadata> (tag 500)
+#            DbMetadata (tag 501) = DbVersion
+#            DbVersion  (tag 502) = [u32 version, schema_hash[32]]
+#
+# End of schema v1
