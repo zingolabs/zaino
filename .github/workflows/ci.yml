@@ -21,7 +21,7 @@ jobs:
     name: Compute Docker Image Tag
     runs-on: ubuntu-latest
     outputs:
-      image-tag: debug
+      image-tag: ${{ steps.taggen.outputs.tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -39,7 +39,7 @@ jobs:
     name: Build test artifacts
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: zingodevops/zaino-ci:debug
     runs-on: arc-sh-runners
     if: github.event.pull_request.draft == false
     steps:
