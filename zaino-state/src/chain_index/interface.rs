@@ -9,29 +9,27 @@ use futures::Stream;
 use zebra_state::HashOrHeight;
 
 /// The interface to the chain index
-pub trait ChainIndex: Sized {
+pub trait ChainIndex {
     /// A snapshot of the nonfinalized state, needed for atomic access
-    type Snapshot: NonFinalizedSnapshot;
+    type Snapshot;
 
     /// How it can fail
-    type Error: std::error::Error;
+    type Error;
+
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
-    fn snapshot_nonfinalized_state(&self) -> &Self::Snapshot;
+    fn snapshot_nonfinalized_state(&self) -> Self::Snapshot;
 
     /// Given inclusive start and end indexes, stream all blocks
     /// between the given indexes. Can be specified
     /// by hash or height.
-    fn get_block_range<'snapshot, 'self_lt, 'future>(
-        &'self_lt self,
-        nonfinalized_snapshot: &'snapshot Self::Snapshot,
+    fn get_block_range(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
         start: Option<HashOrHeight>,
         end: Option<HashOrHeight>,
-    ) -> Result<Option<impl Stream<Item = Result<Vec<u8>, Self::Error>> + 'future>, Self::Error>
-    where
-        'snapshot: 'future,
-        'self_lt: 'future;
+    ) -> Result<Option<impl Stream<Item = Result<Vec<u8>, Self::Error>>>, Self::Error>;
     /// Finds the newest ancestor of the given block on the main
     /// chain, or the block itself if it is on the main chain.
     fn find_fork_point(
