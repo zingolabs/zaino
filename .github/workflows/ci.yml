@@ -43,6 +43,10 @@ jobs:
     runs-on: arc-sh-runners
     if: github.event.pull_request.draft == false
     steps:
+
+      - name: Debug env
+        uses: hmarr/debug-action@v3
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
