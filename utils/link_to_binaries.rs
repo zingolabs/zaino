@@ -8,7 +8,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use std::process::{exit, Command};
-use symlistow::{handle_symlink, verify_and_push};
+use symlistow::{append_verified_binaries, handle_symlink};
 
 #[derive(Parser, Debug)]
 #[command(name = "link_to_binaries")]
@@ -57,9 +57,9 @@ fn main() {
     let mut versions = Vec::new();
 
     let mut all_valid = true;
-    all_valid &= verify_and_push(&args.zcashd_bin, "zcashd", &mut versions);
-    all_valid &= verify_and_push(&args.zebrad_bin, "zebrad", &mut versions);
-    all_valid &= verify_and_push(&args.zcashcli_bin, "zcash-cli", &mut versions);
+    all_valid &= append_verified_binaries(&args.zcashd_bin, &mut versions);
+    all_valid &= append_verified_binaries(&args.zebrad_bin, &mut versions);
+    all_valid &= append_verified_binaries(&args.zcashcli_bin, &mut versions);
 
     if !all_valid {
         eprintln!("\nError: Not all required binaries are valid. Please check the paths and ensure the binaries are executable.");
@@ -79,7 +79,7 @@ fn main() {
         println!("\nSetting up symlinks in {}...", bins_dir.display());
 
         // Process each binary
-        for (name, path, version) in versions {
+        for (path, version) in versions {
             let link_path = bins_dir.join(&name);
             handle_symlink(&link_path, &path, &name, &version, args.interactive);
         }
