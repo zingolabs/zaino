@@ -80,6 +80,10 @@ fn main() {
 
         // Process each binary
         for (path, version) in versions {
+            let path_buf = PathBuf::from(&path);
+            let name = path_buf.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
             let link_path = bins_dir.join(&name);
             handle_symlink(&link_path, &path, &name, &version, args.interactive);
         }
