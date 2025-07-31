@@ -151,7 +151,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
     async fn get_info(&self) -> Result<GetInfo, Self::Error>;
 
-    /// Returns blockchain state information, as a [`GetBlockChainInfo`] JSON struct.
+    /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
     /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
@@ -159,7 +159,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
 

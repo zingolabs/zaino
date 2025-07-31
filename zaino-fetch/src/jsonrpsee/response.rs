@@ -266,7 +266,8 @@ impl Default for ChainWork {
     }
 }
 
-/// Wrapper struct for a Zebra [`Balance`], enabling custom deserialisation logic to handle both zebrad and zcashd.
+/// Wrapper struct for a Zebra [`GetBlockchainInfoBalance`], enabling custom
+/// deserialisation logic to handle both zebrad and zcashd.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ChainBalance(GetBlockchainInfoBalance);
 

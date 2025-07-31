@@ -199,7 +199,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.get_info().await?.into())
     }
 
-    /// Returns blockchain state information, as a [`GetBlockChainInfo`] JSON struct.
+    /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
     /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
@@ -207,7 +207,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
         Ok(self
