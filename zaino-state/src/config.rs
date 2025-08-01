@@ -2,6 +2,87 @@
 
 use std::path::PathBuf;
 
+/// Holds validator connection and authentication configuration.
+#[derive(Debug, Clone)]
+pub struct ValidatorConfig {
+    /// Zebra [`zebra_state::ReadStateService`] config data
+    pub config: zebra_state::Config,
+    /// Validator JsonRPC address.
+    pub rpc_address: std::net::SocketAddr,
+    /// Validator gRPC address.
+    pub indexer_rpc_address: std::net::SocketAddr,
+    /// Enable validator rpc cookie authentification.
+    pub cookie_auth: bool,
+    /// Path to the validator cookie file.
+    pub cookie_path: Option<String>,
+    /// Validator JsonRPC user.
+    pub rpc_user: String,
+    /// Validator JsonRPC password.
+    pub rpc_password: String,
+}
+
+impl Default for ValidatorConfig {
+    fn default() -> Self {
+        Self {
+            config: zebra_state::Config::default(),
+            rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
+            indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
+            cookie_auth: false,
+            cookie_path: None,
+            rpc_user: "xxxxxx".to_owned(),
+            rpc_password: "xxxxxx".to_owned(),
+        }
+    }
+}
+
+/// Holds service-level configuration.
+#[derive(Debug, Clone)]
+pub struct ServiceConfig {
+    /// StateService RPC timeout
+    pub timeout: u32,
+    /// StateService RPC max channel size.
+    pub channel_size: u32,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            timeout: 30,
+            channel_size: 32,
+        }
+    }
+}
+
+/// Holds cache configuration for DashMaps.
+#[derive(Debug, Clone, Default)]
+pub struct CacheConfig {
+    /// Capacity of the Dashmaps used for the Mempool and BlockCache NonFinalisedState.
+    pub capacity: Option<usize>,
+    /// Number of shard used in the DashMap used for the Mempool and BlockCache NonFinalisedState.
+    ///
+    /// shard_amount should greater than 0 and be a power of two.
+    /// If a shard_amount which is not a power of two is provided, the function will panic.
+    pub shard_amount: Option<usize>,
+}
+
+/// Holds database configuration.
+#[derive(Debug, Clone)]
+pub struct DatabaseConfig {
+    /// Block Cache database file path.
+    pub path: PathBuf,
+    /// Block Cache database maximum size in gb.
+    pub size: Option<usize>,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("./zaino_cache"),
+            size: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Copy)]
 #[serde(rename_all = "lowercase")]
 /// Type of backend to be used.
@@ -24,83 +105,25 @@ pub enum BackendConfig {
 /// Holds config data for [crate::StateService].
 #[derive(Debug, Clone)]
 pub struct StateServiceConfig {
-    /// Zebra [`zebra_state::ReadStateService`] config data
-    pub validator_config: zebra_state::Config,
-    /// Validator JsonRPC address.
-    pub validator_rpc_address: std::net::SocketAddr,
-    /// Validator gRPC address.
-    pub validator_indexer_rpc_address: std::net::SocketAddr,
-    /// Enable validator rpc cookie authentification.
-    pub validator_cookie_auth: bool,
-    /// Path to the validator cookie file.
-    pub validator_cookie_path: Option<String>,
-    /// Validator JsonRPC user.
-    pub validator_rpc_user: String,
-    /// Validator JsonRPC password.
-    pub validator_rpc_password: String,
-    /// StateService RPC timeout
-    pub service_timeout: u32,
-    /// StateService RPC max channel size.
-    pub service_channel_size: u32,
-    /// Capacity of the Dashmaps used for the Mempool and BlockCache NonFinalisedState.
-    pub map_capacity: Option<usize>,
-    /// Number of shard used in the DashMap used for the Mempool and BlockCache NonFinalisedState.
-    ///
-    /// shard_amount should greater than 0 and be a power of two.
-    /// If a shard_amount which is not a power of two is provided, the function will panic.
-    pub map_shard_amount: Option<usize>,
-    /// Block Cache database file path.
-    pub db_path: PathBuf,
-    /// Block Cache database maximum size in gb.
-    pub db_size: Option<usize>,
-    /// Network type.
-    pub network: zebra_chain::parameters::Network,
-    /// Disables internal sync and stops zaino waiting on server sync.
-    /// Used for testing.
-    pub no_sync: bool,
-    /// Disables FinalisedState.
-    /// Used for testing.
-    pub no_db: bool,
+    /// Validator connection and authentication configuration.
+    pub validator: ValidatorConfig,
+    /// Service-level configuration.
+    pub service: ServiceConfig,
+    /// Block cache configuration.
+    pub block_cache: BlockCacheConfig,
 }
 
 impl StateServiceConfig {
     /// Returns a new instance of [`StateServiceConfig`].
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        validator_config: zebra_state::Config,
-        validator_rpc_address: std::net::SocketAddr,
-        validator_indexer_rpc_address: std::net::SocketAddr,
-        validator_cookie_auth: bool,
-        validator_cookie_path: Option<String>,
-        validator_rpc_user: Option<String>,
-        validator_rpc_password: Option<String>,
-        service_timeout: Option<u32>,
-        service_channel_size: Option<u32>,
-        map_capacity: Option<usize>,
-        map_shard_amount: Option<usize>,
-        db_path: PathBuf,
-        db_size: Option<usize>,
-        network: zebra_chain::parameters::Network,
-        no_sync: bool,
-        no_db: bool,
+        validator: ValidatorConfig,
+        service: ServiceConfig,
+        block_cache: BlockCacheConfig,
     ) -> Self {
         StateServiceConfig {
-            validator_config,
-            validator_rpc_address,
-            validator_indexer_rpc_address,
-            validator_cookie_auth,
-            validator_cookie_path,
-            validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
-            validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
-            service_timeout: service_timeout.unwrap_or(30),
-            service_channel_size: service_channel_size.unwrap_or(32),
-            map_capacity,
-            map_shard_amount,
-            db_path,
-            db_size,
-            network,
-            no_sync,
-            no_db,
+            validator,
+            service,
+            block_cache,
         }
     }
 }
@@ -108,76 +131,25 @@ impl StateServiceConfig {
 /// Holds config data for [crate::FetchService].
 #[derive(Debug, Clone)]
 pub struct FetchServiceConfig {
-    /// Validator JsonRPC address.
-    pub validator_rpc_address: std::net::SocketAddr,
-    /// Enable validator rpc cookie authentification.
-    pub validator_cookie_auth: bool,
-    /// Path to the validator cookie file.
-    pub validator_cookie_path: Option<String>,
-    /// Validator JsonRPC user.
-    pub validator_rpc_user: String,
-    /// Validator JsonRPC password.
-    pub validator_rpc_password: String,
-    /// StateService RPC timeout
-    pub service_timeout: u32,
-    /// StateService RPC max channel size.
-    pub service_channel_size: u32,
-    /// Capacity of the Dashmaps used for the Mempool and BlockCache NonFinalisedState.
-    pub map_capacity: Option<usize>,
-    /// Number of shard used in the DashMap used for the Mempool and BlockCache NonFinalisedState.
-    ///
-    /// shard_amount should greater than 0 and be a power of two.
-    /// If a shard_amount which is not a power of two is provided, the function will panic.
-    pub map_shard_amount: Option<usize>,
-    /// Block Cache database file path.
-    pub db_path: PathBuf,
-    /// Block Cache database maximum size in gb.
-    pub db_size: Option<usize>,
-    /// Network type.
-    pub network: zebra_chain::parameters::Network,
-    /// Disables internal sync and stops zaino waiting on server sync.
-    /// Used for testing.
-    pub no_sync: bool,
-    /// Disables FinalisedState.
-    /// Used for testing.
-    pub no_db: bool,
+    /// Validator connection and authentication configuration.
+    pub validator: ValidatorConfig,
+    /// Service-level configuration.
+    pub service: ServiceConfig,
+    /// Block cache configuration.
+    pub block_cache: BlockCacheConfig,
 }
 
 impl FetchServiceConfig {
     /// Returns a new instance of [`FetchServiceConfig`].
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        validator_rpc_address: std::net::SocketAddr,
-        validator_cookie_auth: bool,
-        validator_cookie_path: Option<String>,
-        validator_rpc_user: Option<String>,
-        validator_rpc_password: Option<String>,
-        service_timeout: Option<u32>,
-        service_channel_size: Option<u32>,
-        map_capacity: Option<usize>,
-        map_shard_amount: Option<usize>,
-        db_path: PathBuf,
-        db_size: Option<usize>,
-        network: zebra_chain::parameters::Network,
-        no_sync: bool,
-        no_db: bool,
+        validator: ValidatorConfig,
+        service: ServiceConfig,
+        block_cache: BlockCacheConfig,
     ) -> Self {
         FetchServiceConfig {
-            validator_rpc_address,
-            validator_cookie_auth,
-            validator_cookie_path,
-            validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
-            validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
-            // NOTE: This timeout is currently long to ease development but should be reduced before production.
-            service_timeout: service_timeout.unwrap_or(60),
-            service_channel_size: service_channel_size.unwrap_or(32),
-            map_capacity,
-            map_shard_amount,
-            db_path,
-            db_size,
-            network,
-            no_sync,
-            no_db,
+            validator,
+            service,
+            block_cache,
         }
     }
 }
@@ -186,21 +158,10 @@ impl FetchServiceConfig {
 /// TODO: Rename when ChainIndex update is complete.
 #[derive(Debug, Clone)]
 pub struct BlockCacheConfig {
-    /// Capacity of the Dashmap.
-    ///
-    /// NOTE: map_capacity and shard map must both be set for either to be used.
-    pub map_capacity: Option<usize>,
-    /// Number of shard used in the DashMap.
-    ///
-    /// shard_amount should greater than 0 and be a power of two.
-    /// If a shard_amount which is not a power of two is provided, the function will panic.
-    ///
-    /// NOTE: map_capacity and shard map must both be set for either to be used.
-    pub map_shard_amount: Option<usize>,
-    /// Block Cache database file path.
-    pub db_path: PathBuf,
-    /// Block Cache database maximum size in gb.
-    pub db_size: Option<usize>,
+    /// Cache configuration for DashMaps.
+    pub cache: CacheConfig,
+    /// Database configuration.
+    pub database: DatabaseConfig,
     /// Network type.
     pub network: zebra_chain::parameters::Network,
     /// Stops zaino waiting on server sync.
@@ -212,22 +173,18 @@ pub struct BlockCacheConfig {
 }
 
 impl BlockCacheConfig {
-    /// Returns a new instance of [`FetchServiceConfig`].
+    /// Returns a new instance of [`BlockCacheConfig`].
     #[allow(dead_code)]
     pub fn new(
-        map_capacity: Option<usize>,
-        map_shard_amount: Option<usize>,
-        db_path: PathBuf,
-        db_size: Option<usize>,
+        cache: CacheConfig,
+        database: DatabaseConfig,
         network: zebra_chain::parameters::Network,
         no_sync: bool,
         no_db: bool,
     ) -> Self {
         BlockCacheConfig {
-            map_capacity,
-            map_shard_amount,
-            db_path,
-            db_size,
+            cache,
+            database,
             network,
             no_sync,
             no_db,
@@ -236,29 +193,13 @@ impl BlockCacheConfig {
 }
 
 impl From<StateServiceConfig> for BlockCacheConfig {
-    fn from(value: StateServiceConfig) -> Self {
-        Self {
-            map_capacity: value.map_capacity,
-            map_shard_amount: value.map_shard_amount,
-            db_path: value.db_path,
-            db_size: value.db_size,
-            network: value.network,
-            no_sync: value.no_sync,
-            no_db: value.no_db,
-        }
+    fn from(config: StateServiceConfig) -> Self {
+        config.block_cache
     }
 }
 
 impl From<FetchServiceConfig> for BlockCacheConfig {
-    fn from(value: FetchServiceConfig) -> Self {
-        Self {
-            map_capacity: value.map_capacity,
-            map_shard_amount: value.map_shard_amount,
-            db_path: value.db_path,
-            db_size: value.db_size,
-            network: value.network,
-            no_sync: value.no_sync,
-            no_db: value.no_db,
-        }
+    fn from(config: FetchServiceConfig) -> Self {
+        config.block_cache
     }
 }
