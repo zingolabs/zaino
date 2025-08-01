@@ -172,36 +172,49 @@ mod chain_query_interface {
             "Mainnet" => zebra_chain::parameters::Network::Mainnet,
             _ => panic!("Incorrect newtork type found."),
         };
-        let state_service = StateService::spawn(StateServiceConfig::new(
-            zebra_state::Config {
-                cache_dir: state_chain_cache_dir,
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
+
+        let state_service_config: StateServiceConfig = StateServiceConfig {
+            validator: zaino_state::config::ValidatorConfig {
+                config: zebra_state::Config {
+                    cache_dir: state_chain_cache_dir,
+                    ephemeral: false,
+                    delete_old_database: true,
+                    debug_stop_at_height: None,
+                    debug_validity_check_interval: None,
+                },
+                rpc_address: test_manager.zebrad_rpc_listen_address,
+                indexer_rpc_address: false,
+                cookie_auth: false,
+                cookie_path: None,
+                rpc_user: None,
+                rpc_password: None,
             },
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            test_manager
-                .local_net
-                .data_dir()
-                .path()
-                .to_path_buf()
-                .join("zaino"),
-            None,
-            network.clone(),
-            true,
-            true,
-        ))
-        .await
-        .unwrap();
+            service: zaino_state::config::ServiceConfig {
+                timeout: None,
+                channel_size: None,
+            },
+            block_cache: zaino_state::config::BlockCacheConfig {
+                cache: CacheConfig {
+                    capacity: None,
+                    shard_amount: None,
+                },
+                database: DatabaseConfig {
+                    path: test_manager
+                        .local_net
+                        .data_dir()
+                        .path()
+                        .to_path_buf()
+                        .join("zaino"),
+                    size: None,
+                },
+                network: network.clone(),
+                no_sync: false,
+                no_db: false,
+            },
+        };
+
+        let state_service = StateService::spawn(state_service_config).await.unwrap();
+
         let chain_index = NodeBackedChainIndex::new(
             BlockchainSource::State(state_service.read_state_service().clone()),
             network,
