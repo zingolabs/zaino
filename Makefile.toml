@@ -428,7 +428,7 @@ info "Extracting targets from nextest..."
 NEXTEST_TARGETS=$(mktemp)
 cargo nextest list --profile ci -T json-pretty | jq -r '.["rust-suites"] | to_entries[] | select(.value.testcases | length > 0) | .key' | sort > "$NEXTEST_TARGETS"
 
-# Extract CI matrix partition values  
+# Extract CI matrix partition values
 info "Extracting targets from CI workflow..."
 CI_TARGETS=$(mktemp)
 yq '.jobs.test.strategy.matrix.partition[]' .github/workflows/ci.yml | sed 's/"//g' | sort > "$CI_TARGETS"
@@ -452,19 +452,19 @@ if [[ ! -s "$MISSING_IN_CI" && ! -s "$EXTRA_IN_CI" ]]; then
     cat "$NEXTEST_TARGETS" | sed 's/^/  - /'
 else
     warn "❌ Test target synchronization issues found:"
-    
+
     if [[ -s "$MISSING_IN_CI" ]]; then
         echo ""
         warn "📋 Targets with tests missing from CI matrix ($(wc -l < "$MISSING_IN_CI")):"
         cat "$MISSING_IN_CI" | sed 's/^/  - /'
     fi
-    
+
     if [[ -s "$EXTRA_IN_CI" ]]; then
         echo ""
         warn "🗑️  Targets in CI matrix with no tests ($(wc -l < "$EXTRA_IN_CI")):"
         cat "$EXTRA_IN_CI" | sed 's/^/  - /'
     fi
-    
+
     echo ""
     info "💡 To automatically update the CI workflow, run:"
     info "   makers update-test-targets"
