@@ -35,7 +35,7 @@ impl ZainoDB {
 
     /// Spawns a ZainoDB, opens a database if a path is given in the config else  creates a new db.
     pub(crate) async fn spawn(cfg: BlockCacheConfig) -> Result<Self, FinalisedStateError> {
-        let meta_opt = Self::peek_metadata(&cfg.db_path).await?;
+        let meta_opt = Self::peek_metadata(&cfg.database.path).await?;
 
         let (backend, caps): (Arc<dyn DbCore + Send + Sync>, Capability) = match meta_opt {
             Some(meta) => {

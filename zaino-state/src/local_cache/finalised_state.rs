@@ -135,13 +135,13 @@ impl FinalisedState {
         config: BlockCacheConfig,
     ) -> Result<Self, FinalisedStateError> {
         info!("Launching Finalised State..");
-        let db_size = config.db_size.unwrap_or(64);
+        let db_size = config.database.size.unwrap_or(64);
         let db_path_dir = match config.network.kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
         };
-        let db_path = config.db_path.join(db_path_dir);
+        let db_path = config.database.path.join(db_path_dir);
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }

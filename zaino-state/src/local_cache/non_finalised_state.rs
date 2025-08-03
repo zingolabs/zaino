@@ -52,8 +52,8 @@ impl NonFinalisedState {
         let mut non_finalised_state = NonFinalisedState {
             fetcher: fetcher.clone(),
             state: state.cloned(),
-            heights_to_hashes: Broadcast::new(config.map_capacity, config.map_shard_amount),
-            hashes_to_blocks: Broadcast::new(config.map_capacity, config.map_shard_amount),
+            heights_to_hashes: Broadcast::new(config.cache.capacity, config.cache.shard_amount),
+            hashes_to_blocks: Broadcast::new(config.cache.capacity, config.cache.shard_amount),
             sync_task_handle: None,
             block_sender,
             status: AtomicStatus::new(StatusType::Spawning.into()),

@@ -18,9 +18,20 @@ use serde::{
 #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
 use tracing::warn;
 use tracing::{error, info};
-use zaino_state::{BackendConfig, FetchServiceConfig, StateServiceConfig};
+use zaino_commons::config::{BackendType, ValidatorConfig, ServiceConfig, CacheConfig, DatabaseConfig, BlockCacheConfig};
+use zaino_fetch::config::FetchServiceConfig;
+use zaino_state::StateServiceConfig;
 
 use crate::error::IndexerError;
+
+/// Unified backend configuration enum.
+#[derive(Debug, Clone)]
+pub enum BackendConfig {
+    /// StateService config.
+    State(StateServiceConfig),
+    /// Fetchservice config.
+    Fetch(FetchServiceConfig),
+}
 
 /// Custom deserialization function for `SocketAddr` from a String.
 /// Used by Serde's `deserialize_with`.
@@ -37,14 +48,14 @@ where
 /// Used by Serde's `deserialize_with`.
 fn deserialize_backendtype_from_string<'de, D>(
     deserializer: D,
-) -> Result<zaino_state::BackendType, D::Error>
+) -> Result<BackendType, D::Error>
 where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
     match s.to_lowercase().as_str() {
-        "state" => Ok(zaino_state::BackendType::State),
-        "fetch" => Ok(zaino_state::BackendType::Fetch),
+        "state" => Ok(BackendType::State),
+        "fetch" => Ok(BackendType::Fetch),
         _ => Err(de::Error::custom(format!(
             "Invalid backend type '{s}', valid options are 'state' or 'fetch'"
         ))),
@@ -58,7 +69,7 @@ pub struct IndexerConfig {
     /// Type of backend to be used.
     #[serde(deserialize_with = "deserialize_backendtype_from_string")]
     #[serde(serialize_with = "serialize_backendtype_to_string")]
-    pub backend: zaino_state::BackendType,
+    pub backend: BackendType,
     /// Enable JsonRPC server.
     pub enable_json_server: bool,
     /// Server bind addr.
@@ -271,7 +282,7 @@ impl IndexerConfig {
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
-            backend: zaino_state::BackendType::Fetch,
+            backend: BackendType::Fetch,
             enable_json_server: false,
             json_rpc_listen_address: "127.0.0.1:8237".parse().unwrap(),
             enable_cookie_auth: false,
@@ -410,50 +421,72 @@ impl TryFrom<IndexerConfig> for BackendConfig {
         let network = cfg.get_network()?;
 
         match cfg.backend {
-            zaino_state::BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
-                validator_config: zebra_state::Config {
-                    cache_dir: cfg.zebra_db_path.clone(),
-                    ephemeral: false,
-                    delete_old_database: true,
-                    debug_stop_at_height: None,
-                    debug_validity_check_interval: None,
+            BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
+                validator: ValidatorConfig {
+                    config: zebra_state::Config {
+                        cache_dir: cfg.zebra_db_path.clone(),
+                        ephemeral: false,
+                        delete_old_database: true,
+                        debug_stop_at_height: None,
+                        debug_validity_check_interval: None,
+                    },
+                    rpc_address: cfg.validator_listen_address,
+                    indexer_rpc_address: cfg.validator_grpc_listen_address,
+                    cookie_auth: cfg.validator_cookie_auth,
+                    cookie_path: cfg.validator_cookie_path,
+                    rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
+                    rpc_password: cfg
+                        .validator_password
+                        .unwrap_or_else(|| "xxxxxx".to_string()),
                 },
-                validator_rpc_address: cfg.validator_listen_address,
-                validator_indexer_rpc_address: cfg.validator_grpc_listen_address,
-                validator_cookie_auth: cfg.validator_cookie_auth,
-                validator_cookie_path: cfg.validator_cookie_path,
-                validator_rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
-                validator_rpc_password: cfg
-                    .validator_password
-                    .unwrap_or_else(|| "xxxxxx".to_string()),
-                service_timeout: 30,
-                service_channel_size: 32,
-                map_capacity: cfg.map_capacity,
-                map_shard_amount: cfg.map_shard_amount,
-                db_path: cfg.zaino_db_path,
-                db_size: cfg.db_size,
-                network,
-                no_sync: cfg.no_sync,
-                no_db: cfg.no_db,
+                service: ServiceConfig {
+                    timeout: 30,
+                    channel_size: 32,
+                },
+                block_cache: BlockCacheConfig {
+                    cache: CacheConfig {
+                        capacity: cfg.map_capacity,
+                        shard_amount: cfg.map_shard_amount,
+                    },
+                    database: DatabaseConfig {
+                        path: cfg.zaino_db_path,
+                        size: cfg.db_size,
+                    },
+                    network,
+                    no_sync: cfg.no_sync,
+                    no_db: cfg.no_db,
+                },
             })),
 
-            zaino_state::BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
-                validator_rpc_address: cfg.validator_listen_address,
-                validator_cookie_auth: cfg.validator_cookie_auth,
-                validator_cookie_path: cfg.validator_cookie_path,
-                validator_rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
-                validator_rpc_password: cfg
-                    .validator_password
-                    .unwrap_or_else(|| "xxxxxx".to_string()),
-                service_timeout: 30,
-                service_channel_size: 32,
-                map_capacity: cfg.map_capacity,
-                map_shard_amount: cfg.map_shard_amount,
-                db_path: cfg.zaino_db_path,
-                db_size: cfg.db_size,
-                network,
-                no_sync: cfg.no_sync,
-                no_db: cfg.no_db,
+            BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
+                validator: ValidatorConfig {
+                    config: zebra_state::Config::default(),
+                    rpc_address: cfg.validator_listen_address,
+                    indexer_rpc_address: cfg.validator_grpc_listen_address,
+                    cookie_auth: cfg.validator_cookie_auth,
+                    cookie_path: cfg.validator_cookie_path,
+                    rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
+                    rpc_password: cfg
+                        .validator_password
+                        .unwrap_or_else(|| "xxxxxx".to_string()),
+                },
+                service: ServiceConfig {
+                    timeout: 30,
+                    channel_size: 32,
+                },
+                block_cache: BlockCacheConfig {
+                    cache: CacheConfig {
+                        capacity: cfg.map_capacity,
+                        shard_amount: cfg.map_shard_amount,
+                    },
+                    database: DatabaseConfig {
+                        path: cfg.zaino_db_path,
+                        size: cfg.db_size,
+                    },
+                    network,
+                    no_sync: cfg.no_sync,
+                    no_db: cfg.no_db,
+                },
             })),
         }
     }
@@ -461,14 +494,14 @@ impl TryFrom<IndexerConfig> for BackendConfig {
 
 /// Custom serializer for BackendType
 fn serialize_backendtype_to_string<S>(
-    backend_type: &zaino_state::BackendType,
+    backend_type: &BackendType,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     serializer.serialize_str(match backend_type {
-        zaino_state::BackendType::State => "state",
-        zaino_state::BackendType::Fetch => "fetch",
+        BackendType::State => "state",
+        BackendType::Fetch => "fetch",
     })
 }

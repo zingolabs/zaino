@@ -11,7 +11,7 @@ use std::{
 use tempfile::TempDir;
 use testvectors::{seeds, REG_O_ADDR_FROM_ABANDONART};
 use tracing_subscriber::EnvFilter;
-use zaino_state::BackendType;
+use zaino_commons::config::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::network::Network;

@@ -1,11 +1,10 @@
-//! Holds config data for Zaino-State services.
+//! Configuration types for Zaino-Fetch services.
 
-pub use zaino_commons::config::{ValidatorConfig, ServiceConfig, CacheConfig, DatabaseConfig, BlockCacheConfig, BackendType};
+use zaino_commons::config::{ValidatorConfig, ServiceConfig, BlockCacheConfig};
 
-
-/// Holds config data for [crate::StateService].
+/// Holds config data for [crate::FetchService].
 #[derive(Debug, Clone)]
-pub struct StateServiceConfig {
+pub struct FetchServiceConfig {
     /// Validator connection and authentication configuration.
     pub validator: ValidatorConfig,
     /// Service-level configuration.
@@ -14,14 +13,14 @@ pub struct StateServiceConfig {
     pub block_cache: BlockCacheConfig,
 }
 
-impl StateServiceConfig {
-    /// Returns a new instance of [`StateServiceConfig`].
+impl FetchServiceConfig {
+    /// Returns a new instance of [`FetchServiceConfig`].
     pub fn new(
         validator: ValidatorConfig,
         service: ServiceConfig,
         block_cache: BlockCacheConfig,
     ) -> Self {
-        StateServiceConfig {
+        FetchServiceConfig {
             validator,
             service,
             block_cache,
@@ -29,9 +28,8 @@ impl StateServiceConfig {
     }
 }
 
-
-impl From<StateServiceConfig> for BlockCacheConfig {
-    fn from(config: StateServiceConfig) -> Self {
+impl From<FetchServiceConfig> for BlockCacheConfig {
+    fn from(config: FetchServiceConfig) -> Self {
         config.block_cache
     }
 }

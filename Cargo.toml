@@ -7,6 +7,7 @@ members = [
     "zaino-serve",
     "zaino-state",
     "zaino-fetch",
+    "zaino-commons",
     "zaino-proto",
 ]
 
@@ -114,6 +115,7 @@ bitflags = "2.9"
 # Test
 portpicker = "0.1"
 tempfile = "3.2"
+zaino-commons = { path = "zaino-commons" }
 zaino-fetch = { path = "zaino-fetch" }
 zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }

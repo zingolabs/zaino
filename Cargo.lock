@@ -2170,6 +2170,7 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "url",
+ "zaino-commons",
  "zaino-fetch",
  "zaino-proto",
  "zaino-state",
@@ -5920,6 +5921,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-commons"
+version = "0.1.2"
+dependencies = [
+ "serde",
+ "zebra-chain 1.0.0",
+ "zebra-state 1.0.1",
+]
+
+[[package]]
 name = "zaino-fetch"
 version = "0.1.2"
 dependencies = [
@@ -5940,6 +5950,7 @@ dependencies = [
  "tonic",
  "tracing",
  "url",
+ "zaino-commons",
  "zaino-proto",
  "zcash_protocol",
  "zebra-chain 1.0.0",
@@ -6022,6 +6033,7 @@ dependencies = [
  "tracing",
  "url",
  "whoami",
+ "zaino-commons",
  "zaino-fetch",
  "zaino-proto",
  "zcash_primitives",
@@ -6050,6 +6062,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
+ "zaino-commons",
  "zaino-state",
  "zainod",
  "zcash_client_backend",
@@ -6075,6 +6088,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
+ "zaino-commons",
  "zaino-fetch",
  "zaino-serve",
  "zaino-state",

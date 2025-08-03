@@ -12,7 +12,8 @@ use zaino_state::read_u32_le;
 use zaino_state::write_u32_le;
 use zaino_state::CompactSize;
 use zaino_state::ZainoVersionedSerialise;
-use zaino_state::{BackendType, ChainBlock, ChainWork};
+use zaino_commons::config::BackendType;
+use zaino_state::{ChainBlock, ChainWork};
 use zaino_state::{
     StateService, StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };

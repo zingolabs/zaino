@@ -9,6 +9,7 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
+zaino-commons = { workspace = true }
 zainod = { workspace = true }
 zaino-state = { workspace = true, features = ["bench"] }
 

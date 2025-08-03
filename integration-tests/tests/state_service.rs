@@ -1,6 +1,7 @@
-use zaino_state::{BackendType, FetchServiceError};
+use zaino_commons::config::{BackendType, BlockCacheConfig};
+use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
-    FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer, StateService,
+    FetchService, FetchServiceError, FetchServiceSubscriber, LightWalletIndexer, StateService,
     StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::from_inputs;
@@ -71,29 +72,62 @@ async fn create_test_manager_and_services(
 
     test_manager.local_net.print_stdout();
 
-    let fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.zebrad_rpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        network_type.clone(),
-        zaino_sync_bool,
-        true,
-    ))
-    .await
-    .unwrap();
+    let fetch_service_config = FetchServiceConfig {
+        validator: zaino_state::config::ValidatorConfig {
+            config,
+            rpc_address: test_manager.zebrad_rpc_listen_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            cookie_auth: false,
+            cookie_path: None,
+            rpc_user: None,
+            rpc_password: None,
+        },
+        service: zaino_state::config::ServiceConfig {
+            timeout: None,
+            channel_size: None,
+        },
+        block_cache: zaino_state::config::BlockCacheConfig {
+            cache: CacheConfig {
+                capacity: None,
+                shard_amount: None,
+            },
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                size: None,
+            },
+            network: network_type.clone(),
+            no_sync: zaino_sync_bool,
+            no_db: true,
+        },
+    };
+    // let fetch_service = FetchService::spawn(FetchServiceConfig::new(
+    //     test_manager.zebrad_rpc_listen_address,
+    //     false,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     test_manager
+    //         .local_net
+    //         .data_dir()
+    //         .path()
+    //         .to_path_buf()
+    //         .join("zaino"),
+    //     None,
+    //     network_type.clone(),
+    //     zaino_sync_bool,
+    //     true,
+    // ))
+
+    let fetch_service = FetchService::spawn(fetch_service_config).await.unwrap();
 
     let fetch_subscriber = fetch_service.get_subscriber().inner();
 
@@ -102,37 +136,41 @@ async fn create_test_manager_and_services(
         None => test_manager.data_dir.clone(),
     };
 
-    let state_service = StateService::spawn(StateServiceConfig::new(
-        zebra_state::Config {
-            cache_dir: state_chain_cache_dir,
-            ephemeral: false,
-            delete_old_database: true,
-            debug_stop_at_height: None,
-            debug_validity_check_interval: None,
-        },
-        test_manager.zebrad_rpc_listen_address,
-        test_manager.zebrad_grpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        network_type,
-        true,
-        true,
-    ))
-    .await
-    .unwrap();
+    let state_service_config = StateServiceConfig {
+        validator: todo!(),
+        service: todo!(),
+        block_cache: todo!(),
+    };
+    // let state_service = StateService::spawn(StateServiceConfig::new(
+    //     zebra_state::Config {
+    //         cache_dir: state_chain_cache_dir,
+    //         ephemeral: false,
+    //         delete_old_database: true,
+    //         debug_stop_at_height: None,
+    //         debug_validity_check_interval: None,
+    //     },
+    //     test_manager.zebrad_rpc_listen_address,
+    //     test_manager.zebrad_grpc_listen_address,
+    //     false,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     None,
+    //     test_manager
+    //         .local_net
+    //         .data_dir()
+    //         .path()
+    //         .to_path_buf()
+    //         .join("zaino"),
+    //     None,
+    //     network_type,
+    //     true,
+    //     true,
+    // ))
+    let state_service = StateService::spawn(state_service_config).await.unwrap();
 
     let state_subscriber = state_service.get_subscriber().inner();
 

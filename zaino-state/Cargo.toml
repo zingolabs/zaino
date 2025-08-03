@@ -13,6 +13,7 @@ version = { workspace = true }
 bench = []
 
 [dependencies]
+zaino-commons = { workspace = true }
 zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 

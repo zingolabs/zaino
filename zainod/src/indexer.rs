@@ -10,11 +10,11 @@ use zaino_serve::server::{
     jsonrpc::JsonRpcServer,
 };
 use zaino_state::{
-    BackendConfig, FetchService, IndexerService, LightWalletService, StateService, StatusType,
+    FetchService, IndexerService, LightWalletService, StateService, StatusType,
     ZcashIndexer, ZcashService,
 };
 
-use crate::{config::IndexerConfig, error::IndexerError};
+use crate::{config::{IndexerConfig, BackendConfig}, error::IndexerError};
 
 /// Zingo-Indexer.
 pub struct Indexer<Service: ZcashService + LightWalletService> {

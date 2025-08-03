@@ -4,8 +4,10 @@ use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
 };
+use zaino_commons::config::BackendType;
+use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
-    BackendType, FetchService, FetchServiceConfig, FetchServiceError, FetchServiceSubscriber,
+    FetchService, FetchServiceError, FetchServiceSubscriber,
     LightWalletIndexer, StatusType, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::Validator as _;
