@@ -221,44 +221,46 @@ impl JsonRpSeeConnector {
         })
     }
 
-    /// Helper function to create from parts of a StateServiceConfig or
-    /// FetchServiceConfig
-    pub async fn new_from_config_parts(
-        validator_cookie_auth: bool,
-        validator_rpc_address: SocketAddr,
-        validator_rpc_user: String,
-        validator_rpc_password: String,
-        validator_cookie_path: Option<String>,
+    /// Creates a new JsonRpSeeConnector from a ValidatorConfig.
+    pub async fn new_from_validator_config(
+        config: &zaino_commons::config::ValidatorConfig,
     ) -> Result<Self, TransportError> {
-        match validator_cookie_auth {
+        match config.cookie_auth {
             true => JsonRpSeeConnector::new_with_cookie_auth(
                 test_node_and_return_url(
-                    validator_rpc_address,
-                    validator_cookie_auth,
-                    validator_cookie_path.clone(),
+                    config.rpc_address,
+                    config.cookie_auth,
+                    config.cookie_path.clone(),
                     None,
                     None,
                 )
                 .await?,
                 Path::new(
-                    &validator_cookie_path
+                    &config.cookie_path
                         .clone()
                         .expect("validator cookie authentication path missing"),
                 ),
             ),
             false => JsonRpSeeConnector::new_with_basic_auth(
                 test_node_and_return_url(
-                    validator_rpc_address,
+                    config.rpc_address,
                     false,
                     None,
-                    Some(validator_rpc_user.clone()),
-                    Some(validator_rpc_password.clone()),
+                    Some(config.rpc_user.clone()),
+                    Some(config.rpc_password.clone()),
                 )
                 .await?,
-                validator_rpc_user.clone(),
-                validator_rpc_password.clone(),
+                config.rpc_user.clone(),
+                config.rpc_password.clone(),
             ),
         }
+    }
+
+    /// Creates a new JsonRpSeeConnector from a FetchServiceConfig.
+    pub async fn new_from_fetch_service_config(
+        config: &crate::config::FetchServiceConfig,
+    ) -> Result<Self, TransportError> {
+        Self::new_from_validator_config(&config.validator).await
     }
 
     /// Returns the http::uri the JsonRpSeeConnector is configured to send requests to.

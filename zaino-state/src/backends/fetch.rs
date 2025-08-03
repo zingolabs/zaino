@@ -81,14 +81,8 @@ impl ZcashService for FetchService {
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!("Launching Chain Fetch Service..");
 
-        let fetcher = JsonRpSeeConnector::new_from_config_parts(
-            config.validator.cookie_auth,
-            config.validator.rpc_address,
-            config.validator.rpc_user.clone(),
-            config.validator.rpc_password.clone(),
-            config.validator.cookie_path.clone(),
-        )
-        .await?;
+        let fetcher = JsonRpSeeConnector::new_from_fetch_service_config(&config)
+            .await?;
 
         let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(

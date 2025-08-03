@@ -1,6 +1,6 @@
 //! Holds config data for Zaino-State services.
 
-pub use zaino_commons::config::{ValidatorConfig, ServiceConfig, CacheConfig, DatabaseConfig, BlockCacheConfig, BackendType};
+pub use zaino_commons::config::{ValidatorConfig, ServiceConfig, BlockCacheConfig};
 
 
 /// Holds config data for [crate::StateService].
