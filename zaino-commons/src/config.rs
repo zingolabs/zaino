@@ -11,10 +11,8 @@ pub struct ValidatorConfig {
     pub rpc_address: std::net::SocketAddr,
     /// Validator gRPC address.
     pub indexer_rpc_address: std::net::SocketAddr,
-    /// Enable validator rpc cookie authentification.
-    pub cookie_auth: bool,
-    /// Path to the validator cookie file.
-    pub cookie_path: Option<String>,
+    /// Validator RPC cookie authentication
+    pub cookie: Cookie,
     /// Validator JsonRPC user.
     pub rpc_user: String,
     /// Validator JsonRPC password.
@@ -27,12 +25,20 @@ impl Default for ValidatorConfig {
             config: zebra_state::Config::default(),
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
             indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
-            cookie_auth: false,
-            cookie_path: None,
+            cookie: Cookie::Disabled,
             rpc_user: "xxxxxx".to_owned(),
             rpc_password: "xxxxxx".to_owned(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum Cookie {
+    Disabled,
+    Enabled {
+        /// Path to the validator cookie file.
+        path: PathBuf,
+    },
 }
 
 /// Holds service-level configuration.
@@ -100,26 +106,6 @@ pub struct BlockCacheConfig {
     /// Disables FinalisedState.
     /// Used for testing.
     pub no_db: bool,
-}
-
-impl BlockCacheConfig {
-    /// Returns a new instance of [`BlockCacheConfig`].
-    #[allow(dead_code)]
-    pub fn new(
-        cache: CacheConfig,
-        database: DatabaseConfig,
-        network: zebra_chain::parameters::Network,
-        no_sync: bool,
-        no_db: bool,
-    ) -> Self {
-        BlockCacheConfig {
-            cache,
-            database,
-            network,
-            no_sync,
-            no_db,
-        }
-    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Copy)]

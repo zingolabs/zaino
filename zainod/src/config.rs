@@ -18,7 +18,10 @@ use serde::{
 #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
 use tracing::warn;
 use tracing::{error, info};
-use zaino_commons::config::{BackendType, ValidatorConfig, ServiceConfig, CacheConfig, DatabaseConfig, BlockCacheConfig};
+use zaino_commons::config::{
+    BackendType, BlockCacheConfig, CacheConfig, Cookie, DatabaseConfig, ServiceConfig,
+    ValidatorConfig,
+};
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
 
@@ -46,9 +49,7 @@ where
 
 /// Custom deserialization function for `BackendType` from a String.
 /// Used by Serde's `deserialize_with`.
-fn deserialize_backendtype_from_string<'de, D>(
-    deserializer: D,
-) -> Result<BackendType, D::Error>
+fn deserialize_backendtype_from_string<'de, D>(deserializer: D) -> Result<BackendType, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -430,10 +431,20 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                         debug_stop_at_height: None,
                         debug_validity_check_interval: None,
                     },
+                    // todo! the whole IndexerConfig struct should also be refactored into sub-structs and all this can be avoided
+                    cookie: {
+                        if cfg.enable_cookie_auth {
+                            Cookie::Enabled {
+                                path: cfg
+                                    .cookie_dir
+                                    .expect("should provide cookie dir if enable_cookie_auth=true"),
+                            }
+                        } else {
+                            Cookie::Disabled
+                        }
+                    },
                     rpc_address: cfg.validator_listen_address,
                     indexer_rpc_address: cfg.validator_grpc_listen_address,
-                    cookie_auth: cfg.validator_cookie_auth,
-                    cookie_path: cfg.validator_cookie_path,
                     rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
                     rpc_password: cfg
                         .validator_password
@@ -463,8 +474,18 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                     config: zebra_state::Config::default(),
                     rpc_address: cfg.validator_listen_address,
                     indexer_rpc_address: cfg.validator_grpc_listen_address,
-                    cookie_auth: cfg.validator_cookie_auth,
-                    cookie_path: cfg.validator_cookie_path,
+                    // todo! the whole IndexerConfig struct should also be refactored into sub-structs and all this can be avoided
+                    cookie: {
+                        if cfg.enable_cookie_auth {
+                            Cookie::Enabled {
+                                path: cfg
+                                    .cookie_dir
+                                    .expect("should provide cookie dir if enable_cookie_auth=true"),
+                            }
+                        } else {
+                            Cookie::Disabled
+                        }
+                    },
                     rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
                     rpc_password: cfg
                         .validator_password

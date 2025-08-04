@@ -20,6 +20,7 @@ use std::{
     time::Duration,
 };
 use tracing::error;
+use zaino_commons::config::{Cookie, ValidatorConfig};
 
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
@@ -125,6 +126,31 @@ enum AuthMethod {
     Cookie { cookie: String },
 }
 
+impl TryFrom<ValidatorConfig> for AuthMethod {
+    type Error = TransportError;
+    fn try_from(
+        ValidatorConfig {
+            cookie,
+            rpc_user,
+            rpc_password,
+            ..
+        }: ValidatorConfig,
+    ) -> Result<Self, Self::Error> {
+        match cookie {
+            Cookie::Enabled { path } => {
+                let cookie_password = read_and_parse_cookie_token(Path::new(&path))?;
+                Ok(AuthMethod::Cookie {
+                    cookie: cookie_password,
+                })
+            }
+            Cookie::Disabled => Ok(AuthMethod::Basic {
+                username: rpc_user,
+                password: rpc_password,
+            }),
+        }
+    }
+}
+
 /// Trait to convert a JSON-RPC response to an error.
 pub trait ResponseToError: Sized {
     /// The error type.
@@ -225,31 +251,13 @@ impl JsonRpSeeConnector {
     pub async fn new_from_validator_config(
         config: &zaino_commons::config::ValidatorConfig,
     ) -> Result<Self, TransportError> {
-        match config.cookie_auth {
-            true => JsonRpSeeConnector::new_with_cookie_auth(
-                test_node_and_return_url(
-                    config.rpc_address,
-                    config.cookie_auth,
-                    config.cookie_path.clone(),
-                    None,
-                    None,
-                )
-                .await?,
-                Path::new(
-                    &config.cookie_path
-                        .clone()
-                        .expect("validator cookie authentication path missing"),
-                ),
+        match &config.cookie {
+            Cookie::Enabled { path } => JsonRpSeeConnector::new_with_cookie_auth(
+                test_node_and_return_url(config).await?,
+                Path::new(path),
             ),
-            false => JsonRpSeeConnector::new_with_basic_auth(
-                test_node_and_return_url(
-                    config.rpc_address,
-                    false,
-                    None,
-                    Some(config.rpc_user.clone()),
-                    Some(config.rpc_password.clone()),
-                )
-                .await?,
+            Cookie::Disabled => JsonRpSeeConnector::new_with_basic_auth(
+                test_node_and_return_url(config).await?,
                 config.rpc_user.clone(),
                 config.rpc_password.clone(),
             ),
@@ -722,34 +730,36 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
     Ok(())
 }
 
+// todo! these fields could probably be all replaced with a combo of ValidatorConfig, BlockCacheConfig and ServiceConfig
 /// Tries to connect to zebrad/zcashd using the provided SocketAddr and returns the correct URL.
 pub async fn test_node_and_return_url(
-    addr: SocketAddr,
-    rpc_cookie_auth: bool,
-    cookie_path: Option<String>,
-    user: Option<String>,
-    password: Option<String>,
+    ValidatorConfig {
+        rpc_address,
+        cookie,
+        rpc_user,
+        rpc_password,
+        ..
+    }: &ValidatorConfig,
 ) -> Result<Url, TransportError> {
-    let auth_method = match rpc_cookie_auth {
-        true => {
-            let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
-            let cookie_password = read_and_parse_cookie_token(Path::new(&cookie_file_path_str))?;
+    let auth_method = match cookie {
+        Cookie::Enabled { path } => {
+            let cookie_password = read_and_parse_cookie_token(Path::new(&path))?;
             AuthMethod::Cookie {
                 cookie: cookie_password,
             }
         }
-        false => AuthMethod::Basic {
-            username: user.unwrap_or_else(|| "xxxxxx".to_string()),
-            password: password.unwrap_or_else(|| "xxxxxx".to_string()),
+        Cookie::Disabled => AuthMethod::Basic {
+            username: rpc_user.to_string(),
+            password: rpc_password.to_string(),
         },
     };
 
-    let host = match addr {
-        SocketAddr::V4(_) => addr.ip().to_string(),
-        SocketAddr::V6(_) => format!("[{}]", addr.ip()),
+    let host = match rpc_address {
+        SocketAddr::V4(_) => rpc_address.ip().to_string(),
+        SocketAddr::V6(_) => format!("[{}]", rpc_address.ip()),
     };
 
-    let url: Url = format!("http://{}:{}", host, addr.port()).parse()?;
+    let url: Url = format!("http://{}:{}", host, rpc_address.port()).parse()?;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
     for _ in 0..3 {
