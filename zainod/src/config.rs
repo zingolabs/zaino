@@ -63,6 +63,95 @@ where
     }
 }
 
+/// Server configuration for Zaino's own servers (JSON-RPC and gRPC).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// Enable JsonRPC server.
+    pub enable_json_server: bool,
+    /// JsonRPC server bind address.
+    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
+    pub json_rpc_listen_address: SocketAddr,
+    /// Enable cookie-based authentication for zaino server.
+    pub cookie: CookieAuth,
+    /// gRPC server bind address.
+    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
+    pub grpc_listen_address: SocketAddr,
+    /// Enables TLS for gRPC server.
+    pub grpc_tls: bool,
+    /// Path to the TLS certificate file.
+    pub tls_cert_path: Option<String>,
+    /// Path to the TLS private key file.
+    pub tls_key_path: Option<String>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            enable_json_server: false,
+            json_rpc_listen_address: "127.0.0.1:8237".parse().unwrap(),
+            cookie: CookieAuth::Disabled,
+            grpc_listen_address: "127.0.0.1:8137".parse().unwrap(),
+            grpc_tls: false,
+            tls_cert_path: None,
+            tls_key_path: None,
+        }
+    }
+}
+
+/// Storage configuration (cache and database settings).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// Cache configuration.
+    pub cache: CacheConfig,
+    /// Zaino database configuration.
+    pub zaino_database: DatabaseConfig,
+    /// Zebra database configuration.
+    pub zebra_database: DatabaseConfig,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            cache: CacheConfig::default(),
+            zaino_database: DatabaseConfig {
+                path: default_zaino_db_path(),
+                size: None,
+            },
+            zebra_database: DatabaseConfig {
+                path: default_zebra_db_path().unwrap(),
+                size: None,
+            },
+        }
+    }
+}
+
+/// Debug and testing configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DebugConfig {
+    /// Disables internal sync and stops zaino waiting on server sync.
+    /// Used for testing.
+    pub no_sync: bool,
+    /// Disables FinalisedState.
+    /// Used for testing.
+    pub no_db: bool,
+    /// When enabled Zaino syncs it DB in the background, fetching data from the validator.
+    /// NOTE: Unimplemented.
+    pub slow_sync: bool,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            no_sync: false,
+            no_db: false,
+            slow_sync: false,
+        }
+    }
+}
+
 /// Config information required for Zaino.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
