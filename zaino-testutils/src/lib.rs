@@ -430,29 +430,54 @@ impl TestManager {
             let indexer_config = zainodlib::config::IndexerConfig {
                 // TODO: Make configurable.
                 backend: *backend,
-                enable_json_server: enable_zaino_jsonrpc_server,
-                json_rpc_listen_address: zaino_json_listen_address,
-                enable_cookie_auth: enable_zaino_jsonrpc_server_cookie_auth,
-                cookie_dir: zaino_json_server_cookie_dir.clone(),
-                grpc_listen_address: zaino_grpc_listen_address,
-                grpc_tls: false,
-                tls_cert_path: None,
-                tls_key_path: None,
-                validator_listen_address: zebrad_rpc_listen_address,
-                validator_grpc_listen_address: zebrad_grpc_listen_address,
-                validator_cookie_auth: false,
-                validator_cookie_path: None,
-                validator_user: Some("xxxxxx".to_string()),
-                validator_password: Some("xxxxxx".to_string()),
-                map_capacity: None,
-                map_shard_amount: None,
-                zaino_db_path,
-                zebra_db_path,
-                db_size: None,
-                network: network.to_string(),
-                no_sync: zaino_no_sync,
-                no_db: zaino_no_db,
-                slow_sync: false,
+                network: match network {
+                    Network::Mainnet => zaino_commons::config::Network::Mainnet,
+                    Network::Testnet => zaino_commons::config::Network::Testnet,
+                    Network::Regtest => zaino_commons::config::Network::Regtest,
+                },
+                server: zainodlib::config::ServerConfig {
+                    enable_json_server: enable_zaino_jsonrpc_server,
+                    json_rpc_listen_address: zaino_json_listen_address,
+                    cookie: if enable_zaino_jsonrpc_server_cookie_auth {
+                        zaino_commons::config::CookieAuth::Enabled {
+                            path: zaino_json_server_cookie_dir.clone().unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
+                        }
+                    } else {
+                        zaino_commons::config::CookieAuth::Disabled
+                    },
+                    grpc_listen_address: zaino_grpc_listen_address,
+                    grpc_tls: false,
+                    tls_cert_path: None,
+                    tls_key_path: None,
+                },
+                validator: zaino_commons::config::ValidatorConfig {
+                    rpc_address: zebrad_rpc_listen_address,
+                    indexer_rpc_address: zebrad_grpc_listen_address,
+                    cookie: zaino_commons::config::CookieAuth::Disabled,
+                    rpc_user: "xxxxxx".to_string(),
+                    rpc_password: "xxxxxx".to_string(),
+                    ..Default::default()
+                },
+                service: zaino_commons::config::ServiceConfig::default(),
+                storage: zainodlib::config::StorageConfig {
+                    cache: zaino_commons::config::CacheConfig {
+                        capacity: None,
+                        shard_amount: None,
+                    },
+                    zaino_database: zaino_commons::config::DatabaseConfig {
+                        path: zaino_db_path,
+                        size: None,
+                    },
+                    zebra_database: zaino_commons::config::DatabaseConfig {
+                        path: zebra_db_path,
+                        size: None,
+                    },
+                },
+                debug: zainodlib::config::DebugConfig {
+                    no_sync: zaino_no_sync,
+                    no_db: zaino_no_db,
+                    slow_sync: false,
+                },
             };
             let handle = zainodlib::indexer::spawn_indexer(indexer_config)
                 .await

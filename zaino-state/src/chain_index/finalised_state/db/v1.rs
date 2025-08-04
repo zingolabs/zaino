@@ -21,7 +21,6 @@ use crate::{
     TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerialise as _,
 };
 
-use zebra_chain::parameters::NetworkKind;
 use zebra_state::HashOrHeight;
 
 use async_trait::async_trait;
@@ -443,10 +442,10 @@ impl DbV1 {
         // Prepare database details and path.
         let db_size = config.database.size.unwrap_or(128);
         let db_size_bytes = db_size * 1024 * 1024 * 1024;
-        let db_path_dir = match config.network.kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
+        let db_path_dir = match config.network {
+            zaino_commons::config::Network::Mainnet => "mainnet",
+            zaino_commons::config::Network::Testnet => "testnet",
+            zaino_commons::config::Network::Regtest => "regtest",
         };
         let db_path = config.database.path.join(db_path_dir);
         if !db_path.exists() {

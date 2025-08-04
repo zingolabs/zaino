@@ -159,7 +159,7 @@ impl BlockCacheSubscriber {
                 None => {
                     let (_, block) = fetch_block_from_node(
                         self.state.as_ref(),
-                        Some(&self.config.network),
+                        Some(&self.config.network.to_zebra_network()),
                         &self.fetcher,
                         hash_or_height,
                     )

@@ -109,7 +109,7 @@ pub struct BlockCacheConfig {
     pub database: DatabaseConfig,
     // todo! this porbably belongs in ValidatorConfig ... ?
     /// Network type.
-    pub network: zebra_chain::parameters::Network,
+    pub network: Network,
     /// Stops zaino waiting on server sync.
     /// Used for testing.
     pub no_sync: bool,

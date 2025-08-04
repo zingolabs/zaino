@@ -73,6 +73,7 @@ impl NonFinalisedState {
             non_finalised_state
                 .config
                 .network
+                .to_zebra_network()
                 .sapling_activation_height()
                 .0,
         )..=chain_height
@@ -80,7 +81,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     non_finalised_state.state.as_ref(),
-                    Some(&non_finalised_state.config.network),
+                    Some(&non_finalised_state.config.network.to_zebra_network()),
                     &non_finalised_state.fetcher,
                     HashOrHeight::Height(Height(height)),
                 )
@@ -276,7 +277,7 @@ impl NonFinalisedState {
             .blocks
             .0;
         for block_height in ((reorg_height.0 + 1)
-            .max(self.config.network.sapling_activation_height().0))
+            .max(self.config.network.to_zebra_network().sapling_activation_height().0))
             ..=validator_height
         {
             // Either pop the reorged block or pop the oldest block in non-finalised state.
@@ -327,7 +328,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     self.state.as_ref(),
-                    Some(&self.config.network.clone()),
+                    Some(&self.config.network.to_zebra_network()),
                     &self.fetcher,
                     HashOrHeight::Height(Height(block_height)),
                 )
@@ -358,7 +359,7 @@ impl NonFinalisedState {
     /// Waits for server to sync with p2p network.
     pub async fn wait_on_server(&self) -> Result<(), NonFinalisedStateError> {
         // If no_db is active wait for server to sync with p2p network.
-        if self.config.no_db && !self.config.network.is_regtest() && !self.config.no_sync {
+        if self.config.no_db && !self.config.network.to_zebra_network().is_regtest() && !self.config.no_sync {
             self.status.store(StatusType::Syncing.into());
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {

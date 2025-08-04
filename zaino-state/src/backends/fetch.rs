@@ -87,7 +87,7 @@ impl ZcashService for FetchService {
         let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(
             get_build_info(),
-            config.block_cache.network.clone(),
+            config.block_cache.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );

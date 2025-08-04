@@ -406,7 +406,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
     type Error = IndexerError;
 
     fn try_from(cfg: IndexerConfig) -> Result<Self, Self::Error> {
-        let network = cfg.network.to_zebra_network();
+        let _network = cfg.network.to_zebra_network();
 
         match cfg.backend {
             BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
@@ -424,7 +424,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                 block_cache: BlockCacheConfig {
                     cache: cfg.storage.cache,
                     database: cfg.storage.zaino_database,
-                    network,
+                    network: cfg.network,
                     no_sync: cfg.debug.no_sync,
                     no_db: cfg.debug.no_db,
                 },
@@ -436,7 +436,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                 block_cache: BlockCacheConfig {
                     cache: cfg.storage.cache,
                     database: cfg.storage.zaino_database,
-                    network,
+                    network: cfg.network,
                     no_sync: cfg.debug.no_sync,
                     no_db: cfg.debug.no_db,
                 },
