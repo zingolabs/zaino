@@ -1,8 +1,6 @@
-use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_commons::config::BackendType;
-use zaino_state::{
-    bench::chain_index::non_finalised_state::{BlockchainSource, NonFinalizedState},
-};
+use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
+use zaino_state::bench::chain_index::non_finalised_state::{BlockchainSource, NonFinalizedState};
 use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
 
 async fn create_test_manager_and_connector(
@@ -119,6 +117,7 @@ async fn nfs_simple_sync() {
 mod chain_query_interface {
 
     use futures::TryStreamExt as _;
+    use zaino_commons::config::Cookie;
     use zaino_state::{
         bench::chain_index::{
             self,
@@ -152,6 +151,7 @@ mod chain_query_interface {
             Some(dir) => dir,
             None => test_manager.data_dir.clone(),
         };
+        // todo! move into a method, scrap the string layer
         let network = match test_manager.network.to_string().as_str() {
             "Regtest" => zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
@@ -174,7 +174,7 @@ mod chain_query_interface {
         };
 
         let state_service_config: StateServiceConfig = StateServiceConfig {
-            validator: zaino_state::config::ValidatorConfig {
+            validator: zaino_commons::config::validator::Config {
                 config: zebra_state::Config {
                     cache_dir: state_chain_cache_dir,
                     ephemeral: false,
@@ -184,12 +184,11 @@ mod chain_query_interface {
                 },
                 rpc_address: test_manager.zebrad_rpc_listen_address,
                 indexer_rpc_address: false,
-                cookie_auth: false,
-                cookie_path: None,
+                cookie: Cookie::Disabled,
                 rpc_user: None,
                 rpc_password: None,
             },
-            service: zaino_state::config::ServiceConfig {
+            service: zaino_commons::config::ServiceConfig {
                 timeout: None,
                 channel_size: None,
             },

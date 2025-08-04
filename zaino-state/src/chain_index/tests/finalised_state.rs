@@ -7,6 +7,7 @@ use std::io::BufReader;
 use std::path::Path;
 use std::{fs::File, path::PathBuf};
 use tempfile::TempDir;
+use zaino_commons::config::{CacheConfig, DatabaseConfig};
 
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_rpc::methods::GetAddressUtxos;
@@ -116,10 +117,6 @@ async fn spawn_default_zaino_db() -> Result<DefaultZainoDbProcess, FinalisedStat
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
     let config = BlockCacheConfig {
-        map_capacity: None,
-        map_shard_amount: None,
-        db_path,
-        db_size: None,
         network: zebra_chain::parameters::Network::new_regtest(
             zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                 before_overwinter: Some(1),
@@ -135,6 +132,14 @@ async fn spawn_default_zaino_db() -> Result<DefaultZainoDbProcess, FinalisedStat
                 nu7: None,
             },
         ),
+        database: DatabaseConfig {
+            path: db_path,
+            size: None,
+        },
+        cache: CacheConfig {
+            capacity: None,
+            shard_amount: None,
+        },
         no_sync: false,
         no_db: false,
     };
@@ -277,10 +282,6 @@ async fn load_db_from_file() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
     let config = BlockCacheConfig {
-        map_capacity: None,
-        map_shard_amount: None,
-        db_path,
-        db_size: None,
         network: zebra_chain::parameters::Network::new_regtest(
             zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                 before_overwinter: Some(1),
@@ -296,6 +297,14 @@ async fn load_db_from_file() {
                 nu7: None,
             },
         ),
+        cache: CacheConfig {
+            capacity: None,
+            shard_amount: None,
+        },
+        database: DatabaseConfig {
+            path: db_path,
+            size: None,
+        },
         no_sync: false,
         no_db: false,
     };

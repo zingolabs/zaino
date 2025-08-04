@@ -73,7 +73,7 @@ async fn create_test_manager_and_services(
     test_manager.local_net.print_stdout();
 
     let fetch_service_config = FetchServiceConfig {
-        validator: zaino_state::config::ValidatorConfig {
+        validator: zaino_state::config::modname::ValidatorConfig {
             config,
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,

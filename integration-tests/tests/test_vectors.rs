@@ -7,12 +7,15 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
+use zaino_commons::config::CacheConfig;
+use zaino_commons::config::DatabaseConfig;
+use zaino_commons::config::{BackendType, Cookie, ServiceConfig, ValidatorConfig};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_state::read_u32_le;
 use zaino_state::write_u32_le;
+use zaino_state::BlockCacheConfig;
 use zaino_state::CompactSize;
 use zaino_state::ZainoVersionedSerialise;
-use zaino_commons::config::BackendType;
 use zaino_state::{ChainBlock, ChainWork};
 use zaino_state::{
     StateService, StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
@@ -85,37 +88,67 @@ async fn create_test_manager_and_services(
         None => test_manager.data_dir.clone(),
     };
 
-    let state_service = StateService::spawn(StateServiceConfig::new(
-        zebra_state::Config {
-            cache_dir: state_chain_cache_dir,
-            ephemeral: false,
-            delete_old_database: true,
-            debug_stop_at_height: None,
-            debug_validity_check_interval: None,
+    let state_service = StateService::spawn(StateServiceConfig {
+        validator: ValidatorConfig {
+            config: zebra_state::Config {
+                cache_dir: state_chain_cache_dir,
+                ephemeral: false,
+                delete_old_database: true,
+                debug_stop_at_height: None,
+                debug_validity_check_interval: None,
+            },
+            rpc_address: test_manager.zebrad_rpc_listen_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            cookie: Cookie::Disabled,
+            rpc_user: None,
+            rpc_password: None,
         },
-        test_manager.zebrad_rpc_listen_address,
-        test_manager.zebrad_grpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        network_type,
-        true,
-        true,
-    ))
+        service: ServiceConfig {
+            timeout: todo!(),
+            channel_size: todo!(),
+        },
+        block_cache: BlockCacheConfig {
+            cache: CacheConfig {
+                capacity: None,
+                shard_amount: None,
+            },
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                size: None,
+            },
+            network,
+            no_sync: true,
+            no_db: true,
+        },
+    })
     .await
     .unwrap();
+
+    // test_manager.zebrad_rpc_listen_address,
+    // test_manager.zebrad_grpc_listen_address,
+    // false,
+    // None,
+    // None,
+    // None,
+    // None,
+    // None,
+    // None,
+    // None,
+    // test_manager
+    //     .local_net
+    //     .data_dir()
+    //     .path()
+    //     .to_path_buf()
+    //     .join("zaino"),
+    // None,
+    // network_type,
+    // true,
+    // true,
 
     let state_subscriber = state_service.get_subscriber().inner();
 
