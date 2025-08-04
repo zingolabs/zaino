@@ -108,6 +108,48 @@ pub struct BlockCacheConfig {
     pub no_db: bool,
 }
 
+/// Network type for Zaino configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Network {
+    /// Mainnet network
+    Mainnet,
+    /// Testnet network
+    Testnet,
+    /// Regtest network (for local testing)
+    Regtest,
+}
+
+impl Network {
+    /// Convert to Zebra's network type for internal use.
+    pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
+        match self {
+            Network::Regtest => zebra_chain::parameters::Network::new_regtest(
+                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+                    before_overwinter: Some(1),
+                    overwinter: Some(1),
+                    sapling: Some(1),
+                    blossom: Some(1),
+                    heartwood: Some(1),
+                    canopy: Some(1),
+                    nu5: Some(1),
+                    nu6: Some(1),
+                    nu6_1: None,
+                    nu7: None,
+                },
+            ),
+            Network::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
+            Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
+        }
+    }
+}
+
+impl Default for Network {
+    fn default() -> Self {
+        Network::Testnet
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Copy)]
 #[serde(rename_all = "lowercase")]
 /// Type of backend to be used.
