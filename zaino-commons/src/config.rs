@@ -12,7 +12,7 @@ pub struct ValidatorConfig {
     /// Validator gRPC address.
     pub indexer_rpc_address: std::net::SocketAddr,
     /// Validator RPC cookie authentication
-    pub cookie: Cookie,
+    pub cookie: CookieAuth,
     /// Validator JsonRPC user.
     pub rpc_user: String,
     /// Validator JsonRPC password.
@@ -25,20 +25,30 @@ impl Default for ValidatorConfig {
             config: zebra_state::Config::default(),
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
             indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
-            cookie: Cookie::Disabled,
+            cookie: CookieAuth::Disabled,
             rpc_user: "xxxxxx".to_owned(),
             rpc_password: "xxxxxx".to_owned(),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Cookie {
+/// Cookie-based authentication configuration.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CookieAuth {
+    /// No cookie authentication
     Disabled,
+    /// Cookie authentication enabled
     Enabled {
-        /// Path to the validator cookie file.
+        /// Path to the cookie file
         path: PathBuf,
     },
+}
+
+impl Default for CookieAuth {
+    fn default() -> Self {
+        CookieAuth::Disabled
+    }
 }
 
 /// Holds service-level configuration.

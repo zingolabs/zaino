@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zaino_commons::config::{Cookie, ValidatorConfig};
+use zaino_commons::config::{CookieAuth, ValidatorConfig};
 
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
@@ -228,11 +228,11 @@ impl JsonRpSeeConnector {
         config: &zaino_commons::config::ValidatorConfig,
     ) -> Result<Self, TransportError> {
         match &config.cookie {
-            Cookie::Enabled { path } => JsonRpSeeConnector::new_with_cookie_auth(
+            CookieAuth::Enabled { path } => JsonRpSeeConnector::new_with_cookie_auth(
                 test_node_and_return_url(config).await?,
                 Path::new(path),
             ),
-            Cookie::Disabled => JsonRpSeeConnector::new_with_basic_auth(
+            CookieAuth::Disabled => JsonRpSeeConnector::new_with_basic_auth(
                 test_node_and_return_url(config).await?,
                 config.rpc_user.clone(),
                 config.rpc_password.clone(),
@@ -718,13 +718,13 @@ pub async fn test_node_and_return_url(
     }: &ValidatorConfig,
 ) -> Result<Url, TransportError> {
     let auth_method = match cookie {
-        Cookie::Enabled { path } => {
+        CookieAuth::Enabled { path } => {
             let cookie_password = read_and_parse_cookie_token(Path::new(&path))?;
             AuthMethod::Cookie {
                 cookie: cookie_password,
             }
         }
-        Cookie::Disabled => AuthMethod::Basic {
+        CookieAuth::Disabled => AuthMethod::Basic {
             username: rpc_user.to_string(),
             password: rpc_password.to_string(),
         },

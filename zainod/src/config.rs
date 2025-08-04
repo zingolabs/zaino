@@ -19,7 +19,7 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    BackendType, BlockCacheConfig, CacheConfig, Cookie, DatabaseConfig, ServiceConfig,
+    BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, ServiceConfig,
     ValidatorConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
@@ -434,13 +434,13 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                     // todo! the whole IndexerConfig struct should also be refactored into sub-structs and all this can be avoided
                     cookie: {
                         if cfg.enable_cookie_auth {
-                            Cookie::Enabled {
+                            CookieAuth::Enabled {
                                 path: cfg
                                     .cookie_dir
                                     .expect("should provide cookie dir if enable_cookie_auth=true"),
                             }
                         } else {
-                            Cookie::Disabled
+                            CookieAuth::Disabled
                         }
                     },
                     rpc_address: cfg.validator_listen_address,
@@ -477,13 +477,13 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                     // todo! the whole IndexerConfig struct should also be refactored into sub-structs and all this can be avoided
                     cookie: {
                         if cfg.enable_cookie_auth {
-                            Cookie::Enabled {
+                            CookieAuth::Enabled {
                                 path: cfg
                                     .cookie_dir
                                     .expect("should provide cookie dir if enable_cookie_auth=true"),
                             }
                         } else {
-                            Cookie::Disabled
+                            CookieAuth::Disabled
                         }
                     },
                     rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),

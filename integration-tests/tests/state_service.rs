@@ -1,4 +1,4 @@
-use zaino_commons::config::{BackendType, BlockCacheConfig, CacheConfig, Cookie, DatabaseConfig, ServiceConfig, ValidatorConfig};
+use zaino_commons::config::{BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, ServiceConfig, ValidatorConfig};
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
     FetchService, FetchServiceError, FetchServiceSubscriber, LightWalletIndexer, StateService,
@@ -77,7 +77,7 @@ async fn create_test_manager_and_services(
             config,
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            cookie: Cookie::Disabled,
+            cookie: CookieAuth::Disabled,
             rpc_user: "xxxxxx".to_string(),
             rpc_password: "xxxxxx".to_string(),
         },

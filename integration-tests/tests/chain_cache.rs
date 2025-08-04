@@ -117,7 +117,7 @@ async fn nfs_simple_sync() {
 mod chain_query_interface {
 
     use futures::TryStreamExt as _;
-    use zaino_commons::config::Cookie;
+    use zaino_commons::config::CookieAuth;
     use zaino_state::{
         bench::chain_index::{
             self,
@@ -184,7 +184,7 @@ mod chain_query_interface {
                 },
                 rpc_address: test_manager.zebrad_rpc_listen_address,
                 indexer_rpc_address: false,
-                cookie: Cookie::Disabled,
+                cookie: CookieAuth::Disabled,
                 rpc_user: None,
                 rpc_password: None,
             },

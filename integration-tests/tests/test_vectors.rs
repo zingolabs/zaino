@@ -9,7 +9,7 @@ use std::io::BufWriter;
 use std::path::Path;
 use zaino_commons::config::CacheConfig;
 use zaino_commons::config::DatabaseConfig;
-use zaino_commons::config::{BackendType, Cookie, ServiceConfig, ValidatorConfig};
+use zaino_commons::config::{BackendType, CookieAuth, ServiceConfig, ValidatorConfig};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_state::read_u32_le;
 use zaino_state::write_u32_le;
@@ -99,7 +99,7 @@ async fn create_test_manager_and_services(
             },
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            cookie: Cookie::Disabled,
+            cookie: CookieAuth::Disabled,
             rpc_user: None,
             rpc_password: None,
         },
