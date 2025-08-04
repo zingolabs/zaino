@@ -126,30 +126,6 @@ enum AuthMethod {
     Cookie { cookie: String },
 }
 
-impl TryFrom<ValidatorConfig> for AuthMethod {
-    type Error = TransportError;
-    fn try_from(
-        ValidatorConfig {
-            cookie,
-            rpc_user,
-            rpc_password,
-            ..
-        }: ValidatorConfig,
-    ) -> Result<Self, Self::Error> {
-        match cookie {
-            Cookie::Enabled { path } => {
-                let cookie_password = read_and_parse_cookie_token(Path::new(&path))?;
-                Ok(AuthMethod::Cookie {
-                    cookie: cookie_password,
-                })
-            }
-            Cookie::Disabled => Ok(AuthMethod::Basic {
-                username: rpc_user,
-                password: rpc_password,
-            }),
-        }
-    }
-}
 
 /// Trait to convert a JSON-RPC response to an error.
 pub trait ResponseToError: Sized {
