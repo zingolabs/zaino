@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use tempfile::TempDir;
-use zainod::config::{DebugConfig, IndexerConfig, ServerConfig, StorageConfig};
+use zainodlib::config::{DebugConfig, IndexerConfig, ServerConfig, StorageConfig};
 use zaino_commons::config::{
     BackendType, CacheConfig, CookieAuth, DatabaseConfig, Network, ServiceConfig, ValidatorConfig,
 };
@@ -205,7 +205,7 @@ fn test_network_enum_functionality() {
         };
 
         // Network enum provides type safety
-        let zebra_network: zebra_chain::parameters::Network = config.network.into();
+        let _zebra_network: zebra_chain::parameters::Network = config.network.into();
         
         // Can be serialized to string names
         let serialized = serde_json::to_string(&config.network).unwrap();
@@ -296,7 +296,6 @@ fn test_toml_round_trip_fidelity() {
 fn test_figment_integration() {
     // Example 8: Test the actual Figment loading pipeline used by zaino
     use figment::{providers::{Format, Serialized, Toml}, Figment};
-    use std::collections::HashMap;
 
     let toml_path = "tests/data/development.toml";
     

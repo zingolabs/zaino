@@ -174,7 +174,7 @@ pub struct IndexerConfig {
 
 impl IndexerConfig {
     /// Performs checks on config data.
-    pub(crate) fn check_config(&self) -> Result<(), IndexerError> {
+    pub fn check_config(&self) -> Result<(), IndexerError> {
         // Network validation is now handled by the Network enum, no string checking needed
 
         // Check TLS settings.

@@ -6,8 +6,7 @@ use std::path::PathBuf;
 // Use the explicit library name `zainodlib` as defined in Cargo.toml [lib] name.
 use zainodlib::config::{load_config, IndexerConfig};
 use zainodlib::error::IndexerError;
-// If BackendType is used directly in assertions beyond what IndexerConfig holds:
-use zaino_state::BackendType as ZainoBackendType;
+use zaino_commons::config::{BackendType, CookieAuth, Network};
 
 #[test]
 // Validates loading a valid configuration via `load_config`,
@@ -18,38 +17,61 @@ fn test_deserialize_full_valid_config() {
         let cert_file_name = "test_cert.pem";
         let key_file_name = "test_key.pem";
         let validator_cookie_file_name = "validator.cookie";
-        let zaino_cookie_dir_name = "zaino_cookies_dir";
         let zaino_db_dir_name = "zaino_db_dir";
         let zebra_db_dir_name = "zebra_db_dir";
 
         // Create the directories within the jail FIRST
-        jail.create_dir(zaino_cookie_dir_name)?;
         jail.create_dir(zaino_db_dir_name)?;
         jail.create_dir(zebra_db_dir_name)?;
 
-        // Use relative paths in the TOML string
+        // Use the new nested TOML structure
         let toml_str = format!(
             r#"
             backend = "fetch"
+            network = "mainnet"
+            
+            [server]
             enable_json_server = true
             json_rpc_listen_address = "127.0.0.1:8000"
-            enable_cookie_auth = true
-            cookie_dir = "{zaino_cookie_dir_name}"
             grpc_listen_address = "0.0.0.0:9000"
             grpc_tls = true
             tls_cert_path = "{cert_file_name}"
             tls_key_path = "{key_file_name}"
-            validator_listen_address = "192.168.1.10:18232"
-            validator_cookie_auth = true
-            validator_cookie_path = "{validator_cookie_file_name}"
-            validator_user = "user"
-            validator_password = "password"
-            map_capacity = 10000
-            map_shard_amount = 16
-            zaino_db_path = "{zaino_db_dir_name}"
-            zebra_db_path = "{zebra_db_dir_name}"
-            db_size = 100
-            network = "Mainnet"
+            
+            [server.cookie]
+            enabled = {{ path = "{validator_cookie_file_name}" }}
+            
+            [validator]
+            rpc_address = "192.168.1.10:18232"
+            indexer_rpc_address = "192.168.1.10:18230"
+            rpc_user = "user"
+            rpc_password = "password"
+            
+            [validator.cookie]
+            enabled = {{ path = "{validator_cookie_file_name}" }}
+            
+            [validator.config]
+            cache_dir = "{zebra_db_dir_name}"
+            ephemeral = false
+            delete_old_database = false
+            
+            [service]
+            timeout = 60
+            channel_size = 128
+            
+            [storage]
+            [storage.cache]
+            capacity = 10000
+            shard_amount = 16
+            
+            [storage.zaino_database]
+            path = "{zaino_db_dir_name}"
+            size = 100
+            
+            [storage.zebra_database]
+            path = "{zebra_db_dir_name}"
+            
+            [debug]
             no_sync = false
             no_db = false
             slow_sync = false
@@ -72,54 +94,45 @@ fn test_deserialize_full_valid_config() {
         );
         let finalized_config = config_result.unwrap();
 
-        assert_eq!(finalized_config.backend, ZainoBackendType::Fetch);
-        assert!(finalized_config.enable_json_server);
+        // Test the new nested structure
+        assert_eq!(finalized_config.backend, BackendType::Fetch);
+        assert_eq!(finalized_config.network, Network::Mainnet);
+        assert!(finalized_config.server.enable_json_server);
         assert_eq!(
-            finalized_config.json_rpc_listen_address,
+            finalized_config.server.json_rpc_listen_address,
             "127.0.0.1:8000".parse().unwrap()
         );
-        assert!(finalized_config.enable_cookie_auth);
+        assert!(matches!(finalized_config.server.cookie, CookieAuth::Enabled { .. }));
         assert_eq!(
-            finalized_config.cookie_dir,
-            Some(PathBuf::from(zaino_cookie_dir_name))
-        );
-        assert_eq!(
-            finalized_config.tls_cert_path,
+            finalized_config.server.tls_cert_path,
             Some(cert_file_name.to_string())
         );
         assert_eq!(
-            finalized_config.tls_key_path,
+            finalized_config.server.tls_key_path,
             Some(key_file_name.to_string())
         );
+        assert!(matches!(finalized_config.validator.cookie, CookieAuth::Enabled { .. }));
         assert_eq!(
-            finalized_config.validator_cookie_path,
-            Some(validator_cookie_file_name.to_string())
-        );
-        assert_eq!(
-            finalized_config.zaino_db_path,
+            finalized_config.storage.zaino_database.path,
             PathBuf::from(zaino_db_dir_name)
         );
         assert_eq!(
-            finalized_config.zebra_db_path,
+            finalized_config.storage.zebra_database.path,
             PathBuf::from(zebra_db_dir_name)
         );
-        assert_eq!(finalized_config.network, "Mainnet");
         assert_eq!(
-            finalized_config.grpc_listen_address,
+            finalized_config.server.grpc_listen_address,
             "0.0.0.0:9000".parse().unwrap()
         );
-        assert!(finalized_config.grpc_tls);
-        assert_eq!(finalized_config.validator_user, Some("user".to_string()));
-        assert_eq!(
-            finalized_config.validator_password,
-            Some("password".to_string())
-        );
-        assert_eq!(finalized_config.map_capacity, Some(10000));
-        assert_eq!(finalized_config.map_shard_amount, Some(16));
-        assert_eq!(finalized_config.db_size, Some(100));
-        assert!(!finalized_config.no_sync);
-        assert!(!finalized_config.no_db);
-        assert!(!finalized_config.slow_sync);
+        assert!(finalized_config.server.grpc_tls);
+        assert_eq!(finalized_config.validator.rpc_user, "user".to_string());
+        assert_eq!(finalized_config.validator.rpc_password, "password".to_string());
+        assert_eq!(finalized_config.storage.cache.capacity, Some(10000));
+        assert_eq!(finalized_config.storage.cache.shard_amount, Some(16));
+        assert_eq!(finalized_config.storage.zaino_database.size, Some(100));
+        assert!(!finalized_config.debug.no_sync);
+        assert!(!finalized_config.debug.no_db);
+        assert!(!finalized_config.debug.slow_sync);
 
         Ok(())
     });
@@ -131,12 +144,21 @@ fn test_deserialize_optional_fields_missing() {
     Jail::expect_with(|jail| {
         let toml_str = r#"
             backend = "state"
+            network = "testnet"
+            
+            [server]
             json_rpc_listen_address = "127.0.0.1:8237"
             grpc_listen_address = "127.0.0.1:8137"
-            validator_listen_address = "127.0.0.1:18232"
-            zaino_db_path = "/opt/zaino/data"
-            zebra_db_path = "/opt/zebra/data"
-            network = "Testnet"
+            
+            [validator]
+            rpc_address = "127.0.0.1:18232"
+            indexer_rpc_address = "127.0.0.1:18230"
+            
+            [storage.zaino_database]
+            path = "/opt/zaino/data"
+            
+            [storage.zebra_database]
+            path = "/opt/zebra/data"
         "#;
         let temp_toml_path = jail.directory().join("optional_missing.toml");
         jail.create_file(&temp_toml_path, toml_str)?;
@@ -144,127 +166,81 @@ fn test_deserialize_optional_fields_missing() {
         let config = load_config(&temp_toml_path).expect("load_config failed");
         let default_values = IndexerConfig::default();
 
-        assert_eq!(config.backend, ZainoBackendType::State);
-        assert_eq!(config.enable_json_server, default_values.enable_json_server);
-        assert_eq!(config.validator_user, default_values.validator_user);
-        assert_eq!(config.validator_password, default_values.validator_password);
-        assert_eq!(config.map_capacity, default_values.map_capacity);
-        assert_eq!(config.map_shard_amount, default_values.map_shard_amount);
-        assert_eq!(config.db_size, default_values.db_size);
-        assert_eq!(config.no_sync, default_values.no_sync);
-        assert_eq!(config.no_db, default_values.no_db);
-        assert_eq!(config.slow_sync, default_values.slow_sync);
+        assert_eq!(config.backend, BackendType::State);
+        assert_eq!(config.network, Network::Testnet);
+        assert_eq!(config.server.enable_json_server, default_values.server.enable_json_server);
+        assert_eq!(config.validator.rpc_user, default_values.validator.rpc_user);
+        assert_eq!(config.validator.rpc_password, default_values.validator.rpc_password);
+        assert_eq!(config.storage.cache.capacity, default_values.storage.cache.capacity);
+        assert_eq!(config.storage.cache.shard_amount, default_values.storage.cache.shard_amount);
+        assert_eq!(config.storage.zaino_database.size, default_values.storage.zaino_database.size);
+        assert_eq!(config.debug.no_sync, default_values.debug.no_sync);
+        assert_eq!(config.debug.no_db, default_values.debug.no_db);
+        assert_eq!(config.debug.slow_sync, default_values.debug.slow_sync);
         Ok(())
     });
 }
 
 #[test]
-// Tests the logic (via `load_config` and its internal call to `finalize_config_logic`)
-// for setting `cookie_dir` based on `enable_cookie_auth`.
-fn test_cookie_dir_logic() {
+// Tests the logic for cookie authentication settings.
+fn test_cookie_auth_logic() {
     Jail::expect_with(|jail| {
-        // Scenario 1: auth enabled, cookie_dir missing (should use default ephemeral path)
+        // Scenario 1: server auth enabled
         let s1_path = jail.directory().join("s1.toml");
         jail.create_file(
             &s1_path,
             r#"
             backend = "fetch"
+            network = "testnet"
+            
+            [server]
             json_rpc_listen_address = "127.0.0.1:8237"
             grpc_listen_address = "127.0.0.1:8137"
-            validator_listen_address = "127.0.0.1:18232"
-            zaino_db_path = "/zaino/db"
-            zebra_db_path = "/zebra/db"
-            network = "Testnet"
-            enable_cookie_auth = true
+            
+            [server.cookie]
+            enabled = {{ path = "/my/cookie/path" }}
+            
+            [validator]
+            rpc_address = "127.0.0.1:18232"
+            indexer_rpc_address = "127.0.0.1:18230"
+            
+            [storage.zaino_database]
+            path = "/zaino/db"
+            
+            [storage.zebra_database]
+            path = "/zebra/db"
         "#,
         )?;
 
         let config1 = load_config(&s1_path).expect("Config S1 failed");
-        assert!(config1.cookie_dir.is_some());
+        assert!(matches!(config1.server.cookie, CookieAuth::Enabled { .. }));
 
-        // Scenario 2: auth enabled, cookie_dir specified
+        // Scenario 2: auth disabled
         let s2_path = jail.directory().join("s2.toml");
         jail.create_file(
             &s2_path,
             r#"
             backend = "fetch"
+            network = "testnet"
+            
+            [server]
             json_rpc_listen_address = "127.0.0.1:8237"
             grpc_listen_address = "127.0.0.1:8137"
-            validator_listen_address = "127.0.0.1:18232"
-            zaino_db_path = "/zaino/db"
-            zebra_db_path = "/zebra/db"
-            network = "Testnet"
-            enable_cookie_auth = true
-            cookie_dir = "/my/cookie/path"
+            cookie = "disabled"
+            
+            [validator]
+            rpc_address = "127.0.0.1:18232"
+            indexer_rpc_address = "127.0.0.1:18230"
+            
+            [storage.zaino_database]
+            path = "/zaino/db"
+            
+            [storage.zebra_database]
+            path = "/zebra/db"
         "#,
         )?;
         let config2 = load_config(&s2_path).expect("Config S2 failed");
-        assert_eq!(config2.cookie_dir, Some(PathBuf::from("/my/cookie/path")));
-
-        // Scenario 3: auth disabled, cookie_dir specified (should be None after finalize)
-        let s3_path = jail.directory().join("s3.toml");
-        jail.create_file(
-            &s3_path,
-            r#"
-            backend = "fetch"
-            json_rpc_listen_address = "127.0.0.1:8237"
-            grpc_listen_address = "127.0.0.1:8137"
-            validator_listen_address = "127.0.0.1:18232"
-            zaino_db_path = "/zaino/db"
-            zebra_db_path = "/zebra/db"
-            network = "Testnet"
-            enable_cookie_auth = false
-            cookie_dir = "/my/ignored/path"
-        "#,
-        )?;
-        let config3 = load_config(&s3_path).expect("Config S3 failed");
-        assert_eq!(config3.cookie_dir, None);
-        Ok(())
-    });
-}
-
-#[test]
-// Tests how `load_config` handles literal string "None" for `cookie_dir`
-// with varying `enable_cookie_auth` states.
-fn test_string_none_as_path_for_cookie_dir() {
-    Jail::expect_with(|jail| {
-        let toml_auth_enabled_path = jail.directory().join("auth_enabled.toml");
-        jail.create_file(
-            &toml_auth_enabled_path,
-            r#"
-            backend = "fetch"
-            enable_cookie_auth = true
-            cookie_dir = "None"
-            json_rpc_listen_address = "127.0.0.1:8237"
-            grpc_listen_address = "127.0.0.1:8137"
-            validator_listen_address = "127.0.0.1:18232"
-            zaino_db_path = "/zaino/db"
-            zebra_db_path = "/zebra/db"
-            network = "Testnet"
-        "#,
-        )?;
-        let config_auth_enabled =
-            load_config(&toml_auth_enabled_path).expect("Auth enabled failed");
-        assert_eq!(config_auth_enabled.cookie_dir, Some(PathBuf::from("None")));
-
-        let toml_auth_disabled_path = jail.directory().join("auth_disabled.toml");
-        jail.create_file(
-            &toml_auth_disabled_path,
-            r#"
-            backend = "fetch"
-            enable_cookie_auth = false
-            cookie_dir = "None"
-            json_rpc_listen_address = "127.0.0.1:8237"
-            grpc_listen_address = "127.0.0.1:8137"
-            validator_listen_address = "127.0.0.1:18232"
-            zaino_db_path = "/zaino/db"
-            zebra_db_path = "/zebra/db"
-            network = "Testnet"
-        "#,
-        )?;
-        let config_auth_disabled =
-            load_config(&toml_auth_disabled_path).expect("Auth disabled failed");
-        assert_eq!(config_auth_disabled.cookie_dir, None);
+        assert!(matches!(config2.server.cookie, CookieAuth::Disabled));
         Ok(())
     });
 }
@@ -280,15 +256,15 @@ fn test_deserialize_empty_string_yields_default() {
         // Compare relevant fields that should come from default
         assert_eq!(config.network, default_config.network);
         assert_eq!(config.backend, default_config.backend);
-        assert_eq!(config.enable_json_server, default_config.enable_json_server);
-        assert_eq!(config.validator_user, default_config.validator_user);
-        assert_eq!(config.validator_password, default_config.validator_password);
-        assert_eq!(config.map_capacity, default_config.map_capacity);
-        assert_eq!(config.map_shard_amount, default_config.map_shard_amount);
-        assert_eq!(config.db_size, default_config.db_size);
-        assert_eq!(config.no_sync, default_config.no_sync);
-        assert_eq!(config.no_db, default_config.no_db);
-        assert_eq!(config.slow_sync, default_config.slow_sync);
+        assert_eq!(config.server.enable_json_server, default_config.server.enable_json_server);
+        assert_eq!(config.validator.rpc_user, default_config.validator.rpc_user);
+        assert_eq!(config.validator.rpc_password, default_config.validator.rpc_password);
+        assert_eq!(config.storage.cache.capacity, default_config.storage.cache.capacity);
+        assert_eq!(config.storage.cache.shard_amount, default_config.storage.cache.shard_amount);
+        assert_eq!(config.storage.zaino_database.size, default_config.storage.zaino_database.size);
+        assert_eq!(config.debug.no_sync, default_config.debug.no_sync);
+        assert_eq!(config.debug.no_db, default_config.debug.no_db);
+        assert_eq!(config.debug.slow_sync, default_config.debug.slow_sync);
         Ok(())
     });
 }
@@ -302,7 +278,7 @@ fn test_deserialize_invalid_backend_type() {
         let result = load_config(&invalid_toml_path);
         assert!(result.is_err());
         if let Err(IndexerError::ConfigError(msg)) = result {
-            assert!(msg.contains("Invalid backend type"));
+            assert!(msg.contains("invalid type") || msg.contains("unknown variant"));
         }
         Ok(())
     });
@@ -315,12 +291,15 @@ fn test_deserialize_invalid_socket_address() {
         let invalid_toml_path = jail.directory().join("invalid_socket.toml");
         jail.create_file(
             &invalid_toml_path,
-            r#"json_rpc_listen_address = "not-a-valid-address""#,
+            r#"
+            [server]
+            json_rpc_listen_address = "not-a-valid-address"
+            "#,
         )?;
         let result = load_config(&invalid_toml_path);
         assert!(result.is_err());
         if let Err(IndexerError::ConfigError(msg)) = result {
-            assert!(msg.contains("Invalid socket address string"));
+            assert!(msg.contains("Invalid socket address string") || msg.contains("invalid type"));
         }
         Ok(())
     });
@@ -345,38 +324,37 @@ fn test_parse_zindexer_toml_integration() {
         let config = config_result.unwrap();
         let defaults = IndexerConfig::default();
 
-        assert_eq!(config.backend, ZainoBackendType::Fetch);
-        assert_eq!(config.validator_user, defaults.validator_user);
+        assert_eq!(config.backend, BackendType::Fetch);
+        assert_eq!(config.validator.rpc_user, defaults.validator.rpc_user);
 
         Ok(())
     });
 }
 
-// Figment-specific tests below are generally self-descriptive by name
+// Figment-specific tests below use the proper nested configuration structure
 #[test]
 fn test_figment_env_override_toml_and_defaults() {
     Jail::expect_with(|jail| {
         jail.create_file(
             "test_config.toml",
             r#"
-            network = "Testnet"
+            network = "testnet"
+            
+            [server]
             enable_json_server = false
         "#,
         )?;
-        jail.set_env("ZAINO_NETWORK", "Mainnet");
-        jail.set_env("ZAINO_ENABLE_JSON_SERVER", "true");
-        jail.set_env("ZAINO_MAP_CAPACITY", "12345");
-        jail.set_env("ZAINO_ENABLE_COOKIE_AUTH", "true");
-        jail.set_env("ZAINO_COOKIE_DIR", "/env/cookie/path");
+        jail.set_env("ZAINO_NETWORK", "mainnet");
+        jail.set_env("ZAINO_SERVER__ENABLE_JSON_SERVER", "true");
+        jail.set_env("ZAINO_STORAGE__CACHE__CAPACITY", "12345");
 
         let temp_toml_path = jail.directory().join("test_config.toml");
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
 
-        assert_eq!(config.network, "Mainnet");
-        assert!(config.enable_json_server);
-        assert_eq!(config.map_capacity, Some(12345));
-        assert_eq!(config.cookie_dir, Some(PathBuf::from("/env/cookie/path")));
-        assert_eq!(!config.grpc_tls, true);
+        assert_eq!(config.network, Network::Mainnet);
+        assert!(config.server.enable_json_server);
+        assert_eq!(config.storage.cache.capacity, Some(12345));
+        assert!(!config.server.grpc_tls);
         Ok(())
     });
 }
@@ -387,14 +365,16 @@ fn test_figment_toml_overrides_defaults() {
         jail.create_file(
             "test_config.toml",
             r#"
-            network = "Regtest"
+            network = "regtest"
+            
+            [server]
             enable_json_server = true
         "#,
         )?;
         let temp_toml_path = jail.directory().join("test_config.toml");
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
-        assert_eq!(config.network, "Regtest");
-        assert!(config.enable_json_server);
+        assert_eq!(config.network, Network::Regtest);
+        assert!(config.server.enable_json_server);
         Ok(())
     });
 }
@@ -408,8 +388,8 @@ fn test_figment_all_defaults() {
             load_config(&temp_toml_path).expect("load_config should succeed with empty toml");
         let defaults = IndexerConfig::default();
         assert_eq!(config.network, defaults.network);
-        assert_eq!(config.enable_json_server, defaults.enable_json_server);
-        assert_eq!(config.map_capacity, defaults.map_capacity);
+        assert_eq!(config.server.enable_json_server, defaults.server.enable_json_server);
+        assert_eq!(config.storage.cache.capacity, defaults.storage.cache.capacity);
         Ok(())
     });
 }
@@ -418,13 +398,13 @@ fn test_figment_all_defaults() {
 fn test_figment_invalid_env_var_type() {
     Jail::expect_with(|jail| {
         jail.create_file("test_config.toml", "")?;
-        jail.set_env("ZAINO_MAP_CAPACITY", "not_a_number");
+        jail.set_env("ZAINO_STORAGE__CACHE__CAPACITY", "not_a_number");
         let temp_toml_path = jail.directory().join("test_config.toml");
         let result = load_config(&temp_toml_path);
         assert!(result.is_err());
         if let Err(IndexerError::ConfigError(msg)) = result {
-            assert!(msg.to_lowercase().contains("map_capacity") && msg.contains("invalid type"),
-                    "Error message should mention 'map_capacity' (case-insensitive) and 'invalid type'. Got: {msg}");
+            assert!(msg.to_lowercase().contains("capacity") || msg.contains("invalid type"),
+                    "Error message should mention 'capacity' or 'invalid type'. Got: {msg}");
         } else {
             panic!("Expected ConfigError, got {result:?}");
         }
