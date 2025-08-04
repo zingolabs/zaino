@@ -176,8 +176,66 @@ impl Default for Network {
 #[serde(rename_all = "lowercase")]
 /// Type of backend to be used.
 pub enum BackendType {
-    /// Uses ReadStateService (Zebrad)
+    /// Uses ReadStateService (Zebra)
     State,
     /// Uses JsonRPC client (Zcashd. Zainod)
     Fetch,
+}
+
+/// Zaino's wrapper for zebra_state configuration.
+/// 
+/// This provides a clean public API while maintaining compatibility
+/// with Zebra's internal state configuration.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ZainoStateConfig {
+    /// Path to the directory for cached blockchain state
+    pub cache_dir: std::path::PathBuf,
+    /// If true, the state is stored in memory only and not persisted
+    pub ephemeral: bool,
+    /// If true, delete old database files on startup
+    pub delete_old_database: bool,
+    /// Optional height to stop processing blocks (for debugging)
+    pub debug_stop_at_height: Option<u32>,
+    /// Optional interval for validity checks in seconds (for debugging)
+    pub debug_validity_check_interval: Option<u32>,
+}
+
+impl Default for ZainoStateConfig {
+    fn default() -> Self {
+        Self {
+            cache_dir: std::path::PathBuf::from("./zaino_state_cache"),
+            ephemeral: false,
+            delete_old_database: false,
+            debug_stop_at_height: None,
+            debug_validity_check_interval: None,
+        }
+    }
+}
+
+impl From<ZainoStateConfig> for zebra_state::Config {
+    fn from(config: ZainoStateConfig) -> Self {
+        use std::time::Duration;
+        
+        zebra_state::Config {
+            cache_dir: config.cache_dir,
+            ephemeral: config.ephemeral,
+            delete_old_database: config.delete_old_database,
+            debug_stop_at_height: config.debug_stop_at_height,
+            debug_validity_check_interval: config.debug_validity_check_interval
+                .map(|secs| Duration::from_secs(secs as u64)),
+        }
+    }
+}
+
+impl From<zebra_state::Config> for ZainoStateConfig {
+    fn from(config: zebra_state::Config) -> Self {
+        Self {
+            cache_dir: config.cache_dir,
+            ephemeral: config.ephemeral,
+            delete_old_database: config.delete_old_database,
+            debug_stop_at_height: config.debug_stop_at_height,
+            debug_validity_check_interval: config.debug_validity_check_interval
+                .map(|duration| duration.as_secs() as u32),
+        }
+    }
 }

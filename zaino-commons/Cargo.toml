@@ -15,3 +15,4 @@ zebra-state = { workspace = true }
 
 # Miscellaneous Workspace
 serde = { workspace = true, features = ["derive"] }
+humantime-serde = "1.1"
