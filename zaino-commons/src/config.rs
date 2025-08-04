@@ -196,8 +196,9 @@ pub struct ZainoStateConfig {
     pub delete_old_database: bool,
     /// Optional height to stop processing blocks (for debugging)
     pub debug_stop_at_height: Option<u32>,
-    /// Optional interval for validity checks in seconds (for debugging)
-    pub debug_validity_check_interval: Option<u32>,
+    /// Optional interval for validity checks (for debugging), e.g. "30s", "5min"
+    #[serde(with = "humantime_serde")]
+    pub debug_validity_check_interval: Option<std::time::Duration>,
 }
 
 impl Default for ZainoStateConfig {
@@ -214,15 +215,12 @@ impl Default for ZainoStateConfig {
 
 impl From<ZainoStateConfig> for zebra_state::Config {
     fn from(config: ZainoStateConfig) -> Self {
-        use std::time::Duration;
-        
         zebra_state::Config {
             cache_dir: config.cache_dir,
             ephemeral: config.ephemeral,
             delete_old_database: config.delete_old_database,
             debug_stop_at_height: config.debug_stop_at_height,
-            debug_validity_check_interval: config.debug_validity_check_interval
-                .map(|secs| Duration::from_secs(secs as u64)),
+            debug_validity_check_interval: config.debug_validity_check_interval,
         }
     }
 }
@@ -234,8 +232,7 @@ impl From<zebra_state::Config> for ZainoStateConfig {
             ephemeral: config.ephemeral,
             delete_old_database: config.delete_old_database,
             debug_stop_at_height: config.debug_stop_at_height,
-            debug_validity_check_interval: config.debug_validity_check_interval
-                .map(|duration| duration.as_secs() as u32),
+            debug_validity_check_interval: config.debug_validity_check_interval,
         }
     }
 }
