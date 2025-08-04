@@ -406,94 +406,39 @@ impl TryFrom<IndexerConfig> for BackendConfig {
     type Error = IndexerError;
 
     fn try_from(cfg: IndexerConfig) -> Result<Self, Self::Error> {
-        let network = cfg.get_network()?;
+        let network = cfg.network.to_zebra_network();
 
         match cfg.backend {
             BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
                 validator: ValidatorConfig {
                     config: zebra_state::Config {
-                        cache_dir: cfg.zebra_db_path.clone(),
+                        cache_dir: cfg.storage.zebra_database.path,
                         ephemeral: false,
                         delete_old_database: true,
                         debug_stop_at_height: None,
                         debug_validity_check_interval: None,
                     },
-                    // todo! the whole IndexerConfig struct should also be refactored into sub-structs and all this can be avoided
-                    cookie: {
-                        if cfg.enable_cookie_auth {
-                            CookieAuth::Enabled {
-                                path: cfg
-                                    .cookie_dir
-                                    .expect("should provide cookie dir if enable_cookie_auth=true"),
-                            }
-                        } else {
-                            CookieAuth::Disabled
-                        }
-                    },
-                    rpc_address: cfg.validator_listen_address,
-                    indexer_rpc_address: cfg.validator_grpc_listen_address,
-                    rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
-                    rpc_password: cfg
-                        .validator_password
-                        .unwrap_or_else(|| "xxxxxx".to_string()),
+                    ..cfg.validator
                 },
-                service: ServiceConfig {
-                    timeout: 30,
-                    channel_size: 32,
-                },
+                service: cfg.service,
                 block_cache: BlockCacheConfig {
-                    cache: CacheConfig {
-                        capacity: cfg.map_capacity,
-                        shard_amount: cfg.map_shard_amount,
-                    },
-                    database: DatabaseConfig {
-                        path: cfg.zaino_db_path,
-                        size: cfg.db_size,
-                    },
+                    cache: cfg.storage.cache,
+                    database: cfg.storage.zaino_database,
                     network,
-                    no_sync: cfg.no_sync,
-                    no_db: cfg.no_db,
+                    no_sync: cfg.debug.no_sync,
+                    no_db: cfg.debug.no_db,
                 },
             })),
 
             BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
-                validator: ValidatorConfig {
-                    config: zebra_state::Config::default(),
-                    rpc_address: cfg.validator_listen_address,
-                    indexer_rpc_address: cfg.validator_grpc_listen_address,
-                    // todo! the whole IndexerConfig struct should also be refactored into sub-structs and all this can be avoided
-                    cookie: {
-                        if cfg.enable_cookie_auth {
-                            CookieAuth::Enabled {
-                                path: cfg
-                                    .cookie_dir
-                                    .expect("should provide cookie dir if enable_cookie_auth=true"),
-                            }
-                        } else {
-                            CookieAuth::Disabled
-                        }
-                    },
-                    rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
-                    rpc_password: cfg
-                        .validator_password
-                        .unwrap_or_else(|| "xxxxxx".to_string()),
-                },
-                service: ServiceConfig {
-                    timeout: 30,
-                    channel_size: 32,
-                },
+                validator: cfg.validator,
+                service: cfg.service,
                 block_cache: BlockCacheConfig {
-                    cache: CacheConfig {
-                        capacity: cfg.map_capacity,
-                        shard_amount: cfg.map_shard_amount,
-                    },
-                    database: DatabaseConfig {
-                        path: cfg.zaino_db_path,
-                        size: cfg.db_size,
-                    },
+                    cache: cfg.storage.cache,
+                    database: cfg.storage.zaino_database,
                     network,
-                    no_sync: cfg.no_sync,
-                    no_db: cfg.no_db,
+                    no_sync: cfg.debug.no_sync,
+                    no_db: cfg.debug.no_db,
                 },
             })),
         }
