@@ -1,6 +1,6 @@
 //! Configuration types for Zaino-Fetch services.
 
-use zaino_commons::config::{ValidatorConfig, ServiceConfig, BlockCacheConfig};
+use zaino_commons::config::{BlockCacheConfig, ServiceConfig, ValidatorConfig};
 
 /// Holds config data for [crate::FetchService].
 #[derive(Debug, Clone)]

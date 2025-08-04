@@ -1,7 +1,6 @@
 //! Holds config data for Zaino-State services.
 
-pub use zaino_commons::config::{ValidatorConfig, ServiceConfig, BlockCacheConfig};
-
+pub use zaino_commons::config::{BlockCacheConfig, ServiceConfig, ValidatorConfig};
 
 /// Holds config data for [crate::StateService].
 #[derive(Debug, Clone)]
@@ -28,7 +27,6 @@ impl StateServiceConfig {
         }
     }
 }
-
 
 impl From<StateServiceConfig> for BlockCacheConfig {
     fn from(config: StateServiceConfig) -> Self {
