@@ -162,24 +162,7 @@ impl Into<zebra_chain::parameters::Network> for Network {
 
 impl Into<zebra_chain::parameters::Network> for &Network {
     fn into(self) -> zebra_chain::parameters::Network {
-        match self {
-            Network::Regtest => zebra_chain::parameters::Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    nu6_1: None,
-                    nu7: None,
-                },
-            ),
-            Network::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
-            Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
-        }
+        (*self).into()
     }
 }
 

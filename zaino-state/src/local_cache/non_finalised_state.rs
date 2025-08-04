@@ -81,7 +81,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     non_finalised_state.state.as_ref(),
-                    Some(&non_finalised_state.config.network.to_zebra_network()),
+                    Some(&non_finalised_state.config.network.into()),
                     &non_finalised_state.fetcher,
                     HashOrHeight::Height(Height(height)),
                 )
@@ -328,7 +328,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     self.state.as_ref(),
-                    Some(&self.config.network.to_zebra_network()),
+                    Some(&self.config.network.into()),
                     &self.fetcher,
                     HashOrHeight::Height(Height(block_height)),
                 )

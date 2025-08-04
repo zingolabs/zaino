@@ -406,7 +406,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
     type Error = IndexerError;
 
     fn try_from(cfg: IndexerConfig) -> Result<Self, Self::Error> {
-        let _network = cfg.network.to_zebra_network();
+        let _network: zebra_chain::parameters::Network = cfg.network.into();
 
         match cfg.backend {
             BackendType::State => Ok(BackendConfig::State(StateServiceConfig {

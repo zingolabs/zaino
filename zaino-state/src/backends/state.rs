@@ -188,7 +188,7 @@ impl ZcashService for StateService {
         };
         let data = ServiceMetadata::new(
             get_build_info(),
-            config.block_cache.network.to_zebra_network(),
+            config.block_cache.network.into(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -198,7 +198,7 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator.config.clone(),
-                &config.block_cache.network.to_zebra_network(),
+                &config.block_cache.network.into(),
                 config.validator.indexer_rpc_address,
             )
             .await??;
@@ -847,7 +847,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         chain_tip_difficulty(
-            self.config.block_cache.network.to_zebra_network(),
+            self.config.block_cache.network.into(),
             self.read_state_service.clone(),
             false,
         )
@@ -898,7 +898,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let now = Utc::now();
         let zebra_estimated_height =
-            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.block_cache.network.to_zebra_network())
+            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.block_cache.network.into())
                 .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
@@ -943,14 +943,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             (height + 1).expect("valid chain tips are a lot less than Height::MAX");
         let consensus = TipConsensusBranch::from_parts(
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.block_cache.network.to_zebra_network(), height)
+                NetworkUpgrade::current(&self.config.block_cache.network.into(), height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
             )
             .inner(),
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.block_cache.network.to_zebra_network(), next_block_height)
+                NetworkUpgrade::current(&self.config.block_cache.network.into(), next_block_height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
@@ -960,7 +960,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         // TODO: Remove unwrap()
         let difficulty = chain_tip_difficulty(
-            self.config.block_cache.network.to_zebra_network(),
+            self.config.block_cache.network.into(),
             self.read_state_service.clone(),
             false,
         )
@@ -1114,7 +1114,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        let sapling = match NetworkUpgrade::Sapling.activation_height(&self.config.block_cache.network.to_zebra_network()) {
+        let sapling = match NetworkUpgrade::Sapling.activation_height(&self.config.block_cache.network.into()) {
             Some(activation_height) if height >= activation_height => Some(
                 state
                     .ready()
@@ -1127,7 +1127,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
         });
 
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.block_cache.network.to_zebra_network()) {
+        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.block_cache.network.into()) {
             Some(activation_height) if height >= activation_height => Some(
                 state
                     .ready()
@@ -1307,7 +1307,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                                     tx.tx.clone(),
                                     best_chain_height,
                                     Some(tx.confirmations),
-                                    &self.config.block_cache.network.to_zebra_network(),
+                                    &self.config.block_cache.network.into(),
                                     Some(tx.block_time),
                                     Some(zebra_chain::block::Hash::from_bytes(
                                         self.block_cache

@@ -275,7 +275,7 @@ impl FinalisedState {
 
                             match fetch_block_from_node(
                                 finalised_state.state.as_ref(),
-                                Some(&finalised_state.config.network.to_zebra_network()),
+                                Some(&finalised_state.config.network.into()),
                                 &finalised_state.fetcher,
                                 HashOrHeight::Height(height),
                             )
@@ -341,7 +341,7 @@ impl FinalisedState {
                         warn!("Failed to fetch block from DB, re-fetching from validator.");
                         match fetch_block_from_node(
                             finalised_state.state.as_ref(),
-                            Some(&finalised_state.config.network.to_zebra_network()),
+                            Some(&finalised_state.config.network.into()),
                             &finalised_state.fetcher,
                             hash_or_height,
                         )
@@ -383,7 +383,7 @@ impl FinalisedState {
     /// - Searches from ZainoDB tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
     async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
-        let network = self.config.network.to_zebra_network();
+        let network = self.config.network.into();
 
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
         // let reorg_height_int = reorg_height.0.saturating_sub(100);

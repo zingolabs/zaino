@@ -205,7 +205,7 @@ fn test_network_enum_functionality() {
         };
 
         // Network enum provides type safety
-        let zebra_network = config.network.to_zebra_network();
+        let zebra_network: zebra_chain::parameters::Network = config.network.into();
         
         // Can be serialized to string names
         let serialized = serde_json::to_string(&config.network).unwrap();
