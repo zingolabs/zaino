@@ -215,3 +215,186 @@ fn test_network_enum_functionality() {
         assert_eq!(config.network, network);
     }
 }
+
+#[test]
+fn test_toml_file_loading() {
+    // Example 6: Test loading real TOML files
+    let test_cases = [
+        ("minimal.toml", Network::Testnet, BackendType::Fetch, false),
+        ("development.toml", Network::Regtest, BackendType::Fetch, true),
+        ("production.toml", Network::Mainnet, BackendType::State, true),
+        ("edge_cases.toml", Network::Testnet, BackendType::Fetch, false),
+    ];
+
+    for (filename, expected_network, expected_backend, expected_json_server) in test_cases {
+        let toml_path = format!("tests/data/{}", filename);
+        let toml_content = std::fs::read_to_string(&toml_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", toml_path, e));
+
+        // Parse TOML directly with serde
+        let config: IndexerConfig = toml::from_str(&toml_content)
+            .unwrap_or_else(|e| panic!("Failed to parse {} as TOML: {}", filename, e));
+
+        // Verify key fields
+        assert_eq!(config.network, expected_network, "Network mismatch in {}", filename);
+        assert_eq!(config.backend, expected_backend, "Backend mismatch in {}", filename);
+        assert_eq!(config.server.enable_json_server, expected_json_server, "JSON server mismatch in {}", filename);
+
+        // Verify config is valid
+        config.check_config().unwrap_or_else(|e| panic!("Config validation failed for {}: {}", filename, e));
+
+        println!("✓ Successfully loaded and validated {}", filename);
+    }
+}
+
+#[test]
+fn test_toml_round_trip_fidelity() {
+    // Example 7: Test TOML → Rust → TOML → Rust round-trip fidelity
+    let test_files = ["minimal.toml", "development.toml", "production.toml", "edge_cases.toml"];
+
+    for filename in test_files {
+        let toml_path = format!("tests/data/{}", filename);
+        let original_toml = std::fs::read_to_string(&toml_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", toml_path, e));
+
+        // TOML → Rust
+        let config1: IndexerConfig = toml::from_str(&original_toml)
+            .unwrap_or_else(|e| panic!("Failed to parse {} as TOML: {}", filename, e));
+
+        // Rust → TOML
+        let regenerated_toml = toml::to_string_pretty(&config1)
+            .unwrap_or_else(|e| panic!("Failed to serialize {} to TOML: {}", filename, e));
+
+        // TOML → Rust (again)
+        let config2: IndexerConfig = toml::from_str(&regenerated_toml)
+            .unwrap_or_else(|e| panic!("Failed to re-parse regenerated TOML for {}: {}", filename, e));
+
+        // Compare critical fields (not exact TOML text, as formatting may differ)
+        assert_eq!(config1.backend, config2.backend, "Backend differs after round-trip in {}", filename);
+        assert_eq!(config1.network, config2.network, "Network differs after round-trip in {}", filename);
+        assert_eq!(config1.server.enable_json_server, config2.server.enable_json_server, "JSON server differs after round-trip in {}", filename);
+        assert_eq!(config1.server.json_rpc_listen_address, config2.server.json_rpc_listen_address, "JSON RPC address differs after round-trip in {}", filename);
+        assert_eq!(config1.server.grpc_listen_address, config2.server.grpc_listen_address, "gRPC address differs after round-trip in {}", filename);
+        assert_eq!(config1.validator.rpc_address, config2.validator.rpc_address, "Validator address differs after round-trip in {}", filename);
+        assert_eq!(config1.service.timeout, config2.service.timeout, "Service timeout differs after round-trip in {}", filename);
+        assert_eq!(config1.debug.no_sync, config2.debug.no_sync, "Debug no_sync differs after round-trip in {}", filename);
+
+        // Test cookie auth round-trip
+        match (&config1.server.cookie, &config2.server.cookie) {
+            (CookieAuth::Enabled { path: p1 }, CookieAuth::Enabled { path: p2 }) => {
+                assert_eq!(p1, p2, "Server cookie path differs after round-trip in {}", filename);
+            }
+            (CookieAuth::Disabled, CookieAuth::Disabled) => {},
+            _ => panic!("Server cookie auth type differs after round-trip in {}", filename),
+        }
+
+        println!("✓ Round-trip fidelity verified for {}", filename);
+    }
+}
+
+#[test]
+fn test_figment_integration() {
+    // Example 8: Test the actual Figment loading pipeline used by zaino
+    use figment::{providers::{Format, Serialized, Toml}, Figment};
+    use std::collections::HashMap;
+
+    let toml_path = "tests/data/development.toml";
+    
+    // Test Figment loading (same as load_config function)
+    let figment = Figment::new()
+        .merge(Serialized::defaults(IndexerConfig::default()))
+        .merge(Toml::file(toml_path))
+        .merge(figment::providers::Env::prefixed("ZAINO_TEST_"));
+
+    let config: IndexerConfig = figment.extract()
+        .unwrap_or_else(|e| panic!("Figment failed to extract config: {}", e));
+
+    // Verify it loaded correctly
+    assert_eq!(config.network, Network::Regtest);
+    assert_eq!(config.backend, BackendType::Fetch);
+    assert!(config.server.enable_json_server);
+    assert!(config.debug.no_sync);
+
+    println!("✓ Figment integration working correctly");
+}
+
+#[test]
+fn test_env_var_override() {
+    // Example 9: Test environment variable overrides
+    use figment::{providers::{Format, Serialized, Toml}, Figment};
+    
+    // Set test env vars
+    std::env::set_var("ZAINO_TEST_NETWORK", "mainnet");
+    std::env::set_var("ZAINO_TEST_BACKEND", "state");
+    
+    let figment = Figment::new()
+        .merge(Serialized::defaults(IndexerConfig::default()))
+        .merge(Toml::file("tests/data/minimal.toml"))  // This has testnet/fetch
+        .merge(figment::providers::Env::prefixed("ZAINO_TEST_"));
+
+    let config: IndexerConfig = figment.extract()
+        .unwrap_or_else(|e| panic!("Figment failed with env override: {}", e));
+
+    // Environment should override TOML
+    assert_eq!(config.network, Network::Mainnet, "Env var should override TOML network");
+    assert_eq!(config.backend, BackendType::State, "Env var should override TOML backend");
+
+    // Clean up
+    std::env::remove_var("ZAINO_TEST_NETWORK");
+    std::env::remove_var("ZAINO_TEST_BACKEND");
+
+    println!("✓ Environment variable override working correctly");
+}
+
+#[test]  
+fn test_invalid_toml_handling() {
+    // Example 10: Test error handling for invalid TOML
+    let invalid_configs = [
+        // Invalid network
+        ("backend = \"fetch\"\nnetwork = \"invalid_network\"", "Invalid network"),
+        // Invalid backend  
+        ("backend = \"invalid_backend\"\nnetwork = \"testnet\"", "Invalid backend"),
+        // Invalid socket address
+        ("backend = \"fetch\"\nnetwork = \"testnet\"\n[server]\njson_rpc_listen_address = \"invalid:address\"", "Invalid address"),
+        // Missing required nested field
+        ("backend = \"fetch\"\nnetwork = \"testnet\"\n[server.cookie]\n# missing enabled/disabled", "Missing cookie config"),
+    ];
+
+    for (invalid_toml, description) in invalid_configs {
+        let result: Result<IndexerConfig, _> = toml::from_str(invalid_toml);
+        
+        assert!(result.is_err(), "Expected error for: {}", description);
+        println!("✓ Correctly rejected invalid config: {}", description);
+    }
+}
+
+#[test]
+fn test_partial_config_with_defaults() {
+    // Example 11: Test partial configs get proper defaults
+    let partial_toml = r#"
+network = "regtest"
+backend = "fetch"
+
+[server]
+enable_json_server = true
+
+[debug]  
+no_sync = true
+"#;
+
+    let config: IndexerConfig = toml::from_str(partial_toml).unwrap();
+
+    // Specified values
+    assert_eq!(config.network, Network::Regtest);
+    assert_eq!(config.backend, BackendType::Fetch);
+    assert!(config.server.enable_json_server);
+    assert!(config.debug.no_sync);
+
+    // Should get defaults for unspecified values
+    assert_eq!(config.server.grpc_listen_address, "127.0.0.1:8137".parse().unwrap());
+    assert_eq!(config.service.timeout, 30); // ServiceConfig default
+    assert_eq!(config.validator.rpc_user, "xxxxxx"); // ValidatorConfig default
+    assert!(!config.debug.no_db); // DebugConfig default
+
+    println!("✓ Partial config with defaults working correctly");
+}

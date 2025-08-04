@@ -1,0 +1,44 @@
+# Edge cases and complex configurations
+backend = "fetch"
+network = "testnet"
+
+[server]
+enable_json_server = false
+json_rpc_listen_address = "[::1]:8237"  # IPv6 loopback
+grpc_listen_address = "0.0.0.0:8137"
+grpc_tls = true
+tls_cert_path = "/path/with spaces/cert.pem"
+tls_key_path = "/path/with spaces/key.pem"
+
+[server.cookie]
+enabled = { path = "/tmp/test with spaces.cookie" }
+
+[validator]
+rpc_address = "192.168.1.100:8232"  # Private IP
+indexer_rpc_address = "192.168.1.100:8983"
+rpc_user = "user_with_special_chars!@#"
+rpc_password = "p@ssw0rd_with_$pecial_ch@rs"
+
+[validator.cookie]
+enabled = { path = "/etc/zcash/.cookie" }
+
+[service]
+timeout = 1  # Minimum timeout
+channel_size = 1  # Minimum channel size
+
+[storage]
+[storage.cache]
+# No capacity or shard_amount - should use None
+
+[storage.zaino_database]
+path = "/very/long/path/to/database/that/might/not/exist/zaino.db"
+# No size specified
+
+[storage.zebra_database]  
+path = "/another/long/path/zebra.db"
+size = 1  # Minimum size
+
+[debug]
+no_sync = true
+no_db = true
+slow_sync = true

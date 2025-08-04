@@ -1,0 +1,45 @@
+# Production configuration
+backend = "state"
+network = "mainnet"
+
+[server]
+enable_json_server = true
+json_rpc_listen_address = "0.0.0.0:8237"
+grpc_listen_address = "0.0.0.0:8137"
+grpc_tls = true
+tls_cert_path = "/etc/ssl/certs/zaino.crt"
+tls_key_path = "/etc/ssl/private/zaino.key"
+
+[server.cookie]
+enabled = { path = "/var/lib/zaino/server.cookie" }
+
+[validator]
+rpc_address = "127.0.0.1:8232"
+indexer_rpc_address = "127.0.0.1:8983"
+rpc_user = "production_user"
+rpc_password = "secure_production_password"
+
+[validator.cookie]
+enabled = { path = "/var/lib/zebra/.cookie" }
+
+[service]
+timeout = 60
+channel_size = 256
+
+[storage]
+[storage.cache]
+capacity = 50000
+shard_amount = 32
+
+[storage.zaino_database]
+path = "/var/lib/zaino/data"
+size = 200
+
+[storage.zebra_database]
+path = "/var/lib/zebra/state"
+size = 1000
+
+[debug]
+no_sync = false
+no_db = false
+slow_sync = false

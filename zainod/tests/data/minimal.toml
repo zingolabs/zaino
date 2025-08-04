@@ -1,0 +1,3 @@
+# Minimal configuration - mostly defaults
+backend = "fetch"
+network = "testnet"

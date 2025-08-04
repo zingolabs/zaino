@@ -1,0 +1,42 @@
+# Development configuration
+backend = "fetch"
+network = "regtest"
+
+[server]
+enable_json_server = true
+json_rpc_listen_address = "127.0.0.1:18237"
+grpc_listen_address = "127.0.0.1:18137" 
+grpc_tls = false
+
+[server.cookie]
+disabled = {}
+
+[validator]
+rpc_address = "127.0.0.1:18232"
+indexer_rpc_address = "127.0.0.1:18230"
+rpc_user = "dev_user"
+rpc_password = "dev_password"
+
+[validator.cookie]
+disabled = {}
+
+[service]
+timeout = 15
+channel_size = 64
+
+[storage]
+[storage.cache]
+capacity = 500
+shard_amount = 8
+
+[storage.zaino_database]
+path = "/tmp/zaino_dev.db"
+size = 5
+
+[storage.zebra_database]
+path = "/tmp/zebra_dev.db"
+
+[debug]
+no_sync = true
+no_db = false
+slow_sync = false
