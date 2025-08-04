@@ -1,4 +1,4 @@
-use zaino_commons::config::{BackendType, BlockCacheConfig};
+use zaino_commons::config::{BackendType, BlockCacheConfig, CacheConfig, Cookie, DatabaseConfig, ServiceConfig, ValidatorConfig};
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
     FetchService, FetchServiceError, FetchServiceSubscriber, LightWalletIndexer, StateService,
@@ -73,20 +73,19 @@ async fn create_test_manager_and_services(
     test_manager.local_net.print_stdout();
 
     let fetch_service_config = FetchServiceConfig {
-        validator: zaino_state::config::modname::ValidatorConfig {
+        validator: ValidatorConfig {
             config,
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            cookie_auth: false,
-            cookie_path: None,
-            rpc_user: None,
-            rpc_password: None,
+            cookie: Cookie::Disabled,
+            rpc_user: "xxxxxx".to_string(),
+            rpc_password: "xxxxxx".to_string(),
         },
-        service: zaino_state::config::ServiceConfig {
-            timeout: None,
-            channel_size: None,
+        service: ServiceConfig {
+            timeout: 30,
+            channel_size: 32,
         },
-        block_cache: zaino_state::config::BlockCacheConfig {
+        block_cache: BlockCacheConfig {
             cache: CacheConfig {
                 capacity: None,
                 shard_amount: None,
