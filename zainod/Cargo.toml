@@ -55,3 +55,7 @@ toml = { workspace = true }
 [dependencies.figment]
 version = "0.10"
 features = ["toml", "env", "test"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }

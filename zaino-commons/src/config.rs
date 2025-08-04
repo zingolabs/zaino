@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 /// Holds validator connection and authentication configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ValidatorConfig {
     /// Zebra [`zebra_state::ReadStateService`] config data
     pub config: zebra_state::Config,
@@ -52,7 +52,7 @@ impl Default for CookieAuth {
 }
 
 /// Holds service-level configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ServiceConfig {
     /// StateService RPC timeout
     pub timeout: u32,
@@ -70,7 +70,7 @@ impl Default for ServiceConfig {
 }
 
 /// Holds cache configuration for DashMaps.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CacheConfig {
     /// Capacity of the Dashmaps used for the Mempool and BlockCache NonFinalisedState.
     pub capacity: Option<usize>,
@@ -82,7 +82,7 @@ pub struct CacheConfig {
 }
 
 /// Holds database configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct DatabaseConfig {
     /// Block Cache database file path.
     pub path: PathBuf,
@@ -101,7 +101,7 @@ impl Default for DatabaseConfig {
 
 /// Holds config data for `[ChainIndex]`.
 /// TODO: Rename when ChainIndex update is complete.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct BlockCacheConfig {
     /// Cache configuration for DashMaps.
     pub cache: CacheConfig,
@@ -160,7 +160,7 @@ impl Default for Network {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, PartialEq, Copy)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Copy)]
 #[serde(rename_all = "lowercase")]
 /// Type of backend to be used.
 pub enum BackendType {

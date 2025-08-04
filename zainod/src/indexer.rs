@@ -48,14 +48,7 @@ pub async fn spawn_indexer(
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.check_config()?;
     info!("Checking connection with node..");
-    let zebrad_uri = test_node_and_return_url(
-        config.validator_listen_address,
-        config.validator_cookie_auth,
-        config.validator_cookie_path.clone(),
-        config.validator_user.clone(),
-        config.validator_password.clone(),
-    )
-    .await?;
+    let zebrad_uri = test_node_and_return_url(&config.validator).await?;
 
     info!(
         " - Connected to node using JsonRPSee at address {}.",
@@ -96,14 +89,17 @@ where
         // ))
         // .await?;
 
-        let json_server = match indexer_config.enable_json_server {
+        let json_server = match indexer_config.server.enable_json_server {
             true => Some(
                 JsonRpcServer::spawn(
                     service.inner_ref().get_subscriber(),
                     JsonRpcConfig {
-                        json_rpc_listen_address: indexer_config.json_rpc_listen_address,
-                        enable_cookie_auth: indexer_config.enable_cookie_auth,
-                        cookie_dir: indexer_config.cookie_dir,
+                        json_rpc_listen_address: indexer_config.server.json_rpc_listen_address,
+                        enable_cookie_auth: matches!(indexer_config.server.cookie, zaino_commons::config::CookieAuth::Enabled { .. }),
+                        cookie_dir: match &indexer_config.server.cookie {
+                            zaino_commons::config::CookieAuth::Enabled { path } => Some(path.clone()),
+                            zaino_commons::config::CookieAuth::Disabled => None,
+                        },
                     },
                 )
                 .await
@@ -115,10 +111,10 @@ where
         let grpc_server = TonicServer::spawn(
             service.inner_ref().get_subscriber(),
             GrpcConfig {
-                grpc_listen_address: indexer_config.grpc_listen_address,
-                tls: indexer_config.grpc_tls,
-                tls_cert_path: indexer_config.tls_cert_path.clone(),
-                tls_key_path: indexer_config.tls_key_path.clone(),
+                grpc_listen_address: indexer_config.server.grpc_listen_address,
+                tls: indexer_config.server.grpc_tls,
+                tls_cert_path: indexer_config.server.tls_cert_path.clone(),
+                tls_key_path: indexer_config.server.tls_key_path.clone(),
             },
         )
         .await
