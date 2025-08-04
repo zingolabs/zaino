@@ -65,6 +65,7 @@ async fn create_test_manager_and_nfs(
     )
     .await;
 
+    // todo! refactor out of unecessary to_string and string match of already enumerized value
     let network = match test_manager.network.to_string().as_str() {
         "Regtest" => zebra_chain::parameters::Network::new_regtest(
             zebra_chain::parameters::testnet::ConfiguredActivationHeights {
@@ -117,7 +118,7 @@ async fn nfs_simple_sync() {
 mod chain_query_interface {
 
     use futures::TryStreamExt as _;
-    use zaino_commons::config::CookieAuth;
+    use zaino_commons::config::{CacheConfig, CookieAuth, DatabaseConfig};
     use zaino_state::{
         bench::chain_index::{
             self,
@@ -174,8 +175,8 @@ mod chain_query_interface {
         };
 
         let state_service_config: StateServiceConfig = StateServiceConfig {
-            validator: zaino_commons::config::validator::Config {
-                config: zebra_state::Config {
+            validator: zaino_commons::config::ValidatorConfig {
+                config: zaino_commons::config::ZainoStateConfig {
                     cache_dir: state_chain_cache_dir,
                     ephemeral: false,
                     delete_old_database: true,

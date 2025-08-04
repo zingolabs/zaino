@@ -28,7 +28,7 @@ fn test_programmatic_config_construction() {
             tls_key_path: None,
         },
         validator: ValidatorConfig {
-            config: zebra_state::Config::default(),
+            config: zaino_commons::config::ZainoStateConfig::default(),
             rpc_address: "127.0.0.1:18232".parse().unwrap(),
             indexer_rpc_address: "127.0.0.1:18230".parse().unwrap(),
             cookie: CookieAuth::Disabled, // test environment
@@ -87,7 +87,7 @@ fn test_production_config_construction() {
             tls_key_path: Some("/etc/ssl/private/zaino.key".to_string()),
         },
         validator: ValidatorConfig {
-            config: zebra_state::Config {
+            config: zaino_commons::config::ZainoStateConfig {
                 cache_dir: "/var/lib/zebra".into(),
                 ephemeral: false,
                 delete_old_database: false,

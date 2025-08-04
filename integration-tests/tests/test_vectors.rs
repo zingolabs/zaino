@@ -90,7 +90,7 @@ async fn create_test_manager_and_services(
 
     let state_service = StateService::spawn(StateServiceConfig {
         validator: ValidatorConfig {
-            config: zebra_state::Config {
+            config: zaino_commons::config::ZainoStateConfig {
                 cache_dir: state_chain_cache_dir,
                 ephemeral: false,
                 delete_old_database: true,
@@ -100,12 +100,12 @@ async fn create_test_manager_and_services(
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
             cookie: CookieAuth::Disabled,
-            rpc_user: None,
-            rpc_password: None,
+            rpc_user: "xxxxxx".to_string(),
+            rpc_password: "xxxxxx".to_string(),
         },
         service: ServiceConfig {
-            timeout: todo!(),
-            channel_size: todo!(),
+            timeout: 30,
+            channel_size: 32,
         },
         block_cache: BlockCacheConfig {
             cache: CacheConfig {
@@ -121,7 +121,11 @@ async fn create_test_manager_and_services(
                     .join("zaino"),
                 size: None,
             },
-            network,
+            network: match network_type {
+                Network::Mainnet => zaino_commons::config::Network::Mainnet,
+                Network::new_default_testnet() => zaino_commons::config::Network::Testnet,
+                _ => zaino_commons::config::Network::Regtest,
+            },
             no_sync: true,
             no_db: true,
         },

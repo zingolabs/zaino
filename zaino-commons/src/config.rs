@@ -5,8 +5,8 @@ use std::path::PathBuf;
 /// Holds validator connection and authentication configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ValidatorConfig {
-    /// Zebra [`zebra_state::ReadStateService`] config data
-    pub config: zebra_state::Config,
+    /// State service configuration
+    pub config: ZainoStateConfig,
     /// Validator JsonRPC address.
     pub rpc_address: std::net::SocketAddr,
     /// Validator gRPC address.
@@ -22,7 +22,7 @@ pub struct ValidatorConfig {
 impl Default for ValidatorConfig {
     fn default() -> Self {
         Self {
-            config: zebra_state::Config::default(),
+            config: ZainoStateConfig::default(),
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
             indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
             cookie: CookieAuth::Disabled,

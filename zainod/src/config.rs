@@ -20,7 +20,7 @@ use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
     BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, Network, ServiceConfig,
-    ValidatorConfig,
+    ValidatorConfig, ZainoStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
@@ -284,7 +284,7 @@ impl Default for IndexerConfig {
             network: Network::Testnet,
             server: ServerConfig::default(),
             validator: ValidatorConfig {
-                config: zebra_state::Config::default(),
+                config: ZainoStateConfig::default(),
                 rpc_address: "127.0.0.1:18232".parse().unwrap(),
                 indexer_rpc_address: "127.0.0.1:18230".parse().unwrap(),
                 cookie: CookieAuth::Disabled,
@@ -411,7 +411,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
         match cfg.backend {
             BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
                 validator: ValidatorConfig {
-                    config: zebra_state::Config {
+                    config: ZainoStateConfig {
                         cache_dir: cfg.storage.zebra_database.path,
                         ephemeral: false,
                         delete_old_database: true,

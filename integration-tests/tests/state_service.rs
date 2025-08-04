@@ -74,7 +74,13 @@ async fn create_test_manager_and_services(
 
     let fetch_service_config = FetchServiceConfig {
         validator: ValidatorConfig {
-            config,
+            config: zaino_commons::config::ZainoStateConfig {
+                cache_dir: test_manager.data_dir.clone(),
+                ephemeral: false,
+                delete_old_database: true,
+                debug_stop_at_height: None,
+                debug_validity_check_interval: None,
+            },
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
             cookie: CookieAuth::Disabled,
@@ -99,7 +105,11 @@ async fn create_test_manager_and_services(
                     .join("zaino"),
                 size: None,
             },
-            network: network_type.clone(),
+            network: match network_type {
+                Network::Mainnet => zaino_commons::config::Network::Mainnet,
+                Network::new_default_testnet() => zaino_commons::config::Network::Testnet,
+                _ => zaino_commons::config::Network::Regtest,
+            },
             no_sync: zaino_sync_bool,
             no_db: true,
         },
@@ -136,9 +146,46 @@ async fn create_test_manager_and_services(
     };
 
     let state_service_config = StateServiceConfig {
-        validator: todo!(),
-        service: todo!(),
-        block_cache: todo!(),
+        validator: ValidatorConfig {
+            config: zaino_commons::config::ZainoStateConfig {
+                cache_dir: state_chain_cache_dir,
+                ephemeral: false,
+                delete_old_database: true,
+                debug_stop_at_height: None,
+                debug_validity_check_interval: None,
+            },
+            rpc_address: test_manager.zebrad_rpc_listen_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            cookie: CookieAuth::Disabled,
+            rpc_user: "xxxxxx".to_string(),
+            rpc_password: "xxxxxx".to_string(),
+        },
+        service: ServiceConfig {
+            timeout: 30,
+            channel_size: 32,
+        },
+        block_cache: BlockCacheConfig {
+            cache: CacheConfig {
+                capacity: None,
+                shard_amount: None,
+            },
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                size: None,
+            },
+            network: match network_type {
+                Network::Mainnet => zaino_commons::config::Network::Mainnet,
+                Network::new_default_testnet() => zaino_commons::config::Network::Testnet,
+                _ => zaino_commons::config::Network::Regtest,
+            },
+            no_sync: zaino_sync_bool,
+            no_db: true,
+        },
     };
     // let state_service = StateService::spawn(StateServiceConfig::new(
     //     zebra_state::Config {

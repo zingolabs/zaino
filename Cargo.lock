@@ -5924,6 +5924,7 @@ dependencies = [
 name = "zaino-commons"
 version = "0.1.2"
 dependencies = [
+ "humantime-serde",
  "serde",
  "zebra-chain 1.0.0",
  "zebra-state 1.0.1",
@@ -6082,6 +6083,8 @@ dependencies = [
  "figment",
  "http",
  "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "toml 0.5.11",

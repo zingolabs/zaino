@@ -197,7 +197,7 @@ impl ZcashService for StateService {
         info!("Launching Chain Syncer..");
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
-                config.validator.config.clone(),
+                config.validator.config.clone().into(),
                 &config.block_cache.network.into(),
                 config.validator.indexer_rpc_address,
             )
