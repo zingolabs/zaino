@@ -19,14 +19,13 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, Network, ServiceConfig,
-    ValidatorConfig, ZainoStateConfig,
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, Network,
+    ServiceConfig, ValidatorConfig, ZainoStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
 
 use crate::error::IndexerError;
-
 
 /// Unified backend configuration enum.
 #[derive(Debug, Clone)]
@@ -46,22 +45,6 @@ where
     let s = String::deserialize(deserializer)?;
     fetch_socket_addr_from_hostname(&s)
         .map_err(|e| de::Error::custom(format!("Invalid socket address string '{s}': {e}")))
-}
-
-/// Custom deserialization function for `BackendType` from a String.
-/// Used by Serde's `deserialize_with`.
-fn deserialize_backendtype_from_string<'de, D>(deserializer: D) -> Result<BackendType, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    match s.to_lowercase().as_str() {
-        "state" => Ok(BackendType::State),
-        "fetch" => Ok(BackendType::Fetch),
-        _ => Err(de::Error::custom(format!(
-            "Invalid backend type '{s}', valid options are 'state' or 'fetch'"
-        ))),
-    }
 }
 
 /// Server configuration for Zaino's own servers (JSON-RPC and gRPC).
@@ -442,18 +425,4 @@ impl TryFrom<IndexerConfig> for BackendConfig {
             })),
         }
     }
-}
-
-/// Custom serializer for BackendType
-fn serialize_backendtype_to_string<S>(
-    backend_type: &BackendType,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(match backend_type {
-        BackendType::State => "state",
-        BackendType::Fetch => "fetch",
-    })
 }
