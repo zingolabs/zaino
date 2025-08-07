@@ -1,4 +1,7 @@
-use zaino_commons::config::BackendType;
+use zaino_commons::config::{
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig,
+    ServiceConfig, ValidatorConfig, ZainoStateConfig
+};
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
     FetchService, FetchServiceSubscriber, ZcashIndexer,
@@ -38,41 +41,30 @@ async fn create_test_manager_and_fetch_services(
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     println!("Launching zcashd fetch service..");
-    let zcashd_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.zebrad_rpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
+    let zcashd_fetch_service = FetchService::spawn(FetchServiceConfig {
+        validator: ValidatorConfig {
+            config: ZainoStateConfig::default(),
+            rpc_address: test_manager.zebrad_rpc_listen_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            auth: AuthMethod::default(),
+        },
+        service: ServiceConfig::default(),
+        block_cache: BlockCacheConfig {
+            cache: CacheConfig::default(),
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                size: None,
             },
-        ),
-        true,
-        true,
-    ))
+            network: zaino_commons::config::Network::Regtest,
+            no_sync: true,
+            no_db: true,
+        },
+    })
     .await
     .unwrap();
     let zcashd_subscriber = zcashd_fetch_service.get_subscriber().inner();
@@ -81,44 +73,39 @@ async fn create_test_manager_and_fetch_services(
 
     println!("Launching zaino fetch service..");
     let zaino_json_server_address = dbg!(test_manager.zaino_json_rpc_listen_address.unwrap());
-    let zaino_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        zaino_json_server_address,
-        enable_cookie_auth,
-        test_manager
-            .json_server_cookie_dir
-            .clone()
-            .map(|p| p.to_string_lossy().into_owned()),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
+    let zaino_fetch_service = FetchService::spawn(FetchServiceConfig {
+        validator: ValidatorConfig {
+            config: ZainoStateConfig::default(),
+            rpc_address: zaino_json_server_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            auth: if enable_cookie_auth {
+                AuthMethod::Cookie { 
+                    path: test_manager
+                        .json_server_cookie_dir
+                        .clone()
+                        .unwrap_or_else(|| "/tmp/zaino.cookie".into())
+                }
+            } else {
+                AuthMethod::default()
             },
-        ),
-        true,
-        true,
-    ))
+        },
+        service: ServiceConfig::default(),
+        block_cache: BlockCacheConfig {
+            cache: CacheConfig::default(),
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                size: None,
+            },
+            network: zaino_commons::config::Network::Regtest,
+            no_sync: true,
+            no_db: true,
+        },
+    })
     .await
     .unwrap();
     let zaino_subscriber = zaino_fetch_service.get_subscriber().inner();

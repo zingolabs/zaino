@@ -114,27 +114,6 @@ async fn create_test_manager_and_services(
             no_db: true,
         },
     };
-    // let fetch_service = FetchService::spawn(FetchServiceConfig::new(
-    //     test_manager.zebrad_rpc_listen_address,
-    //     false,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     test_manager
-    //         .local_net
-    //         .data_dir()
-    //         .path()
-    //         .to_path_buf()
-    //         .join("zaino"),
-    //     None,
-    //     network_type.clone(),
-    //     zaino_sync_bool,
-    //     true,
-    // ))
 
     let fetch_service = FetchService::spawn(fetch_service_config).await.unwrap();
 
@@ -187,35 +166,6 @@ async fn create_test_manager_and_services(
             no_db: true,
         },
     };
-    // let state_service = StateService::spawn(StateServiceConfig::new(
-    //     zebra_state::Config {
-    //         cache_dir: state_chain_cache_dir,
-    //         ephemeral: false,
-    //         delete_old_database: true,
-    //         debug_stop_at_height: None,
-    //         debug_validity_check_interval: None,
-    //     },
-    //     test_manager.zebrad_rpc_listen_address,
-    //     test_manager.zebrad_grpc_listen_address,
-    //     false,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     None,
-    //     test_manager
-    //         .local_net
-    //         .data_dir()
-    //         .path()
-    //         .to_path_buf()
-    //         .join("zaino"),
-    //     None,
-    //     network_type,
-    //     true,
-    //     true,
-    // ))
     let state_service = StateService::spawn(state_service_config).await.unwrap();
 
     let state_subscriber = state_service.get_subscriber().inner();

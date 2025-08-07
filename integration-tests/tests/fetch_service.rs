@@ -4,7 +4,10 @@ use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
 };
-use zaino_commons::config::BackendType;
+use zaino_commons::config::{
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, 
+    ServiceConfig, ValidatorConfig, ZainoStateConfig
+};
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
     FetchService, FetchServiceError, FetchServiceSubscriber,
@@ -38,41 +41,30 @@ async fn create_test_manager_and_fetch_service(
     .await
     .unwrap();
 
-    let fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.zebrad_rpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
+    let fetch_service = FetchService::spawn(FetchServiceConfig {
+        validator: ValidatorConfig {
+            config: ZainoStateConfig::default(),
+            rpc_address: test_manager.zebrad_rpc_listen_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            auth: AuthMethod::default(),
+        },
+        service: ServiceConfig::default(),
+        block_cache: BlockCacheConfig {
+            cache: CacheConfig::default(),
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                size: None,
             },
-        ),
-        true,
-        true,
-    ))
+            network: zaino_commons::config::Network::Regtest,
+            no_sync: true,
+            no_db: true,
+        },
+    })
     .await
     .unwrap();
     let subscriber = fetch_service.get_subscriber().inner();
