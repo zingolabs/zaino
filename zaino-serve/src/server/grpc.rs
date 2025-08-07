@@ -56,7 +56,7 @@ impl TonicServer {
         };
         let server_future = server_builder
             .add_service(svc)
-            .serve_with_shutdown(server_config.grpc_listen_address, shutdown_signal);
+            .serve_with_shutdown(server_config.listen_address, shutdown_signal);
 
         let task_status = status.clone();
         let server_handle = tokio::task::spawn(async move {

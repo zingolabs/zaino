@@ -30,19 +30,22 @@ impl TlsConfig {
     pub async fn get_server_tls_config(&self) -> Result<Option<ServerTlsConfig>, ServerError> {
         match self {
             TlsConfig::Disabled => Ok(None),
-            TlsConfig::Enabled { cert_path, key_path } => {
+            TlsConfig::Enabled {
+                cert_path,
+                key_path,
+            } => {
                 // Read the certificate and key files asynchronously.
                 let cert = tokio::fs::read(cert_path).await.map_err(|e| {
                     ServerError::ServerConfigError(format!(
-                        "Failed to read TLS certificate from '{}': {}", 
-                        cert_path.display(), 
+                        "Failed to read TLS certificate from '{}': {}",
+                        cert_path.display(),
                         e
                     ))
                 })?;
                 let key = tokio::fs::read(key_path).await.map_err(|e| {
                     ServerError::ServerConfigError(format!(
-                        "Failed to read TLS key from '{}': {}", 
-                        key_path.display(), 
+                        "Failed to read TLS key from '{}': {}",
+                        key_path.display(),
                         e
                     ))
                 })?;
@@ -65,7 +68,7 @@ impl Default for TlsConfig {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct GrpcConfig {
     /// gRPC server bind address.
-    pub grpc_listen_address: SocketAddr,
+    pub listen_address: SocketAddr,
     /// TLS configuration.
     pub tls: TlsConfig,
 }
@@ -81,7 +84,7 @@ impl GrpcConfig {
 impl Default for GrpcConfig {
     fn default() -> Self {
         Self {
-            grpc_listen_address: "127.0.0.1:8137".parse().expect("Valid socket address"),
+            listen_address: "127.0.0.1:8137".parse().expect("Valid socket address"),
             tls: TlsConfig::default(),
         }
     }

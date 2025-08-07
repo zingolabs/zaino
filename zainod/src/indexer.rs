@@ -47,8 +47,10 @@ pub async fn spawn_indexer(
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.check_config()?;
     info!("Checking connection with node..");
-    let zebrad_uri = config.validator.test_and_get_url().await
-        .map_err(|e| IndexerError::ConfigError(format!("Failed to connect to validator: {}", e)))?;
+    let zebrad_uri =
+        config.validator.test_and_get_url().await.map_err(|e| {
+            IndexerError::ConfigError(format!("Failed to connect to validator: {}", e))
+        })?;
 
     info!(
         " - Connected to node using JsonRPSee at address {}.",
@@ -96,15 +98,19 @@ where
         let grpc_server = TonicServer::spawn(
             service.inner_ref().get_subscriber(),
             GrpcConfig {
-                grpc_listen_address: indexer_config.server.grpc_listen_address,
+                listen_address: indexer_config.server.grpc_listen_address,
                 tls: if indexer_config.server.grpc_tls {
                     TlsConfig::Enabled {
-                        cert_path: indexer_config.server.tls_cert_path
+                        cert_path: indexer_config
+                            .server
+                            .tls_cert_path
                             .as_ref()
                             .expect("TLS cert path required when grpc_tls is enabled")
                             .clone()
                             .into(),
-                        key_path: indexer_config.server.tls_key_path
+                        key_path: indexer_config
+                            .server
+                            .tls_key_path
                             .as_ref()
                             .expect("TLS key path required when grpc_tls is enabled")
                             .clone()
