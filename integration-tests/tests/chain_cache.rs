@@ -188,7 +188,7 @@ mod chain_query_interface {
                     debug_validity_check_interval: None,
                 },
                 rpc_address: test_manager.zebrad_rpc_listen_address,
-                indexer_rpc_address: false,
+                indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
                 cookie: CookieAuth::Disabled,
                 rpc_user: None,
                 rpc_password: None,
