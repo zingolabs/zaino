@@ -16,6 +16,91 @@ pub struct ValidatorConfig {
     pub auth: AuthMethod,
 }
 
+impl ValidatorConfig {
+    /// Tests connection to the validator node and returns the correct URL.
+    ///
+    /// This method tries to connect to the validator using the configured RPC address
+    /// and authentication, retrying up to 3 times with a 3-second delay between attempts.
+    pub async fn test_and_get_url(&self) -> Result<reqwest::Url, std::io::Error> {
+        use std::net::SocketAddr;
+
+        let host = match self.rpc_address {
+            SocketAddr::V4(_) => self.rpc_address.ip().to_string(),
+            SocketAddr::V6(_) => format!("[{}]", self.rpc_address.ip()),
+        };
+
+        let url_string = format!("http://{}:{}", host, self.rpc_address.port());
+        let url: reqwest::Url = url_string.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid URL: {}", e),
+            )
+        })?;
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Client build error: {}", e),
+                )
+            })?;
+
+        for attempt in 0..3 {
+            let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
+            let mut request_builder = client
+                .post(url.clone())
+                .header("Content-Type", "application/json")
+                .body(request_body);
+
+            // Add authentication header if configured
+            match self.auth.get_auth_header() {
+                Ok((header_name, header_value)) => {
+                    request_builder = request_builder.header(header_name, header_value);
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("Authentication error: {}", e),
+                    ));
+                }
+            }
+
+            match request_builder.send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        let _body = response.bytes().await.map_err(|e| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("Response read error: {}", e),
+                            )
+                        })?;
+                        return Ok(url);
+                    }
+                }
+                Err(_) if attempt < 2 => {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        format!("Connection failed after {} attempts: {}", attempt + 1, e),
+                    ));
+                }
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Could not establish connection with validator node after 3 attempts",
+        ))
+    }
+}
+
 impl Default for ValidatorConfig {
     fn default() -> Self {
         Self {

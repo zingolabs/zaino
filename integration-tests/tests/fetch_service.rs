@@ -1,5 +1,5 @@
 use futures::StreamExt as _;
-use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
+use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
@@ -173,16 +173,15 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
         .take()
         .expect("Clients are not initialized");
 
+    let validator_config = ValidatorConfig {
+        config: ZainoStateConfig::default(),
+        rpc_address: test_manager.zebrad_rpc_listen_address,
+        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+        auth: AuthMethod::default(),
+    };
+
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
+        validator_config.test_and_get_url().await.unwrap(),
         "xxxxxx".to_string(),
         "xxxxxx".to_string(),
     )
@@ -245,16 +244,15 @@ async fn test_get_mempool_info(validator: &ValidatorKind) {
         .take()
         .expect("Clients are not initialized");
 
+    let validator_config = ValidatorConfig {
+        config: ZainoStateConfig::default(),
+        rpc_address: test_manager.zebrad_rpc_listen_address,
+        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+        auth: AuthMethod::default(),
+    };
+
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
+        validator_config.test_and_get_url().await.unwrap(),
         "xxxxxx".to_string(),
         "xxxxxx".to_string(),
     )
@@ -549,16 +547,15 @@ async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
     test_manager.local_net.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
+    let validator_config = ValidatorConfig {
+        config: ZainoStateConfig::default(),
+        rpc_address: test_manager.zebrad_rpc_listen_address,
+        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+        auth: AuthMethod::default(),
+    };
+
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
+        validator_config.test_and_get_url().await.unwrap(),
         "xxxxxx".to_string(),
         "xxxxxx".to_string(),
     )

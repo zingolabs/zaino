@@ -1,4 +1,8 @@
-use zaino_commons::config::{BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, ServiceConfig, ValidatorConfig};
+use zaino_commons::config::AuthMethod;
+use zaino_commons::config::{
+    BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, ServiceConfig,
+    ValidatorConfig,
+};
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
     FetchService, FetchServiceError, FetchServiceSubscriber, LightWalletIndexer, StateService,
@@ -83,9 +87,7 @@ async fn create_test_manager_and_services(
             },
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            cookie: CookieAuth::Disabled,
-            rpc_user: "xxxxxx".to_string(),
-            rpc_password: "xxxxxx".to_string(),
+            auth: AuthMethod::default(),
         },
         service: ServiceConfig {
             timeout: 30,
@@ -107,7 +109,7 @@ async fn create_test_manager_and_services(
             },
             network: match network_type {
                 Network::Mainnet => zaino_commons::config::Network::Mainnet,
-                Network::new_default_testnet() => zaino_commons::config::Network::Testnet,
+                Network::Testnet(_) => zaino_commons::config::Network::Testnet,
                 _ => zaino_commons::config::Network::Regtest,
             },
             no_sync: zaino_sync_bool,

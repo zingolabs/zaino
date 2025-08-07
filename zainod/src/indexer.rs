@@ -3,7 +3,6 @@
 use tokio::time::Instant;
 use tracing::info;
 
-use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_serve::server::{
     config::{GrpcConfig, JsonRpcConfig},
     grpc::TonicServer,
@@ -48,7 +47,8 @@ pub async fn spawn_indexer(
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.check_config()?;
     info!("Checking connection with node..");
-    let zebrad_uri = test_node_and_return_url(&config.validator).await?;
+    let zebrad_uri = config.validator.test_and_get_url().await
+        .map_err(|e| IndexerError::ConfigError(format!("Failed to connect to validator: {}", e)))?;
 
     info!(
         " - Connected to node using JsonRPSee at address {}.",

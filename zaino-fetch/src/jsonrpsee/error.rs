@@ -26,6 +26,10 @@ pub enum TransportError {
     #[error("Authentication error: {0}")]
     AuthenticationError(String),
 
+    /// Validator connection error
+    #[error("Validator connection error: {0}")]
+    ValidatorConnectionError(#[from] std::io::Error),
+
     /// Reqwest Based Errors.
     #[error("Error: HTTP Request Error: {0}")]
     ReqwestError(#[from] reqwest::Error),

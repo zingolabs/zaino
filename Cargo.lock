@@ -5926,8 +5926,10 @@ version = "0.1.2"
 dependencies = [
  "base64",
  "humantime-serde",
+ "reqwest",
  "serde",
  "thiserror 1.0.69",
+ "tokio",
  "zebra-chain 1.0.0",
  "zebra-state 1.0.1",
 ]

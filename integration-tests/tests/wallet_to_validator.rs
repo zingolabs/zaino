@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
+use zaino_commons::config::{AuthMethod, ValidatorConfig, ZainoStateConfig};
 use zaino_state::BackendType;
 use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
@@ -135,16 +135,15 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 
     test_manager.generate_blocks_with_delay(1).await;
 
+    let validator_config = ValidatorConfig {
+        config: ZainoStateConfig::default(),
+        rpc_address: test_manager.zebrad_rpc_listen_address,
+        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+        auth: AuthMethod::default(),
+    };
+
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
+        validator_config.test_and_get_url().await.unwrap(),
         "xxxxxx".to_string(),
         "xxxxxx".to_string(),
     )
@@ -414,16 +413,15 @@ async fn monitor_unverified_mempool_for_validator(
 
     // test_manager.local_net.print_stdout();
 
+    let validator_config = ValidatorConfig {
+        config: ZainoStateConfig::default(),
+        rpc_address: test_manager.zebrad_rpc_listen_address,
+        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+        auth: AuthMethod::default(),
+    };
+
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
+        validator_config.test_and_get_url().await.unwrap(),
         "xxxxxx".to_string(),
         "xxxxxx".to_string(),
     )

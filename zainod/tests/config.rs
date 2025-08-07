@@ -4,9 +4,9 @@ use figment::Jail;
 use std::path::PathBuf;
 
 // Use the explicit library name `zainodlib` as defined in Cargo.toml [lib] name.
+use zaino_commons::config::{AuthMethod, BackendType, CookieAuth, Network};
 use zainodlib::config::{load_config, IndexerConfig};
 use zainodlib::error::IndexerError;
-use zaino_commons::config::{BackendType, CookieAuth, Network};
 
 #[test]
 // Validates loading a valid configuration via `load_config`,
@@ -102,7 +102,10 @@ fn test_deserialize_full_valid_config() {
             finalized_config.server.json_rpc_listen_address,
             "127.0.0.1:8000".parse().unwrap()
         );
-        assert!(matches!(finalized_config.server.cookie, CookieAuth::Enabled { .. }));
+        assert!(matches!(
+            finalized_config.server.cookie,
+            CookieAuth::Enabled { .. }
+        ));
         assert_eq!(
             finalized_config.server.tls_cert_path,
             Some(cert_file_name.to_string())
@@ -111,7 +114,10 @@ fn test_deserialize_full_valid_config() {
             finalized_config.server.tls_key_path,
             Some(key_file_name.to_string())
         );
-        assert!(matches!(finalized_config.validator.cookie, CookieAuth::Enabled { .. }));
+        assert!(matches!(
+            finalized_config.validator.auth,
+            AuthMethod::Cookie { .. }
+        ));
         assert_eq!(
             finalized_config.storage.zaino_database.path,
             PathBuf::from(zaino_db_dir_name)
@@ -126,7 +132,10 @@ fn test_deserialize_full_valid_config() {
         );
         assert!(finalized_config.server.grpc_tls);
         assert_eq!(finalized_config.validator.rpc_user, "user".to_string());
-        assert_eq!(finalized_config.validator.rpc_password, "password".to_string());
+        assert_eq!(
+            finalized_config.validator.rpc_password,
+            "password".to_string()
+        );
         assert_eq!(finalized_config.storage.cache.capacity, Some(10000));
         assert_eq!(finalized_config.storage.cache.shard_amount, Some(16));
         assert_eq!(finalized_config.storage.zaino_database.size, Some(100));
@@ -168,12 +177,27 @@ fn test_deserialize_optional_fields_missing() {
 
         assert_eq!(config.backend, BackendType::State);
         assert_eq!(config.network, Network::Testnet);
-        assert_eq!(config.server.enable_json_server, default_values.server.enable_json_server);
+        assert_eq!(
+            config.server.enable_json_server,
+            default_values.server.enable_json_server
+        );
         assert_eq!(config.validator.rpc_user, default_values.validator.rpc_user);
-        assert_eq!(config.validator.rpc_password, default_values.validator.rpc_password);
-        assert_eq!(config.storage.cache.capacity, default_values.storage.cache.capacity);
-        assert_eq!(config.storage.cache.shard_amount, default_values.storage.cache.shard_amount);
-        assert_eq!(config.storage.zaino_database.size, default_values.storage.zaino_database.size);
+        assert_eq!(
+            config.validator.rpc_password,
+            default_values.validator.rpc_password
+        );
+        assert_eq!(
+            config.storage.cache.capacity,
+            default_values.storage.cache.capacity
+        );
+        assert_eq!(
+            config.storage.cache.shard_amount,
+            default_values.storage.cache.shard_amount
+        );
+        assert_eq!(
+            config.storage.zaino_database.size,
+            default_values.storage.zaino_database.size
+        );
         assert_eq!(config.debug.no_sync, default_values.debug.no_sync);
         assert_eq!(config.debug.no_db, default_values.debug.no_db);
         assert_eq!(config.debug.slow_sync, default_values.debug.slow_sync);
@@ -256,12 +280,27 @@ fn test_deserialize_empty_string_yields_default() {
         // Compare relevant fields that should come from default
         assert_eq!(config.network, default_config.network);
         assert_eq!(config.backend, default_config.backend);
-        assert_eq!(config.server.enable_json_server, default_config.server.enable_json_server);
+        assert_eq!(
+            config.server.enable_json_server,
+            default_config.server.enable_json_server
+        );
         assert_eq!(config.validator.rpc_user, default_config.validator.rpc_user);
-        assert_eq!(config.validator.rpc_password, default_config.validator.rpc_password);
-        assert_eq!(config.storage.cache.capacity, default_config.storage.cache.capacity);
-        assert_eq!(config.storage.cache.shard_amount, default_config.storage.cache.shard_amount);
-        assert_eq!(config.storage.zaino_database.size, default_config.storage.zaino_database.size);
+        assert_eq!(
+            config.validator.rpc_password,
+            default_config.validator.rpc_password
+        );
+        assert_eq!(
+            config.storage.cache.capacity,
+            default_config.storage.cache.capacity
+        );
+        assert_eq!(
+            config.storage.cache.shard_amount,
+            default_config.storage.cache.shard_amount
+        );
+        assert_eq!(
+            config.storage.zaino_database.size,
+            default_config.storage.zaino_database.size
+        );
         assert_eq!(config.debug.no_sync, default_config.debug.no_sync);
         assert_eq!(config.debug.no_db, default_config.debug.no_db);
         assert_eq!(config.debug.slow_sync, default_config.debug.slow_sync);
@@ -388,8 +427,14 @@ fn test_figment_all_defaults() {
             load_config(&temp_toml_path).expect("load_config should succeed with empty toml");
         let defaults = IndexerConfig::default();
         assert_eq!(config.network, defaults.network);
-        assert_eq!(config.server.enable_json_server, defaults.server.enable_json_server);
-        assert_eq!(config.storage.cache.capacity, defaults.storage.cache.capacity);
+        assert_eq!(
+            config.server.enable_json_server,
+            defaults.server.enable_json_server
+        );
+        assert_eq!(
+            config.storage.cache.capacity,
+            defaults.storage.cache.capacity
+        );
         Ok(())
     });
 }
@@ -403,8 +448,10 @@ fn test_figment_invalid_env_var_type() {
         let result = load_config(&temp_toml_path);
         assert!(result.is_err());
         if let Err(IndexerError::ConfigError(msg)) = result {
-            assert!(msg.to_lowercase().contains("capacity") || msg.contains("invalid type"),
-                    "Error message should mention 'capacity' or 'invalid type'. Got: {msg}");
+            assert!(
+                msg.to_lowercase().contains("capacity") || msg.contains("invalid type"),
+                "Error message should mention 'capacity' or 'invalid type'. Got: {msg}"
+            );
         } else {
             panic!("Expected ConfigError, got {result:?}");
         }

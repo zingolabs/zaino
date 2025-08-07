@@ -11,7 +11,6 @@ use std::{
     any::type_name,
     convert::Infallible,
     fmt,
-    net::SocketAddr,
     path::Path,
     sync::{
         atomic::{AtomicI32, Ordering},
@@ -20,7 +19,7 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zaino_commons::config::{AuthMethod, ValidatorConfig};
+use zaino_commons::config::AuthMethod;
 
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
@@ -203,13 +202,12 @@ impl JsonRpSeeConnector {
     pub async fn new_from_validator_config(
         config: &zaino_commons::config::ValidatorConfig,
     ) -> Result<Self, TransportError> {
+        let url = config.test_and_get_url().await?;
+        
         match &config.auth {
-            AuthMethod::Cookie { path } => JsonRpSeeConnector::new_with_cookie_auth(
-                test_node_and_return_url(config).await?,
-                path,
-            ),
+            AuthMethod::Cookie { path } => JsonRpSeeConnector::new_with_cookie_auth(url, path),
             AuthMethod::Basic { username, password } => JsonRpSeeConnector::new_with_basic_auth(
-                test_node_and_return_url(config).await?,
+                url,
                 username.clone(),
                 password.clone(),
             ),
@@ -637,73 +635,3 @@ impl JsonRpSeeConnector {
     }
 }
 
-/// Tests connection with zebrad / zebrad.
-async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), TransportError> {
-    let client = Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-
-    let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
-    let mut request_builder = client
-        .post(url.clone())
-        .header("Content-Type", "application/json")
-        .body(request_body);
-
-    match auth_method.get_auth_header() {
-        Ok((header_name, header_value)) => {
-            request_builder = request_builder.header(header_name, header_value);
-        }
-        Err(e) => {
-            return Err(TransportError::AuthenticationError(format!(
-                "Failed to get authentication header for node test: {}",
-                e
-            )));
-        }
-    }
-
-    let response = request_builder
-        .send()
-        .await
-        .map_err(TransportError::ReqwestError)?;
-    let body_bytes = response
-        .bytes()
-        .await
-        .map_err(TransportError::ReqwestError)?;
-    let _response: RpcResponse<serde_json::Value> = serde_json::from_slice(&body_bytes)
-        .map_err(|e| TransportError::BadNodeData(Box::new(e), ""))?;
-    Ok(())
-}
-
-// todo! move into a VAlidatorConfig owned method
-/// Tries to connect to zebrd/zcashd using the provided SocketAddr and returns the correct URL.
-pub async fn test_node_and_return_url(
-    ValidatorConfig {
-        rpc_address, auth, ..
-    }: &ValidatorConfig,
-) -> Result<Url, TransportError> {
-    let auth_method = auth.clone();
-
-    let host = match rpc_address {
-        SocketAddr::V4(_) => rpc_address.ip().to_string(),
-        SocketAddr::V6(_) => format!("[{}]", rpc_address.ip()),
-    };
-
-    let url: Url = format!("http://{}:{}", host, rpc_address.port()).parse()?;
-
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-    for _ in 0..3 {
-        match test_node_connection(url.clone(), auth_method.clone()).await {
-            Ok(_) => {
-                return Ok(url);
-            }
-            Err(_) => {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            }
-        }
-        interval.tick().await;
-    }
-    error!("Error: Could not establish connection with node. Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. Exiting..");
-    std::process::exit(1);
-}
