@@ -583,20 +583,25 @@ impl TestManager {
                 Network::Regtest => zaino_commons::config::Network::Regtest,
             },
             server: zainodlib::config::ServerConfig {
-                enable_json_server: config.zaino_config.enable_json_server,
-                json_rpc_listen_address: zaino_json_listen_address,
-                cookie: if config.zaino_config.enable_json_server_cookie_auth {
-                    zaino_commons::config::CookieAuth::Enabled {
-                        path: zaino_json_server_cookie_dir
-                            .unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
-                    }
+                json_rpc: if config.zaino_config.enable_json_server {
+                    Some(zaino_commons::config::JsonRpcConfig {
+                        listen_address: zaino_json_listen_address,
+                        auth: if config.zaino_config.enable_json_server_cookie_auth {
+                            zaino_commons::config::CookieAuth::Enabled {
+                                path: zaino_json_server_cookie_dir
+                                    .unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
+                            }
+                        } else {
+                            zaino_commons::config::CookieAuth::Disabled
+                        },
+                    })
                 } else {
-                    zaino_commons::config::CookieAuth::Disabled
+                    None
                 },
-                grpc_listen_address: zaino_grpc_listen_address,
-                grpc_tls: false,
-                tls_cert_path: None,
-                tls_key_path: None,
+                grpc: zaino_commons::config::GrpcConfig {
+                    listen_address: zaino_grpc_listen_address,
+                    tls: zaino_commons::config::TlsConfig::Disabled,
+                },
             },
             validator: validator_config.clone(),
             service: ServiceConfig::default(),
@@ -893,19 +898,24 @@ impl TestManager {
                     Network::Regtest => zaino_commons::config::Network::Regtest,
                 },
                 server: zainodlib::config::ServerConfig {
-                    enable_json_server: enable_zaino_jsonrpc_server,
-                    json_rpc_listen_address: zaino_json_listen_address,
-                    cookie: if enable_zaino_jsonrpc_server_cookie_auth {
-                        zaino_commons::config::CookieAuth::Enabled {
-                            path: zaino_json_server_cookie_dir.clone().unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
-                        }
+                    json_rpc: if enable_zaino_jsonrpc_server {
+                        Some(zaino_commons::config::JsonRpcConfig {
+                            listen_address: zaino_json_listen_address,
+                            auth: if enable_zaino_jsonrpc_server_cookie_auth {
+                                zaino_commons::config::CookieAuth::Enabled {
+                                    path: zaino_json_server_cookie_dir.clone().unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
+                                }
+                            } else {
+                                zaino_commons::config::CookieAuth::Disabled
+                            },
+                        })
                     } else {
-                        zaino_commons::config::CookieAuth::Disabled
+                        None
                     },
-                    grpc_listen_address: zaino_grpc_listen_address,
-                    grpc_tls: false,
-                    tls_cert_path: None,
-                    tls_key_path: None,
+                    grpc: zaino_commons::config::GrpcConfig {
+                        listen_address: zaino_grpc_listen_address,
+                        tls: zaino_commons::config::TlsConfig::Disabled,
+                    },
                 },
                 validator: validator_config.clone(),
                 service: zaino_commons::config::ServiceConfig::default(),
