@@ -4,7 +4,6 @@ use tokio::time::Instant;
 use tracing::info;
 
 use zaino_serve::server::{
-    config::{GrpcConfig, JsonRpcConfig, TlsConfig},
     grpc::TonicServer,
     jsonrpc::JsonRpcServer,
 };
@@ -80,46 +79,21 @@ where
 
         // .await?;
 
-        let json_server = match indexer_config.server.enable_json_server {
-            true => Some(
+        let json_server = match indexer_config.server.json_rpc {
+            Some(json_rpc_config) => Some(
                 JsonRpcServer::spawn(
                     service.inner_ref().get_subscriber(),
-                    JsonRpcConfig {
-                        listen_address: indexer_config.server.json_rpc_listen_address,
-                        auth: indexer_config.server.cookie.clone(),
-                    },
+                    json_rpc_config,
                 )
                 .await
                 .unwrap(),
             ),
-            false => None,
+            None => None,
         };
 
         let grpc_server = TonicServer::spawn(
             service.inner_ref().get_subscriber(),
-            GrpcConfig {
-                listen_address: indexer_config.server.grpc_listen_address,
-                tls: if indexer_config.server.grpc_tls {
-                    TlsConfig::Enabled {
-                        cert_path: indexer_config
-                            .server
-                            .tls_cert_path
-                            .as_ref()
-                            .expect("TLS cert path required when grpc_tls is enabled")
-                            .clone()
-                            .into(),
-                        key_path: indexer_config
-                            .server
-                            .tls_key_path
-                            .as_ref()
-                            .expect("TLS key path required when grpc_tls is enabled")
-                            .clone()
-                            .into(),
-                    }
-                } else {
-                    TlsConfig::Disabled
-                },
-            },
+            indexer_config.server.grpc,
         )
         .await
         .unwrap();
