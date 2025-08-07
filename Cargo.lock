@@ -6070,6 +6070,7 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "zaino-commons",
+ "zaino-fetch",
  "zaino-state",
  "zainod",
  "zcash_client_backend",
