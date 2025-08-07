@@ -6044,6 +6044,7 @@ dependencies = [
  "zaino-commons",
  "zaino-fetch",
  "zaino-proto",
+ "zcash_address 0.7.1",
  "zcash_primitives",
  "zcash_protocol",
  "zcash_transparent 0.3.0",

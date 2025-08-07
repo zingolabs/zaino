@@ -51,5 +51,5 @@ once_cell = { workspace = true }
 # with its rand version of 0.8.5.
 # TODO: Investigate whether proptest has violated semver guarentees with
 # its rand version update.
-proptest = "~1.2"
+proptest = { workspace = true }
 

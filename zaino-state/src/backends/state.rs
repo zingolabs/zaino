@@ -38,14 +38,15 @@ use zaino_proto::proto::{
 use zebra_chain::{
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
-    parameters::{ConsensusBranchId, Network, NetworkUpgrade},
+    parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
+    primitives,
     serialization::ZcashSerialize,
     subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
     client::{
         GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData,
-        SubtreeRpcData, TransactionObject,
+        SubtreeRpcData, TransactionObject, ValidateAddressResponse,
     },
     methods::{
         chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
@@ -154,8 +155,7 @@ impl ZcashService for StateService {
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
         info!("Launching Chain Fetch Service..");
 
-        let rpc_client = JsonRpSeeConnector::new_from_validator_config(&config.validator)
-            .await?;
+        let rpc_client = JsonRpSeeConnector::new_from_validator_config(&config.validator).await?;
 
         let zebra_build_data = rpc_client.get_info().await?;
 
@@ -897,9 +897,12 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let now = Utc::now();
-        let zebra_estimated_height =
-            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.block_cache.network.into())
-                .estimate_height_at(now);
+        let zebra_estimated_height = NetworkChainTipHeightEstimator::new(
+            header.time,
+            height,
+            &self.config.block_cache.network.into(),
+        )
+        .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
         } else {
@@ -908,7 +911,8 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let upgrades = IndexMap::from_iter(
             self.config
-                .block_cache.network
+                .block_cache
+                .network
                 .to_zebra_network()
                 .full_activation_list()
                 .into_iter()
@@ -970,7 +974,11 @@ impl ZcashIndexer for StateServiceSubscriber {
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockchainInfoResponse::new(
-            self.config.block_cache.network.to_zebra_network().bip70_network_name(),
+            self.config
+                .block_cache
+                .network
+                .to_zebra_network()
+                .bip70_network_name(),
             height,
             hash,
             estimated_height,
@@ -1114,7 +1122,9 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        let sapling = match NetworkUpgrade::Sapling.activation_height(&self.config.block_cache.network.into()) {
+        let sapling = match NetworkUpgrade::Sapling
+            .activation_height(&self.config.block_cache.network.into())
+        {
             Some(activation_height) if height >= activation_height => Some(
                 state
                     .ready()
@@ -1127,18 +1137,19 @@ impl ZcashIndexer for StateServiceSubscriber {
             expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
         });
 
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.block_cache.network.into()) {
-            Some(activation_height) if height >= activation_height => Some(
-                state
-                    .ready()
-                    .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
-                    .await?,
-            ),
-            _ => None,
-        }
-        .and_then(|orch_response| {
-            expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
-        });
+        let orchard =
+            match NetworkUpgrade::Nu5.activation_height(&self.config.block_cache.network.into()) {
+                Some(activation_height) if height >= activation_height => Some(
+                    state
+                        .ready()
+                        .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
+                        .await?,
+                ),
+                _ => None,
+            }
+            .and_then(|orch_response| {
+                expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
+            });
 
         Ok(GetTreestateResponse::from_parts(
             hash,
@@ -1179,6 +1190,56 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
         Ok(self.block_cache.get_chain_height().await?)
+    }
+
+    async fn validate_address(
+        &self,
+        raw_address: String,
+    ) -> Result<ValidateAddressResponse, Self::Error> {
+        let network = self.config.block_cache.network.to_zebra_network().clone();
+
+        let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
+            return Ok(ValidateAddressResponse::invalid());
+        };
+
+        let address = match address.convert::<primitives::Address>() {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::debug!(?err, "conversion error");
+                return Ok(ValidateAddressResponse::invalid());
+            }
+        };
+
+        // we want to match zcashd's behaviour
+        if !address.is_transparent() {
+            return Ok(ValidateAddressResponse::invalid());
+        }
+
+        match address.network() {
+            NetworkKind::Mainnet => {
+                if network.kind() != NetworkKind::Mainnet {
+                    Ok(ValidateAddressResponse::invalid())
+                } else {
+                    Ok(ValidateAddressResponse::new(
+                        true,
+                        Some(raw_address),
+                        Some(address.is_script_hash()),
+                    ))
+                }
+            }
+            // Both testnet and regtest have the same address format
+            NetworkKind::Testnet | NetworkKind::Regtest => {
+                if network.kind() == NetworkKind::Mainnet {
+                    Ok(ValidateAddressResponse::invalid())
+                } else {
+                    Ok(ValidateAddressResponse::new(
+                        true,
+                        Some(raw_address),
+                        Some(address.is_script_hash()),
+                    ))
+                }
+            }
+        }
     }
 
     async fn z_get_subtrees_by_index(
@@ -1958,7 +2019,12 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.block_cache.network.to_zebra_network().bip70_network_name(),
+            network: self
+                .config
+                .block_cache
+                .network
+                .to_zebra_network()
+                .bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,

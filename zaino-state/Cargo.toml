@@ -61,6 +61,7 @@ nonempty = "0.11.0"
 arc-swap = "1.7.1"
 reqwest.workspace = true
 bitflags = { workspace = true }
+zcash_address = { workspace = true }
 derive_more = { version = "2.0.1", features = ["from"] }
 
 [dev-dependencies]
@@ -73,4 +74,3 @@ zingolib = { workspace = true }
 [build-dependencies]
 whoami = { workspace = true }
 cargo-lock = "10.1.0"
-

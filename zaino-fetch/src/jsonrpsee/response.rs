@@ -11,7 +11,11 @@ use zebra_chain::{
     value_balance::ValueBalance,
     work::difficulty::CompactDifficulty,
 };
-use zebra_rpc::{client::GetBlockchainInfoBalance, methods::opthex};
+
+use zebra_rpc::{
+    client::{GetBlockchainInfoBalance, ValidateAddressResponse},
+    methods::opthex,
+};
 
 use crate::jsonrpsee::connector::ResponseToError;
 
@@ -713,6 +717,10 @@ impl From<GetBlockCountResponse> for Height {
     fn from(value: GetBlockCountResponse) -> Self {
         value.0
     }
+}
+
+impl ResponseToError for ValidateAddressResponse {
+    type RpcError = Infallible;
 }
 
 /// A block object containing data and metadata about a block.

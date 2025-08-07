@@ -122,6 +122,10 @@ zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
 zaino-testutils = { path = "zaino-testutils" }
 zainod = { path = "zainod" }
+figment = "0.10"
+nonempty = "0.11.0"
+proptest = "~1.2"
+zcash_address = "0.7.1"
 
 [profile.test]
 opt-level = 3

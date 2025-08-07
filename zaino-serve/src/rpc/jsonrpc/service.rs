@@ -6,6 +6,7 @@ use zaino_state::{LightWalletIndexer, ZcashIndexer};
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::client::{
     GetBlockchainInfoResponse, GetSubtreesByIndexResponse, GetTreestateResponse,
+    ValidateAddressResponse,
 };
 use zebra_rpc::methods::{
     AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
@@ -92,6 +93,20 @@ pub trait ZcashIndexerRpc {
     /// tags: blockchain
     #[method(name = "getblockcount")]
     async fn get_block_count(&self) -> Result<Height, ErrorObjectOwned>;
+
+    /// Return information about the given Zcash address.
+    ///
+    /// # Parameters
+    /// - `address`: (string, required, example="tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb") The Zcash transparent address to validate.
+    ///
+    /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "validateaddress")]
+    async fn validate_address(
+        &self,
+        address: String,
+    ) -> Result<ValidateAddressResponse, ErrorObjectOwned>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -376,6 +391,23 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_block_count()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn validate_address(
+        &self,
+        address: String,
+    ) -> Result<ValidateAddressResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .validate_address(address)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

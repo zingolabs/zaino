@@ -211,7 +211,6 @@ mod chain_query_interface {
         };
 
         let state_service = StateService::spawn(state_service_config).await.unwrap();
-
         let chain_index = NodeBackedChainIndex::new(
             BlockchainSource::State(state_service.read_state_service().clone()),
             network,

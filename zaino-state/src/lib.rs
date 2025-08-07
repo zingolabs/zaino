@@ -27,7 +27,7 @@ pub use backends::{
 };
 
 // NOTE: This will replace local_cache. Currently WIP.
-pub(crate) mod chain_index;
+pub mod chain_index;
 
 pub use chain_index::encoding::*;
 pub use chain_index::mempool::Mempool;

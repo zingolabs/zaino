@@ -52,9 +52,8 @@ ctrlc = { workspace = true }
 # Formats
 toml = { workspace = true }
 
-[dependencies.figment]
-version = "0.10"
-features = ["toml", "env", "test"]
+# Configs
+figment= { workspace = true, features = ["toml", "env", "test"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
