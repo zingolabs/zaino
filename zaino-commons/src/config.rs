@@ -1,7 +1,7 @@
 //! Common configuration types shared across Zaino crates.
 
-use std::path::PathBuf;
 use base64::Engine;
+use std::path::PathBuf;
 
 /// Holds validator connection and authentication configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -27,23 +27,17 @@ impl Default for ValidatorConfig {
     }
 }
 
-
 /// Authentication method for RPC connections.
-/// 
+///
 /// This enum provides self-contained authentication handling,
 /// including lazy loading of cookie files when needed.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMethod {
     /// HTTP Basic authentication with username/password
-    Basic { 
-        username: String, 
-        password: String 
-    },
+    Basic { username: String, password: String },
     /// Cookie-based authentication (loads from file on demand)
-    Cookie { 
-        path: std::path::PathBuf 
-    },
+    Cookie { path: std::path::PathBuf },
 }
 
 impl AuthMethod {
@@ -53,24 +47,30 @@ impl AuthMethod {
             AuthMethod::Basic { username, password } => {
                 let credentials = base64::engine::general_purpose::STANDARD
                     .encode(format!("{}:{}", username, password));
-                Ok(("Authorization".to_string(), format!("Basic {}", credentials)))
-            },
+                Ok((
+                    "Authorization".to_string(),
+                    format!("Basic {}", credentials),
+                ))
+            }
             AuthMethod::Cookie { path } => {
                 let cookie_token = read_cookie_token(path)?;
                 let credentials = base64::engine::general_purpose::STANDARD
                     .encode(format!("__cookie__:{}", cookie_token));
-                Ok(("Authorization".to_string(), format!("Basic {}", credentials)))
+                Ok((
+                    "Authorization".to_string(),
+                    format!("Basic {}", credentials),
+                ))
             }
         }
     }
 }
 
 /// Shared cookie reading utility function
-/// 
+///
 /// Reads and parses a cookie file, extracting the token part after "__cookie__:"
 pub fn read_cookie_token(cookie_path: &std::path::Path) -> Result<String, AuthError> {
-    let cookie_content = std::fs::read_to_string(cookie_path)
-        .map_err(|e| AuthError::CookieReadError(e))?;
+    let cookie_content =
+        std::fs::read_to_string(cookie_path).map_err(|e| AuthError::CookieReadError(e))?;
     let trimmed_content = cookie_content.trim();
     if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
         Ok(stripped.to_string())
@@ -98,7 +98,7 @@ pub enum AuthError {
 }
 
 /// Cookie-based authentication configuration for servers.
-/// 
+///
 /// This is a simpler enum compared to AuthMethod, specifically for cases
 /// where you only need to enable/disable cookie auth (like server configs).
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -264,7 +264,7 @@ pub enum BackendType {
 }
 
 /// Zaino's wrapper for zebra_state configuration.
-/// 
+///
 /// This provides a clean public API while maintaining compatibility
 /// with Zebra's internal state configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
