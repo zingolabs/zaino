@@ -2,8 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+use zaino_commons::config::BackendType;
 use zaino_commons::config::{AuthMethod, ValidatorConfig, ZainoStateConfig};
-use zaino_state::BackendType;
 use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
 use zaino_testutils::ValidatorKind;

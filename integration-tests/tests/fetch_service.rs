@@ -1,21 +1,21 @@
 use futures::StreamExt as _;
+use zaino_commons::config::{
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, ServiceConfig,
+    ValidatorConfig, ZainoStateConfig,
+};
+use zaino_fetch::config::FetchServiceConfig;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
 };
-use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, 
-    ServiceConfig, ValidatorConfig, ZainoStateConfig
-};
-use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
-    FetchService, FetchServiceError, FetchServiceSubscriber,
-    LightWalletIndexer, StatusType, ZcashIndexer, ZcashService as _,
+    FetchService, FetchServiceError, FetchServiceSubscriber, LightWalletIndexer, StatusType,
+    ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlock, GetBlockHash};
 
 async fn create_test_manager_and_fetch_service(
@@ -587,13 +587,12 @@ async fn assert_fetch_service_difficulty_matches_rpc(validator: &ValidatorKind) 
     let fetch_service_get_difficulty = fetch_service_subscriber.get_difficulty().await.unwrap();
 
     let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
+        ValidatorConfig {
+            rpc_address: test_manager.zebrad_rpc_listen_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            ..Default::default()
+        }
+        .test_and_get_url()
         .await
         .unwrap(),
         "xxxxxx".to_string(),

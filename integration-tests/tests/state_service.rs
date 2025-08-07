@@ -1,7 +1,6 @@
 use zaino_commons::config::AuthMethod;
 use zaino_commons::config::{
-    BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, ServiceConfig,
-    ValidatorConfig,
+    BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, ServiceConfig, ValidatorConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::{
@@ -137,9 +136,7 @@ async fn create_test_manager_and_services(
             },
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            cookie: CookieAuth::Disabled,
-            rpc_user: "xxxxxx".to_string(),
-            rpc_password: "xxxxxx".to_string(),
+            auth: AuthMethod::default(),
         },
         service: ServiceConfig {
             timeout: 30,

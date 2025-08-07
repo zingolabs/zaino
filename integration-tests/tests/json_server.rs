@@ -1,15 +1,12 @@
 use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig,
-    ServiceConfig, ValidatorConfig, ZainoStateConfig
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, ServiceConfig,
+    ValidatorConfig, ZainoStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
-use zaino_state::{
-    FetchService, FetchServiceSubscriber, ZcashIndexer,
-    ZcashService as _,
-};
+use zaino_state::{FetchService, FetchServiceSubscriber, ZcashIndexer, ZcashService as _};
 use zaino_testutils::{from_inputs, Validator as _};
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
 async fn create_test_manager_and_fetch_services(
@@ -79,11 +76,11 @@ async fn create_test_manager_and_fetch_services(
             rpc_address: zaino_json_server_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
             auth: if enable_cookie_auth {
-                AuthMethod::Cookie { 
+                AuthMethod::Cookie {
                     path: test_manager
                         .json_server_cookie_dir
                         .clone()
-                        .unwrap_or_else(|| "/tmp/zaino.cookie".into())
+                        .unwrap_or_else(|| "/tmp/zaino.cookie".into()),
                 }
             } else {
                 AuthMethod::default()

@@ -7,9 +7,10 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
+use zaino_commons::config::AuthMethod;
 use zaino_commons::config::CacheConfig;
 use zaino_commons::config::DatabaseConfig;
-use zaino_commons::config::{BackendType, CookieAuth, ServiceConfig, ValidatorConfig};
+use zaino_commons::config::{BackendType, ServiceConfig, ValidatorConfig};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_state::read_u32_le;
 use zaino_state::write_u32_le;
@@ -99,9 +100,7 @@ async fn create_test_manager_and_services(
             },
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            cookie: CookieAuth::Disabled,
-            rpc_user: "xxxxxx".to_string(),
-            rpc_password: "xxxxxx".to_string(),
+            auth: AuthMethod::default(),
         },
         service: ServiceConfig {
             timeout: 30,

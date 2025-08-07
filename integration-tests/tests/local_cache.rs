@@ -1,5 +1,7 @@
 use core::panic;
-use zaino_commons::config::{AuthMethod, BackendType, ValidatorConfig, ZainoStateConfig};
+use zaino_commons::config::{
+    AuthMethod, BackendType, DatabaseConfig, ValidatorConfig, ZainoStateConfig,
+};
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_state::bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber};
 use zaino_testutils::Validator as _;
@@ -71,13 +73,14 @@ async fn create_test_manager_and_block_cache(
     };
 
     let block_cache_config = BlockCacheConfig {
-        map_capacity: None,
-        map_shard_amount: None,
-        db_path: test_manager.data_dir.clone(),
-        db_size: None,
+        database: DatabaseConfig {
+            path: test_manager.data_dir.clone(),
+            size: None,
+        },
         network,
         no_sync: zaino_no_sync,
         no_db: zaino_no_db,
+        ..Default::default()
     };
 
     let block_cache = BlockCache::spawn(&json_service, None, block_cache_config)
