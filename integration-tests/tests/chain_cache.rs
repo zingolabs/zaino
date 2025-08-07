@@ -1,4 +1,4 @@
-use zaino_commons::config::{BackendType, CookieAuth, ValidatorConfig, ZainoStateConfig};
+use zaino_commons::config::{AuthMethod, BackendType, ValidatorConfig, ZainoStateConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::bench::chain_index::non_finalised_state::{BlockchainSource, NonFinalizedState};
 use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
@@ -33,9 +33,7 @@ async fn create_test_manager_and_connector(
             },
             rpc_address: test_manager.zebrad_rpc_listen_address,
             indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            cookie: CookieAuth::Disabled,
-            rpc_user: "xxxxxx".to_string(),
-            rpc_password: "xxxxxx".to_string(),
+            auth: AuthMethod::default(),
         })
         .await
         .unwrap(),
@@ -122,7 +120,7 @@ async fn nfs_simple_sync() {
 mod chain_query_interface {
 
     use futures::TryStreamExt as _;
-    use zaino_commons::config::{CacheConfig, CookieAuth, DatabaseConfig};
+    use zaino_commons::config::{CacheConfig, DatabaseConfig};
     use zaino_state::{
         bench::chain_index::{
             self,
@@ -189,15 +187,10 @@ mod chain_query_interface {
                 },
                 rpc_address: test_manager.zebrad_rpc_listen_address,
                 indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-                cookie: CookieAuth::Disabled,
-                rpc_user: None,
-                rpc_password: None,
+                auth: AuthMethod::default(),
             },
-            service: zaino_commons::config::ServiceConfig {
-                timeout: None,
-                channel_size: None,
-            },
-            block_cache: zaino_state::config::BlockCacheConfig {
+            service: zaino_commons::config::ServiceConfig::default(),
+            block_cache: zaino_commons::config::BlockCacheConfig {
                 cache: CacheConfig {
                     capacity: None,
                     shard_amount: None,
