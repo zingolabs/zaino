@@ -68,9 +68,9 @@ async fn create_test_manager_and_nfs(
     )
     .await;
 
-    // todo! refactor out of unecessary to_string and string match of already enumerized value
-    let network = match test_manager.network.to_string().as_str() {
-        "Regtest" => zebra_chain::parameters::Network::new_regtest(
+    // todo! unify duplicated Network enums
+    let network = match test_manager.network {
+        zaino_testutils::Network::Regtest => zebra_chain::parameters::Network::new_regtest(
             zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                 before_overwinter: Some(1),
                 overwinter: Some(1),
@@ -85,9 +85,10 @@ async fn create_test_manager_and_nfs(
                 nu7: None,
             },
         ),
-        "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
-        "Mainnet" => zebra_chain::parameters::Network::Mainnet,
-        _ => panic!("Incorrect newtork type found."),
+        zaino_testutils::Network::Testnet => {
+            zebra_chain::parameters::Network::new_default_testnet()
+        }
+        zaino_testutils::Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
     };
 
     let non_finalized_state =
