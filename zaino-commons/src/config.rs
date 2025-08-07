@@ -12,17 +12,8 @@ pub struct ValidatorConfig {
     pub rpc_address: std::net::SocketAddr,
     /// Validator gRPC address.
     pub indexer_rpc_address: std::net::SocketAddr,
-    /// Authentication method for RPC connections (new unified approach)
+    /// Authentication method for RPC connections
     pub auth: AuthMethod,
-    /// Validator RPC cookie authentication (deprecated, use `auth` instead)
-    #[serde(default)]
-    pub cookie: CookieAuth,
-    /// Validator JsonRPC user (deprecated, use `auth` instead)
-    #[serde(default)]
-    pub rpc_user: String,
-    /// Validator JsonRPC password (deprecated, use `auth` instead)  
-    #[serde(default)]
-    pub rpc_password: String,
 }
 
 impl Default for ValidatorConfig {
@@ -32,31 +23,10 @@ impl Default for ValidatorConfig {
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
             indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
             auth: AuthMethod::default(),
-            cookie: CookieAuth::Disabled,
-            rpc_user: "xxxxxx".to_owned(),
-            rpc_password: "xxxxxx".to_owned(),
         }
     }
 }
 
-/// Cookie-based authentication configuration.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CookieAuth {
-    /// No cookie authentication
-    Disabled,
-    /// Cookie authentication enabled
-    Enabled {
-        /// Path to the cookie file
-        path: PathBuf,
-    },
-}
-
-impl Default for CookieAuth {
-    fn default() -> Self {
-        CookieAuth::Disabled
-    }
-}
 
 /// Authentication method for RPC connections.
 /// 
@@ -86,24 +56,26 @@ impl AuthMethod {
                 Ok(("Authorization".to_string(), format!("Basic {}", credentials)))
             },
             AuthMethod::Cookie { path } => {
-                let cookie_token = Self::read_cookie_token(path)?;
+                let cookie_token = read_cookie_token(path)?;
                 let credentials = base64::engine::general_purpose::STANDARD
                     .encode(format!("__cookie__:{}", cookie_token));
                 Ok(("Authorization".to_string(), format!("Basic {}", credentials)))
             }
         }
     }
+}
 
-    /// Self-contained cookie reading logic
-    fn read_cookie_token(cookie_path: &std::path::Path) -> Result<String, AuthError> {
-        let cookie_content = std::fs::read_to_string(cookie_path)
-            .map_err(|e| AuthError::CookieReadError(e))?;
-        let trimmed_content = cookie_content.trim();
-        if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
-            Ok(stripped.to_string())
-        } else {
-            Err(AuthError::InvalidCookieFormat)
-        }
+/// Shared cookie reading utility function
+/// 
+/// Reads and parses a cookie file, extracting the token part after "__cookie__:"
+pub fn read_cookie_token(cookie_path: &std::path::Path) -> Result<String, AuthError> {
+    let cookie_content = std::fs::read_to_string(cookie_path)
+        .map_err(|e| AuthError::CookieReadError(e))?;
+    let trimmed_content = cookie_content.trim();
+    if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
+        Ok(stripped.to_string())
+    } else {
+        Err(AuthError::InvalidCookieFormat)
     }
 }
 

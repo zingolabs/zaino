@@ -439,11 +439,11 @@ impl TestManager {
                     enable_json_server: enable_zaino_jsonrpc_server,
                     json_rpc_listen_address: zaino_json_listen_address,
                     cookie: if enable_zaino_jsonrpc_server_cookie_auth {
-                        zaino_commons::config::CookieAuth::Enabled {
+                        zainodlib::config::CookieAuth::Enabled {
                             path: zaino_json_server_cookie_dir.clone().unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
                         }
                     } else {
-                        zaino_commons::config::CookieAuth::Disabled
+                        zainodlib::config::CookieAuth::Disabled
                     },
                     grpc_listen_address: zaino_grpc_listen_address,
                     grpc_tls: false,
@@ -453,9 +453,6 @@ impl TestManager {
                 validator: zaino_commons::config::ValidatorConfig {
                     rpc_address: zebrad_rpc_listen_address,
                     indexer_rpc_address: zebrad_grpc_listen_address,
-                    cookie: zaino_commons::config::CookieAuth::Disabled,
-                    rpc_user: "xxxxxx".to_string(),
-                    rpc_password: "xxxxxx".to_string(),
                     ..Default::default()
                 },
                 service: zaino_commons::config::ServiceConfig::default(),

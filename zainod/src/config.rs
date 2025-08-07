@@ -19,13 +19,42 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, Network, ServiceConfig,
-    ValidatorConfig, ZainoStateConfig,
+    AuthError, AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, Network, ServiceConfig,
+    ValidatorConfig, ZainoStateConfig, read_cookie_token,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
 
 use crate::error::IndexerError;
+
+/// Cookie-based authentication configuration for Zaino's own servers.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CookieAuth {
+    /// No cookie authentication
+    Disabled,
+    /// Cookie authentication enabled
+    Enabled {
+        /// Path to the cookie file
+        path: PathBuf,
+    },
+}
+
+impl CookieAuth {
+    /// Get the cookie token if authentication is enabled, using shared cookie reading logic
+    pub fn get_cookie_token(&self) -> Result<Option<String>, AuthError> {
+        match self {
+            CookieAuth::Disabled => Ok(None),
+            CookieAuth::Enabled { path } => Ok(Some(read_cookie_token(path)?)),
+        }
+    }
+}
+
+impl Default for CookieAuth {
+    fn default() -> Self {
+        CookieAuth::Disabled
+    }
+}
 
 /// Unified backend configuration enum.
 #[derive(Debug, Clone)]
@@ -204,8 +233,8 @@ impl IndexerConfig {
             }
         }
 
-        // Check validator cookie authentication settings
-        if let CookieAuth::Enabled { ref path } = self.validator.cookie {
+        // Check validator authentication settings
+        if let AuthMethod::Cookie { ref path } = self.validator.auth {
             if !path.exists() {
                 return Err(IndexerError::ConfigError(
                     format!("Validator cookie authentication is enabled, but cookie path '{}' does not exist.", path.display()),
@@ -214,7 +243,8 @@ impl IndexerConfig {
         }
 
         #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
-        let grpc_addr = fetch_socket_addr_from_hostname(&self.server.grpc_listen_address.to_string())?;
+        let grpc_addr =
+            fetch_socket_addr_from_hostname(&self.server.grpc_listen_address.to_string())?;
         #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
         let _ = fetch_socket_addr_from_hostname(&self.server.grpc_listen_address.to_string())?;
 
@@ -239,7 +269,7 @@ impl IndexerConfig {
 
             // Ensure validator rpc cookie authentication is used when connecting to non-loopback addresses.
             if !is_loopback_listen_addr(&validator_addr) {
-                if let CookieAuth::Disabled = self.validator.cookie {
+                if let AuthMethod::Basic { .. } = self.validator.auth {
                     return Err(IndexerError::ConfigError(
                         "Validator listen address is not loopback, so cookie authentication must be enabled."
                             .to_string(),
@@ -261,7 +291,6 @@ impl IndexerConfig {
 
         Ok(())
     }
-
 
     /// Finalizes the configuration after initial parsing, applying conditional defaults.
     fn finalize_config_logic(mut self) -> Self {
@@ -287,9 +316,7 @@ impl Default for IndexerConfig {
                 config: ZainoStateConfig::default(),
                 rpc_address: "127.0.0.1:18232".parse().unwrap(),
                 indexer_rpc_address: "127.0.0.1:18230".parse().unwrap(),
-                cookie: CookieAuth::Disabled,
-                rpc_user: "xxxxxx".to_string(),
-                rpc_password: "xxxxxx".to_string(),
+                auth: AuthMethod::default(),
             },
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),

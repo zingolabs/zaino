@@ -95,10 +95,10 @@ where
                     service.inner_ref().get_subscriber(),
                     JsonRpcConfig {
                         json_rpc_listen_address: indexer_config.server.json_rpc_listen_address,
-                        enable_cookie_auth: matches!(indexer_config.server.cookie, zaino_commons::config::CookieAuth::Enabled { .. }),
+                        enable_cookie_auth: matches!(indexer_config.server.cookie, crate::config::CookieAuth::Enabled { .. }),
                         cookie_dir: match &indexer_config.server.cookie {
-                            zaino_commons::config::CookieAuth::Enabled { path } => Some(path.clone()),
-                            zaino_commons::config::CookieAuth::Disabled => None,
+                            crate::config::CookieAuth::Enabled { path } => Some(path.clone()),
+                            crate::config::CookieAuth::Disabled => None,
                         },
                     },
                 )
