@@ -69,7 +69,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 tower = { version = "0.4", features = ["buffer", "util"] }
-tonic = "0.12"
+tonic = { version = "0.12", features = ["tls", "server"] }
 tonic-build = "0.12"
 prost = "0.13"
 serde = "1.0"
