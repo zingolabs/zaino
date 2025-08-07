@@ -15,7 +15,8 @@ zebra-state = { workspace = true }
 
 # Miscellaneous Workspace
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "fs"] }
+tonic = { workspace = true }
 reqwest = { workspace = true }
 humantime-serde = "1.1"
 base64 = "0.22"

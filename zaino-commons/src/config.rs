@@ -1,7 +1,16 @@
 //! Common configuration types shared across Zaino crates.
 
 use base64::Engine;
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
+use tonic::transport::{Identity, ServerTlsConfig};
+
+/// Configuration-related errors
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// IO error reading configuration files
+    #[error("IO error: {0}")]
+    Io(String),
+}
 
 /// Holds validator connection and authentication configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -400,5 +409,106 @@ impl From<zebra_state::Config> for ZainoStateConfig {
             debug_stop_at_height: config.debug_stop_at_height,
             debug_validity_check_interval: config.debug_validity_check_interval,
         }
+    }
+}
+
+/// TLS configuration for gRPC server.
+///
+/// This enum provides lazy loading of certificate and key files when TLS is enabled.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsConfig {
+    /// TLS is disabled
+    Disabled,
+    /// TLS is enabled with certificate and key file paths
+    Enabled {
+        /// Path to the TLS certificate file in PEM format
+        cert_path: PathBuf,
+        /// Path to the TLS private key file in PEM format  
+        key_path: PathBuf,
+    },
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        TlsConfig::Disabled
+    }
+}
+
+impl TlsConfig {
+    /// Reads the certificate and key files and returns a ServerTlsConfig if TLS is enabled.
+    /// Returns None if TLS is disabled.
+    pub async fn get_server_tls_config(&self) -> Result<Option<ServerTlsConfig>, ConfigError> {
+        match self {
+            TlsConfig::Disabled => Ok(None),
+            TlsConfig::Enabled {
+                cert_path,
+                key_path,
+            } => {
+                // Read the certificate and key files asynchronously.
+                let cert = tokio::fs::read(cert_path).await.map_err(|e| {
+                    ConfigError::Io(format!(
+                        "Failed to read TLS certificate from '{}': {}",
+                        cert_path.display(),
+                        e
+                    ))
+                })?;
+                let key = tokio::fs::read(key_path).await.map_err(|e| {
+                    ConfigError::Io(format!(
+                        "Failed to read TLS key from '{}': {}",
+                        key_path.display(),
+                        e
+                    ))
+                })?;
+
+                // Create the TLS identity and server configuration.
+                let identity = Identity::from_pem(&cert, &key);
+                Ok(Some(ServerTlsConfig::new().identity(identity)))
+            }
+        }
+    }
+}
+
+/// Configuration data for Zaino's JSON-RPC server.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct JsonRpcConfig {
+    /// Server bind address.
+    pub listen_address: SocketAddr,
+    /// Cookie-based authentication configuration.
+    pub auth: CookieAuth,
+}
+
+impl Default for JsonRpcConfig {
+    fn default() -> Self {
+        Self {
+            listen_address: "127.0.0.1:8237".parse().expect("Valid socket address"),
+            auth: CookieAuth::default(),
+        }
+    }
+}
+
+/// Configuration data for Zaino's gRPC server.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GrpcConfig {
+    /// gRPC server bind address.
+    pub listen_address: SocketAddr,
+    /// TLS configuration.
+    pub tls: TlsConfig,
+}
+
+impl Default for GrpcConfig {
+    fn default() -> Self {
+        Self {
+            listen_address: "127.0.0.1:8137".parse().expect("Valid socket address"),
+            tls: TlsConfig::default(),
+        }
+    }
+}
+
+impl GrpcConfig {
+    /// If TLS is enabled, reads the certificate and key files and returns a valid
+    /// `ServerTlsConfig`. If TLS is not enabled, returns `Ok(None)`.
+    pub async fn get_valid_tls(&self) -> Result<Option<ServerTlsConfig>, ConfigError> {
+        self.tls.get_server_tls_config().await
     }
 }
