@@ -29,6 +29,7 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true, features = ["tls"] }
 http = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
 # Miscellaneous Crate

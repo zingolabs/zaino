@@ -4,7 +4,7 @@ use tokio::time::Instant;
 use tracing::info;
 
 use zaino_serve::server::{
-    config::{GrpcConfig, JsonRpcConfig},
+    config::{GrpcConfig, JsonRpcConfig, TlsConfig},
     grpc::TonicServer,
     jsonrpc::JsonRpcServer,
 };
@@ -97,9 +97,22 @@ where
             service.inner_ref().get_subscriber(),
             GrpcConfig {
                 grpc_listen_address: indexer_config.server.grpc_listen_address,
-                tls: indexer_config.server.grpc_tls,
-                tls_cert_path: indexer_config.server.tls_cert_path.clone(),
-                tls_key_path: indexer_config.server.tls_key_path.clone(),
+                tls: if indexer_config.server.grpc_tls {
+                    TlsConfig::Enabled {
+                        cert_path: indexer_config.server.tls_cert_path
+                            .as_ref()
+                            .expect("TLS cert path required when grpc_tls is enabled")
+                            .clone()
+                            .into(),
+                        key_path: indexer_config.server.tls_key_path
+                            .as_ref()
+                            .expect("TLS key path required when grpc_tls is enabled")
+                            .clone()
+                            .into(),
+                    }
+                } else {
+                    TlsConfig::Disabled
+                },
             },
         )
         .await

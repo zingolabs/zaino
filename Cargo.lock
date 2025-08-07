@@ -5985,6 +5985,7 @@ dependencies = [
  "jsonrpsee",
  "lazy-regex",
  "prost",
+ "serde",
  "thiserror 1.0.69",
  "tokio",
  "tonic",
