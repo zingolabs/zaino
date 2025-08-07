@@ -11,3 +11,9 @@ pub enum ServerError {
     #[error("Tonic transport error: {0}")]
     TonicTransportError(#[from] tonic::transport::Error),
 }
+
+impl From<zaino_commons::config::ConfigError> for ServerError {
+    fn from(config_error: zaino_commons::config::ConfigError) -> Self {
+        ServerError::ServerConfigError(config_error.to_string())
+    }
+}
