@@ -22,6 +22,10 @@ pub enum TransportError {
     #[error("could not read zebra authentication cookie file: {0}")]
     CookieReadError(io::Error),
 
+    /// Authentication error (e.g., cookie file issues, credential problems)
+    #[error("Authentication error: {0}")]
+    AuthenticationError(String),
+
     /// Reqwest Based Errors.
     #[error("Error: HTTP Request Error: {0}")]
     ReqwestError(#[from] reqwest::Error),

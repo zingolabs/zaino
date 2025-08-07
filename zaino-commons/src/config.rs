@@ -1,6 +1,7 @@
 //! Common configuration types shared across Zaino crates.
 
 use std::path::PathBuf;
+use base64::Engine;
 
 /// Holds validator connection and authentication configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -11,11 +12,16 @@ pub struct ValidatorConfig {
     pub rpc_address: std::net::SocketAddr,
     /// Validator gRPC address.
     pub indexer_rpc_address: std::net::SocketAddr,
-    /// Validator RPC cookie authentication
+    /// Authentication method for RPC connections (new unified approach)
+    pub auth: AuthMethod,
+    /// Validator RPC cookie authentication (deprecated, use `auth` instead)
+    #[serde(default)]
     pub cookie: CookieAuth,
-    /// Validator JsonRPC user.
+    /// Validator JsonRPC user (deprecated, use `auth` instead)
+    #[serde(default)]
     pub rpc_user: String,
-    /// Validator JsonRPC password.
+    /// Validator JsonRPC password (deprecated, use `auth` instead)  
+    #[serde(default)]
     pub rpc_password: String,
 }
 
@@ -25,6 +31,7 @@ impl Default for ValidatorConfig {
             config: ZainoStateConfig::default(),
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
             indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
+            auth: AuthMethod::default(),
             cookie: CookieAuth::Disabled,
             rpc_user: "xxxxxx".to_owned(),
             rpc_password: "xxxxxx".to_owned(),
@@ -49,6 +56,73 @@ impl Default for CookieAuth {
     fn default() -> Self {
         CookieAuth::Disabled
     }
+}
+
+/// Authentication method for RPC connections.
+/// 
+/// This enum provides self-contained authentication handling,
+/// including lazy loading of cookie files when needed.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMethod {
+    /// HTTP Basic authentication with username/password
+    Basic { 
+        username: String, 
+        password: String 
+    },
+    /// Cookie-based authentication (loads from file on demand)
+    Cookie { 
+        path: std::path::PathBuf 
+    },
+}
+
+impl AuthMethod {
+    /// Get authentication header for HTTP requests
+    pub fn get_auth_header(&self) -> Result<(String, String), AuthError> {
+        match self {
+            AuthMethod::Basic { username, password } => {
+                let credentials = base64::engine::general_purpose::STANDARD
+                    .encode(format!("{}:{}", username, password));
+                Ok(("Authorization".to_string(), format!("Basic {}", credentials)))
+            },
+            AuthMethod::Cookie { path } => {
+                let cookie_token = Self::read_cookie_token(path)?;
+                let credentials = base64::engine::general_purpose::STANDARD
+                    .encode(format!("__cookie__:{}", cookie_token));
+                Ok(("Authorization".to_string(), format!("Basic {}", credentials)))
+            }
+        }
+    }
+
+    /// Self-contained cookie reading logic
+    fn read_cookie_token(cookie_path: &std::path::Path) -> Result<String, AuthError> {
+        let cookie_content = std::fs::read_to_string(cookie_path)
+            .map_err(|e| AuthError::CookieReadError(e))?;
+        let trimmed_content = cookie_content.trim();
+        if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
+            Ok(stripped.to_string())
+        } else {
+            Err(AuthError::InvalidCookieFormat)
+        }
+    }
+}
+
+impl Default for AuthMethod {
+    fn default() -> Self {
+        AuthMethod::Basic {
+            username: "xxxxxx".to_string(),
+            password: "xxxxxx".to_string(),
+        }
+    }
+}
+
+/// Authentication-related errors
+#[derive(Debug, thiserror::Error)]
+pub enum AuthError {
+    #[error("Failed to read cookie file: {0}")]
+    CookieReadError(std::io::Error),
+    #[error("Cookie file format is invalid (expected '__cookie__:token')")]
+    InvalidCookieFormat,
 }
 
 /// Holds service-level configuration.
@@ -165,6 +239,9 @@ impl Into<zebra_chain::parameters::Network> for &Network {
         (*self).into()
     }
 }
+
+// TODO: Implement From<zebra_chain::parameters::Network> for Network
+// This is complex due to zebra's network structure - will implement later
 
 impl Default for Network {
     fn default() -> Self {

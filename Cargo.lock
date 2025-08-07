@@ -5924,8 +5924,10 @@ dependencies = [
 name = "zaino-commons"
 version = "0.1.2"
 dependencies = [
+ "base64",
  "humantime-serde",
  "serde",
+ "thiserror 1.0.69",
  "zebra-chain 1.0.0",
  "zebra-state 1.0.1",
 ]

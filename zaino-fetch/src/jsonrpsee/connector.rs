@@ -3,14 +3,14 @@
 //! TODO: - Add option for http connector.
 //!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [<https://github.com/zingolabs/zaino/issues/67>].
 
-use base64::{engine::general_purpose, Engine};
+// base64 imports moved to zaino-commons AuthMethod
 use http::Uri;
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
 use std::{
     any::type_name,
     convert::Infallible,
-    fmt, fs,
+    fmt,
     net::SocketAddr,
     path::Path,
     sync::{
@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zaino_commons::config::{CookieAuth, ValidatorConfig};
+use zaino_commons::config::{AuthMethod, ValidatorConfig};
 
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
@@ -102,30 +102,8 @@ impl fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
-// Helper function to read and parse the cookie file content.
-// Zebra's RPC server expects Basic Auth with username "__cookie__"
-// and the token from the cookie file as the password.
-// The cookie file itself is formatted as "__cookie__:<token>".
-// This function extracts just the <token> part.
-fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, TransportError> {
-    let cookie_content =
-        fs::read_to_string(cookie_path).map_err(TransportError::CookieReadError)?;
-    let trimmed_content = cookie_content.trim();
-    if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
-        Ok(stripped.to_string())
-    } else {
-        // If the prefix is not present, use the entire trimmed content.
-        // This maintains compatibility with older formats or other cookie sources.
-        Ok(trimmed_content.to_string())
-    }
-}
-
-#[derive(Debug, Clone)]
-enum AuthMethod {
-    Basic { username: String, password: String },
-    Cookie { cookie: String },
-}
-
+// Cookie token reading functionality moved to zaino-commons AuthMethod
+// for self-contained authentication handling
 
 /// Trait to convert a JSON-RPC response to an error.
 pub trait ResponseToError: Sized {
@@ -203,8 +181,6 @@ impl JsonRpSeeConnector {
 
     /// Creates a new JsonRpSeeConnector with Cookie Authentication.
     pub fn new_with_cookie_auth(url: Url, cookie_path: &Path) -> Result<Self, TransportError> {
-        let cookie_password = read_and_parse_cookie_token(cookie_path)?;
-
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(5))
@@ -218,7 +194,7 @@ impl JsonRpSeeConnector {
             id_counter: Arc::new(AtomicI32::new(0)),
             client,
             auth_method: AuthMethod::Cookie {
-                cookie: cookie_password,
+                path: cookie_path.to_path_buf(),
             },
         })
     }
@@ -227,15 +203,15 @@ impl JsonRpSeeConnector {
     pub async fn new_from_validator_config(
         config: &zaino_commons::config::ValidatorConfig,
     ) -> Result<Self, TransportError> {
-        match &config.cookie {
-            CookieAuth::Enabled { path } => JsonRpSeeConnector::new_with_cookie_auth(
+        match &config.auth {
+            AuthMethod::Cookie { path } => JsonRpSeeConnector::new_with_cookie_auth(
                 test_node_and_return_url(config).await?,
-                Path::new(path),
+                path,
             ),
-            CookieAuth::Disabled => JsonRpSeeConnector::new_with_basic_auth(
+            AuthMethod::Basic { username, password } => JsonRpSeeConnector::new_with_basic_auth(
                 test_node_and_return_url(config).await?,
-                config.rpc_user.clone(),
-                config.rpc_password.clone(),
+                username.clone(),
+                password.clone(),
             ),
         }
     }
@@ -362,18 +338,15 @@ impl JsonRpSeeConnector {
             .post(self.url.clone())
             .header("Content-Type", "application/json");
 
-        match &self.auth_method {
-            AuthMethod::Basic { username, password } => {
-                request_builder = request_builder.basic_auth(username, Some(password));
+        match self.auth_method.get_auth_header() {
+            Ok((header_name, header_value)) => {
+                request_builder = request_builder.header(header_name, header_value);
             }
-            AuthMethod::Cookie { cookie } => {
-                request_builder = request_builder.header(
-                    reqwest::header::AUTHORIZATION,
-                    format!(
-                        "Basic {}",
-                        general_purpose::STANDARD.encode(format!("__cookie__:{cookie}"))
-                    ),
-                );
+            Err(e) => {
+                // Convert AuthError to serde_json::Error since this function returns serde_json::Result
+                // Use a workaround since serde_json::Error doesn't have a custom constructor
+                let error_msg = format!("Failed to get authentication header: {}", e);
+                return Err(serde_json::from_str::<()>(&error_msg).unwrap_err());
             }
         }
 
@@ -678,18 +651,15 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
         .header("Content-Type", "application/json")
         .body(request_body);
 
-    match &auth_method {
-        AuthMethod::Basic { username, password } => {
-            request_builder = request_builder.basic_auth(username, Some(password));
+    match auth_method.get_auth_header() {
+        Ok((header_name, header_value)) => {
+            request_builder = request_builder.header(header_name, header_value);
         }
-        AuthMethod::Cookie { cookie } => {
-            request_builder = request_builder.header(
-                reqwest::header::AUTHORIZATION,
-                format!(
-                    "Basic {}",
-                    general_purpose::STANDARD.encode(format!("__cookie__:{cookie}"))
-                ),
-            );
+        Err(e) => {
+            return Err(TransportError::AuthenticationError(format!(
+                "Failed to get authentication header for node test: {}",
+                e
+            )));
         }
     }
 
@@ -707,28 +677,13 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
 }
 
 // todo! these fields could probably be all replaced with a combo of ValidatorConfig, BlockCacheConfig and ServiceConfig
-/// Tries to connect to zebrad/zcashd using the provided SocketAddr and returns the correct URL.
+/// Tries to connect to zebrd/zcashd using the provided SocketAddr and returns the correct URL.
 pub async fn test_node_and_return_url(
     ValidatorConfig {
-        rpc_address,
-        cookie,
-        rpc_user,
-        rpc_password,
-        ..
+        rpc_address, auth, ..
     }: &ValidatorConfig,
 ) -> Result<Url, TransportError> {
-    let auth_method = match cookie {
-        CookieAuth::Enabled { path } => {
-            let cookie_password = read_and_parse_cookie_token(Path::new(&path))?;
-            AuthMethod::Cookie {
-                cookie: cookie_password,
-            }
-        }
-        CookieAuth::Disabled => AuthMethod::Basic {
-            username: rpc_user.to_string(),
-            password: rpc_password.to_string(),
-        },
-    };
+    let auth_method = auth.clone();
 
     let host = match rpc_address {
         SocketAddr::V4(_) => rpc_address.ip().to_string(),
