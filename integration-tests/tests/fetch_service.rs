@@ -1,10 +1,5 @@
 use futures::StreamExt as _;
-use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, ServiceConfig,
-    ValidatorConfig, ZainoStateConfig,
-};
-use zaino_fetch::config::FetchServiceConfig;
-use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
+use zaino_commons::config::BackendType;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
@@ -14,7 +9,7 @@ use zaino_state::{
     ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::Validator as _;
-use zaino_testutils::{TestManager, ValidatorKind};
+use zaino_testutils::{TestManager, TestManagerConfig, ValidatorKind};
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlock, GetBlockHash};
 
@@ -26,47 +21,28 @@ async fn create_test_manager_and_fetch_service(
     zaino_no_db: bool,
     enable_clients: bool,
 ) -> (TestManager, FetchService, FetchServiceSubscriber) {
-    let test_manager = TestManager::launch(
-        validator,
-        &BackendType::Fetch,
-        None,
-        chain_cache,
-        enable_zaino,
-        false,
-        false,
-        zaino_no_sync,
-        zaino_no_db,
-        enable_clients,
-    )
-    .await
-    .unwrap();
+    // Create TestManagerConfig using the new configuration system
+    let mut config = TestManagerConfig::minimal(*validator, BackendType::Fetch);
+    config.chain_cache = chain_cache;
+    if enable_zaino {
+        config.zaino_config.enable_zaino = true;
+        config.zaino_config.no_sync = zaino_no_sync;
+        config.zaino_config.no_db = zaino_no_db;
+    }
+    if enable_clients {
+        config.client_config.enable_clients = true;
+    }
 
-    let fetch_service = FetchService::spawn(FetchServiceConfig {
-        validator: ValidatorConfig {
-            config: ZainoStateConfig::default(),
-            rpc_address: test_manager.zebrad_rpc_listen_address,
-            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            auth: AuthMethod::default(),
-        },
-        service: ServiceConfig::default(),
-        block_cache: BlockCacheConfig {
-            cache: CacheConfig::default(),
-            database: DatabaseConfig {
-                path: test_manager
-                    .local_net
-                    .data_dir()
-                    .path()
-                    .to_path_buf()
-                    .join("zaino"),
-                size: None,
-            },
-            network: zaino_commons::config::Network::Regtest,
-            no_sync: true,
-            no_db: true,
-        },
-    })
-    .await
-    .unwrap();
+    let test_manager = TestManager::launch_with_config(config).await.unwrap();
+
+    // Use the TestManager's helper method to get FetchServiceConfig
+    let zaino_db_path = test_manager.data_dir.join("zaino");
+    let zebra_db_path = test_manager.data_dir.clone();
+    let fetch_service_config = test_manager.get_fetch_service_config(zaino_db_path, zebra_db_path);
+    
+    let fetch_service = FetchService::spawn(fetch_service_config)
+        .await
+        .unwrap();
     let subscriber = fetch_service.get_subscriber().inner();
     (test_manager, fetch_service, subscriber)
 }
@@ -173,19 +149,8 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
         .take()
         .expect("Clients are not initialized");
 
-    let validator_config = ValidatorConfig {
-        config: ZainoStateConfig::default(),
-        rpc_address: test_manager.zebrad_rpc_listen_address,
-        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-        auth: AuthMethod::default(),
-    };
 
-    let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        validator_config.test_and_get_url().await.unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let json_service = test_manager.create_json_connector().await.unwrap();
 
     test_manager.local_net.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -244,19 +209,8 @@ async fn test_get_mempool_info(validator: &ValidatorKind) {
         .take()
         .expect("Clients are not initialized");
 
-    let validator_config = ValidatorConfig {
-        config: ZainoStateConfig::default(),
-        rpc_address: test_manager.zebrad_rpc_listen_address,
-        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-        auth: AuthMethod::default(),
-    };
 
-    let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        validator_config.test_and_get_url().await.unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let json_service = test_manager.create_json_connector().await.unwrap();
 
     test_manager.local_net.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -547,19 +501,8 @@ async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
     test_manager.local_net.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    let validator_config = ValidatorConfig {
-        config: ZainoStateConfig::default(),
-        rpc_address: test_manager.zebrad_rpc_listen_address,
-        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-        auth: AuthMethod::default(),
-    };
 
-    let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        validator_config.test_and_get_url().await.unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let json_service = test_manager.create_json_connector().await.unwrap();
 
     let fetch_service_get_latest_block =
         dbg!(fetch_service_subscriber.get_latest_block().await.unwrap());
@@ -586,19 +529,7 @@ async fn assert_fetch_service_difficulty_matches_rpc(validator: &ValidatorKind) 
 
     let fetch_service_get_difficulty = fetch_service_subscriber.get_difficulty().await.unwrap();
 
-    let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
-        ValidatorConfig {
-            rpc_address: test_manager.zebrad_rpc_listen_address,
-            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            ..Default::default()
-        }
-        .test_and_get_url()
-        .await
-        .unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let jsonrpc_client = test_manager.create_json_connector().await.unwrap();
 
     let rpc_difficulty_response = jsonrpc_client.get_difficulty().await.unwrap();
 
