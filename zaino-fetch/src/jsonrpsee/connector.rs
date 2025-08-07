@@ -676,7 +676,7 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
     Ok(())
 }
 
-// todo! these fields could probably be all replaced with a combo of ValidatorConfig, BlockCacheConfig and ServiceConfig
+// todo! move into a VAlidatorConfig owned method
 /// Tries to connect to zebrd/zcashd using the provided SocketAddr and returns the correct URL.
 pub async fn test_node_and_return_url(
     ValidatorConfig {
