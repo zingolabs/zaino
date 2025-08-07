@@ -1,4 +1,4 @@
-use zaino_commons::config::BackendType;
+use zaino_commons::config::{BackendType, CookieAuth, ValidatorConfig, ZainoStateConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::bench::chain_index::non_finalised_state::{BlockchainSource, NonFinalizedState};
 use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
@@ -27,13 +27,16 @@ async fn create_test_manager_and_connector(
     .unwrap();
 
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
+        test_node_and_return_url(&ValidatorConfig {
+            config: ZainoStateConfig {
+                ..Default::default()
+            },
+            rpc_address: test_manager.zebrad_rpc_listen_address,
+            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
+            cookie: CookieAuth::Disabled,
+            rpc_user: "xxxxxx".to_string(),
+            rpc_password: "xxxxxx".to_string(),
+        })
         .await
         .unwrap(),
         "xxxxxx".to_string(),
