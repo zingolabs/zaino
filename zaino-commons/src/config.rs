@@ -264,7 +264,7 @@ impl Default for DatabaseConfig {
 
 /// Holds config data for `[ChainIndex]`.
 /// TODO: Rename when ChainIndex update is complete.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
 pub struct BlockCacheConfig {
     /// Cache configuration for DashMaps.
     pub cache: CacheConfig,
