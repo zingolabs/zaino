@@ -19,8 +19,8 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, Network,
-    ServiceConfig, ValidatorConfig, ZainoStateConfig,
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig,
+    GrpcConfig, JsonRpcConfig, Network, ServiceConfig, TlsConfig, ValidatorConfig, ZainoStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
@@ -51,34 +51,25 @@ where
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
-    /// Enable JsonRPC server.
-    pub enable_json_server: bool,
-    /// JsonRPC server bind address.
-    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
-    pub json_rpc_listen_address: SocketAddr,
-    /// Enable cookie-based authentication for zaino server.
-    pub cookie: CookieAuth,
-    /// gRPC server bind address.
-    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
-    pub grpc_listen_address: SocketAddr,
-    /// Enables TLS for gRPC server.
-    pub grpc_tls: bool,
-    /// Path to the TLS certificate file.
-    pub tls_cert_path: Option<String>,
-    /// Path to the TLS private key file.
-    pub tls_key_path: Option<String>,
+    /// JSON-RPC server configuration.
+    /// 
+    /// Set to `None` to completely disable the JSON-RPC server.
+    /// Set to `Some(config)` to enable the JSON-RPC server with the specified configuration.
+    pub json_rpc: Option<JsonRpcConfig>,
+    
+    /// gRPC server configuration.
+    /// 
+    /// The gRPC server is always enabled and required for Zaino operation.
+    pub grpc: GrpcConfig,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            enable_json_server: false,
-            json_rpc_listen_address: "127.0.0.1:8237".parse().unwrap(),
-            cookie: CookieAuth::Disabled,
-            grpc_listen_address: "127.0.0.1:8137".parse().unwrap(),
-            grpc_tls: false,
-            tls_cert_path: None,
-            tls_key_path: None,
+            // JSON-RPC server is disabled by default
+            json_rpc: None,
+            // gRPC server is always enabled with default settings
+            grpc: GrpcConfig::default(),
         }
     }
 }
@@ -161,30 +152,24 @@ impl IndexerConfig {
     pub fn check_config(&self) -> Result<(), IndexerError> {
         // Network validation is now handled by the Network enum, no string checking needed
 
-        // Check TLS settings.
-        if self.server.grpc_tls {
-            if let Some(ref cert_path) = self.server.tls_cert_path {
-                if !std::path::Path::new(cert_path).exists() {
+        // Check TLS settings for gRPC server.
+        match self.server.grpc.tls {
+            TlsConfig::Enabled { ref cert_path, ref key_path } => {
+                if !cert_path.exists() {
                     return Err(IndexerError::ConfigError(format!(
-                        "TLS is enabled, but certificate path '{cert_path}' does not exist."
+                        "TLS is enabled, but certificate path '{}' does not exist.",
+                        cert_path.display()
                     )));
                 }
-            } else {
-                return Err(IndexerError::ConfigError(
-                    "TLS is enabled, but no certificate path is provided.".to_string(),
-                ));
+                if !key_path.exists() {
+                    return Err(IndexerError::ConfigError(format!(
+                        "TLS is enabled, but key path '{}' does not exist.",
+                        key_path.display()
+                    )));
+                }
             }
-
-            if let Some(ref key_path) = self.server.tls_key_path {
-                if !std::path::Path::new(key_path).exists() {
-                    return Err(IndexerError::ConfigError(format!(
-                        "TLS is enabled, but key path '{key_path}' does not exist."
-                    )));
-                }
-            } else {
-                return Err(IndexerError::ConfigError(
-                    "TLS is enabled, but no key path is provided.".to_string(),
-                ));
+            TlsConfig::Disabled => {
+                // TLS is disabled, no validation needed
             }
         }
 
@@ -199,9 +184,9 @@ impl IndexerConfig {
 
         #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
         let grpc_addr =
-            fetch_socket_addr_from_hostname(&self.server.grpc_listen_address.to_string())?;
+            fetch_socket_addr_from_hostname(&self.server.grpc.listen_address.to_string())?;
         #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
-        let _ = fetch_socket_addr_from_hostname(&self.server.grpc_listen_address.to_string())?;
+        let _ = fetch_socket_addr_from_hostname(&self.server.grpc.listen_address.to_string())?;
 
         let validator_addr =
             fetch_socket_addr_from_hostname(&self.validator.rpc_address.to_string())?;
@@ -216,7 +201,8 @@ impl IndexerConfig {
         #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
         {
             // Ensure TLS is used when connecting to external addresses.
-            if !is_private_listen_addr(&grpc_addr) && !self.server.grpc_tls {
+            let grpc_tls_enabled = matches!(self.server.grpc.tls, TlsConfig::Enabled { .. });
+            if !is_private_listen_addr(&grpc_addr) && !grpc_tls_enabled {
                 return Err(IndexerError::ConfigError(
                     "TLS required when connecting to external addresses.".to_string(),
                 ));
@@ -238,10 +224,12 @@ impl IndexerConfig {
         }
 
         // Check gRPC and JsonRPC server are not listening on the same address.
-        if self.server.json_rpc_listen_address == self.server.grpc_listen_address {
-            return Err(IndexerError::ConfigError(
-                "gRPC server and JsonRPC server must listen on different addresses.".to_string(),
-            ));
+        if let Some(ref json_rpc_config) = self.server.json_rpc {
+            if json_rpc_config.listen_address == self.server.grpc.listen_address {
+                return Err(IndexerError::ConfigError(
+                    "gRPC server and JsonRPC server must listen on different addresses.".to_string(),
+                ));
+            }
         }
 
         Ok(())
@@ -249,12 +237,14 @@ impl IndexerConfig {
 
     /// Finalizes the configuration after initial parsing, applying conditional defaults.
     fn finalize_config_logic(mut self) -> Self {
-        // Ensure cookie path is set for enabled cookie auth
-        if let CookieAuth::Enabled { ref path } = self.server.cookie {
-            if path.as_os_str().is_empty() {
-                self.server.cookie = CookieAuth::Enabled {
-                    path: default_ephemeral_cookie_path(),
-                };
+        // Ensure cookie path is set for enabled cookie auth in JSON-RPC server config
+        if let Some(ref mut json_rpc_config) = self.server.json_rpc {
+            if let CookieAuth::Enabled { ref path } = json_rpc_config.auth {
+                if path.as_os_str().is_empty() {
+                    json_rpc_config.auth = CookieAuth::Enabled {
+                        path: default_ephemeral_cookie_path(),
+                    };
+                }
             }
         }
         self
