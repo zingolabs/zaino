@@ -5,6 +5,8 @@ use crate::{
     server::{config::JsonRpcConfig, error::ServerError},
 };
 
+use zaino_commons::config::CookieAuth;
+
 use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusType, ZcashIndexer};
 
 use zebra_rpc::server::{
@@ -45,20 +47,15 @@ impl JsonRpcServer {
         };
 
         // Initialize Zebra-compatible cookie-based authentication if enabled.
-        let (cookie, cookie_dir) = if server_config.enable_cookie_auth {
-            let cookie = Cookie::default();
-            if let Some(dir) = &server_config.cookie_dir {
-                write_to_disk(&cookie, dir).map_err(|e| {
+        let (cookie, cookie_dir) = match &server_config.auth {
+            CookieAuth::Enabled { path } => {
+                let cookie = Cookie::default();
+                write_to_disk(&cookie, path.parent().unwrap()).map_err(|e| {
                     ServerError::ServerConfigError(format!("Failed to write cookie: {e}"))
                 })?;
-            } else {
-                return Err(ServerError::ServerConfigError(
-                    "Cookie dir must be provided when auth is enabled".into(),
-                ));
+                (Some(cookie), Some(path.parent().unwrap().to_path_buf()))
             }
-            (Some(cookie), server_config.cookie_dir)
-        } else {
-            (None, None)
+            CookieAuth::Disabled => (None, None),
         };
 
         // Set up Zebra HTTP request compatibility middleware (handles auth and content-type issues)
@@ -73,7 +70,7 @@ impl JsonRpcServer {
         let server = ServerBuilder::default()
             .set_http_middleware(tower::ServiceBuilder::new().layer(http_middleware_layer))
             .set_rpc_middleware(rpc_middleware)
-            .build(server_config.json_rpc_listen_address)
+            .build(server_config.listen_address)
             .await
             .map_err(|e| {
                 ServerError::ServerConfigError(format!("JSON-RPC server build error: {e}"))

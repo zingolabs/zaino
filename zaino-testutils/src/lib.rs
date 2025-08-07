@@ -439,11 +439,11 @@ impl TestManager {
                     enable_json_server: enable_zaino_jsonrpc_server,
                     json_rpc_listen_address: zaino_json_listen_address,
                     cookie: if enable_zaino_jsonrpc_server_cookie_auth {
-                        zainodlib::config::CookieAuth::Enabled {
+                        zaino_commons::config::CookieAuth::Enabled {
                             path: zaino_json_server_cookie_dir.clone().unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
                         }
                     } else {
-                        zainodlib::config::CookieAuth::Disabled
+                        zaino_commons::config::CookieAuth::Disabled
                     },
                     grpc_listen_address: zaino_grpc_listen_address,
                     grpc_tls: false,

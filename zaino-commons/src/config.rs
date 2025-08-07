@@ -97,6 +97,38 @@ pub enum AuthError {
     InvalidCookieFormat,
 }
 
+/// Cookie-based authentication configuration for servers.
+/// 
+/// This is a simpler enum compared to AuthMethod, specifically for cases
+/// where you only need to enable/disable cookie auth (like server configs).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CookieAuth {
+    /// No cookie authentication
+    Disabled,
+    /// Cookie authentication enabled
+    Enabled {
+        /// Path to the cookie file
+        path: PathBuf,
+    },
+}
+
+impl CookieAuth {
+    /// Get the cookie token if authentication is enabled, using shared cookie reading logic
+    pub fn get_cookie_token(&self) -> Result<Option<String>, AuthError> {
+        match self {
+            CookieAuth::Disabled => Ok(None),
+            CookieAuth::Enabled { path } => Ok(Some(read_cookie_token(path)?)),
+        }
+    }
+}
+
+impl Default for CookieAuth {
+    fn default() -> Self {
+        CookieAuth::Disabled
+    }
+}
+
 /// Holds service-level configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ServiceConfig {

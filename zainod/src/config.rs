@@ -19,42 +19,14 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    AuthError, AuthMethod, BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, Network, ServiceConfig,
-    ValidatorConfig, ZainoStateConfig, read_cookie_token,
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, Network, ServiceConfig,
+    ValidatorConfig, ZainoStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
 
 use crate::error::IndexerError;
 
-/// Cookie-based authentication configuration for Zaino's own servers.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CookieAuth {
-    /// No cookie authentication
-    Disabled,
-    /// Cookie authentication enabled
-    Enabled {
-        /// Path to the cookie file
-        path: PathBuf,
-    },
-}
-
-impl CookieAuth {
-    /// Get the cookie token if authentication is enabled, using shared cookie reading logic
-    pub fn get_cookie_token(&self) -> Result<Option<String>, AuthError> {
-        match self {
-            CookieAuth::Disabled => Ok(None),
-            CookieAuth::Enabled { path } => Ok(Some(read_cookie_token(path)?)),
-        }
-    }
-}
-
-impl Default for CookieAuth {
-    fn default() -> Self {
-        CookieAuth::Disabled
-    }
-}
 
 /// Unified backend configuration enum.
 #[derive(Debug, Clone)]

@@ -13,6 +13,7 @@ state_service = []
 
 [dependencies]
 zaino-proto = { workspace = true }
+zaino-commons = { workspace = true }
 zaino-fetch = { workspace = true }
 zaino-state = { workspace = true }
 
