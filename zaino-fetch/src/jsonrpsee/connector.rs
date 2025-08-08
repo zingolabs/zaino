@@ -204,14 +204,12 @@ impl JsonRpSeeConnector {
         config: &zaino_commons::config::ValidatorConfig,
     ) -> Result<Self, TransportError> {
         let url = config.test_and_get_url().await?;
-        
+
         match &config.auth {
             AuthMethod::Cookie { path } => JsonRpSeeConnector::new_with_cookie_auth(url, path),
-            AuthMethod::Basic { username, password } => JsonRpSeeConnector::new_with_basic_auth(
-                url,
-                username.clone(),
-                password.clone(),
-            ),
+            AuthMethod::Basic { username, password } => {
+                JsonRpSeeConnector::new_with_basic_auth(url, username.clone(), password.clone())
+            }
         }
     }
 
@@ -651,4 +649,3 @@ impl JsonRpSeeConnector {
         self.send_request("getaddressutxos", params).await
     }
 }
-

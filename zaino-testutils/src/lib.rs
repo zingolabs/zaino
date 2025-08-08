@@ -17,7 +17,7 @@ use zaino_commons::config::{
 };
 use zainodlib::config::default_ephemeral_cookie_path;
 pub use zingo_infra_services as services;
-pub use zingo_infra_services::network::Network;
+use zingo_infra_services::network::Network;
 pub use zingo_infra_services::validator::Validator;
 use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
 pub use zingolib::{
@@ -294,7 +294,7 @@ pub struct AuthConfig {
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
-            validator_auth: None, // Will use default basic auth
+            validator_auth: None,   // Will use default basic auth
             json_server_auth: None, // Will use no auth
         }
     }
@@ -350,7 +350,7 @@ pub struct TestManagerConfig {
     /// Backend type for Zaino
     pub backend_type: BackendType,
     /// Network configuration
-    pub network: Option<services::network::Network>,
+    pub network: Option<zaino_commons::config::Network>,
     /// Optional chain cache directory
     pub chain_cache: Option<PathBuf>,
     /// Zaino configuration
@@ -424,7 +424,7 @@ impl TestManagerConfig {
     }
 
     /// Set network type
-    pub fn with_network(mut self, network: services::network::Network) -> Self {
+    pub fn with_network(mut self, network: zaino_commons::config::Network) -> Self {
         self.network = Some(network);
         self
     }
@@ -456,15 +456,17 @@ impl TestManagerConfig {
     }
 
     /// Enable cookie authentication for both validator and JSON server
-    pub fn with_cookie_auth(mut self, validator_cookie_path: PathBuf, server_cookie_path: Option<PathBuf>) -> Self {
+    pub fn with_cookie_auth(
+        mut self,
+        validator_cookie_path: PathBuf,
+        server_cookie_path: Option<PathBuf>,
+    ) -> Self {
         self.auth_config.validator_auth = Some(AuthMethod::Cookie {
             path: validator_cookie_path,
         });
-        
+
         if let Some(server_path) = server_cookie_path {
-            self.auth_config.json_server_auth = Some(AuthMethod::Cookie {
-                path: server_path,
-            });
+            self.auth_config.json_server_auth = Some(AuthMethod::Cookie { path: server_path });
         }
         self
     }
@@ -475,11 +477,8 @@ impl TestManagerConfig {
             username: username.clone(),
             password: password.clone(),
         });
-        
-        self.auth_config.json_server_auth = Some(AuthMethod::Basic {
-            username,
-            password,
-        });
+
+        self.auth_config.json_server_auth = Some(AuthMethod::Basic { username, password });
         self
     }
 }
@@ -489,7 +488,7 @@ impl std::fmt::Debug for TestManagerConfig {
         f.debug_struct("TestManagerConfig")
             .field("validator_kind", &self.validator_kind)
             .field("backend_type", &self.backend_type)
-            .field("network", &"Network")  // Just print "Network" since it doesn't implement Debug
+            .field("network", &"Network") // Just print "Network" since it doesn't implement Debug
             .field("chain_cache", &self.chain_cache)
             .field("zaino_config", &self.zaino_config)
             .field("client_config", &self.client_config)
@@ -505,7 +504,7 @@ pub struct TestManager {
     /// Data directory for the validator.
     pub data_dir: PathBuf,
     /// Network (chain) type:
-    pub network: Network,
+    pub network: zaino_commons::config::Network,
     /// Zebrad/Zcashd JsonRpc listen address.
     pub zebrad_rpc_listen_address: SocketAddr,
     /// Zebrad/Zcashd gRpc listen address.
@@ -553,8 +552,11 @@ impl TestManager {
         zebrad_grpc_listen_address: SocketAddr,
         auth_config: &AuthConfig,
     ) -> ZainoValidatorConfig {
-        let auth = auth_config.validator_auth.clone().unwrap_or_else(|| AuthMethod::default());
-        
+        let auth = auth_config
+            .validator_auth
+            .clone()
+            .unwrap_or_else(|| AuthMethod::default());
+
         ZainoValidatorConfig {
             config: ZainoStateConfig::default(),
             rpc_address: zebrad_rpc_listen_address,
@@ -573,15 +575,13 @@ impl TestManager {
         zebra_db_path: PathBuf,
         zaino_json_server_cookie_dir: Option<PathBuf>,
     ) -> zainodlib::config::IndexerConfig {
-        let network = config.network.unwrap_or(services::network::Network::Regtest);
-        
+        let network = config
+            .network
+            .unwrap_or(zaino_commons::config::Network::Regtest);
+
         zainodlib::config::IndexerConfig {
             backend: config.backend_type,
-            network: match network {
-                Network::Mainnet => zaino_commons::config::Network::Mainnet,
-                Network::Testnet => zaino_commons::config::Network::Testnet,
-                Network::Regtest => zaino_commons::config::Network::Regtest,
-            },
+            network,
             server: zainodlib::config::ServerConfig {
                 json_rpc: if config.zaino_config.enable_json_server {
                     Some(zaino_commons::config::JsonRpcConfig {
@@ -630,7 +630,9 @@ impl TestManager {
     /// Launch with new TestManagerConfig structure.
     pub async fn launch_with_config(config: TestManagerConfig) -> Result<Self, std::io::Error> {
         // Validation
-        if (config.validator_kind == ValidatorKind::Zcashd) && (config.backend_type == BackendType::State) {
+        if (config.validator_kind == ValidatorKind::Zcashd)
+            && (config.backend_type == BackendType::State)
+        {
             return Err(std::io::Error::other(
                 "Cannot use state backend with zcashd.",
             ));
@@ -651,7 +653,9 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let network = config.network.unwrap_or(services::network::Network::Regtest);
+        let network = config
+            .network
+            .unwrap_or(zaino_commons::config::Network::Regtest);
 
         // Set up network ports
         let zebrad_rpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
@@ -690,12 +694,12 @@ impl TestManager {
                     activation_heights: zingo_infra_services::network::ActivationHeights::default(),
                     miner_address: zingo_infra_services::validator::ZEBRAD_DEFAULT_MINER,
                     chain_cache: config.chain_cache.clone(),
-                    network,
+                    network: network.into(),
                 };
                 ValidatorConfig::ZebradConfig(cfg)
             }
         };
-        
+
         let local_net = LocalNet::launch(local_net_validator_config).await.unwrap();
         let data_dir = local_net.data_dir().path().to_path_buf();
         let zaino_db_path = data_dir.join("zaino");
@@ -737,7 +741,7 @@ impl TestManager {
 
             // NOTE: This is required to give the server time to launch
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-            
+
             (
                 Some(zaino_grpc_listen_address),
                 Some(zaino_json_listen_address),
@@ -903,7 +907,9 @@ impl TestManager {
                             listen_address: zaino_json_listen_address,
                             auth: if enable_zaino_jsonrpc_server_cookie_auth {
                                 zaino_commons::config::CookieAuth::Enabled {
-                                    path: zaino_json_server_cookie_dir.clone().unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
+                                    path: zaino_json_server_cookie_dir
+                                        .clone()
+                                        .unwrap_or_else(|| PathBuf::from("/tmp/zaino.cookie")),
                                 }
                             } else {
                                 zaino_commons::config::CookieAuth::Disabled
@@ -977,7 +983,7 @@ impl TestManager {
         Ok(Self {
             local_net,
             data_dir,
-            network,
+            network: network.into(),
             zebrad_rpc_listen_address,
             zebrad_grpc_listen_address,
             validator_config,
@@ -1004,23 +1010,32 @@ impl TestManager {
     }
 
     /// Create a JSON RPC connector using the test manager's configuration.
-    pub async fn create_json_connector(&self) -> Result<zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector, zaino_fetch::jsonrpsee::error::TransportError> {
+    pub async fn create_json_connector(
+        &self,
+    ) -> Result<
+        zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector,
+        zaino_fetch::jsonrpsee::error::TransportError,
+    > {
         use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
         // Use the ValidatorConfig's test_and_get_url method to get URL and create connector with auth
         match &self.validator_config.auth {
             AuthMethod::Basic { username, password } => {
                 let url = self.validator_config.test_and_get_url().await?;
                 JsonRpSeeConnector::new_with_basic_auth(url, username.clone(), password.clone())
-            },
+            }
             AuthMethod::Cookie { path } => {
                 let url = self.validator_config.test_and_get_url().await?;
                 JsonRpSeeConnector::new_with_cookie_auth(url, path)
-            },
+            }
         }
     }
 
     /// Get a FetchServiceConfig for integration tests.
-    pub fn get_fetch_service_config(&self, zaino_db_path: PathBuf, _zebra_db_path: PathBuf) -> zaino_fetch::config::FetchServiceConfig {
+    pub fn get_fetch_service_config(
+        &self,
+        zaino_db_path: PathBuf,
+        _zebra_db_path: PathBuf,
+    ) -> zaino_fetch::config::FetchServiceConfig {
         zaino_fetch::config::FetchServiceConfig {
             validator: self.validator_config.clone(),
             service: ServiceConfig::default(),
@@ -1031,14 +1046,18 @@ impl TestManager {
                     size: None,
                 },
                 network: zaino_commons::config::Network::Regtest, // Tests typically use regtest
-                no_sync: true, // Typical for tests
-                no_db: true, // Typical for tests
+                no_sync: true,                                    // Typical for tests
+                no_db: true,                                      // Typical for tests
             },
         }
     }
 
     /// Get a StateServiceConfig for integration tests.
-    pub fn get_state_service_config(&self, zaino_db_path: PathBuf, _zebra_db_path: PathBuf) -> zaino_state::StateServiceConfig {
+    pub fn get_state_service_config(
+        &self,
+        zaino_db_path: PathBuf,
+        _zebra_db_path: PathBuf,
+    ) -> zaino_state::StateServiceConfig {
         zaino_state::StateServiceConfig {
             validator: self.validator_config.clone(),
             service: ServiceConfig::default(),
@@ -1049,8 +1068,8 @@ impl TestManager {
                     size: None,
                 },
                 network: zaino_commons::config::Network::Regtest, // Tests typically use regtest
-                no_sync: true, // Typical for tests
-                no_db: true, // Typical for tests
+                no_sync: true,                                    // Typical for tests
+                no_db: true,                                      // Typical for tests
             },
         }
     }

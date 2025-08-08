@@ -56,12 +56,12 @@ pub mod bench {
     pub mod chain_index {
         pub use crate::chain_index::*;
     }
-    pub use crate::{local_cache::*, config::BlockCacheConfig};
+    pub use crate::{config::BlockCacheConfig, local_cache::*};
 }
 
 pub(crate) mod config;
 
-pub use config::{StateServiceConfig, BlockCacheConfig};
+pub use config::{BlockCacheConfig, StateServiceConfig};
 
 pub(crate) mod error;
 

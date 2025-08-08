@@ -3,10 +3,7 @@
 use tokio::time::Instant;
 use tracing::info;
 
-use zaino_serve::server::{
-    grpc::TonicServer,
-    jsonrpc::JsonRpcServer,
-};
+use zaino_serve::server::{grpc::TonicServer, jsonrpc::JsonRpcServer};
 use zaino_state::{
     FetchService, IndexerService, LightWalletService, StateService, StatusType, ZcashIndexer,
     ZcashService,
@@ -81,12 +78,9 @@ where
 
         let json_server = match indexer_config.server.json_rpc {
             Some(json_rpc_config) => Some(
-                JsonRpcServer::spawn(
-                    service.inner_ref().get_subscriber(),
-                    json_rpc_config,
-                )
-                .await
-                .unwrap(),
+                JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_rpc_config)
+                    .await
+                    .unwrap(),
             ),
             None => None,
         };

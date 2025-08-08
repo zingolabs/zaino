@@ -19,8 +19,8 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig,
-    GrpcConfig, JsonRpcConfig, Network, ServiceConfig, TlsConfig, ValidatorConfig, ZainoStateConfig,
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, GrpcConfig,
+    JsonRpcConfig, Network, ServiceConfig, TlsConfig, ValidatorConfig, ZainoStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
@@ -52,13 +52,13 @@ where
 #[serde(default)]
 pub struct ServerConfig {
     /// JSON-RPC server configuration.
-    /// 
+    ///
     /// Set to `None` to completely disable the JSON-RPC server.
     /// Set to `Some(config)` to enable the JSON-RPC server with the specified configuration.
     pub json_rpc: Option<JsonRpcConfig>,
-    
+
     /// gRPC server configuration.
-    /// 
+    ///
     /// The gRPC server is always enabled and required for Zaino operation.
     pub grpc: GrpcConfig,
 }
@@ -154,7 +154,10 @@ impl IndexerConfig {
 
         // Check TLS settings for gRPC server.
         match self.server.grpc.tls {
-            TlsConfig::Enabled { ref cert_path, ref key_path } => {
+            TlsConfig::Enabled {
+                ref cert_path,
+                ref key_path,
+            } => {
                 if !cert_path.exists() {
                     return Err(IndexerError::ConfigError(format!(
                         "TLS is enabled, but certificate path '{}' does not exist.",
@@ -227,7 +230,8 @@ impl IndexerConfig {
         if let Some(ref json_rpc_config) = self.server.json_rpc {
             if json_rpc_config.listen_address == self.server.grpc.listen_address {
                 return Err(IndexerError::ConfigError(
-                    "gRPC server and JsonRPC server must listen on different addresses.".to_string(),
+                    "gRPC server and JsonRPC server must listen on different addresses."
+                        .to_string(),
                 ));
             }
         }

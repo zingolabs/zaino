@@ -16,12 +16,12 @@ async fn create_test_manager_and_fetch_services(
     FetchServiceSubscriber,
 ) {
     println!("Launching test manager..");
-    
+
     // Create TestManagerConfig for the JSON server scenario
     let mut config = TestManagerConfig::with_zaino(ValidatorKind::Zcashd, BackendType::Fetch)
         .with_json_server(enable_cookie_auth)
         .with_sync_and_db(); // This test needs the JSON server running
-        
+
     if clients {
         config.client_config.enable_clients = true;
     }
@@ -34,8 +34,9 @@ async fn create_test_manager_and_fetch_services(
     // Use TestManager helper for zcashd connection
     let zaino_db_path = test_manager.data_dir.join("zaino");
     let zebra_db_path = test_manager.data_dir.clone();
-    let zcashd_fetch_service_config = test_manager.get_fetch_service_config(zaino_db_path.clone(), zebra_db_path.clone());
-    
+    let zcashd_fetch_service_config =
+        test_manager.get_fetch_service_config(zaino_db_path.clone(), zebra_db_path.clone());
+
     let zcashd_fetch_service = FetchService::spawn(zcashd_fetch_service_config)
         .await
         .unwrap();
@@ -45,7 +46,7 @@ async fn create_test_manager_and_fetch_services(
 
     println!("Launching zaino fetch service..");
     let zaino_json_server_address = dbg!(test_manager.zaino_json_rpc_listen_address.unwrap());
-    
+
     // Create a custom ValidatorConfig for connecting to zaino's JSON server
     use zaino_commons::config::{AuthMethod, ValidatorConfig, ZainoStateConfig};
     let zaino_server_validator_config = ValidatorConfig {
@@ -63,7 +64,7 @@ async fn create_test_manager_and_fetch_services(
             AuthMethod::default()
         },
     };
-    
+
     // Create a custom FetchServiceConfig for zaino server connection
     use zaino_commons::config::{BlockCacheConfig, CacheConfig, DatabaseConfig, ServiceConfig};
     let zaino_fetch_service_config = zaino_fetch::config::FetchServiceConfig {
@@ -80,7 +81,7 @@ async fn create_test_manager_and_fetch_services(
             no_db: true,
         },
     };
-    
+
     let zaino_fetch_service = FetchService::spawn(zaino_fetch_service_config)
         .await
         .unwrap();
