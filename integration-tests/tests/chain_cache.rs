@@ -66,33 +66,12 @@ async fn create_test_manager_and_nfs(
     )
     .await;
 
-    // todo! unify duplicated Network enums
-    let network = match test_manager.network {
-        zaino_testutils::Network::Regtest => zebra_chain::parameters::Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
-            },
-        ),
-        zaino_testutils::Network::Testnet => {
-            zebra_chain::parameters::Network::new_default_testnet()
-        }
-        zaino_testutils::Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
-    };
-
-    let non_finalized_state =
-        NonFinalizedState::initialize(BlockchainSource::Fetch(json_service.clone()), network)
-            .await
-            .unwrap();
+    let non_finalized_state = NonFinalizedState::initialize(
+        BlockchainSource::Fetch(json_service.clone()),
+        test_manager.network.into(),
+    )
+    .await
+    .unwrap();
 
     (test_manager, json_service, non_finalized_state)
 }
@@ -192,7 +171,7 @@ mod chain_query_interface {
         let state_service = StateService::spawn(state_service_config).await.unwrap();
         let chain_index = NodeBackedChainIndex::new(
             BlockchainSource::State(state_service.read_state_service().clone()),
-            test_manager.network.clone(),
+            test_manager.network.into(),
         )
         .await
         .unwrap();

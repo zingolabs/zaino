@@ -290,6 +290,8 @@ pub struct BlockCacheConfig {
     pub no_db: bool,
 }
 
+// todo! analyse zaino native enum vs zingo-infra enum usage... I went for zaino native cause it made more sense for a public facing config enum... but maybe we could have gotten away with re-exporting the other one ??
+// There's also the need for zebra network enum logic implementation which i think might have been impossible to do with the services' one (From<services::Network> for zebra::Network)
 /// Network type for Zaino configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -306,6 +308,26 @@ impl Network {
     /// Convert to Zebra's network type for internal use.
     pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
         self.into()
+    }
+}
+
+impl Into<zingo_infra_services::network::Network> for Network {
+    fn into(self) -> zingo_infra_services::network::Network {
+        match self {
+            Network::Mainnet => zingo_infra_services::network::Network::Mainnet,
+            Network::Regtest => zingo_infra_services::network::Network::Regtest,
+            Network::Testnet => zingo_infra_services::network::Network::Testnet,
+        }
+    }
+}
+
+impl From<zingo_infra_services::network::Network> for Network {
+    fn from(value: zingo_infra_services::network::Network) -> Self {
+        match value {
+            zingo_infra_services::network::Network::Regtest => Network::Regtest,
+            zingo_infra_services::network::Network::Testnet => Network::Testnet,
+            zingo_infra_services::network::Network::Mainnet => Network::Mainnet,
+        }
     }
 }
 
