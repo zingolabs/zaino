@@ -18,13 +18,8 @@ async fn create_test_manager_and_fetch_services(
     println!("Launching test manager..");
 
     // Create TestManagerConfig for the JSON server scenario
-    let mut config = TestManagerConfig::with_zaino(ValidatorKind::Zcashd, BackendType::Fetch)
-        .with_json_server(enable_cookie_auth)
-        .with_sync_and_db(); // This test needs the JSON server running
-
-    if clients {
-        config.client_config.enable_clients = true;
-    }
+    let config = TestManagerConfig::for_json_server_tests(ValidatorKind::Zcashd, enable_cookie_auth)
+        .with_clients_if(clients);
 
     let test_manager = TestManager::launch_with_config(config).await.unwrap();
 
