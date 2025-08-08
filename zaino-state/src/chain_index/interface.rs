@@ -34,7 +34,7 @@ impl NodeBackedChainIndex {
     {
         let chain_index = Self {
             non_finalized_state: Arc::new(
-                NonFinalizedState::initialize(source.into(), network).await?,
+                NonFinalizedState::initialize(source.into(), network.into()).await?,
             ),
         };
         chain_index.start_sync_loop();

@@ -115,7 +115,7 @@ impl NonFinalizedState {
     /// TODO: Currently, we can't initate without an snapshot, we need to create a cache
     /// of at least one block. Should this be tied to the instantiation of the data structure
     /// itself?
-    pub async fn initialize(source: BlockchainSource, network: Network) -> Result<Self, InitError> {
+    pub async fn initialize(source: BlockchainSource, network: zaino_commons::config::Network) -> Result<Self, InitError> {
         // TODO: Consider arbitrary buffer length
         let (staging_sender, staging_receiver) = mpsc::channel(100);
         let staged = Mutex::new(staging_receiver);
@@ -146,7 +146,7 @@ impl NonFinalizedState {
                     .bytes_in_display_order(),
             ),
             block_commitments: match genesis_block
-                .commitment(&network)
+                .commitment(&network.into())
                 .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
             {
                 zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
@@ -297,7 +297,7 @@ impl NonFinalizedState {
             staged,
             staging_sender,
             current,
-            network,
+            network: network.into(),
         })
     }
 
