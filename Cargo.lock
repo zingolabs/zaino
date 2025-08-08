@@ -5933,6 +5933,7 @@ dependencies = [
  "tonic",
  "zebra-chain 1.0.0",
  "zebra-state 1.0.1",
+ "zingo-infra-services",
 ]
 
 [[package]]

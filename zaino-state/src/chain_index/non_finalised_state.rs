@@ -16,7 +16,7 @@ use zaino_fetch::jsonrpsee::{
     response::{GetBlockError, GetBlockResponse, GetTreestateResponse},
 };
 use zcash_primitives::merkle_tree::read_commitment_tree;
-use zebra_chain::{parameters::Network, serialization::ZcashDeserialize};
+use zebra_chain::{parameters::Network as ZebraNetwork, serialization::ZcashDeserialize};
 use zebra_state::{HashOrHeight, ReadResponse, ReadStateService};
 
 use crate::ChainBlock;
@@ -33,7 +33,7 @@ pub struct NonFinalizedState {
     /// without interfering with readers, who will hold a stale copy
     current: ArcSwap<NonfinalizedBlockCacheSnapshot>,
     /// Used mostly to determine activation heights
-    network: Network,
+    network: ZebraNetwork,
 }
 
 #[derive(Debug)]
