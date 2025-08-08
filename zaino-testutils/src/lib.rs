@@ -443,6 +443,77 @@ impl TestManagerConfig {
         self
     }
 
+    // ===== Ergonomic Constructor Methods for Common Test Patterns =====
+
+    /// Configuration for wallet integration tests
+    /// 
+    /// Enables: Zaino indexer, clients, no sync/no db (testing flags)
+    /// Perfect for: wallet_to_validator.rs tests, send/receive/shield operations
+    pub fn for_wallet_tests(validator_kind: ValidatorKind, backend_type: BackendType) -> Self {
+        Self::with_zaino(validator_kind, backend_type)
+            .with_clients()
+            .with_no_sync_no_db() // Wallet tests use testing flags
+    }
+
+    /// Configuration for JSON server tests
+    ///
+    /// Enables: Zaino indexer, JSON server with optional cookie auth, sync and database
+    /// Perfect for: json_server.rs tests, RPC method testing
+    pub fn for_json_server_tests(validator_kind: ValidatorKind, enable_cookie_auth: bool) -> Self {
+        Self::with_zaino(validator_kind, BackendType::Fetch) // JSON server tests typically use Fetch
+            .with_json_server(enable_cookie_auth)
+            .with_sync_and_db()
+    }
+
+    /// Configuration for basic infrastructure tests
+    ///
+    /// Enables: Zaino indexer only, minimal configuration
+    /// Perfect for: basic connectivity, service spawn tests
+    pub fn for_basic_tests(validator_kind: ValidatorKind, backend_type: BackendType) -> Self {
+        Self::with_zaino(validator_kind, backend_type)
+            .with_sync_and_db()
+    }
+
+    /// Configuration for chain cache tests
+    ///
+    /// Enables: Zaino indexer, chain cache, no sync/db for testing
+    /// Perfect for: chain_cache.rs tests, cached data scenarios
+    pub fn for_chain_cache_tests(
+        validator_kind: ValidatorKind, 
+        chain_cache: PathBuf
+    ) -> Self {
+        Self::with_chain_cache(validator_kind, BackendType::Fetch, chain_cache)
+            // Chain cache tests often test with no_sync and no_db flags
+    }
+
+    /// Configuration for state service tests  
+    ///
+    /// Enables: State backend, Zaino indexer, sync and database
+    /// Perfect for: state_service.rs, local_cache.rs tests
+    pub fn for_state_tests(validator_kind: ValidatorKind) -> Self {
+        Self::with_zaino(validator_kind, BackendType::State)
+            .with_sync_and_db()
+    }
+
+    /// Enable clients (chainable method)
+    pub fn with_clients(mut self) -> Self {
+        self.client_config.enable_clients = true;
+        self
+    }
+
+    /// Conditionally enable clients (chainable method)
+    pub fn with_clients_if(mut self, enable: bool) -> Self {
+        self.client_config.enable_clients = enable;
+        self
+    }
+
+    /// Disable sync and database (for testing scenarios)
+    pub fn with_no_sync_no_db(mut self) -> Self {
+        self.zaino_config.no_sync = true;
+        self.zaino_config.no_db = true;
+        self
+    }
+
     /// Set validator authentication method
     pub fn with_validator_auth(mut self, auth: AuthMethod) -> Self {
         self.auth_config.validator_auth = Some(auth);
@@ -793,7 +864,14 @@ impl TestManager {
     ///
     /// If clients is set to active zingolib lightclients will be created for test use.
     ///
-    /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
+    /// # Deprecated
+    /// This method is deprecated. Use `launch_with_config()` with `TestManagerConfig` constructors instead:
+    /// - `TestManagerConfig::for_wallet_tests()` - for wallet integration tests
+    /// - `TestManagerConfig::for_json_server_tests()` - for JSON RPC server tests  
+    /// - `TestManagerConfig::for_basic_tests()` - for basic infrastructure tests
+    /// - `TestManagerConfig::for_chain_cache_tests()` - for chain cache tests
+    /// - `TestManagerConfig::for_state_tests()` - for state service tests
+    #[deprecated(since = "0.2.0", note = "Use `launch_with_config()` with `TestManagerConfig` constructors instead")]
     #[allow(clippy::too_many_arguments)]
     pub async fn launch(
         validator: &ValidatorKind,
