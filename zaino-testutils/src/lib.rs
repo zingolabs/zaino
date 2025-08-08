@@ -446,7 +446,7 @@ impl TestManagerConfig {
     // ===== Ergonomic Constructor Methods for Common Test Patterns =====
 
     /// Configuration for wallet integration tests
-    /// 
+    ///
     /// Enables: Zaino indexer, clients, no sync/no db (testing flags)
     /// Perfect for: wallet_to_validator.rs tests, send/receive/shield operations
     pub fn for_wallet_tests(validator_kind: ValidatorKind, backend_type: BackendType) -> Self {
@@ -470,20 +470,16 @@ impl TestManagerConfig {
     /// Enables: Zaino indexer only, minimal configuration
     /// Perfect for: basic connectivity, service spawn tests
     pub fn for_basic_tests(validator_kind: ValidatorKind, backend_type: BackendType) -> Self {
-        Self::with_zaino(validator_kind, backend_type)
-            .with_sync_and_db()
+        Self::with_zaino(validator_kind, backend_type).with_sync_and_db()
     }
 
     /// Configuration for chain cache tests
     ///
     /// Enables: Zaino indexer, chain cache, no sync/db for testing
     /// Perfect for: chain_cache.rs tests, cached data scenarios
-    pub fn for_chain_cache_tests(
-        validator_kind: ValidatorKind, 
-        chain_cache: PathBuf
-    ) -> Self {
+    pub fn for_chain_cache_tests(validator_kind: ValidatorKind, chain_cache: PathBuf) -> Self {
         Self::with_chain_cache(validator_kind, BackendType::Fetch, chain_cache)
-            // Chain cache tests often test with no_sync and no_db flags
+        // Chain cache tests often test with no_sync and no_db flags
     }
 
     /// Configuration for state service tests  
@@ -491,8 +487,7 @@ impl TestManagerConfig {
     /// Enables: State backend, Zaino indexer, sync and database
     /// Perfect for: state_service.rs, local_cache.rs tests
     pub fn for_state_tests(validator_kind: ValidatorKind) -> Self {
-        Self::with_zaino(validator_kind, BackendType::State)
-            .with_sync_and_db()
+        Self::with_zaino(validator_kind, BackendType::State).with_sync_and_db()
     }
 
     /// Enable clients (chainable method)
@@ -871,7 +866,10 @@ impl TestManager {
     /// - `TestManagerConfig::for_basic_tests()` - for basic infrastructure tests
     /// - `TestManagerConfig::for_chain_cache_tests()` - for chain cache tests
     /// - `TestManagerConfig::for_state_tests()` - for state service tests
-    #[deprecated(since = "0.2.0", note = "Use `launch_with_config()` with `TestManagerConfig` constructors instead")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `launch_with_config()` with `TestManagerConfig` constructors instead"
+    )]
     #[allow(clippy::too_many_arguments)]
     pub async fn launch(
         validator: &ValidatorKind,
@@ -1150,6 +1148,57 @@ impl TestManager {
                 no_db: true,                                      // Typical for tests
             },
         }
+    }
+
+    /// Waits for the validator to be ready by polling its JSON-RPC interface.
+    /// Returns Ok(()) when the validator responds to a `getinfo` request.
+    pub async fn wait_for_validator_ready(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::time::{Duration, Instant};
+
+        let timeout = Duration::from_secs(30); // Maximum wait time
+        let start = Instant::now();
+
+        // Create a simple HTTP client to test validator connectivity
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()?;
+
+        let validator_url = format!("http://{}", self.zebrad_rpc_listen_address);
+
+        while start.elapsed() < timeout {
+            let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
+
+            let request = client
+                .post(&validator_url)
+                .header("Content-Type", "application/json")
+                .body(request_body);
+
+            // Add authentication if configured
+            let request = match &self.validator_config.auth {
+                zaino_commons::config::AuthMethod::Basic { username, password } => {
+                    request.basic_auth(username, Some(password))
+                }
+                zaino_commons::config::AuthMethod::Cookie { path } => {
+                    // For cookie auth, we'd need to read the cookie file
+                    // For now, just proceed without auth for simplicity
+                    request
+                }
+            };
+
+            if let Ok(response) = request.send().await {
+                if response.status().is_success() {
+                    println!("Validator is ready after {:?}", start.elapsed());
+                    return Ok(());
+                }
+            }
+
+            // Wait 100ms before next attempt
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        Err(format!("Validator not ready after {:?}", timeout).into())
     }
 
     /// Closes the TestManager.
