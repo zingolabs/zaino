@@ -5,12 +5,12 @@
 use zaino_commons::config::BackendType;
 use zaino_commons::config::{AuthMethod, ValidatorConfig, ZainoStateConfig};
 use zaino_testutils::from_inputs;
-use zaino_testutils::TestManager;
+use zaino_testutils::{TestManager, TestManagerConfig};
 use zaino_testutils::ValidatorKind;
 
 async fn connect_to_node_get_info_for_validator(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
+    let mut test_manager = TestManager::launch_with_config(
+        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
     )
     .await
     .unwrap();
@@ -26,8 +26,8 @@ async fn connect_to_node_get_info_for_validator(validator: &ValidatorKind, backe
 }
 
 async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
+    let mut test_manager = TestManager::launch_with_config(
+        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
     )
     .await
     .unwrap();
@@ -67,8 +67,8 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
+    let mut test_manager = TestManager::launch_with_config(
+        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
     )
     .await
     .unwrap();
@@ -108,8 +108,8 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
+    let mut test_manager = TestManager::launch_with_config(
+        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
     )
     .await
     .unwrap();
@@ -209,8 +209,8 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
+    let mut test_manager = TestManager::launch_with_config(
+        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
     )
     .await
     .unwrap();
@@ -294,8 +294,8 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
+    let mut test_manager = TestManager::launch_with_config(
+        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
     )
     .await
     .unwrap();
@@ -362,8 +362,8 @@ async fn monitor_unverified_mempool_for_validator(
     validator: &ValidatorKind,
     backend: &BackendType,
 ) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
+    let mut test_manager = TestManager::launch_with_config(
+        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
     )
     .await
     .unwrap();
