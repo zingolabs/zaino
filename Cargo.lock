@@ -6065,6 +6065,7 @@ dependencies = [
  "once_cell",
  "portpicker",
  "proptest",
+ "reqwest",
  "tempfile",
  "testvectors",
  "tokio",
