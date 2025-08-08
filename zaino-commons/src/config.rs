@@ -309,6 +309,21 @@ impl Network {
     }
 }
 
+impl From<zebra_chain::parameters::Network> for Network {
+    fn from(value: zebra_chain::parameters::Network) -> Self {
+        match value {
+            zebra_chain::parameters::Network::Mainnet => Network::Mainnet,
+            zebra_chain::parameters::Network::Testnet(parameters) => {
+                if parameters.is_regtest() {
+                    Network::Regtest
+                } else {
+                    Network::Regtest
+                }
+            }
+        }
+    }
+}
+
 impl Into<zebra_chain::parameters::Network> for Network {
     fn into(self) -> zebra_chain::parameters::Network {
         match self {

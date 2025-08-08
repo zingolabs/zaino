@@ -154,27 +154,6 @@ mod chain_query_interface {
             Some(dir) => dir,
             None => test_manager.data_dir.clone(),
         };
-        // todo! move into a method, scrap the string layer
-        let network = match test_manager.network.to_string().as_str() {
-            "Regtest" => zebra_chain::parameters::Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                    nu6_1: None,
-                    nu7: None,
-                },
-            ),
-            "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
-            "Mainnet" => zebra_chain::parameters::Network::Mainnet,
-            _ => panic!("Incorrect newtork type found."),
-        };
 
         let state_service_config: StateServiceConfig = StateServiceConfig {
             validator: zaino_commons::config::ValidatorConfig {
@@ -204,7 +183,7 @@ mod chain_query_interface {
                         .join("zaino"),
                     size: None,
                 },
-                network: network.clone(),
+                network: test_manager.network.clone(),
                 no_sync: false,
                 no_db: false,
             },
@@ -213,7 +192,7 @@ mod chain_query_interface {
         let state_service = StateService::spawn(state_service_config).await.unwrap();
         let chain_index = NodeBackedChainIndex::new(
             BlockchainSource::State(state_service.read_state_service().clone()),
-            network,
+            test_manager.network.clone(),
         )
         .await
         .unwrap();
