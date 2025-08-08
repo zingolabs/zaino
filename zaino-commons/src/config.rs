@@ -12,6 +12,13 @@ pub enum ConfigError {
     Io(String),
 }
 
+/// Network conversion errors
+#[derive(Debug, thiserror::Error)]
+pub enum NetworkConversionError {
+    #[error("Custom activation heights are only supported for regtest networks, but got {network:?}")]
+    CustomHeightsNotSupported { network: Network },
+}
+
 /// Holds validator connection and authentication configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ValidatorConfig {
@@ -305,9 +312,55 @@ pub enum Network {
 }
 
 impl Network {
-    /// Convert to Zebra's network type for internal use.
-    pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
+    /// Convert to Zebra's network type using default configurations.
+    pub fn to_zebra_default(&self) -> zebra_chain::parameters::Network {
         self.into()
+    }
+    
+    /// Convert to Zebra's network type for internal use (alias for to_zebra_default).
+    pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
+        self.to_zebra_default()
+    }
+    
+    /// Convert to Zebra regtest network with custom activation heights.
+    /// Returns an error if called on non-regtest networks.
+    pub fn to_zebra_regtest_with_heights(
+        &self,
+        heights: zebra_chain::parameters::testnet::ConfiguredActivationHeights
+    ) -> Result<zebra_chain::parameters::Network, NetworkConversionError> {
+        match self {
+            Network::Regtest => Ok(zebra_chain::parameters::Network::new_regtest(heights)),
+            network => Err(NetworkConversionError::CustomHeightsNotSupported { 
+                network: *network 
+            }),
+        }
+    }
+    
+    /// Get the standard regtest activation heights used by Zaino.
+    pub fn zaino_regtest_heights() -> zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+        zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        }
+    }
+    
+    /// Determines if sync should be skipped for testing.
+    /// 
+    /// - Mainnet/Testnet: Skip sync (false) because we don't want to sync real chains in tests
+    /// - Regtest: Enable sync (true) because regtest is local and fast to sync
+    pub fn should_sync_for_testing(&self) -> bool {
+        match self {
+            Network::Mainnet | Network::Testnet => false, // Real networks - don't sync in tests
+            Network::Regtest => true, // Local network - safe and fast to sync
+        }
     }
 }
 
@@ -350,18 +403,7 @@ impl Into<zebra_chain::parameters::Network> for Network {
     fn into(self) -> zebra_chain::parameters::Network {
         match self {
             Network::Regtest => zebra_chain::parameters::Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    nu6_1: None,
-                    nu7: None,
-                },
+                Self::zaino_regtest_heights()
             ),
             Network::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
             Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
