@@ -1,4 +1,3 @@
-use core::panic;
 use zaino_commons::config::{
     AuthMethod, BackendType, DatabaseConfig, ValidatorConfig, ZainoStateConfig,
 };
@@ -55,33 +54,14 @@ async fn create_test_manager_and_block_cache(
     )
     .unwrap();
 
-    let network = match test_manager.network.to_string().as_str() {
-        "Regtest" => zebra_chain::parameters::Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
-            },
-        ),
-        "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
-        "Mainnet" => zebra_chain::parameters::Network::Mainnet,
-        _ => panic!("Incorrect newtork type found."),
-    };
+    let network = test_manager.network.to_zebra_default();
 
     let block_cache_config = BlockCacheConfig {
         database: DatabaseConfig {
             path: test_manager.data_dir.clone(),
             size: None,
         },
-        network,
+        network: network.into(),
         no_sync: zaino_no_sync,
         no_db: zaino_no_db,
         ..Default::default()

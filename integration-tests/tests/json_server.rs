@@ -1,4 +1,3 @@
-use zaino_commons::config::BackendType;
 use zaino_state::{FetchService, FetchServiceSubscriber, ZcashIndexer, ZcashService as _};
 use zaino_testutils::{from_inputs, Validator as _};
 use zaino_testutils::{TestManager, TestManagerConfig, ValidatorKind};

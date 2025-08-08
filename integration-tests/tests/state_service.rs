@@ -8,10 +8,9 @@ use zaino_state::{
     StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::from_inputs;
-use zaino_testutils::services;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, TestManagerConfig, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
-use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
 async fn create_test_manager_and_services(
@@ -19,7 +18,7 @@ async fn create_test_manager_and_services(
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-    network: Option<services::network::Network>,
+    network: Option<zaino_commons::config::Network>,
 ) -> (
     TestManager,
     FetchService,
@@ -28,7 +27,7 @@ async fn create_test_manager_and_services(
     StateServiceSubscriber,
 ) {
     let mut config = match chain_cache {
-        Some(cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path),
+        Some(ref cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path.clone()),
         None => TestManagerConfig::for_basic_tests(validator.clone(), BackendType::Fetch),
     };
 
@@ -38,43 +37,20 @@ async fn create_test_manager_and_services(
     }
     config = config.with_clients_if(enable_clients).with_no_sync_no_db();
 
-    // Handle network conversion
+    // Handle network configuration
     if let Some(network) = network {
-        config = config.with_network(network.into());
+        config = config.with_network(network);
     }
 
     let test_manager = TestManager::launch_with_config(config).await.unwrap();
 
-    let (network_type, zaino_sync_bool) = match network {
-        Some(services::network::Network::Mainnet) => {
-            println!("Waiting for validator to spawn..");
-            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (Network::Mainnet, false)
-        }
-        Some(services::network::Network::Testnet) => {
-            println!("Waiting for validator to spawn..");
-            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (Network::new_default_testnet(), false)
-        }
-        _ => (
-            Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                    nu6_1: None,
-                    nu7: None,
-                },
-            ),
-            true,
-        ),
-    };
+    // Wait for validator to be ready instead of hardcoded sleep
+    let network_to_use = network.unwrap_or(zaino_commons::config::Network::Regtest);
+    if matches!(network_to_use, zaino_commons::config::Network::Mainnet | zaino_commons::config::Network::Testnet) {
+        println!("Waiting for validator to be ready..");
+        test_manager.wait_for_validator_ready().await
+            .expect("Validator should become ready");
+    }
 
     test_manager.local_net.print_stdout();
 
@@ -109,12 +85,8 @@ async fn create_test_manager_and_services(
                     .join("zaino"),
                 size: None,
             },
-            network: match network_type {
-                Network::Mainnet => zaino_commons::config::Network::Mainnet,
-                Network::Testnet(_) => zaino_commons::config::Network::Testnet,
-                _ => zaino_commons::config::Network::Regtest,
-            },
-            no_sync: zaino_sync_bool,
+            network: network_to_use,
+            no_sync: network_to_use.should_sync_for_testing(),
             no_db: true,
         },
     };
@@ -159,12 +131,8 @@ async fn create_test_manager_and_services(
                     .join("zaino"),
                 size: None,
             },
-            network: match network_type {
-                Network::Mainnet => zaino_commons::config::Network::Mainnet,
-                Network::new_default_testnet() => zaino_commons::config::Network::Testnet,
-                _ => zaino_commons::config::Network::Regtest,
-            },
-            no_sync: zaino_sync_bool,
+            network: network_to_use,
+            no_sync: network_to_use.should_sync_for_testing(),
             no_db: true,
         },
     };
@@ -186,7 +154,7 @@ async fn create_test_manager_and_services(
 async fn state_service_check_info(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: services::network::Network,
+    network: zaino_commons::config::Network,
 ) {
     let (
         mut test_manager,
@@ -196,7 +164,7 @@ async fn state_service_check_info(
         state_service_subscriber,
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
-    if dbg!(network.to_string()) == *"Regtest" {
+    if matches!(network, zaino_commons::config::Network::Regtest) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -389,7 +357,7 @@ async fn state_service_get_address_balance_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(zaino_commons::config::Network::Testnet),
     )
     .await;
 
@@ -419,7 +387,7 @@ async fn state_service_get_address_balance_testnet() {
 async fn state_service_get_block_raw(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: services::network::Network,
+    network: zaino_commons::config::Network,
 ) {
     let (
         mut test_manager,
@@ -430,7 +398,7 @@ async fn state_service_get_block_raw(
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
     let height = match network {
-        services::network::Network::Regtest => "1".to_string(),
+        zaino_commons::config::Network::Regtest => "1".to_string(),
         _ => "1000000".to_string(),
     };
 
@@ -452,7 +420,7 @@ async fn state_service_get_block_raw(
 async fn state_service_get_block_object(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: services::network::Network,
+    network: zaino_commons::config::Network,
 ) {
     let (
         mut test_manager,
@@ -463,7 +431,7 @@ async fn state_service_get_block_object(
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
     let height = match network {
-        services::network::Network::Regtest => "1".to_string(),
+        zaino_commons::config::Network::Regtest => "1".to_string(),
         _ => "1000000".to_string(),
     };
 
@@ -561,7 +529,7 @@ async fn state_service_get_raw_mempool_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(zaino_commons::config::Network::Testnet),
     )
     .await;
 
@@ -639,7 +607,7 @@ async fn state_service_z_get_treestate_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(zaino_commons::config::Network::Testnet),
     )
     .await;
 
@@ -722,7 +690,7 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(zaino_commons::config::Network::Testnet),
     )
     .await;
 
@@ -829,7 +797,7 @@ async fn state_service_get_raw_transaction_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(zaino_commons::config::Network::Testnet),
     )
     .await;
 
@@ -937,7 +905,7 @@ async fn state_service_get_address_tx_ids_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(zaino_commons::config::Network::Testnet),
     )
     .await;
 
@@ -1040,7 +1008,7 @@ async fn state_service_get_address_utxos_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(zaino_commons::config::Network::Testnet),
     )
     .await;
 
@@ -1081,7 +1049,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 None,
-                services::network::Network::Regtest,
+                zaino_commons::config::Network::Regtest,
             )
             .await;
         }
@@ -1099,7 +1067,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             let mut chaintip_subscriber = state_service_subscriber.chaintip_update_subscriber();
@@ -1125,7 +1093,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_CHAIN_CACHE_DIR.clone(),
-                services::network::Network::Regtest,
+                zaino_commons::config::Network::Regtest,
             )
             .await;
         }
@@ -1136,7 +1104,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                services::network::Network::Testnet,
+                zaino_commons::config::Network::Testnet,
             )
             .await;
         }
@@ -1192,7 +1160,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1218,7 +1186,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1246,7 +1214,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
 
@@ -1387,7 +1355,7 @@ mod zebrad {
             state_service_get_block_object(
                 &ValidatorKind::Zebrad,
                 None,
-                services::network::Network::Regtest,
+                zaino_commons::config::Network::Regtest,
             )
             .await;
         }
@@ -1398,7 +1366,7 @@ mod zebrad {
             state_service_get_block_object(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                services::network::Network::Testnet,
+                zaino_commons::config::Network::Testnet,
             )
             .await;
         }
@@ -1408,7 +1376,7 @@ mod zebrad {
             state_service_get_block_raw(
                 &ValidatorKind::Zebrad,
                 None,
-                services::network::Network::Regtest,
+                zaino_commons::config::Network::Regtest,
             )
             .await;
         }
@@ -1419,7 +1387,7 @@ mod zebrad {
             state_service_get_block_raw(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                services::network::Network::Testnet,
+                zaino_commons::config::Network::Testnet,
             )
             .await;
         }
@@ -1457,7 +1425,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(1).await.unwrap();
@@ -1483,7 +1451,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1529,7 +1497,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1565,7 +1533,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(5).await.unwrap();
@@ -1608,7 +1576,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1637,7 +1605,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(6).await.unwrap();
@@ -1708,7 +1676,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(100).await.unwrap();
@@ -1763,7 +1731,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
 
@@ -1802,7 +1770,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
 
@@ -1861,7 +1829,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
 
@@ -1915,7 +1883,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(zaino_commons::config::Network::Regtest),
             )
             .await;
 

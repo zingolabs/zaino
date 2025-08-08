@@ -37,7 +37,7 @@ async fn create_test_manager_and_services(
     network: Option<services::network::Network>,
 ) -> (TestManager, StateService, StateServiceSubscriber) {
     let mut config = match chain_cache {
-        Some(cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path),
+        Some(ref cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path.clone()),
         None => TestManagerConfig::for_basic_tests(validator.clone(), BackendType::Fetch),
     };
 
@@ -123,11 +123,7 @@ async fn create_test_manager_and_services(
                     .join("zaino"),
                 size: None,
             },
-            network: match network_type {
-                Network::Mainnet => zaino_commons::config::Network::Mainnet,
-                Network::new_default_testnet() => zaino_commons::config::Network::Testnet,
-                _ => zaino_commons::config::Network::Regtest,
-            },
+            network: network_type.into(),
             no_sync: true,
             no_db: true,
         },
