@@ -24,7 +24,7 @@ use zaino_state::{
 use zaino_testutils::from_inputs;
 use zaino_testutils::services;
 use zaino_testutils::Validator as _;
-use zaino_testutils::{TestManager, ValidatorKind};
+use zaino_testutils::{TestManager, TestManagerConfig, ValidatorKind};
 use zebra_chain::parameters::Network;
 use zebra_rpc::methods::GetAddressUtxos;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlockTransaction};
@@ -36,20 +36,23 @@ async fn create_test_manager_and_services(
     enable_clients: bool,
     network: Option<services::network::Network>,
 ) -> (TestManager, StateService, StateServiceSubscriber) {
-    let test_manager = TestManager::launch(
-        validator,
-        &BackendType::Fetch,
-        network,
-        chain_cache.clone(),
-        enable_zaino,
-        false,
-        false,
-        true,
-        true,
-        enable_clients,
-    )
-    .await
-    .unwrap();
+    let mut config = match chain_cache {
+        Some(cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path),
+        None => TestManagerConfig::for_basic_tests(validator.clone(), BackendType::Fetch),
+    };
+
+    // Apply dynamic flags
+    if !enable_zaino {
+        config.zaino_config.enable_zaino = false;
+    }
+    config = config.with_clients_if(enable_clients).with_no_sync_no_db();
+
+    // Handle network conversion (old API used services::network::Network)
+    if let Some(network) = network {
+        config = config.with_network(network.into());
+    }
+
+    let test_manager = TestManager::launch_with_config(config).await.unwrap();
 
     let (network_type, _zaino_sync_bool) = match network {
         Some(services::network::Network::Mainnet) => {

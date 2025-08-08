@@ -5,7 +5,7 @@ use zaino_commons::config::{
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_state::bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber};
 use zaino_testutils::Validator as _;
-use zaino_testutils::{TestManager, ValidatorKind};
+use zaino_testutils::{TestManager, TestManagerConfig, ValidatorKind};
 use zebra_chain::block::Height;
 use zebra_state::HashOrHeight;
 
@@ -22,20 +22,24 @@ async fn create_test_manager_and_block_cache(
     BlockCache,
     BlockCacheSubscriber,
 ) {
-    let test_manager = TestManager::launch(
-        validator,
-        &BackendType::Fetch,
-        None,
-        chain_cache,
-        enable_zaino,
-        false,
-        false,
-        zaino_no_sync,
-        zaino_no_db,
-        enable_clients,
-    )
-    .await
-    .unwrap();
+    let mut config = match chain_cache {
+        Some(cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path),
+        None => TestManagerConfig::for_basic_tests(validator.clone(), BackendType::Fetch),
+    };
+
+    // Apply dynamic flags
+    if !enable_zaino {
+        config.zaino_config.enable_zaino = false;
+    }
+    config = config.with_clients_if(enable_clients);
+    if zaino_no_sync {
+        config.zaino_config.no_sync = true;
+    }
+    if zaino_no_db {
+        config.zaino_config.no_db = true;
+    }
+
+    let test_manager = TestManager::launch_with_config(config).await.unwrap();
 
     let validator_config = ValidatorConfig {
         config: ZainoStateConfig::default(),

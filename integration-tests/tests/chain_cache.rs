@@ -1,7 +1,7 @@
 use zaino_commons::config::{AuthMethod, BackendType, ValidatorConfig, ZainoStateConfig};
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_state::bench::chain_index::non_finalised_state::{BlockchainSource, NonFinalizedState};
-use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
+use zaino_testutils::{TestManager, TestManagerConfig, Validator as _, ValidatorKind};
 
 async fn create_test_manager_and_connector(
     validator: &ValidatorKind,
@@ -11,20 +11,26 @@ async fn create_test_manager_and_connector(
     zaino_no_db: bool,
     enable_clients: bool,
 ) -> (TestManager, JsonRpSeeConnector) {
-    let test_manager = TestManager::launch(
-        validator,
-        &BackendType::Fetch,
-        None,
-        chain_cache,
-        enable_zaino,
-        false,
-        false,
-        zaino_no_sync,
-        zaino_no_db,
-        enable_clients,
-    )
-    .await
-    .unwrap();
+    let mut config = match chain_cache {
+        Some(cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path),
+        None => TestManagerConfig::for_basic_tests(validator.clone(), BackendType::Fetch),
+    };
+
+    // Apply dynamic flags
+    if !enable_zaino {
+        config.zaino_config.enable_zaino = false;
+    }
+    if enable_clients {
+        config = config.with_clients();
+    }
+    if zaino_no_sync {
+        config.zaino_config.no_sync = true;
+    }
+    if zaino_no_db {
+        config.zaino_config.no_db = true;
+    }
+
+    let test_manager = TestManager::launch_with_config(config).await.unwrap();
 
     let validator_config = ValidatorConfig {
         config: ZainoStateConfig {
