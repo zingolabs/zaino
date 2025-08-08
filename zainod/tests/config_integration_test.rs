@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_commons::config::{
     AuthMethod, BackendType, CacheConfig, CookieAuth, DatabaseConfig, Network, ServiceConfig,
-    ValidatorConfig,
+    ValidatorConfig, TlsConfig,
 };
 use zainodlib::config::{DebugConfig, IndexerConfig, ServerConfig, StorageConfig};
 
@@ -20,13 +20,14 @@ fn test_programmatic_config_construction() {
         backend: BackendType::Fetch,
         network: Network::Regtest,
         server: ServerConfig {
-            enable_json_server: true,
-            json_rpc_listen_address: "127.0.0.1:0".parse().unwrap(), // random port
-            cookie: CookieAuth::Disabled,                            // no auth needed for tests
-            grpc_listen_address: "127.0.0.1:0".parse().unwrap(),
-            grpc_tls: false, // no TLS for local tests
-            tls_cert_path: None,
-            tls_key_path: None,
+            json_rpc: Some(zaino_commons::config::JsonRpcConfig {
+                listen_address: "127.0.0.1:0".parse().unwrap(), // random port
+                auth: CookieAuth::Disabled,                      // no auth needed for tests
+            }),
+            grpc: zaino_commons::config::GrpcConfig {
+                listen_address: "127.0.0.1:0".parse().unwrap(),
+                tls: zaino_commons::config::TlsConfig::Disabled, // no TLS for local tests
+            },
         },
         validator: ValidatorConfig {
             config: zaino_commons::config::ZainoStateConfig::default(),
@@ -75,15 +76,19 @@ fn test_production_config_construction() {
         backend: BackendType::State,
         network: Network::Mainnet,
         server: ServerConfig {
-            enable_json_server: true,
-            json_rpc_listen_address: "0.0.0.0:8237".parse().unwrap(),
-            cookie: CookieAuth::Enabled {
-                path: cookie_path.clone(),
+            json_rpc: Some(zaino_commons::config::JsonRpcConfig {
+                listen_address: "0.0.0.0:8237".parse().unwrap(),
+                auth: CookieAuth::Enabled {
+                    path: cookie_path.clone(),
+                },
+            }),
+            grpc: zaino_commons::config::GrpcConfig {
+                listen_address: "0.0.0.0:8137".parse().unwrap(),
+                tls: zaino_commons::config::TlsConfig::Enabled {
+                    cert_path: "/etc/ssl/certs/zaino.crt".into(),
+                    key_path: "/etc/ssl/private/zaino.key".into(),
+                },
             },
-            grpc_listen_address: "0.0.0.0:8137".parse().unwrap(),
-            grpc_tls: true,
-            tls_cert_path: Some("/etc/ssl/certs/zaino.crt".to_string()),
-            tls_key_path: Some("/etc/ssl/private/zaino.key".to_string()),
         },
         validator: ValidatorConfig {
             config: zaino_commons::config::ZainoStateConfig {
@@ -125,12 +130,16 @@ fn test_production_config_construction() {
     // Verify the structure
     assert_eq!(production_config.network, Network::Mainnet);
     assert_eq!(production_config.backend, BackendType::State);
-    assert!(production_config.server.grpc_tls);
+    assert!(matches!(production_config.server.grpc.tls, TlsConfig::Enabled { .. }));
 
     // Verify cookie auth is enabled
-    match production_config.server.cookie {
-        CookieAuth::Enabled { path } => assert_eq!(path, cookie_path),
-        CookieAuth::Disabled => panic!("Expected cookie auth to be enabled"),
+    if let Some(json_rpc) = &production_config.server.json_rpc {
+        match &json_rpc.auth {
+            CookieAuth::Enabled { path } => assert_eq!(*path, cookie_path),
+            CookieAuth::Disabled => panic!("Expected cookie auth to be enabled"),
+        }
+    } else {
+        panic!("Expected JSON-RPC to be enabled");
     }
 }
 
@@ -159,10 +168,12 @@ fn test_serde_roundtrip() {
         backend: BackendType::Fetch,
         network: Network::Regtest,
         server: ServerConfig {
-            enable_json_server: true,
-            cookie: CookieAuth::Enabled {
-                path: "/tmp/test.cookie".into(),
-            },
+            json_rpc: Some(zaino_commons::config::JsonRpcConfig {
+                listen_address: "127.0.0.1:8237".parse().unwrap(),
+                auth: CookieAuth::Enabled {
+                    path: "/tmp/test.cookie".into(),
+                },
+            }),
             ..Default::default()
         },
         ..Default::default()
@@ -179,8 +190,8 @@ fn test_serde_roundtrip() {
     assert_eq!(original_config.backend, deserialized_config.backend);
     assert_eq!(original_config.network, deserialized_config.network);
     assert_eq!(
-        original_config.server.enable_json_server,
-        deserialized_config.server.enable_json_server
+        original_config.server.json_rpc.is_some(),
+        deserialized_config.server.json_rpc.is_some()
     );
 }
 
@@ -257,7 +268,7 @@ fn test_toml_file_loading() {
             filename
         );
         assert_eq!(
-            config.server.enable_json_server, expected_json_server,
+            config.server.json_rpc.is_some(), expected_json_server,
             "JSON server mismatch in {}",
             filename
         );
@@ -314,17 +325,24 @@ fn test_toml_round_trip_fidelity() {
             filename
         );
         assert_eq!(
-            config1.server.enable_json_server, config2.server.enable_json_server,
+            config1.server.json_rpc.is_some(), config2.server.json_rpc.is_some(),
             "JSON server differs after round-trip in {}",
             filename
         );
+        // Compare JSON RPC addresses if both configs have JSON RPC enabled
+        match (&config1.server.json_rpc, &config2.server.json_rpc) {
+            (Some(json_rpc1), Some(json_rpc2)) => {
+                assert_eq!(
+                    json_rpc1.listen_address, json_rpc2.listen_address,
+                    "JSON RPC address differs after round-trip in {}",
+                    filename
+                );
+            }
+            (None, None) => {}, // Both disabled, OK
+            _ => panic!("JSON RPC enabled/disabled state differs after round-trip in {}", filename),
+        }
         assert_eq!(
-            config1.server.json_rpc_listen_address, config2.server.json_rpc_listen_address,
-            "JSON RPC address differs after round-trip in {}",
-            filename
-        );
-        assert_eq!(
-            config1.server.grpc_listen_address, config2.server.grpc_listen_address,
+            config1.server.grpc.listen_address, config2.server.grpc.listen_address,
             "gRPC address differs after round-trip in {}",
             filename
         );
@@ -344,20 +362,26 @@ fn test_toml_round_trip_fidelity() {
             filename
         );
 
-        // Test cookie auth round-trip
-        match (&config1.server.cookie, &config2.server.cookie) {
-            (CookieAuth::Enabled { path: p1 }, CookieAuth::Enabled { path: p2 }) => {
-                assert_eq!(
-                    p1, p2,
-                    "Server cookie path differs after round-trip in {}",
-                    filename
-                );
+        // Test cookie auth round-trip for JSON RPC
+        match (&config1.server.json_rpc, &config2.server.json_rpc) {
+            (Some(json_rpc1), Some(json_rpc2)) => {
+                match (&json_rpc1.auth, &json_rpc2.auth) {
+                    (CookieAuth::Enabled { path: p1 }, CookieAuth::Enabled { path: p2 }) => {
+                        assert_eq!(
+                            p1, p2,
+                            "JSON RPC cookie path differs after round-trip in {}",
+                            filename
+                        );
+                    }
+                    (CookieAuth::Disabled, CookieAuth::Disabled) => {}
+                    _ => panic!(
+                        "JSON RPC cookie auth type differs after round-trip in {}",
+                        filename
+                    ),
+                }
             }
-            (CookieAuth::Disabled, CookieAuth::Disabled) => {}
-            _ => panic!(
-                "Server cookie auth type differs after round-trip in {}",
-                filename
-            ),
+            (None, None) => {}, // Both disabled
+            _ => {} // Already checked above
         }
 
         println!("✓ Round-trip fidelity verified for {}", filename);
@@ -387,7 +411,7 @@ fn test_figment_integration() {
     // Verify it loaded correctly
     assert_eq!(config.network, Network::Regtest);
     assert_eq!(config.backend, BackendType::Fetch);
-    assert!(config.server.enable_json_server);
+    assert!(config.server.json_rpc.is_some());
     assert!(config.debug.no_sync);
 
     println!("✓ Figment integration working correctly");
@@ -474,12 +498,12 @@ no_sync = true
     // Specified values
     assert_eq!(config.network, Network::Regtest);
     assert_eq!(config.backend, BackendType::Fetch);
-    assert!(config.server.enable_json_server);
+    assert!(config.server.json_rpc.is_some());
     assert!(config.debug.no_sync);
 
     // Should get defaults for unspecified values
     assert_eq!(
-        config.server.grpc_listen_address,
+        config.server.grpc.listen_address,
         "127.0.0.1:8137".parse().unwrap()
     );
     assert_eq!(config.service.timeout, 30); // ServiceConfig default

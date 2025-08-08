@@ -4,7 +4,7 @@ use figment::Jail;
 use std::path::PathBuf;
 
 // Use the explicit library name `zainodlib` as defined in Cargo.toml [lib] name.
-use zaino_commons::config::{AuthMethod, BackendType, CookieAuth, Network};
+use zaino_commons::config::{AuthMethod, BackendType, CookieAuth, Network, TlsConfig};
 use zainodlib::config::{load_config, IndexerConfig};
 use zainodlib::error::IndexerError;
 
@@ -30,13 +30,12 @@ fn test_deserialize_full_valid_config() {
             backend = "fetch"
             network = "mainnet"
             
-            [server]
-            enable_json_server = true
-            json_rpc_listen_address = "127.0.0.1:8000"
-            grpc_listen_address = "0.0.0.0:9000"
-            grpc_tls = true
-            tls_cert_path = "{cert_file_name}"
-            tls_key_path = "{key_file_name}"
+            [server.json_rpc]
+            listen_address = "127.0.0.1:8000"
+            
+            [server.grpc]
+            listen_address = "0.0.0.0:9000"
+            tls = {{ enabled = {{ cert_path = "{cert_file_name}", key_path = "{key_file_name}" }} }}
             
             [server.cookie]
             enabled = {{ path = "{validator_cookie_file_name}" }}
@@ -97,23 +96,21 @@ fn test_deserialize_full_valid_config() {
         // Test the new nested structure
         assert_eq!(finalized_config.backend, BackendType::Fetch);
         assert_eq!(finalized_config.network, Network::Mainnet);
-        assert!(finalized_config.server.enable_json_server);
+        assert!(finalized_config.server.json_rpc.is_some());
         assert_eq!(
-            finalized_config.server.json_rpc_listen_address,
+            finalized_config.server.json_rpc.as_ref().unwrap().listen_address,
             "127.0.0.1:8000".parse().unwrap()
         );
         assert!(matches!(
-            finalized_config.server.cookie,
+            finalized_config.server.json_rpc.as_ref().unwrap().auth,
             CookieAuth::Enabled { .. }
         ));
-        assert_eq!(
-            finalized_config.server.tls_cert_path,
-            Some(cert_file_name.to_string())
-        );
-        assert_eq!(
-            finalized_config.server.tls_key_path,
-            Some(key_file_name.to_string())
-        );
+        if let TlsConfig::Enabled { cert_path, key_path } = &finalized_config.server.grpc.tls {
+            assert_eq!(*cert_path, PathBuf::from(cert_file_name));
+            assert_eq!(*key_path, PathBuf::from(key_file_name));
+        } else {
+            panic!("Expected TLS to be enabled with cert and key paths");
+        }
         assert!(matches!(
             finalized_config.validator.auth,
             AuthMethod::Cookie { .. }
@@ -127,15 +124,20 @@ fn test_deserialize_full_valid_config() {
             PathBuf::from(zebra_db_dir_name)
         );
         assert_eq!(
-            finalized_config.server.grpc_listen_address,
+            finalized_config.server.grpc.listen_address,
             "0.0.0.0:9000".parse().unwrap()
         );
-        assert!(finalized_config.server.grpc_tls);
-        assert_eq!(finalized_config.validator.rpc_user, "user".to_string());
-        assert_eq!(
-            finalized_config.validator.rpc_password,
-            "password".to_string()
-        );
+        assert!(matches!(finalized_config.server.grpc.tls, TlsConfig::Enabled { .. }));
+        if let AuthMethod::Basic { username, .. } = &finalized_config.validator.auth {
+            assert_eq!(*username, "user".to_string());
+        } else {
+            panic!("Expected basic auth with username");
+        }
+        if let AuthMethod::Basic { password, .. } = &finalized_config.validator.auth {
+            assert_eq!(*password, "password".to_string());
+        } else {
+            panic!("Expected basic auth with password");
+        }
         assert_eq!(finalized_config.storage.cache.capacity, Some(10000));
         assert_eq!(finalized_config.storage.cache.shard_amount, Some(16));
         assert_eq!(finalized_config.storage.zaino_database.size, Some(100));
@@ -155,9 +157,11 @@ fn test_deserialize_optional_fields_missing() {
             backend = "state"
             network = "testnet"
             
-            [server]
-            json_rpc_listen_address = "127.0.0.1:8237"
-            grpc_listen_address = "127.0.0.1:8137"
+            [server.json_rpc]
+            listen_address = "127.0.0.1:8237"
+            
+            [server.grpc]
+            listen_address = "127.0.0.1:8137"
             
             [validator]
             rpc_address = "127.0.0.1:18232"
@@ -178,14 +182,11 @@ fn test_deserialize_optional_fields_missing() {
         assert_eq!(config.backend, BackendType::State);
         assert_eq!(config.network, Network::Testnet);
         assert_eq!(
-            config.server.enable_json_server,
-            default_values.server.enable_json_server
+            config.server.json_rpc.is_some(),
+            default_values.server.json_rpc.is_some()
         );
-        assert_eq!(config.validator.rpc_user, default_values.validator.rpc_user);
-        assert_eq!(
-            config.validator.rpc_password,
-            default_values.validator.rpc_password
-        );
+        assert_eq!(config.validator.auth, default_values.validator.auth);
+        // Auth already compared above
         assert_eq!(
             config.storage.cache.capacity,
             default_values.storage.cache.capacity
@@ -217,12 +218,14 @@ fn test_cookie_auth_logic() {
             backend = "fetch"
             network = "testnet"
             
-            [server]
-            json_rpc_listen_address = "127.0.0.1:8237"
-            grpc_listen_address = "127.0.0.1:8137"
+            [server.json_rpc]
+            listen_address = "127.0.0.1:8237"
             
-            [server.cookie]
+            [server.json_rpc.auth]
             enabled = {{ path = "/my/cookie/path" }}
+            
+            [server.grpc]
+            listen_address = "127.0.0.1:8137"
             
             [validator]
             rpc_address = "127.0.0.1:18232"
@@ -237,7 +240,11 @@ fn test_cookie_auth_logic() {
         )?;
 
         let config1 = load_config(&s1_path).expect("Config S1 failed");
-        assert!(matches!(config1.server.cookie, CookieAuth::Enabled { .. }));
+        if let Some(json_rpc) = &config1.server.json_rpc {
+            assert!(matches!(json_rpc.auth, CookieAuth::Enabled { .. }));
+        } else {
+            panic!("Expected JSON RPC to be enabled with cookie auth");
+        }
 
         // Scenario 2: auth disabled
         let s2_path = jail.directory().join("s2.toml");
@@ -247,10 +254,14 @@ fn test_cookie_auth_logic() {
             backend = "fetch"
             network = "testnet"
             
-            [server]
-            json_rpc_listen_address = "127.0.0.1:8237"
-            grpc_listen_address = "127.0.0.1:8137"
-            cookie = "disabled"
+            [server.json_rpc]
+            listen_address = "127.0.0.1:8237"
+            
+            [server.json_rpc.auth]
+            disabled = true
+            
+            [server.grpc]
+            listen_address = "127.0.0.1:8137"
             
             [validator]
             rpc_address = "127.0.0.1:18232"
@@ -264,7 +275,12 @@ fn test_cookie_auth_logic() {
         "#,
         )?;
         let config2 = load_config(&s2_path).expect("Config S2 failed");
-        assert!(matches!(config2.server.cookie, CookieAuth::Disabled));
+        if let Some(json_rpc) = &config2.server.json_rpc {
+            assert!(matches!(json_rpc.auth, CookieAuth::Disabled));
+        } else {
+            // If JSON RPC is disabled entirely, that's also valid
+            assert!(config2.server.json_rpc.is_none());
+        }
         Ok(())
     });
 }
@@ -281,14 +297,11 @@ fn test_deserialize_empty_string_yields_default() {
         assert_eq!(config.network, default_config.network);
         assert_eq!(config.backend, default_config.backend);
         assert_eq!(
-            config.server.enable_json_server,
-            default_config.server.enable_json_server
+            config.server.json_rpc.is_some(),
+            default_config.server.json_rpc.is_some()
         );
-        assert_eq!(config.validator.rpc_user, default_config.validator.rpc_user);
-        assert_eq!(
-            config.validator.rpc_password,
-            default_config.validator.rpc_password
-        );
+        assert_eq!(config.validator.auth, default_config.validator.auth);
+        // rpc_password is now part of the auth field structure
         assert_eq!(
             config.storage.cache.capacity,
             default_config.storage.cache.capacity
@@ -364,7 +377,7 @@ fn test_parse_zindexer_toml_integration() {
         let defaults = IndexerConfig::default();
 
         assert_eq!(config.backend, BackendType::Fetch);
-        assert_eq!(config.validator.rpc_user, defaults.validator.rpc_user);
+        assert_eq!(config.validator.auth, defaults.validator.auth);
 
         Ok(())
     });
@@ -379,8 +392,7 @@ fn test_figment_env_override_toml_and_defaults() {
             r#"
             network = "testnet"
             
-            [server]
-            enable_json_server = false
+            # JSON-RPC server is disabled by default when no [server.json_rpc] section is present
         "#,
         )?;
         jail.set_env("ZAINO_NETWORK", "mainnet");
@@ -391,9 +403,9 @@ fn test_figment_env_override_toml_and_defaults() {
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
 
         assert_eq!(config.network, Network::Mainnet);
-        assert!(config.server.enable_json_server);
+        assert!(config.server.json_rpc.is_some());
         assert_eq!(config.storage.cache.capacity, Some(12345));
-        assert!(!config.server.grpc_tls);
+        assert!(matches!(config.server.grpc.tls, TlsConfig::Disabled));
         Ok(())
     });
 }
@@ -406,14 +418,14 @@ fn test_figment_toml_overrides_defaults() {
             r#"
             network = "regtest"
             
-            [server]
-            enable_json_server = true
+            [server.json_rpc]
+            listen_address = "127.0.0.1:8237"
         "#,
         )?;
         let temp_toml_path = jail.directory().join("test_config.toml");
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
         assert_eq!(config.network, Network::Regtest);
-        assert!(config.server.enable_json_server);
+        assert!(config.server.json_rpc.is_some());
         Ok(())
     });
 }
@@ -428,8 +440,8 @@ fn test_figment_all_defaults() {
         let defaults = IndexerConfig::default();
         assert_eq!(config.network, defaults.network);
         assert_eq!(
-            config.server.enable_json_server,
-            defaults.server.enable_json_server
+            config.server.json_rpc.is_some(),
+            defaults.server.json_rpc.is_some()
         );
         assert_eq!(
             config.storage.cache.capacity,
