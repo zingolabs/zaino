@@ -15,24 +15,72 @@ pub enum ConfigError {
 /// Network conversion errors
 #[derive(Debug, thiserror::Error)]
 pub enum NetworkConversionError {
-    #[error("Custom activation heights are only supported for regtest networks, but got {network:?}")]
+    #[error(
+        "Custom activation heights are only supported for regtest networks, but got {network:?}"
+    )]
     CustomHeightsNotSupported { network: Network },
 }
 
 /// Holds validator connection and authentication configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ValidatorConfig {
-    /// State service configuration
-    pub config: ZainoStateConfig,
-    /// Validator JsonRPC address.
-    pub rpc_address: std::net::SocketAddr,
-    /// Validator gRPC address.
-    pub indexer_rpc_address: std::net::SocketAddr,
-    /// Authentication method for RPC connections
-    pub auth: AuthMethod,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ValidatorConfig {
+    Zebrad(ZebradConfig),
+    Zcashd(ZcashdConfig),
 }
 
-impl ValidatorConfig {
+/// Holds validator connection and authentication configuration.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ZebradConfig {
+    /// Validator JsonRPC address.
+    pub rpc_address: std::net::SocketAddr,
+    /// Authentication method for RPC connections
+    pub auth: ZebradAuth,
+    /// Backend configuration
+    pub backend: ZebradBackend,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ZebradAuth {
+    Disabled,
+    Cookie(CookieAuth),
+}
+
+/// Holds validator connection and authentication configuration.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ZcashdConfig {
+    /// Validator JsonRPC address.
+    pub rpc_address: std::net::SocketAddr,
+    /// Authentication method for RPC connections
+    pub auth: ZcashdAuth,
+    /// Backend configuration
+    pub backend: ZcashdBackend,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ZcashdAuth {
+    Disabled,
+    Password(PasswordAuth),
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct PasswordAuth {
+    pub username: String,
+    pub password: String,
+}
+
+impl PasswordAuth {
+    pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
+        Self {
+            username: username.into(),
+            password: password.into(),
+        }
+    }
+}
+
+impl ZebradConfig {
     /// Tests connection to the validator node and returns the correct URL.
     ///
     /// This method tries to connect to the validator using the configured RPC address
@@ -74,8 +122,215 @@ impl ValidatorConfig {
 
             // Add authentication header if configured
             match self.auth.get_auth_header() {
-                Ok((header_name, header_value)) => {
+                Ok(Some((header_name, header_value))) => {
                     request_builder = request_builder.header(header_name, header_value);
+                }
+                Ok(None) => {
+                    // No authentication required
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("Authentication error: {}", e),
+                    ));
+                }
+            }
+
+            match request_builder.send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        let _body = response.bytes().await.map_err(|e| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("Response read error: {}", e),
+                            )
+                        })?;
+                        return Ok(url);
+                    }
+                }
+                Err(_) if attempt < 2 => {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        format!("Connection failed after {} attempts: {}", attempt + 1, e),
+                    ));
+                }
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Could not establish connection with validator node after 3 attempts",
+        ))
+    }
+}
+
+/// HTTP authentication header with semantic accessors
+/// e.g. AuthHeader::new("Authorization", "Basic dXNlcjpwYXNz")
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthHeader {
+    name: String,
+    value: String,
+}
+
+impl AuthHeader {
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.name
+    }
+
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Convenience method for Authorization headers
+    pub fn authorization(value: impl Into<String>) -> Self {
+        Self::new("Authorization", value)
+    }
+}
+
+/// Authentication-related errors
+#[derive(Debug, thiserror::Error)]
+pub enum AuthError {
+    #[error("Failed to read cookie file: {0}")]
+    CookieReadError(std::io::Error),
+    #[error("Cookie file format is invalid (expected '__cookie__:token')")]
+    InvalidCookieFormat,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub struct CookieAuth {
+    pub path: PathBuf,
+}
+
+impl CookieAuth {
+    fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Get the cookie token
+    pub fn read_cookie_token(&self) -> Result<String, AuthError> {
+        let cookie_path: &std::path::Path = &self.path;
+        let cookie_content =
+            std::fs::read_to_string(cookie_path).map_err(|e| AuthError::CookieReadError(e))?;
+        let trimmed_content = cookie_content.trim();
+
+        if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
+            Ok(stripped.to_string())
+        } else {
+            Err(AuthError::InvalidCookieFormat)
+        }
+    }
+}
+
+impl Default for CookieAuth {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from(".cookie"),
+        }
+    }
+}
+
+impl ZebradAuth {
+    /// Get authentication header for HTTP requests
+    pub fn get_auth_header(&self) -> Result<Option<AuthHeader>, AuthError> {
+        match self {
+            ZebradAuth::Disabled => Ok(None),
+            ZebradAuth::Cookie(cookie_auth) => {
+                let cookie_token = cookie_auth.read_cookie_token()?;
+                let credentials = base64::engine::general_purpose::STANDARD
+                    .encode(format!("__cookie__:{}", cookie_token));
+                Ok(Some(AuthHeader::authorization(format!("Basic {}", credentials))))
+            }
+        }
+    }
+}
+
+impl Default for ZebradAuth {
+    fn default() -> Self {
+        ZebradAuth::Disabled
+    }
+}
+
+impl ZcashdAuth {
+    /// Get authentication header for HTTP requests
+    pub fn get_auth_header(&self) -> Result<Option<AuthHeader>, AuthError> {
+        match self {
+            ZcashdAuth::Disabled => Ok(None),
+            ZcashdAuth::Password(password_auth) => {
+                let credentials = base64::engine::general_purpose::STANDARD.encode(format!(
+                    "{}:{}",
+                    password_auth.username, password_auth.password
+                ));
+                Ok(Some(AuthHeader::authorization(format!("Basic {}", credentials))))
+            }
+        }
+    }
+}
+
+impl Default for ZcashdAuth {
+    fn default() -> Self {
+        ZcashdAuth::Disabled
+    }
+}
+
+impl ZcashdConfig {
+    /// Tests connection to the validator node and returns the correct URL.
+    ///
+    /// This method tries to connect to the validator using the configured RPC address
+    /// and authentication, retrying up to 3 times with a 3-second delay between attempts.
+    pub async fn test_and_get_url(&self) -> Result<reqwest::Url, std::io::Error> {
+        use std::net::SocketAddr;
+
+        let host = match self.rpc_address {
+            SocketAddr::V4(_) => self.rpc_address.ip().to_string(),
+            SocketAddr::V6(_) => format!("[{}]", self.rpc_address.ip()),
+        };
+
+        let url_string = format!("http://{}:{}", host, self.rpc_address.port());
+        let url: reqwest::Url = url_string.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid URL: {}", e),
+            )
+        })?;
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Client build error: {}", e),
+                )
+            })?;
+
+        for attempt in 0..3 {
+            let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
+            let mut request_builder = client
+                .post(url.clone())
+                .header("Content-Type", "application/json")
+                .body(request_body);
+
+            // Add authentication header if configured
+            match self.auth.get_auth_header() {
+                Ok(Some((header_name, header_value))) => {
+                    request_builder = request_builder.header(header_name, header_value);
+                }
+                Ok(None) => {
+                    // No authentication required
                 }
                 Err(e) => {
                     return Err(std::io::Error::new(
@@ -119,114 +374,27 @@ impl ValidatorConfig {
 
 impl Default for ValidatorConfig {
     fn default() -> Self {
+        ValidatorConfig::Zebrad(ZebradConfig::default())
+    }
+}
+
+impl Default for ZebradConfig {
+    fn default() -> Self {
         Self {
-            config: ZainoStateConfig::default(),
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
-            indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
-            auth: AuthMethod::default(),
+            auth: ZebradAuth::default(),
+            backend: ZebradBackend::default(),
         }
     }
 }
 
-/// Authentication method for RPC connections.
-///
-/// This enum provides self-contained authentication handling,
-/// including lazy loading of cookie files when needed.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AuthMethod {
-    /// HTTP Basic authentication with username/password
-    Basic { username: String, password: String },
-    /// Cookie-based authentication (loads from file on demand)
-    Cookie { path: std::path::PathBuf },
-}
-
-impl AuthMethod {
-    /// Get authentication header for HTTP requests
-    pub fn get_auth_header(&self) -> Result<(String, String), AuthError> {
-        match self {
-            AuthMethod::Basic { username, password } => {
-                let credentials = base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", username, password));
-                Ok((
-                    "Authorization".to_string(),
-                    format!("Basic {}", credentials),
-                ))
-            }
-            AuthMethod::Cookie { path } => {
-                let cookie_token = read_cookie_token(path)?;
-                let credentials = base64::engine::general_purpose::STANDARD
-                    .encode(format!("__cookie__:{}", cookie_token));
-                Ok((
-                    "Authorization".to_string(),
-                    format!("Basic {}", credentials),
-                ))
-            }
-        }
-    }
-}
-
-/// Shared cookie reading utility function
-///
-/// Reads and parses a cookie file, extracting the token part after "__cookie__:"
-pub fn read_cookie_token(cookie_path: &std::path::Path) -> Result<String, AuthError> {
-    let cookie_content =
-        std::fs::read_to_string(cookie_path).map_err(|e| AuthError::CookieReadError(e))?;
-    let trimmed_content = cookie_content.trim();
-    if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
-        Ok(stripped.to_string())
-    } else {
-        Err(AuthError::InvalidCookieFormat)
-    }
-}
-
-impl Default for AuthMethod {
+impl Default for ZcashdConfig {
     fn default() -> Self {
-        AuthMethod::Basic {
-            username: "xxxxxx".to_string(),
-            password: "xxxxxx".to_string(),
+        Self {
+            rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
+            auth: ZcashdAuth::default(),
+            backend: ZcashdBackend::default(),
         }
-    }
-}
-
-/// Authentication-related errors
-#[derive(Debug, thiserror::Error)]
-pub enum AuthError {
-    #[error("Failed to read cookie file: {0}")]
-    CookieReadError(std::io::Error),
-    #[error("Cookie file format is invalid (expected '__cookie__:token')")]
-    InvalidCookieFormat,
-}
-
-/// Cookie-based authentication configuration for servers.
-///
-/// This is a simpler enum compared to AuthMethod, specifically for cases
-/// where you only need to enable/disable cookie auth (like server configs).
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CookieAuth {
-    /// No cookie authentication
-    Disabled,
-    /// Cookie authentication enabled
-    Enabled {
-        /// Path to the cookie file
-        path: PathBuf,
-    },
-}
-
-impl CookieAuth {
-    /// Get the cookie token if authentication is enabled, using shared cookie reading logic
-    pub fn get_cookie_token(&self) -> Result<Option<String>, AuthError> {
-        match self {
-            CookieAuth::Disabled => Ok(None),
-            CookieAuth::Enabled { path } => Ok(Some(read_cookie_token(path)?)),
-        }
-    }
-}
-
-impl Default for CookieAuth {
-    fn default() -> Self {
-        CookieAuth::Disabled
     }
 }
 
@@ -278,6 +446,171 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// Storage configuration for Zaino (shared across all backends)
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ZainoStorageConfig {
+    /// Cache configuration for DashMaps
+    pub cache: CacheConfig,
+    /// Zaino database configuration
+    pub database: DatabaseConfig,
+}
+
+impl Default for ZainoStorageConfig {
+    fn default() -> Self {
+        Self {
+            cache: CacheConfig::default(),
+            database: DatabaseConfig::default(),
+        }
+    }
+}
+
+/// Zaino daemon's service configuration bundle.
+///
+/// This contains all configuration needed by Zaino's own services,
+/// separate from validator-specific configuration.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ZainodServiceConfig {
+    /// Service-level configuration (timeouts, channels)
+    pub service: ServiceConfig,
+    /// Cache configuration for DashMaps
+    pub cache: CacheConfig,
+    /// Zaino database configuration
+    pub database: DatabaseConfig,
+    /// Network type
+    pub network: Network,
+    /// Debug and testing configuration
+    pub debug: DebugConfig,
+}
+
+impl Default for ZainodServiceConfig {
+    fn default() -> Self {
+        Self {
+            service: ServiceConfig::default(),
+            cache: CacheConfig::default(),
+            database: DatabaseConfig::default(),
+            network: Network::default(),
+            debug: DebugConfig::default(),
+        }
+    }
+}
+
+/// Debug and testing configuration for Zaino daemon.
+///
+/// These settings are primarily used for testing and development scenarios.
+/// In production, all options should typically remain at their default values (false).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DebugConfig {
+    /// Skip blockchain synchronization on startup.
+    ///
+    /// When enabled, Zaino will start immediately without waiting for the validator
+    /// to sync to the network tip. Useful for testing scenarios where you want to
+    /// test Zaino functionality without a fully synced blockchain.
+    pub no_sync: bool,
+
+    /// Disable persistent storage.
+    ///
+    /// When enabled, Zaino will not persist blockchain data to disk and will operate
+    /// in memory-only mode. This is useful for testing and development where you don't
+    /// want to maintain blockchain state between runs.
+    pub no_db: bool,
+
+    /// Enable background database synchronization.
+    ///
+    /// When enabled, Zaino will sync its database in the background while serving
+    /// requests, fetching data from the validator as needed.
+    /// NOTE: This feature is currently unimplemented.
+    pub slow_sync: bool,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            no_sync: false,
+            no_db: false,
+            slow_sync: false,
+        }
+    }
+}
+
+/// Type-safe configuration for Zebra daemon with State backend.
+///
+/// This configuration is guaranteed to only contain valid Zebra + State combinations,
+/// making it impossible to construct invalid configurations at compile time.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ZebradStateConfig {
+    /// Zebra JsonRPC address
+    pub rpc_address: std::net::SocketAddr,
+    /// Zebra authentication configuration
+    pub auth: ZebradAuth,
+    /// Zebra state configuration
+    pub zebra_state: ZebraStateConfig,
+    /// Zebra gRPC address for state syncing
+    pub indexer_rpc_address: std::net::SocketAddr,
+    /// Zebra database configuration
+    pub zebra_database: DatabaseConfig,
+}
+
+impl ZebradStateConfig {
+    /// Extract from a ZebradConfig with State backend
+    pub fn from_zebrad_state_backend(
+        zebra_config: &ZebradConfig,
+        state_config: &ZebraStateConfig,
+        indexer_rpc_address: std::net::SocketAddr,
+        zebra_database: &DatabaseConfig,
+    ) -> Self {
+        Self {
+            rpc_address: zebra_config.rpc_address,
+            auth: zebra_config.auth.clone(),
+            zebra_state: state_config.clone(),
+            indexer_rpc_address,
+            zebra_database: zebra_database.clone(),
+        }
+    }
+}
+
+impl Default for ZebradStateConfig {
+    fn default() -> Self {
+        Self {
+            rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
+            auth: ZebradAuth::default(),
+            zebra_state: ZebraStateConfig::default(),
+            indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
+            zebra_database: DatabaseConfig::default(),
+        }
+    }
+}
+
+/// Type-safe validator configuration for Fetch backends only.
+///
+/// This enum ensures that only valid validator + Fetch backend combinations
+/// can be constructed, preventing runtime errors from invalid configurations.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub enum ValidatorFetchConfig {
+    /// Zebra daemon with Fetch backend
+    Zebrad {
+        /// Zebra JsonRPC address
+        rpc_address: std::net::SocketAddr,
+        /// Zebra authentication configuration
+        auth: ZebradAuth,
+    },
+    /// Zcashd daemon with Fetch backend
+    Zcashd {
+        /// Zcashd JsonRPC address  
+        rpc_address: std::net::SocketAddr,
+        /// Zcashd authentication configuration
+        auth: ZcashdAuth,
+    },
+}
+
+impl Default for ValidatorFetchConfig {
+    fn default() -> Self {
+        ValidatorFetchConfig::Zebrad {
+            rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
+            auth: ZebradAuth::default(),
+        }
+    }
+}
+
 /// Holds config data for `[ChainIndex]`.
 /// TODO: Rename when ChainIndex update is complete.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
@@ -316,28 +649,27 @@ impl Network {
     pub fn to_zebra_default(&self) -> zebra_chain::parameters::Network {
         self.into()
     }
-    
+
     /// Convert to Zebra's network type for internal use (alias for to_zebra_default).
     pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
         self.to_zebra_default()
     }
-    
+
     /// Convert to Zebra regtest network with custom activation heights.
     /// Returns an error if called on non-regtest networks.
     pub fn to_zebra_regtest_with_heights(
         &self,
-        heights: zebra_chain::parameters::testnet::ConfiguredActivationHeights
+        heights: zebra_chain::parameters::testnet::ConfiguredActivationHeights,
     ) -> Result<zebra_chain::parameters::Network, NetworkConversionError> {
         match self {
             Network::Regtest => Ok(zebra_chain::parameters::Network::new_regtest(heights)),
-            network => Err(NetworkConversionError::CustomHeightsNotSupported { 
-                network: *network 
-            }),
+            network => Err(NetworkConversionError::CustomHeightsNotSupported { network: *network }),
         }
     }
-    
+
     /// Get the standard regtest activation heights used by Zaino.
-    pub fn zaino_regtest_heights() -> zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+    pub fn zaino_regtest_heights() -> zebra_chain::parameters::testnet::ConfiguredActivationHeights
+    {
         zebra_chain::parameters::testnet::ConfiguredActivationHeights {
             before_overwinter: Some(1),
             overwinter: Some(1),
@@ -351,15 +683,15 @@ impl Network {
             nu7: None,
         }
     }
-    
+
     /// Determines if sync should be skipped for testing.
-    /// 
+    ///
     /// - Mainnet/Testnet: Skip sync (false) because we don't want to sync real chains in tests
     /// - Regtest: Enable sync (true) because regtest is local and fast to sync
     pub fn should_sync_for_testing(&self) -> bool {
         match self {
             Network::Mainnet | Network::Testnet => false, // Real networks - don't sync in tests
-            Network::Regtest => true, // Local network - safe and fast to sync
+            Network::Regtest => true,                     // Local network - safe and fast to sync
         }
     }
 }
@@ -402,9 +734,9 @@ impl From<zebra_chain::parameters::Network> for Network {
 impl Into<zebra_chain::parameters::Network> for Network {
     fn into(self) -> zebra_chain::parameters::Network {
         match self {
-            Network::Regtest => zebra_chain::parameters::Network::new_regtest(
-                Self::zaino_regtest_heights()
-            ),
+            Network::Regtest => {
+                zebra_chain::parameters::Network::new_regtest(Self::zaino_regtest_heights())
+            }
             Network::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
             Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
         }
@@ -436,12 +768,57 @@ pub enum BackendType {
     Fetch,
 }
 
-/// Zaino's wrapper for zebra_state configuration.
-///
-/// This provides a clean public API while maintaining compatibility
-/// with Zebra's internal state configuration.
+/// Backend configuration specific to Zebra validator.
+/// Zebra supports both State (ReadStateService) and Fetch (JsonRPC) backends.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ZainoStateConfig {
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ZebradBackend {
+    /// State backend using Zebra's ReadStateService
+    State {
+        /// Zebra state configuration
+        state_config: ZebraStateConfig,
+        /// Zebra gRPC address for state syncing
+        indexer_rpc_address: std::net::SocketAddr,
+        /// Zebra database configuration
+        zebra_database: DatabaseConfig,
+    },
+    /// Fetch backend using JsonRPC
+    Fetch,
+}
+
+/// Backend configuration specific to Zcashd validator.
+/// Zcashd only supports Fetch (JsonRPC) backend.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ZcashdBackend {
+    /// Fetch backend using JsonRPC (only option for Zcashd)
+    Fetch,
+}
+
+impl Default for ZebradBackend {
+    fn default() -> Self {
+        ZebradBackend::Fetch
+    }
+}
+
+impl Default for ZcashdBackend {
+    fn default() -> Self {
+        ZcashdBackend::Fetch
+    }
+}
+
+/// Zaino's wrapper for Zebra's state configuration.
+///
+/// This is NOT a 1-on-1 mapping with `zebra_state::Config`. Instead, it's a deliberate
+/// abstraction layer that:
+/// - Controls exactly which Zebra state functionality we expose to consumers
+/// - Protects us from breaking changes in Zebra's public API
+/// - Allows us to maintain our own stable configuration interface
+/// - Forces explicit updates to conversion logic when Zebra changes
+///
+/// Conversions to/from `zebra_state::Config` are maintained below to ensure flexibility.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ZebraStateConfig {
     /// Path to the directory for cached blockchain state
     pub cache_dir: std::path::PathBuf,
     /// If true, the state is stored in memory only and not persisted
@@ -455,7 +832,7 @@ pub struct ZainoStateConfig {
     pub debug_validity_check_interval: Option<std::time::Duration>,
 }
 
-impl Default for ZainoStateConfig {
+impl Default for ZebraStateConfig {
     fn default() -> Self {
         Self {
             cache_dir: std::path::PathBuf::from("./zaino_state_cache"),
@@ -467,8 +844,8 @@ impl Default for ZainoStateConfig {
     }
 }
 
-impl From<ZainoStateConfig> for zebra_state::Config {
-    fn from(config: ZainoStateConfig) -> Self {
+impl From<ZebraStateConfig> for zebra_state::Config {
+    fn from(config: ZebraStateConfig) -> Self {
         zebra_state::Config {
             cache_dir: config.cache_dir,
             ephemeral: config.ephemeral,
@@ -479,7 +856,7 @@ impl From<ZainoStateConfig> for zebra_state::Config {
     }
 }
 
-impl From<zebra_state::Config> for ZainoStateConfig {
+impl From<zebra_state::Config> for ZebraStateConfig {
     fn from(config: zebra_state::Config) -> Self {
         Self {
             cache_dir: config.cache_dir,
