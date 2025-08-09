@@ -155,7 +155,8 @@ impl ZcashService for StateService {
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
         info!("Launching Chain Fetch Service..");
 
-        let rpc_client = JsonRpSeeConnector::new_from_validator_config(&config.validator).await?;
+        let rpc_client = JsonRpSeeConnector::from_zebrd_state_config(&config.zebrd)
+            .map_err(|e| StateServiceError::Custom(format!("Connector error: {}", e)))?;
 
         let zebra_build_data = rpc_client.get_info().await?;
 
@@ -195,11 +196,22 @@ impl ZcashService for StateService {
         info!("Using Zcash build: {}", data);
 
         info!("Launching Chain Syncer..");
+        let (state_config, indexer_address) = match &config.validator {
+            zaino_commons::config::ValidatorConfig::Zebrad(zebra_config) => {
+                (zebra_config.config.clone().into(), zebra_config.indexer_rpc_address)
+            }
+            zaino_commons::config::ValidatorConfig::Zcashd(zcashd_config) => {
+                // Zcashd doesn't have separate state config or indexer address, 
+                // use default state config and main RPC address
+                (zaino_commons::config::ZainoStateConfig::default().into(), zcashd_config.rpc_address)
+            }
+        };
+
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
-                config.validator.config.clone().into(),
+                state_config,
                 &config.block_cache.network.into(),
-                config.validator.indexer_rpc_address,
+                indexer_address,
             )
             .await??;
 
