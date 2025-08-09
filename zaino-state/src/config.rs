@@ -1,32 +1,19 @@
 //! Holds config data for Zaino-State services.
 
-pub use zaino_commons::config::{BlockCacheConfig, ServiceConfig, ValidatorConfig};
+pub use zaino_commons::config::{BlockCacheConfig, ZainodServiceConfig, ZebradStateConfig};
 
-/// Holds config data for [crate::StateService].
+/// Type-safe configuration for StateService.
+/// 
+/// This ensures that only valid Zebra + State backend configurations
+/// can be passed to the State service, preventing runtime errors.
 #[derive(Debug, Clone)]
 pub struct StateServiceConfig {
-    /// Validator connection and authentication configuration.
-    pub validator: ValidatorConfig,
-    /// Service-level configuration.
-    pub service: ServiceConfig,
-    /// Block cache configuration.
-    pub block_cache: BlockCacheConfig,
+    /// Zebra validator with State backend configuration (type-safe)
+    pub zebrad: ZebradStateConfig,
+    /// Zaino daemon service configuration
+    pub zainod: ZainodServiceConfig,
 }
 
-impl StateServiceConfig {
-    /// Returns a new instance of [`StateServiceConfig`].
-    pub fn new(
-        validator: ValidatorConfig,
-        service: ServiceConfig,
-        block_cache: BlockCacheConfig,
-    ) -> Self {
-        StateServiceConfig {
-            validator,
-            service,
-            block_cache,
-        }
-    }
-}
 
 impl From<StateServiceConfig> for BlockCacheConfig {
     fn from(config: StateServiceConfig) -> Self {

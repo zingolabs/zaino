@@ -1,35 +1,28 @@
 //! Configuration types for Zaino-Fetch services.
 
-use zaino_commons::config::{BlockCacheConfig, ServiceConfig, ValidatorConfig};
+use zaino_commons::config::{BlockCacheConfig, ValidatorFetchConfig, ZainodServiceConfig};
 
-/// Holds config data for [crate::FetchService].
+/// Type-safe configuration for FetchService.
+/// 
+/// This ensures that only valid validator + Fetch backend configurations
+/// can be passed to the Fetch service, preventing runtime errors.
 #[derive(Debug, Clone)]
 pub struct FetchServiceConfig {
-    /// Validator connection and authentication configuration.
-    pub validator: ValidatorConfig,
-    /// Service-level configuration.
-    pub service: ServiceConfig,
-    /// Block cache configuration.
-    pub block_cache: BlockCacheConfig,
+    /// Validator with Fetch backend configuration (type-safe)
+    pub validator: ValidatorFetchConfig,
+    /// Zaino daemon service configuration
+    pub zainod: ZainodServiceConfig,
 }
 
-impl FetchServiceConfig {
-    /// Returns a new instance of [`FetchServiceConfig`].
-    pub fn new(
-        validator: ValidatorConfig,
-        service: ServiceConfig,
-        block_cache: BlockCacheConfig,
-    ) -> Self {
-        FetchServiceConfig {
-            validator,
-            service,
-            block_cache,
-        }
-    }
-}
 
 impl From<FetchServiceConfig> for BlockCacheConfig {
     fn from(config: FetchServiceConfig) -> Self {
-        config.block_cache
+        BlockCacheConfig {
+            cache: config.zainod.cache,
+            database: config.zainod.database,
+            network: config.zainod.network,
+            no_sync: config.zainod.debug.no_sync,
+            no_db: config.zainod.debug.no_db,
+        }
     }
 }
