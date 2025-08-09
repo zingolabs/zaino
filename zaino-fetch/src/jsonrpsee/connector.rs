@@ -3,7 +3,7 @@
 //! TODO: - Add option for http connector.
 //!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [<https://github.com/zingolabs/zaino/issues/67>].
 
-// base64 imports moved to zaino-commons AuthMethod
+use base64::Engine;
 use http::Uri;
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,8 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zaino_commons::config::AuthMethod;
+use zaino_commons::config::{AuthHeader, ValidatorConfig, ValidatorFetchConfig, ZebradAuth, ZebradStateConfig, ZcashdAuth};
+
 use zebra_rpc::client::ValidateAddressResponse;
 
 use crate::jsonrpsee::{
@@ -154,16 +155,15 @@ pub struct JsonRpSeeConnector {
     url: Url,
     id_counter: Arc<AtomicI32>,
     client: Client,
-    auth_method: AuthMethod,
+    auth_header: Option<AuthHeader>,
 }
 
 impl JsonRpSeeConnector {
-    /// Creates a new JsonRpSeeConnector with Basic Authentication.
-    pub fn new_with_basic_auth(
-        url: Url,
-        username: String,
-        password: String,
-    ) -> Result<Self, TransportError> {
+    /// Creates a new JsonRpSeeConnector with optional authentication header.
+    /// 
+    /// The service should handle authentication and provide the pre-computed
+    /// auth header. This keeps the connector focused on JSON-RPC transport.
+    pub fn new(url: Url, auth_header: Option<AuthHeader>) -> Result<Self, TransportError> {
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(5))
@@ -175,50 +175,38 @@ impl JsonRpSeeConnector {
             url,
             id_counter: Arc::new(AtomicI32::new(0)),
             client,
-            auth_method: AuthMethod::Basic { username, password },
+            auth_header,
         })
     }
 
-    /// Creates a new JsonRpSeeConnector with Cookie Authentication.
-    pub fn new_with_cookie_auth(url: Url, cookie_path: &Path) -> Result<Self, TransportError> {
-        let client = ClientBuilder::new()
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
-            .cookie_store(true)
-            .build()
-            .map_err(TransportError::ReqwestError)?;
+    /// Creates a connector from a ValidatorFetchConfig.
+    pub fn from_validator_fetch_config(config: &ValidatorFetchConfig) -> Result<Self, TransportError> {
+        let (rpc_address, auth) = match config {
+            ValidatorFetchConfig::Zebrad { rpc_address, auth } => (rpc_address, auth.get_auth_header()),
+            ValidatorFetchConfig::Zcashd { rpc_address, auth } => (rpc_address, auth.get_auth_header()),
+        };
 
-        Ok(Self {
-            url,
-            id_counter: Arc::new(AtomicI32::new(0)),
-            client,
-            auth_method: AuthMethod::Cookie {
-                path: cookie_path.to_path_buf(),
-            },
-        })
+        let url = reqwest::Url::parse(&format!("http://{}", rpc_address))
+            .map_err(|e| TransportError::BadNodeData(Box::new(e), "URL parsing"))?;
+        
+        let auth_header = auth
+            .map_err(|e| TransportError::BadNodeData(Box::new(e), "Auth header"))?;
+
+        Self::new(url, auth_header)
     }
 
-    /// Creates a new JsonRpSeeConnector from a ValidatorConfig.
-    pub async fn new_from_validator_config(
-        config: &zaino_commons::config::ValidatorConfig,
-    ) -> Result<Self, TransportError> {
-        let url = config.test_and_get_url().await?;
+    /// Creates a connector from a ZebradStateConfig.
+    pub fn from_zebrad_state_config(config: &ZebradStateConfig) -> Result<Self, TransportError> {
+        let url = reqwest::Url::parse(&format!("http://{}", config.rpc_address))
+            .map_err(|e| TransportError::BadNodeData(Box::new(e), "URL parsing"))?;
+        
+        let auth_header = config.auth
+            .get_auth_header()
+            .map_err(|e| TransportError::BadNodeData(Box::new(e), "Auth header"))?;
 
-        match &config.auth {
-            AuthMethod::Cookie { path } => JsonRpSeeConnector::new_with_cookie_auth(url, path),
-            AuthMethod::Basic { username, password } => {
-                JsonRpSeeConnector::new_with_basic_auth(url, username.clone(), password.clone())
-            }
-        }
+        Self::new(url, auth_header)
     }
 
-    /// Creates a new JsonRpSeeConnector from a FetchServiceConfig.
-    pub async fn new_from_fetch_service_config(
-        config: &crate::config::FetchServiceConfig,
-    ) -> Result<Self, TransportError> {
-        Self::new_from_validator_config(&config.validator).await
-    }
 
     /// Returns the http::uri the JsonRpSeeConnector is configured to send requests to.
     pub fn uri(&self) -> Result<Uri, TransportError> {
@@ -335,16 +323,8 @@ impl JsonRpSeeConnector {
             .post(self.url.clone())
             .header("Content-Type", "application/json");
 
-        match self.auth_method.get_auth_header() {
-            Ok((header_name, header_value)) => {
-                request_builder = request_builder.header(header_name, header_value);
-            }
-            Err(e) => {
-                // Convert AuthError to serde_json::Error since this function returns serde_json::Result
-                // Use a workaround since serde_json::Error doesn't have a custom constructor
-                let error_msg = format!("Failed to get authentication header: {}", e);
-                return Err(serde_json::from_str::<()>(&error_msg).unwrap_err());
-            }
+        if let Some(auth_header) = &self.auth_header {
+            request_builder = request_builder.header(auth_header.key(), auth_header.value());
         }
 
         let request_body = serde_json::to_string(&req)?;
