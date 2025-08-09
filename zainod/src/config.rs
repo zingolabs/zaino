@@ -19,9 +19,12 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, GrpcConfig,
-    JsonRpcConfig, Network, ServiceConfig, TlsConfig, ValidatorConfig, ZainoStateConfig,
+    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, DebugConfig, GrpcConfig,
+    JsonRpcConfig, Network, ServiceConfig, TlsConfig, ValidatorConfig, ZebraStateConfig, ZainoStorageConfig,
 };
+
+// Re-export commonly used config types for convenience
+pub use zaino_commons::config::DebugConfig;
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
 
@@ -102,42 +105,16 @@ impl Default for StorageConfig {
     }
 }
 
-/// Debug and testing configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct DebugConfig {
-    /// Disables internal sync and stops zaino waiting on server sync.
-    /// Used for testing.
-    pub no_sync: bool,
-    /// Disables FinalisedState.
-    /// Used for testing.
-    pub no_db: bool,
-    /// When enabled Zaino syncs it DB in the background, fetching data from the validator.
-    /// NOTE: Unimplemented.
-    pub slow_sync: bool,
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            no_sync: false,
-            no_db: false,
-            slow_sync: false,
-        }
-    }
-}
 
 /// Config information required for Zaino.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IndexerConfig {
-    /// Type of backend to be used.
-    pub backend: BackendType,
     /// Network type (Mainnet, Testnet, Regtest).
     pub network: Network,
     /// Server configuration (zaino's own JSON-RPC and gRPC servers).
     pub server: ServerConfig,
-    /// Validator connection and authentication configuration.
+    /// Validator connection and authentication configuration (includes backend config).
     pub validator: ValidatorConfig,
     /// Service-level configuration.
     pub service: ServiceConfig,
@@ -258,15 +235,9 @@ impl IndexerConfig {
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
-            backend: BackendType::Fetch,
             network: Network::Testnet,
             server: ServerConfig::default(),
-            validator: ValidatorConfig {
-                config: ZainoStateConfig::default(),
-                rpc_address: "127.0.0.1:18232".parse().unwrap(),
-                indexer_rpc_address: "127.0.0.1:18230".parse().unwrap(),
-                auth: AuthMethod::default(),
-            },
+            validator: ValidatorConfig::default(),
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
             debug: DebugConfig::default(),
