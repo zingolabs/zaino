@@ -19,7 +19,8 @@ use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
         AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-        GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
+        GetBlockHash, GetBlockHeaderResponse, GetBlockchainInfoResponse, GetInfo,
+        GetRawTransaction, SentTransactionHash,
     },
 };
 
@@ -164,6 +165,18 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
+
+    // TODO add original implementation
+    /// getblockheader "hash" ( verbose )
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
+    /// If verbose is true, returns an Object with information about blockheader <hash>.
+    ///
+    /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    // TODO compare with getinfo
+    async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///

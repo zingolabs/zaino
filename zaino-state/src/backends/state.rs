@@ -51,9 +51,9 @@ use zebra_rpc::{
     methods::{
         chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
         GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader,
-        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
-        GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
-        TipConsensusBranch,
+        GetBlockHeaderObject, GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees,
+        GetBlockchainInfoResponse, GetInfo, GetRawTransaction, NetworkUpgradeInfo,
+        NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
@@ -410,6 +410,7 @@ impl StateServiceSubscriber {
         };
 
         let response = if !verbose {
+            // TODO --> +Response
             GetBlockHeader::Raw(HexData(header.zcash_serialize_to_vec()?))
         } else {
             let zebra_state::ReadResponse::SaplingTree(sapling_tree) = state
@@ -489,6 +490,7 @@ impl StateServiceSubscriber {
                 next_block_hash,
             );
 
+            // TODO --> +Response
             GetBlockHeader::Object(Box::new(block_header))
         };
 
@@ -727,9 +729,11 @@ impl StateServiceSubscriber {
                 );
 
                 let header_obj = match header? {
+                    // TODO --> +Response
                     GetBlockHeader::Raw(_hex_data) => unreachable!(
                         "`true` was passed to get_block_header, an object should be returned"
                     ),
+                    // TODO --> +Response
                     GetBlockHeader::Object(get_block_header_object) => get_block_header_object,
                 };
 
@@ -850,6 +854,10 @@ impl ZcashIndexer for StateServiceSubscriber {
             .await
             .map(GetInfo::from)
             .map_err(|e| StateServiceError::Custom(e.to_string()))
+    }
+
+    async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
+        panic!("ouch");
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {

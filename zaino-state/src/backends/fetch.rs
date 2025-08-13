@@ -13,8 +13,8 @@ use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
         AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-        GetBlockHashResponse, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
-        SentTransactionHash,
+        GetBlockHashResponse, GetBlockHeaderResponse, GetBlockchainInfoResponse, GetInfo,
+        GetRawTransaction, SentTransactionHash,
     },
 };
 
@@ -200,6 +200,20 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
         Ok(self.fetcher.get_info().await?.into())
+    }
+
+    // TODO add original implementation
+    /// getblockheader "hash" ( verbose )
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
+    /// If verbose is true, returns an Object with information about blockheader <hash>.
+    ///
+    /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    // TODO compare with getinfo
+    async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
+        panic!("demo only");
     }
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
