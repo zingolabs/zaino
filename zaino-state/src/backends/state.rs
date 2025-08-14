@@ -50,10 +50,10 @@ use zebra_rpc::{
     },
     methods::{
         chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
-        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader,
-        GetBlockHeaderObject, GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees,
-        GetBlockchainInfoResponse, GetInfo, GetRawTransaction, NetworkUpgradeInfo,
-        NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
+        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeaderObject,
+        GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
+        GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
+        TipConsensusBranch,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
@@ -410,8 +410,7 @@ impl StateServiceSubscriber {
         };
 
         let response = if !verbose {
-            // TODO --> +Response
-            GetBlockHeader::Raw(HexData(header.zcash_serialize_to_vec()?))
+            GetBlockHeaderResponse::Raw(HexData(header.zcash_serialize_to_vec()?))
         } else {
             let zebra_state::ReadResponse::SaplingTree(sapling_tree) = state
                 .ready()
@@ -490,8 +489,7 @@ impl StateServiceSubscriber {
                 next_block_hash,
             );
 
-            // TODO --> +Response
-            GetBlockHeader::Object(Box::new(block_header))
+            GetBlockHeaderResponse::Object(Box::new(block_header))
         };
 
         Ok(response)
@@ -729,12 +727,12 @@ impl StateServiceSubscriber {
                 );
 
                 let header_obj = match header? {
-                    // TODO --> +Response
-                    GetBlockHeader::Raw(_hex_data) => unreachable!(
+                    GetBlockHeaderResponse::Raw(_hex_data) => unreachable!(
                         "`true` was passed to get_block_header, an object should be returned"
                     ),
-                    // TODO --> +Response
-                    GetBlockHeader::Object(get_block_header_object) => get_block_header_object,
+                    GetBlockHeaderResponse::Object(get_block_header_object) => {
+                        get_block_header_object
+                    }
                 };
 
                 let (transactions_response, size, block_info): (Vec<GetBlockTransaction>, _, _) =
