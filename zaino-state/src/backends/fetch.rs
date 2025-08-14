@@ -213,7 +213,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     // TODO compare with getinfo
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
-        panic!("demo only");
+        unreachable!("work in progress");
     }
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.

@@ -379,7 +379,7 @@ impl StateServiceSubscriber {
         network: &Network,
         hash_or_height: HashOrHeight,
         verbose: Option<bool>,
-    ) -> Result<GetBlockHeader, StateServiceError> {
+    ) -> Result<GetBlockHeaderResponse, StateServiceError> {
         let mut state = state.clone();
         let verbose = verbose.unwrap_or(true);
         let network = network.clone();
@@ -855,7 +855,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
-        panic!("ouch");
+        unreachable!("work in progress");
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
