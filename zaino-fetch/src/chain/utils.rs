@@ -5,20 +5,58 @@ use std::io::{self, Cursor, Read, Write};
 
 use crate::chain::error::ParseError;
 
-/// Used for decoding zcash blocks from a bytestring.
-pub trait ParseFromSlice {
-    /// Reads data from a bytestring, consuming data read, and returns an instance of self along with the remaining data in the bytestring given.
-    ///
-    /// txid is giving as an input as this is taken from a get_block verbose=1 call.
-    ///
-    /// tx_version is used for deserializing sapling spends and outputs.
-    fn parse_from_slice(
-        data: &[u8],
-        txid: Option<Vec<Vec<u8>>>,
-        tx_version: Option<u32>,
-    ) -> Result<(&[u8], Self), ParseError>
+/// Unified parsing trait for hex data and cursor-based parsing.
+/// 
+/// This trait provides clean parsing by:
+/// - Using cursors for stateful parsing within larger contexts (like blocks)
+/// - Using hex strings/slices for standalone parsing (like individual transactions)
+/// - Using associated types for context instead of Option parameters
+/// - Allowing each implementation to specify its exact context requirements
+/// - Eliminating runtime parameter validation
+/// 
+/// ## Implementation Guide
+/// 
+/// Implementors only need to implement `parse_from_cursor()`. The `parse_from_slice()`
+/// method is provided automatically as a wrapper that:
+/// 1. Creates a cursor from the input slice
+/// 2. Calls `parse_from_cursor()` 
+/// 3. Returns both the parsed object and remaining unparsed bytes
+/// 
+/// This design allows the same parsing logic to work in both contexts:
+/// - When parsing within a block (cursor already positioned)
+/// - When parsing standalone transactions from hex strings
+pub trait ParseFromHex {
+    /// The context type required for parsing this type
+    type Context;
+    
+    /// Parse from a cursor with the appropriate context.
+    /// 
+    /// This is the main method implementors should provide.
+    fn parse_from_cursor(
+        cursor: &mut std::io::Cursor<&[u8]>,
+        context: Self::Context,
+    ) -> Result<Self, ParseError>
     where
         Self: Sized;
+    
+    /// Parse from a byte slice with the appropriate context.
+    /// 
+    /// Returns the remaining unparsed bytes and the parsed object.
+    /// This method is automatically provided and wraps `parse_from_cursor()`.
+    fn parse_from_slice(
+        data: &[u8],
+        context: Self::Context,
+    ) -> Result<(&[u8], Self), ParseError>
+    where
+        Self: Sized,
+        Self::Context: Clone,
+    {
+        let mut cursor = std::io::Cursor::new(data);
+        let parsed = Self::parse_from_cursor(&mut cursor, context)?;
+        let consumed = cursor.position() as usize;
+        let remaining = &data[consumed..];
+        Ok((remaining, parsed))
+    }
 }
 
 /// Skips the next n bytes in cursor, returns error message given if eof is reached.
