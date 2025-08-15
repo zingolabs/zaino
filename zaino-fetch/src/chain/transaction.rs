@@ -13,8 +13,8 @@ pub use reader::{TransactionField, FieldReader, FieldSize};
 pub use version_reader::{TransactionVersionReader, peek_transaction_version};
 pub use dispatcher::{Transaction, TransactionDispatcher, TransactionVersionSpecific, V4Fields};
 
-// Backward compatibility exports
-pub use backward_compat::FullTransaction;
+// Full transaction exports
+pub use full_transaction::FullTransaction;
 
 // Re-export commonly used field types
 pub use fields::{TxIn, TxOut};
@@ -28,7 +28,7 @@ pub mod reader;
 pub mod version_reader;
 pub mod fields;
 pub mod dispatcher;
-pub mod backward_compat;
+pub mod full_transaction;
 
 pub mod versions {
     pub mod v1;
