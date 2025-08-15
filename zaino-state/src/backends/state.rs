@@ -42,6 +42,7 @@ use zebra_chain::{
     primitives,
     serialization::ZcashSerialize,
     subtree::NoteCommitmentSubtreeIndex,
+    work::equihash::Solution,
 };
 use zebra_rpc::{
     client::{
@@ -67,7 +68,7 @@ use chrono::{DateTime, Utc};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashSet, future::poll_fn, str::FromStr, sync::Arc};
+use std::{collections::HashSet, future::poll_fn, rc::Rc, str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -854,7 +855,49 @@ impl ZcashIndexer for StateServiceSubscriber {
             .map_err(|e| StateServiceError::Custom(e.to_string()))
     }
 
+    /// Returns a string that is serialized, hex-encoded data for blockheader 'hash', or
+    /// if verbose, returns an Object with information about blockheader <hash>.
+    /// Request parameters:
+    /// 1. "hash"          (string, required) The block hash
+    /// 2. verbose           (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    /// The Zcash source is considered canonical:
+    ///  ...
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
+        let state = self.read_state_service.clone();
+
+        // zebra-rpc/src/methods.rs 3645
+        Ok(GetBlockHeaderResponse::Object({
+            Box::new(GetBlockHeaderObject {
+                //type: Hash
+                hash: "string_of_hash".to_string(),
+                confirmations: 0,
+                // type: Height
+                height: 11,
+                version: 1,
+                // type: Root
+                merkle_root: "string_of_merkleroot".to_string(),
+                final_sapling_root: "string_of_finalsaplingroot".to_string,
+                // unix epoch, u64
+                time: 1755284848,
+                // [u8; 32]
+                nonce: [0; 32],
+                // type: CompactDifficulty
+                bits: "string_of_bits, 1d00ffff".to_string(),
+                // f64
+                difficulty: 1.123,
+                // type: Hash
+                previous_block_hash: "string_of_previousblockhash".to_string(),
+                // type: Option<zebra_chain::block::Hash>
+                next_block_hash: "string_of_nextblockhash".to_string(),
+                // undocumented u64
+                sapling_tree_size: 87,
+                // undocumented [u8; 32]
+                block_commitments: [0; 32],
+                // undocumented Solution type
+                // The Equihash solution in the requested block header.
+                solution: Solution::Common(Box::new([0; 32])),
+            })
+        }));
         unreachable!("work in progress");
     }
 

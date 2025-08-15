@@ -166,16 +166,19 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
 
-    // TODO add original implementation
     /// getblockheader "hash" ( verbose )
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
     /// If verbose is true, returns an Object with information about blockheader <hash>.
     ///
-    /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// zcashd web reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     /// method: post
     /// tags: blockchain
     ///
-    // TODO compare with getinfo
+    /// # Notes
+    ///
+    /// zebra includes several fields not in the zcashd web reference.
+    // TODO Check both zebra and zcashd source
+    // TODO add links to original implementation
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
