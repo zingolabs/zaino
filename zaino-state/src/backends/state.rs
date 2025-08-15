@@ -20,7 +20,10 @@ use crate::{
 use nonempty::NonEmpty;
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
-    chain::{transaction::FullTransaction, utils::ParseFromSlice},
+    chain::{
+        transaction::{FullTransaction, FullTransactionContext},
+        utils::ParseFromHex,
+    },
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{GetMempoolInfoResponse, GetSubtreesResponse},
@@ -1836,18 +1839,29 @@ impl LightWalletIndexer for StateServiceSubscriber {
                                         }
                                     }
                                 };
-                                match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                                    transaction_object.hex().as_ref(),
-                                    Some(vec![txid_bytes]),
-                                    None,
-                                ) {
-                                    Ok(transaction) => {
-                                        // ParseFromSlice returns any data left after
-                                        // the conversion to a FullTransaction, If the
-                                        // conversion has succeeded this should be empty.
-                                        if transaction.0.is_empty() {
+                                // Convert hex to bytes for parsing
+                                let data = match hex::decode(transaction_object.hex()) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        if channel_tx
+                                            .send(Err(tonic::Status::unknown(format!("Failed to decode hex: {}", e))))
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        } else {
+                                            continue;
+                                        }
+                                    }
+                                };
+                                
+                                let context = FullTransactionContext::new(txid_bytes);
+                                match FullTransaction::parse_from_slice(&data, context) {
+                                    Ok((remaining, transaction)) => {
+                                        // Check if we consumed all the data  
+                                        if remaining.is_empty() {
                                             if channel_tx
-                                                .send(transaction.1.to_compact(0).map_err(|e| {
+                                                .send(transaction.to_compact(0).map_err(|e| {
                                                     tonic::Status::unknown(e.to_string())
                                                 }))
                                                 .await
