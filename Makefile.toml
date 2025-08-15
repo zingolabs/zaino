@@ -272,6 +272,51 @@ DOCKER_PID=$!
 wait $DOCKER_PID
 '''
 
+[tasks.container-check]
+clear = true
+description = "Run integration tests using the local image"
+# This task runs tests inside the Docker container built from test_environment.
+# The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
+# by creating symlinks from /home/container_user/artifacts to the expected test_binaries/bins location.
+dependencies = ["init-docker-volumes", "ensure-image-exists"]
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+info "Running tests using:"
+info "-- IMAGE             = ${IMAGE_NAME}"
+info "-- TAG               = $TAG"
+# info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
+
+# Create directories with correct ownership before Docker creates them as root
+mkdir -p container-target docker_cargo/git docker_cargo/registry
+
+# Set container name for cleanup
+CONTAINER_NAME="zaino-testing"
+
+# Run docker in foreground with proper signal handling
+docker run --rm \
+  --init \
+  --name "$CONTAINER_NAME" \
+  -v "$PWD":/home/container_user/zaino \
+  -v "$PWD/container-target":/home/container_user/zaino/target \
+  -v "$PWD/docker_cargo/git":/home/container_user/.cargo/git \
+  -v "$PWD/docker_cargo/registry":/home/container_user/.cargo/registry \
+  -e "CARGO_TARGET_DIR=/home/container_user/zaino/target" \
+  -w /home/container_user/zaino \
+  -u container_user \
+  "${IMAGE_NAME}:$TAG" \
+  cargo check "${@}" &
+
+# Capture the background job PID
+DOCKER_PID=$!
+
+# Wait for the docker process
+wait $DOCKER_PID
+'''
+
+
 # -------------------------------------------------------------------
 
 [tasks.check-matching-zebras]

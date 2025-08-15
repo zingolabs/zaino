@@ -8,7 +8,7 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
 use zaino_fetch::chain::transaction::FullTransaction;
-use zaino_fetch::chain::utils::ParseFromSlice;
+use zaino_fetch::chain::utils::ParseFromHex;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_state::read_u32_le;
 use zaino_state::write_u32_le;
