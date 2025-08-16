@@ -868,55 +868,52 @@ impl ZcashIndexer for StateServiceSubscriber {
         // zebra-rpc/src/methods.rs 3645
         Ok(GetBlockHeaderResponse::Object({
             Box::new(GetBlockHeaderObject::new(
-                //type: Hash
-                //hash:
+                // type: Hash
+                // hash:
                 Hash::from([0; 32]),
-                //"string_of_hash".to_string(),
-                //confirmations:
+                // confirmations:
                 0,
                 // type: Height
-                //height:
+                // height:
                 Height(13),
-                //version:
+                // version:
                 1,
                 // type: Root
-                //merkle_root:
+                // merkle_root:
                 Root::from([0; 32]),
-                // undocumented [u8; 32]
-                //block_commitments:
+                // undocumented. type: [u8; 32]
+                // block_commitments:
                 [0; 32],
-                //final_sapling_root:
+                // final_sapling_root:
                 [1; 32],
-                // undocumented u64
-                //sapling_tree_size:
+                // undocumented. type: u64
+                // sapling_tree_size:
                 87,
                 // unix epoch, u64
-                //time:
+                // time:
                 1755284848,
                 // [u8; 32]
-                //nonce:
+                // nonce:
                 [0; 32],
-                // undocumented Solution type
+                // undocumented. type: Solution
                 // The Equihash solution in the requested block header.
-                //solution:
+                // solution:
                 Solution::Common([0; 1344]),
                 // type: CompactDifficulty
-                //bits:
+                // from_hex() also possible , for example = "1d00ffff"
+                // bits:
                 CompactDifficulty::from_bytes_in_display_order(&[1; 4]).unwrap(),
-                //from_hex() also possible
-                //example = "1d00ffff"
-                // f64
-                //difficulty:
+                // type: f64
+                // difficulty:
                 1.123,
                 // type: Hash
-                //previous_block_hash:
+                // previous_block_hash:
                 Hash::from([1; 32]),
-                // type: Option<zebra_chain::block::Hash>
-                //next_block_hash:
+                // type: Option<Hash>
+                // next_block_hash:
                 Some(Hash::from([2; 32])),
             ))
         }))
-        //unreachable!("work in progress");
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
