@@ -36,7 +36,7 @@ use zaino_proto::proto::{
 };
 
 use zebra_chain::{
-    block::{Header, Height, SerializedBlock},
+    block::{Hash, Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
     primitives,
@@ -68,7 +68,7 @@ use chrono::{DateTime, Utc};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashSet, future::poll_fn, rc::Rc, str::FromStr, sync::Arc};
+use std::{collections::HashSet, future::poll_fn, str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -334,9 +334,7 @@ pub struct ChainTipSubscriber(zebra_state::ChainTipChange);
 impl ChainTipSubscriber {
     /// Waits until the tip hash has changed (relative to the last time this method
     /// was called), then returns the best tip's block hash.
-    pub async fn next_tip_hash(
-        &mut self,
-    ) -> Result<zebra_chain::block::Hash, tokio::sync::watch::error::RecvError> {
+    pub async fn next_tip_hash(&mut self) -> Result<Hash, tokio::sync::watch::error::RecvError> {
         self.0
             .wait_for_tip_change()
             .await
@@ -582,7 +580,7 @@ impl StateServiceSubscriber {
                         };
                         let Ok(hash_or_height) =
                             <[u8; 32]>::try_from(child_block.prev_hash.as_slice())
-                                .map(zebra_chain::block::Hash)
+                                .map(Hash)
                                 .map(HashOrHeight::from)
                         else {
                             break;
@@ -865,6 +863,9 @@ impl ZcashIndexer for StateServiceSubscriber {
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
         let state = self.read_state_service.clone();
 
+        // ReadStateService exposes a db in finalized state, but I am not sure how to
+        // access the block header response, see Zebra code and trace from that end to see how they get to it?
+        //
         // zebra-rpc/src/methods.rs 3645
         Ok(GetBlockHeaderResponse::Object({
             Box::new(GetBlockHeaderObject {
@@ -895,7 +896,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                 block_commitments: [0; 32],
                 // undocumented Solution type
                 // The Equihash solution in the requested block header.
-                solution: Solution::Common(Box::new([0; 32])),
+                solution: Solution::Common([0; 1334]),
             })
         }));
         unreachable!("work in progress");
@@ -1414,7 +1415,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                                     Some(tx.confirmations),
                                     &self.config.network,
                                     Some(tx.block_time),
-                                    Some(zebra_chain::block::Hash::from_bytes(
+                                    Some(Hash::from_bytes(
                                         self.block_cache
                                             .get_compact_block(
                                                 HashOrHeight::Height(tx.height).to_string(),
