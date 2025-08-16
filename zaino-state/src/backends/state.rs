@@ -36,13 +36,13 @@ use zaino_proto::proto::{
 };
 
 use zebra_chain::{
-    block::{Hash, Header, Height, SerializedBlock},
+    block::{merkle::Root, Hash, Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
     primitives,
     serialization::ZcashSerialize,
     subtree::NoteCommitmentSubtreeIndex,
-    work::equihash::Solution,
+    work::{difficulty::CompactDifficulty, equihash::Solution},
 };
 use zebra_rpc::{
     client::{
@@ -861,45 +861,62 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// The Zcash source is considered canonical:
     ///  ...
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
-        let state = self.read_state_service.clone();
-
+        // let state = self.read_state_service.clone();
         // ReadStateService exposes a db in finalized state, but I am not sure how to
         // access the block header response, see Zebra code and trace from that end to see how they get to it?
         //
         // zebra-rpc/src/methods.rs 3645
         Ok(GetBlockHeaderResponse::Object({
-            Box::new(GetBlockHeaderObject {
+            Box::new(GetBlockHeaderObject::new(
                 //type: Hash
-                hash: "string_of_hash".to_string(),
-                confirmations: 0,
+                //hash:
+                Hash::from([0; 32]),
+                //"string_of_hash".to_string(),
+                //confirmations:
+                0,
                 // type: Height
-                height: 11,
-                version: 1,
+                //height:
+                Height(13),
+                //version:
+                1,
                 // type: Root
-                merkle_root: "string_of_merkleroot".to_string(),
-                final_sapling_root: "string_of_finalsaplingroot".to_string,
-                // unix epoch, u64
-                time: 1755284848,
-                // [u8; 32]
-                nonce: [0; 32],
-                // type: CompactDifficulty
-                bits: "string_of_bits, 1d00ffff".to_string(),
-                // f64
-                difficulty: 1.123,
-                // type: Hash
-                previous_block_hash: "string_of_previousblockhash".to_string(),
-                // type: Option<zebra_chain::block::Hash>
-                next_block_hash: "string_of_nextblockhash".to_string(),
-                // undocumented u64
-                sapling_tree_size: 87,
+                //merkle_root:
+                Root::from([0; 32]),
                 // undocumented [u8; 32]
-                block_commitments: [0; 32],
+                //block_commitments:
+                [0; 32],
+                //final_sapling_root:
+                [1; 32],
+                // undocumented u64
+                //sapling_tree_size:
+                87,
+                // unix epoch, u64
+                //time:
+                1755284848,
+                // [u8; 32]
+                //nonce:
+                [0; 32],
                 // undocumented Solution type
                 // The Equihash solution in the requested block header.
-                solution: Solution::Common([0; 1334]),
-            })
-        }));
-        unreachable!("work in progress");
+                //solution:
+                Solution::Common([0; 1344]),
+                // type: CompactDifficulty
+                //bits:
+                CompactDifficulty::from_bytes_in_display_order(&[1; 4]).unwrap(),
+                //from_hex() also possible
+                //example = "1d00ffff"
+                // f64
+                //difficulty:
+                1.123,
+                // type: Hash
+                //previous_block_hash:
+                Hash::from([1; 32]),
+                // type: Option<zebra_chain::block::Hash>
+                //next_block_hash:
+                Some(Hash::from([2; 32])),
+            ))
+        }))
+        //unreachable!("work in progress");
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
