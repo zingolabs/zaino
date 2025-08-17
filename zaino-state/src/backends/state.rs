@@ -351,7 +351,7 @@ impl StateServiceSubscriber {
     pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
         ChainTipSubscriber(self.chain_tip_change.clone())
     }
-    /// Returns the requested block header by hash or height, as a [`GetBlockHeader`] JSON string.
+    /// Returns the requested block header by hash or height, as a [`GetBlockHeaderResponse`] JSON string.
     /// If the block is not in Zebra's state,
     /// returns [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
     /// if a height was passed or -5 if a hash was passed.
@@ -859,7 +859,28 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// 1. "hash"          (string, required) The block hash
     /// 2. verbose           (boolean, optional, default=true) true for a json object, false for the hex encoded data
     /// The Zcash source is considered canonical:
-    ///  ...
+    ///
+    /// The function does not modify the state of the object it is called on (const),
+    /// with a return type defined as CBlockHeader in chain.h file:
+    /// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.h#L449
+    ///
+    /// (https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121)
+    /// GetBlochHeader() seems to take arg of CBlockHeader (hash of block) and has a return with these fields,
+    /// including a field of the same data used as argument:
+    /// {
+    ///     CBlockHeader block;
+    ///     block.nVersion       = nVersion;
+    ///     block.hashPrevBlock  = hashPrevBlock;
+    ///     block.hashMerkleRoot = hashMerkleRoot;
+    ///     block.hashBlockCommitments = hashBlockCommitments;
+    ///     block.nTime          = nTime;
+    ///     block.nBits          = nBits;
+    ///     block.nNonce         = nNonce;
+    ///     block.nSolution      = nSolution;
+    ///     return block;
+    /// }
+    /// (https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.cpp#L82)
+    ///
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
         // let state = self.read_state_service.clone();
         // ReadStateService exposes a db in finalized state, but I am not sure how to

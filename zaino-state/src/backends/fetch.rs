@@ -210,7 +210,6 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     /// method: post
     /// tags: blockchain
-    ///
     // TODO compare with getinfo
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
         unreachable!("work in progress");
