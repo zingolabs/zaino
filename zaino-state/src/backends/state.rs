@@ -904,8 +904,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     ///
     /// The successful return Result of our function is GetBlockHeaderResponse, a type defined in zebra,
     /// which is backed by BlockHeaderObjects (in verbose form).
-    /// [From Zebra Release 2.4.1:]
-    /// (https://github.com/ZcashFoundation/zebra/blob/0893e1a7f499cadad1d9480216b3057dfd7900c7/zebra-rpc/src/methods.rs#L3645)
+    /// [From Zebra Release 2.4.1:](https://github.com/ZcashFoundation/zebra/blob/0893e1a7f499cadad1d9480216b3057dfd7900c7/zebra-rpc/src/methods.rs#L3645)
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
         // let state = self.read_state_service.clone();
         // ReadStateService exposes a db in finalized state, but I am not sure how to
