@@ -166,7 +166,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
 
-    /// getblockheader 'hash' ( verbose )
+    /// getblockheader 'hash' { verbose }
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
     /// If verbose is true, returns an Object with information about blockheader <hash>.
     ///
