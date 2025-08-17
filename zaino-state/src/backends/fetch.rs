@@ -205,7 +205,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     // TODO add original implementation
     /// getblockheader "hash" { verbose }
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
-    /// If verbose is true, returns an Object with information about blockheader <hash>.
+    /// If verbose is true, returns an Object with information about blockheader 'hash'.
     ///
     /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     /// method: post

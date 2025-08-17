@@ -855,7 +855,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     /// zcash online RPC docs:
     /// Returns a string that is serialized, hex-encoded data for blockheader 'hash', or
-    /// if verbose, returns an Object with information about blockheader <hash>.
+    /// if verbose, returns an Object with information about blockheader 'hash'.
     /// Request parameters:
     /// 1. "hash"          (string, required) The block hash
     /// 2. verbose           (boolean, optional, default=true) true for a json object, false for the hex encoded data
@@ -899,12 +899,12 @@ impl ZcashIndexer for StateServiceSubscriber {
     ///     block.nSolution      = nSolution;
     ///     return block;
     /// }
-    /// [another handy link]
+    /// [chain.cpp link]
     /// (https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.cpp#L82)
     ///
     /// The successful return Result of our function is GetBlockHeaderResponse, a type defined in zebra,
     /// which is backed by BlockHeaderObjects (in verbose form).
-    /// From Zebra Release 2.4.1
+    /// [From Zebra Release 2.4.1:]
     /// (https://github.com/ZcashFoundation/zebra/blob/0893e1a7f499cadad1d9480216b3057dfd7900c7/zebra-rpc/src/methods.rs#L3645)
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
         // let state = self.read_state_service.clone();
