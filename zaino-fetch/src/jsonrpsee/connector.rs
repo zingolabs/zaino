@@ -20,16 +20,16 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zebra_rpc::{client::ValidateAddressResponse, methods::GetBlockHeaderResponse};
+use zebra_rpc::client::ValidateAddressResponse;
 
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        GetBlockHeaderResponse, GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse,
+        GetMempoolInfoResponse, GetSubtreesError, GetSubtreesResponse, GetTransactionResponse,
+        GetTreestateError, GetTreestateResponse, GetUtxosError, GetUtxosResponse,
+        SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 

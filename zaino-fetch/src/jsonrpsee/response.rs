@@ -1563,3 +1563,44 @@ pub struct GetMempoolInfoResponse {
 impl ResponseToError for GetMempoolInfoResponse {
     type RpcError = Infallible;
 }
+
+/// The Zcash source code is considered canonical:
+/// The function does not modify the state of the object: it is called on `const`,
+/// with a return type defined as CBlockHeader in chain.h file:
+/// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.h#L449>
+///
+/// see also
+/// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121>
+/// GetBlochHeader() seems to take arg of CBlockHeader (hash of block) and has a return with these fields,
+/// including a field of the same data used as argument:
+/// {
+// TODO: this is different than the online docs, we should drill into zcashd
+// maybe setting some default fields when creating the block I don't see here?
+///     CBlockHeader block;
+///     block.nVersion       = nVersion;
+///     block.hashPrevBlock  = hashPrevBlock;
+///     block.hashMerkleRoot = hashMerkleRoot;
+///     block.hashBlockCommitments = hashBlockCommitments;
+///     block.nTime          = nTime;
+///     block.nBits          = nBits;
+///     block.nNonce         = nNonce;
+///     block.nSolution      = nSolution;
+///     return block;
+/// }
+/// [chain.cpp link](https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.cpp#L82)
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetBlockHeaderResponse {
+    // fields taken from zcashd source code pasted above
+    version: (),
+    hash_previous_block: (),
+    hash_merkle_root: (),
+    hash_block_commitments: (),
+    time: (),
+    bits: (),
+    nonce: (),
+    solution: (),
+}
+
+impl ResponseToError for GetBlockHeaderResponse {
+    type RpcError = Infallible;
+}
