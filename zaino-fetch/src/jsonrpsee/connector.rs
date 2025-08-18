@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zebra_rpc::client::ValidateAddressResponse;
+use zebra_rpc::{client::ValidateAddressResponse, methods::GetBlockHeaderResponse};
 
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
@@ -417,6 +417,18 @@ impl JsonRpSeeConnector {
     ) -> Result<GetBlockchainInfoResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetBlockchainInfoResponse>("getblockchaininfo", ())
             .await
+    }
+
+    /// from online zcashd RPC reference docs:
+    /// getblockheader 'hash' ( verbose )
+    ///
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
+    /// If verbose is true, returns an Object with information about blockheader <hash>.
+    pub async fn get_block_header(
+        &self,
+    ) -> Result<GetBlockHeaderResponse, RpcRequestError<Infallible>> {
+        // do something
+        unreachable!("so far");
     }
 
     /// Returns details on the active state of the TX memory pool.

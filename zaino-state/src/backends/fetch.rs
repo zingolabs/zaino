@@ -202,7 +202,6 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.get_info().await?.into())
     }
 
-    // TODO add original implementation
     /// getblockheader 'hash' ( verbose )
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
     /// If verbose is true, returns an Object with information about blockheader 'hash'.
@@ -210,9 +209,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     /// method: post
     /// tags: blockchain
-    // TODO compare with getinfo
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
-        unreachable!("work in progress");
+        Ok(self.fetcher.get_block_header().await?)
     }
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
