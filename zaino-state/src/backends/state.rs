@@ -878,13 +878,13 @@ impl ZcashIndexer for StateServiceSubscriber {
     ///
     /// The Zcash source is considered canonical:
     ///
-    /// The function does not modify the state of the object it is called on `const`,
+    /// The function does not modify the state of the object: it is called on `const`,
     /// with a return type defined as CBlockHeader in chain.h file:
     /// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.h#L449>
     ///
     /// see also
     /// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121>
-    /// GetBlochHeader() seems to take arg of CBlockHeader -hash of block- and has a return with these fields,
+    /// GetBlochHeader() seems to take arg of CBlockHeader (hash of block) and has a return with these fields,
     /// including a field of the same data used as argument:
     /// {
     // TODO: this is different than the online docs, we should drill into zcashd
