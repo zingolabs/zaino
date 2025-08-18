@@ -860,7 +860,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// 1. "hash"          (string, required) The block hash
     /// 2. verbose           (boolean, optional, default=true) true for a json object, false for the hex encoded data
     ///
-    ///Result (for verbose = true):
+    /// Result (for verbose = true):
     /// {
     ///   "hash" : "hash",     (string) the block hash (same as provided)
     ///   "confirmations" : n,   (numeric) The number of confirmations, or -1 if the block is not on the main chain
@@ -882,11 +882,11 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// with a return type defined as CBlockHeader in chain.h file:
     /// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.h#L449
     ///
-    /// (https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121)
+    /// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121
     /// GetBlochHeader() seems to take arg of CBlockHeader -hash of block- and has a return with these fields,
     /// including a field of the same data used as argument:
     /// {
-    // TODO: this is different than the online docs.
+    // TODO: this is different than the online docs, we should drill into zcashd
     // maybe setting some default fields when creating the block I don't see here?
     ///     CBlockHeader block;
     ///     block.nVersion       = nVersion;
@@ -899,17 +899,19 @@ impl ZcashIndexer for StateServiceSubscriber {
     ///     block.nSolution      = nSolution;
     ///     return block;
     /// }
-    /// [chain.cpp link]
-    /// (https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.cpp#L82)
+    /// chain.cpp link
+    /// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.cpp#L82
     ///
     /// The successful return Result of our function is GetBlockHeaderResponse, a type defined in zebra,
     /// which is backed by BlockHeaderObjects in verbose form.
-    /// [From Zebra Release 2.4.1:](https://github.com/ZcashFoundation/zebra/blob/0893e1a7f499cadad1d9480216b3057dfd7900c7/zebra-rpc/src/methods.rs#L3645)
+    /// From Zebra Release 2.4.1:
+    /// https://github.com/ZcashFoundation/zebra/blob/0893e1a7f499cadad1d9480216b3057dfd7900c7/zebra-rpc/src/methods.rs#L3645
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
         // let state = self.read_state_service.clone();
         // ReadStateService exposes a db in finalized state, but I am not sure how to
         // access the block header response, see Zebra code and trace from that end to see how they get to it?
         //
+        // TODO this is only a response for VERBOSE - arguments / parameters? compare with other RPCs that take arguments
         Ok(GetBlockHeaderResponse::Object({
             Box::new(GetBlockHeaderObject::new(
                 // type: Hash
