@@ -203,7 +203,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 
     // TODO add original implementation
-    /// getblockheader "hash" { verbose }
+    /// getblockheader 'hash' ( verbose )
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
     /// If verbose is true, returns an Object with information about blockheader 'hash'.
     ///
