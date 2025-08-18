@@ -878,12 +878,12 @@ impl ZcashIndexer for StateServiceSubscriber {
     ///
     /// The Zcash source is considered canonical:
     ///
-    /// The function does not modify the state of the object it is called on (const),
+    /// The function does not modify the state of the object it is called on `const`,
     /// with a return type defined as CBlockHeader in chain.h file:
     /// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.h#L449
     ///
     /// (https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121)
-    /// GetBlochHeader() seems to take arg of CBlockHeader (hash of block) and has a return with these fields,
+    /// GetBlochHeader() seems to take arg of CBlockHeader -hash of block- and has a return with these fields,
     /// including a field of the same data used as argument:
     /// {
     // TODO: this is different than the online docs.
@@ -903,7 +903,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// (https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.cpp#L82)
     ///
     /// The successful return Result of our function is GetBlockHeaderResponse, a type defined in zebra,
-    /// which is backed by BlockHeaderObjects (in verbose form).
+    /// which is backed by BlockHeaderObjects in verbose form.
     /// [From Zebra Release 2.4.1:](https://github.com/ZcashFoundation/zebra/blob/0893e1a7f499cadad1d9480216b3057dfd7900c7/zebra-rpc/src/methods.rs#L3645)
     async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
         // let state = self.read_state_service.clone();
