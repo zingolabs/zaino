@@ -11,6 +11,7 @@ version = { workspace = true }
 [dependencies]
 zainod = { workspace = true }
 zaino-state = { workspace = true, features = ["bench"] }
+zaino-testvectors.workspace = true
 
 # Librustzcash
 zcash_protocol = { workspace = true }
@@ -50,4 +51,5 @@ once_cell = { workspace = true }
 # TODO: Investigate whether proptest has violated semver guarentees with
 # its rand version update.
 proptest = { workspace = true }
+lazy_static = "1.5.0"
 

@@ -33,3 +33,6 @@ tracing-subscriber = { workspace = true }
 
 # Url
 url = { workspace = true }
+
+[dev-dependencies]
+anyhow = "1.0"

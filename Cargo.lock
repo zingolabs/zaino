@@ -2163,6 +2163,7 @@ dependencies = [
 name = "integration-tests"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
  "core2 0.4.0",
  "futures",
  "hex",
@@ -5943,6 +5944,7 @@ dependencies = [
  "tracing",
  "url",
  "zaino-proto",
+ "zaino-testvectors",
  "zcash_protocol",
  "zebra-chain 1.0.0",
  "zebra-rpc 1.0.0",
@@ -6045,6 +6047,7 @@ version = "0.1.2"
 dependencies = [
  "ctrlc",
  "http",
+ "lazy_static",
  "once_cell",
  "portpicker",
  "proptest",
@@ -6056,6 +6059,7 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "zaino-state",
+ "zaino-testvectors",
  "zainod",
  "zcash_client_backend",
  "zcash_protocol",
@@ -6063,6 +6067,13 @@ dependencies = [
  "zingo-infra-services",
  "zingo-infra-testutils",
  "zingolib",
+]
+
+[[package]]
+name = "zaino-testvectors"
+version = "0.1.2"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]

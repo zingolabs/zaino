@@ -8,6 +8,7 @@ members = [
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
+    "zaino-testvectors"
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -119,6 +120,7 @@ zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
 zaino-testutils = { path = "zaino-testutils" }
+zaino-testvectors = { path = "zaino-testvectors" }
 zainod = { path = "zainod" }
 figment = "0.10"
 nonempty = "0.11.0"
