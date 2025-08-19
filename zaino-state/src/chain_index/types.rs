@@ -103,14 +103,13 @@ impl From<zebra_chain::block::Hash> for BlockHash {
 
 impl From<BlockHash> for zcash_primitives::block::BlockHash {
     fn from(hash: BlockHash) -> Self {
-        // Convert to display order (big-endian)
-        zcash_primitives::block::BlockHash(hash.bytes_in_display_order())
+        zcash_primitives::block::BlockHash(hash.0)
     }
 }
 
 impl From<zcash_primitives::block::BlockHash> for BlockHash {
     fn from(hash: zcash_primitives::block::BlockHash) -> Self {
-        BlockHash::from_bytes_in_display_order(&hash.0)
+        BlockHash(hash.0)
     }
 }
 
@@ -221,14 +220,13 @@ impl From<zebra_chain::transaction::Hash> for TransactionHash {
 
 impl From<TransactionHash> for zcash_primitives::transaction::TxId {
     fn from(hash: TransactionHash) -> Self {
-        // Convert to display order (big-endian)
-        zcash_primitives::transaction::TxId::from_bytes(hash.bytes_in_display_order())
+        zcash_primitives::transaction::TxId::from_bytes(hash.0)
     }
 }
 
 impl From<zcash_primitives::transaction::TxId> for TransactionHash {
     fn from(hash: zcash_primitives::transaction::TxId) -> Self {
-        TransactionHash::from_bytes_in_display_order(&hash.into())
+        TransactionHash(hash.into())
     }
 }
 
