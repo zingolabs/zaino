@@ -14,7 +14,7 @@ use zaino_proto::proto::{
         TxFilter,
     },
 };
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::{block::Height, parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
@@ -23,6 +23,7 @@ use zebra_rpc::{
         GetRawTransaction, SentTransactionHash,
     },
 };
+use zebra_state::{HashOrHeight, ReadStateService};
 
 use crate::{
     status::StatusType,
@@ -179,7 +180,26 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zebra includes several fields not in the zcashd web reference.
     // TODO Check both zebra and zcashd source
     // TODO add links to original implementation
-    async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error>;
+    async fn get_block_header(
+        &self,
+        // state: &ReadStateService,
+        // only used in one place ^
+        // network: &Network,
+        // only used in one place ^
+        //network: self.config.network.clone(),
+        // zebra request HashOrHeight
+        hash_or_height: HashOrHeight,
+        // I'd like to only allow the Hash, but ok.
+        verbose: Option<bool>,
+    ) -> Result<GetBlockHeaderResponse, Self::Error>;
+
+    /// a shim to accomdate existing logic using Static methods
+    async fn get_block_header_static(
+        state: &ReadStateService,
+        network: &Network,
+        hash_or_height: HashOrHeight,
+        verbose: Option<bool>,
+    ) -> Result<GetBlockHeaderResponse, Self::Error>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///

@@ -13,8 +13,8 @@ use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
         AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-        GetBlockHashResponse, GetBlockHeaderResponse, GetBlockchainInfoResponse, GetInfo,
-        GetRawTransaction, SentTransactionHash,
+        GetBlockHashResponse, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
+        SentTransactionHash,
     },
 };
 
@@ -22,7 +22,7 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
-        response::GetMempoolInfoResponse,
+        response::{GetBlockHeaderResponse, GetMempoolInfoResponse},
     },
 };
 
@@ -209,7 +209,29 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     /// method: post
     /// tags: blockchain
-    async fn get_block_header(&self) -> Result<GetBlockHeaderResponse, Self::Error> {
+    // TODO params are only demos
+    async fn get_block_header(
+        &self,
+        _hash_or_height_demo: HashOrHeight,
+        _verbose: Option<bool>,
+    ) -> Result<GetBlockHeaderResponse, Self::Error> {
+        Ok(self.fetcher.get_block_header().await?)
+    }
+
+    /// getblockheader 'hash' ( verbose )
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader 'hash'.
+    /// If verbose is true, returns an Object with information about blockheader 'hash'.
+    ///
+    /// online zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    // TODO params are only demos
+    async fn get_block_header_static(
+        _,
+        _,
+        _hash_or_height_demo: HashOrHeight,
+        _verbose: Option<bool>,
+    ) -> Result<GetBlockHeaderResponse, Self::Error> {
         Ok(self.fetcher.get_block_header().await?)
     }
 

@@ -306,6 +306,7 @@ impl Drop for StateService {
     }
 }
 
+// TODO - why is this called a fetch service subscriber?! it's in state.
 /// A fetch service subscriber.
 ///
 /// Subscribers should be
@@ -350,148 +351,6 @@ impl StateServiceSubscriber {
     /// Gets a Subscriber to any updates to the latest chain tip
     pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
         ChainTipSubscriber(self.chain_tip_change.clone())
-    }
-    /// Returns the requested block header by hash or height, as a [`GetBlockHeaderResponse`] JSON string.
-    /// If the block is not in Zebra's state,
-    /// returns [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
-    /// if a height was passed or -5 if a hash was passed.
-    ///
-    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
-    /// method: post
-    /// tags: blockchain
-    ///
-    /// # Parameters
-    ///
-    /// - `hash_or_height`: (string, required, example="1") The hash or height
-    ///   for the block to be returned.
-    /// - `verbose`: (bool, optional, default=false, example=true) false for hex encoded data,
-    ///   true for a json object
-    ///
-    /// # Notes
-    ///
-    /// The undocumented `chainwork` field is not returned.
-    ///
-    /// This rpc is used by get_block(verbose), there is currently no
-    /// plan to offer this RPC publicly.
-    async fn get_block_header(
-        state: &ReadStateService,
-        network: &Network,
-        hash_or_height: HashOrHeight,
-        verbose: Option<bool>,
-    ) -> Result<GetBlockHeaderResponse, StateServiceError> {
-        let mut state = state.clone();
-        let verbose = verbose.unwrap_or(true);
-        let network = network.clone();
-
-        let zebra_state::ReadResponse::BlockHeader {
-            header,
-            hash,
-            height,
-            next_block_hash,
-        } = state
-            .ready()
-            .and_then(|service| service.call(zebra_state::ReadRequest::BlockHeader(hash_or_height)))
-            .await
-            .map_err(|_| {
-                StateServiceError::RpcError(RpcError {
-                    // Compatibility with zcashd. Note that since this function
-                    // is reused by getblock(), we return the errors expected
-                    // by it (they differ whether a hash or a height was passed)
-                    code: LegacyCode::InvalidParameter as i64,
-                    message: "block height not in best chain".to_string(),
-                    data: None,
-                })
-            })?
-        else {
-            return Err(StateServiceError::Custom(
-                "Unexpected response to BlockHeader request".to_string(),
-            ));
-        };
-
-        let response = if !verbose {
-            GetBlockHeaderResponse::Raw(HexData(header.zcash_serialize_to_vec()?))
-        } else {
-            let zebra_state::ReadResponse::SaplingTree(sapling_tree) = state
-                .ready()
-                .and_then(|service| {
-                    service.call(zebra_state::ReadRequest::SaplingTree(hash_or_height))
-                })
-                .await?
-            else {
-                return Err(StateServiceError::Custom(
-                    "Unexpected response to SaplingTree request".to_string(),
-                ));
-            };
-            // This could be `None` if there's a chain reorg between state queries.
-            let sapling_tree = sapling_tree.ok_or_else(|| {
-                StateServiceError::RpcError(zaino_fetch::jsonrpsee::connector::RpcError {
-                    code: LegacyCode::InvalidParameter as i64,
-                    message: "missing sapling tree for block".to_string(),
-                    data: None,
-                })
-            })?;
-
-            let zebra_state::ReadResponse::Depth(depth) = state
-                .ready()
-                .and_then(|service| service.call(zebra_state::ReadRequest::Depth(hash)))
-                .await?
-            else {
-                return Err(StateServiceError::Custom(
-                    "Unexpected response to Depth request".to_string(),
-                ));
-            };
-
-            // From <https://zcash.github.io/rpc/getblock.html>
-            // TODO: Deduplicate const definition, consider
-            // refactoring this to avoid duplicate logic
-            const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
-
-            // Confirmations are one more than the depth.
-            // Depth is limited by height, so it will never overflow an i64.
-            let confirmations = depth
-                .map(|depth| i64::from(depth) + 1)
-                .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS);
-
-            let mut nonce = *header.nonce;
-            nonce.reverse();
-
-            let sapling_activation = NetworkUpgrade::Sapling.activation_height(&network);
-            let sapling_tree_size = sapling_tree.count();
-            let final_sapling_root: [u8; 32] =
-                if sapling_activation.is_some() && height >= sapling_activation.unwrap() {
-                    let mut root: [u8; 32] = sapling_tree.root().into();
-                    root.reverse();
-                    root
-                } else {
-                    [0; 32]
-                };
-
-            let difficulty = header.difficulty_threshold.relative_to_network(&network);
-            let block_commitments =
-                header_to_block_commitments(&header, &network, height, final_sapling_root)?;
-
-            let block_header = GetBlockHeaderObject::new(
-                hash,
-                confirmations,
-                height,
-                header.version,
-                header.merkle_root,
-                block_commitments,
-                final_sapling_root,
-                sapling_tree_size,
-                header.time.timestamp(),
-                nonce,
-                header.solution,
-                header.difficulty_threshold,
-                difficulty,
-                header.previous_block_hash,
-                next_block_hash,
-            );
-
-            GetBlockHeaderResponse::Object(Box::new(block_header))
-        };
-
-        Ok(response)
     }
 
     /// Return a list of consecutive compact blocks.
@@ -716,7 +575,7 @@ impl StateServiceSubscriber {
                 let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
                     blockandsize_future,
                     orchard_future,
-                    StateServiceSubscriber::get_block_header(
+                    StateServiceSubscriber::get_block_header_static(
                         &state_3,
                         network,
                         hash_or_height,
@@ -725,6 +584,7 @@ impl StateServiceSubscriber {
                     block_info_future
                 );
 
+                // TODO matching against a fetch -type here, this could be wrong or untangled
                 let header_obj = match header? {
                     GetBlockHeaderResponse::Raw(_hex_data) => unreachable!(
                         "`true` was passed to get_block_header, an object should be returned"
@@ -853,6 +713,302 @@ impl ZcashIndexer for StateServiceSubscriber {
             .map_err(|e| StateServiceError::Custom(e.to_string()))
     }
 
+    /// Returns the requested block header by hash or height, as a [`GetBlockHeaderResponse`] JSON string.
+    /// If the block is not in Zebra's state,
+    /// returns [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
+    /// if a height was passed or -5 if a hash was passed.
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `hash_or_height`: (string, required, example="1") The hash or height
+    ///   for the block to be returned.
+    /// - `verbose`: (bool, optional, default=false, example=true) false for hex encoded data,
+    ///   true for a json object
+    ///
+    /// # Notes
+    ///
+    /// The undocumented `chainwork` field is not returned.
+    ///
+    /// This rpc is used by get_block(verbose), there is currently no
+    /// plan to offer this RPC publicly.
+    async fn get_block_header_static(
+        state: &ReadStateService,
+        network: &Network,
+        //network: self.config.network.clone(),
+        hash_or_height: HashOrHeight,
+        verbose: Option<bool>,
+    ) -> Result<GetBlockHeaderResponse, StateServiceError> {
+        let mut state = state.clone();
+        let verbose = verbose.unwrap_or(true);
+        let network = network.clone();
+
+        let zebra_state::ReadResponse::BlockHeader {
+            header,
+            hash,
+            height,
+            next_block_hash,
+        } = state
+            .ready()
+            .and_then(|service| service.call(zebra_state::ReadRequest::BlockHeader(hash_or_height)))
+            .await
+            .map_err(|_| {
+                StateServiceError::RpcError(RpcError {
+                    // Compatibility with zcashd. Note that since this function
+                    // is reused by getblock(), we return the errors expected
+                    // by it (they differ whether a hash or a height was passed)
+                    code: LegacyCode::InvalidParameter as i64,
+                    message: "block height not in best chain".to_string(),
+                    data: None,
+                })
+            })?
+        else {
+            return Err(StateServiceError::Custom(
+                "Unexpected response to BlockHeader request".to_string(),
+            ));
+        };
+
+        let response = if !verbose {
+            GetBlockHeaderResponse::Raw(HexData(header.zcash_serialize_to_vec()?))
+        } else {
+            let zebra_state::ReadResponse::SaplingTree(sapling_tree) = state
+                .ready()
+                .and_then(|service| {
+                    service.call(zebra_state::ReadRequest::SaplingTree(hash_or_height))
+                })
+                .await?
+            else {
+                return Err(StateServiceError::Custom(
+                    "Unexpected response to SaplingTree request".to_string(),
+                ));
+            };
+            // This could be `None` if there's a chain reorg between state queries.
+            let sapling_tree = sapling_tree.ok_or_else(|| {
+                StateServiceError::RpcError(zaino_fetch::jsonrpsee::connector::RpcError {
+                    code: LegacyCode::InvalidParameter as i64,
+                    message: "missing sapling tree for block".to_string(),
+                    data: None,
+                })
+            })?;
+
+            let zebra_state::ReadResponse::Depth(depth) = state
+                .ready()
+                .and_then(|service| service.call(zebra_state::ReadRequest::Depth(hash)))
+                .await?
+            else {
+                return Err(StateServiceError::Custom(
+                    "Unexpected response to Depth request".to_string(),
+                ));
+            };
+
+            // From <https://zcash.github.io/rpc/getblock.html>
+            // TODO: Deduplicate const definition, consider
+            // refactoring this to avoid duplicate logic
+            const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
+
+            // Confirmations are one more than the depth.
+            // Depth is limited by height, so it will never overflow an i64.
+            let confirmations = depth
+                .map(|depth| i64::from(depth) + 1)
+                .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS);
+
+            let mut nonce = *header.nonce;
+            nonce.reverse();
+
+            let sapling_activation = NetworkUpgrade::Sapling.activation_height(&network);
+            let sapling_tree_size = sapling_tree.count();
+            let final_sapling_root: [u8; 32] =
+                if sapling_activation.is_some() && height >= sapling_activation.unwrap() {
+                    let mut root: [u8; 32] = sapling_tree.root().into();
+                    root.reverse();
+                    root
+                } else {
+                    [0; 32]
+                };
+
+            let difficulty = header.difficulty_threshold.relative_to_network(&network);
+            let block_commitments =
+                header_to_block_commitments(&header, &network, height, final_sapling_root)?;
+
+            let block_header = GetBlockHeaderObject::new(
+                hash,
+                confirmations,
+                height,
+                header.version,
+                header.merkle_root,
+                block_commitments,
+                final_sapling_root,
+                sapling_tree_size,
+                header.time.timestamp(),
+                nonce,
+                header.solution,
+                header.difficulty_threshold,
+                difficulty,
+                header.previous_block_hash,
+                next_block_hash,
+            );
+
+            GetBlockHeaderResponse::Object(Box::new(block_header))
+        };
+
+        Ok(response)
+    }
+
+    /// Returns the requested block header by hash or height, as a [`GetBlockHeaderResponse`] JSON string.
+    /// If the block is not in Zebra's state,
+    /// returns [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
+    /// if a height was passed or -5 if a hash was passed.
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `hash_or_height`: (string, required, example="1") The hash or height
+    ///   for the block to be returned.
+    /// - `verbose`: (bool, optional, default=false, example=true) false for hex encoded data,
+    ///   true for a json object
+    ///
+    /// # Notes
+    ///
+    /// The undocumented `chainwork` field is not returned.
+    ///
+    /// This rpc is used by get_block(verbose), there is currently no
+    /// plan to offer this RPC publicly.
+    async fn get_block_header(
+        &self,
+        // state: &ReadStateService,
+        // only used in one place ^
+        // of course we're reading the state, we're in state! ugh.
+        // network: &Network,
+        // only used in one place ^
+        // same place above.
+        //network: self.config.network.clone(),
+        hash_or_height: HashOrHeight,
+        // I'd like to only allow the Hash, but ok.
+        verbose: Option<bool>,
+        // verbose seems to be required?
+    ) -> Result<GetBlockHeaderResponse, StateServiceError> {
+        let mut state = state.clone();
+        let verbose = verbose.unwrap_or(true);
+        let network = network.clone();
+
+        let zebra_state::ReadResponse::BlockHeader {
+            header,
+            hash,
+            height,
+            next_block_hash,
+        } = state
+            .ready()
+            .and_then(|service| service.call(zebra_state::ReadRequest::BlockHeader(hash_or_height)))
+            .await
+            .map_err(|_| {
+                StateServiceError::RpcError(RpcError {
+                    // Compatibility with zcashd. Note that since this function
+                    // is reused by getblock(), we return the errors expected
+                    // by it (they differ whether a hash or a height was passed)
+                    code: LegacyCode::InvalidParameter as i64,
+                    message: "block height not in best chain".to_string(),
+                    data: None,
+                })
+            })?
+        else {
+            return Err(StateServiceError::Custom(
+                "Unexpected response to BlockHeader request".to_string(),
+            ));
+        };
+
+        let response = if !verbose {
+            GetBlockHeaderResponse::Raw(HexData(header.zcash_serialize_to_vec()?))
+        } else {
+            let zebra_state::ReadResponse::SaplingTree(sapling_tree) = state
+                .ready()
+                .and_then(|service| {
+                    service.call(zebra_state::ReadRequest::SaplingTree(hash_or_height))
+                })
+                .await?
+            else {
+                return Err(StateServiceError::Custom(
+                    "Unexpected response to SaplingTree request".to_string(),
+                ));
+            };
+            // This could be `None` if there's a chain reorg between state queries.
+            let sapling_tree = sapling_tree.ok_or_else(|| {
+                StateServiceError::RpcError(zaino_fetch::jsonrpsee::connector::RpcError {
+                    code: LegacyCode::InvalidParameter as i64,
+                    message: "missing sapling tree for block".to_string(),
+                    data: None,
+                })
+            })?;
+
+            let zebra_state::ReadResponse::Depth(depth) = state
+                .ready()
+                .and_then(|service| service.call(zebra_state::ReadRequest::Depth(hash)))
+                .await?
+            else {
+                return Err(StateServiceError::Custom(
+                    "Unexpected response to Depth request".to_string(),
+                ));
+            };
+
+            // From <https://zcash.github.io/rpc/getblock.html>
+            // TODO: Deduplicate const definition, consider
+            // refactoring this to avoid duplicate logic
+            const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
+
+            // Confirmations are one more than the depth.
+            // Depth is limited by height, so it will never overflow an i64.
+            let confirmations = depth
+                .map(|depth| i64::from(depth) + 1)
+                .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS);
+
+            let mut nonce = *header.nonce;
+            nonce.reverse();
+
+            let sapling_activation = NetworkUpgrade::Sapling.activation_height(&network);
+            let sapling_tree_size = sapling_tree.count();
+            let final_sapling_root: [u8; 32] =
+                if sapling_activation.is_some() && height >= sapling_activation.unwrap() {
+                    let mut root: [u8; 32] = sapling_tree.root().into();
+                    root.reverse();
+                    root
+                } else {
+                    [0; 32]
+                };
+
+            let difficulty = header.difficulty_threshold.relative_to_network(&network);
+            let block_commitments =
+                header_to_block_commitments(&header, &network, height, final_sapling_root)?;
+
+            let block_header = GetBlockHeaderObject::new(
+                hash,
+                confirmations,
+                height,
+                header.version,
+                header.merkle_root,
+                block_commitments,
+                final_sapling_root,
+                sapling_tree_size,
+                header.time.timestamp(),
+                nonce,
+                header.solution,
+                header.difficulty_threshold,
+                difficulty,
+                header.previous_block_hash,
+                next_block_hash,
+            );
+
+            GetBlockHeaderResponse::Object(Box::new(block_header))
+        };
+
+        Ok(response)
+    }
+
+    /*
     /// zcash online RPC docs:
     /// Returns a string that is serialized, hex-encoded data for blockheader 'hash', or
     /// if verbose, returns an Object with information about blockheader 'hash'.
@@ -961,6 +1117,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             ))
         }))
     }
+    */
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         chain_tip_difficulty(
@@ -1181,6 +1338,8 @@ impl ZcashIndexer for StateServiceSubscriber {
             .map_err(Into::into)
     }
 
+    // using get_block_inner using get_block_header
+    // also not an RPC call as far as I can tell.
     async fn z_get_block(
         &self,
         hash_or_height_string: String,
