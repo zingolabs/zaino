@@ -182,14 +182,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     // TODO add links to original implementation
     async fn get_block_header(
         &self,
-        // state: &ReadStateService,
-        // only used in one place ^
-        // network: &Network,
-        // only used in one place ^
-        //network: self.config.network.clone(),
-        // zebra request HashOrHeight
         hash_or_height: HashOrHeight,
-        // I'd like to only allow the Hash, but ok.
         verbose: Option<bool>,
     ) -> Result<GetBlockHeaderResponse, Self::Error>;
 

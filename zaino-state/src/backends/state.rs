@@ -738,7 +738,6 @@ impl ZcashIndexer for StateServiceSubscriber {
     async fn get_block_header_static(
         state: &ReadStateService,
         network: &Network,
-        //network: self.config.network.clone(),
         hash_or_height: HashOrHeight,
         verbose: Option<bool>,
     ) -> Result<GetBlockHeaderResponse, StateServiceError> {
@@ -881,17 +880,8 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// plan to offer this RPC publicly.
     async fn get_block_header(
         &self,
-        // state: &ReadStateService,
-        // only used in one place ^
-        // of course we're reading the state, we're in state! ugh.
-        // network: &Network,
-        // only used in one place ^
-        // same place above.
-        //network: self.config.network.clone(),
         hash_or_height: HashOrHeight,
-        // I'd like to only allow the Hash, but ok.
         verbose: Option<bool>,
-        // verbose seems to be required?
     ) -> Result<GetBlockHeaderResponse, StateServiceError> {
         let mut state = state.clone();
         let verbose = verbose.unwrap_or(true);
