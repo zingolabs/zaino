@@ -306,9 +306,6 @@ impl Drop for StateService {
     }
 }
 
-/// A fetch service subscriber.
-///
-/// Subscribers should be
 #[derive(Debug, Clone)]
 pub struct StateServiceSubscriber {
     /// Remote wrappper functionality for zebra's [`ReadStateService`].
