@@ -306,7 +306,6 @@ impl Drop for StateService {
     }
 }
 
-// TODO - why is this called a fetch service subscriber?! it's in state.
 /// A fetch service subscriber.
 ///
 /// Subscribers should be
@@ -584,7 +583,6 @@ impl StateServiceSubscriber {
                     block_info_future
                 );
 
-                // TODO matching against a fetch -type here, this could be wrong or untangled
                 let header_obj = match header? {
                     GetBlockHeaderResponse::Raw(_hex_data) => unreachable!(
                         "`true` was passed to get_block_header, an object should be returned"
