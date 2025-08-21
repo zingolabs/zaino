@@ -19,20 +19,18 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    AuthMethod, BackendType, BlockCacheConfig, CacheConfig, CookieAuth, DatabaseConfig, DebugConfig, GrpcConfig,
-    JsonRpcConfig, Network, ServiceConfig, TlsConfig, ValidatorConfig, ZebraStateConfig, ZainoStorageConfig,
+    BackendConfig, CacheConfig, DatabaseConfig, DebugConfig, GrpcConfig, JsonRpcAuth,
+    JsonRpcConfig, Network, ServiceConfig, StorageConfig, TlsConfig, ValidatorFetchConfig,
+    ZainodServiceConfig, ZebradStateConfig,
 };
-
-// Re-export commonly used config types for convenience
-pub use zaino_commons::config::DebugConfig;
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
 
 use crate::error::IndexerError;
 
-/// Unified backend configuration enum.
+/// Unified service configuration enum.
 #[derive(Debug, Clone)]
-pub enum BackendConfig {
+pub enum ServiceBackendConfig {
     /// StateService config.
     State(StateServiceConfig),
     /// Fetchservice config.
@@ -77,60 +75,10 @@ impl Default for ServerConfig {
     }
 }
 
-/// Storage configuration (cache and database settings).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct StorageConfig {
-    /// Cache configuration.
-    pub cache: CacheConfig,
-    /// Zaino database configuration.
-    pub zaino_database: DatabaseConfig,
-    /// Zebra database configuration.
-    pub zebra_database: DatabaseConfig,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            cache: CacheConfig::default(),
-            zaino_database: DatabaseConfig {
-                path: default_zaino_db_path(),
-                size: None,
-            },
-            zebra_database: DatabaseConfig {
-                path: default_zebra_db_path().unwrap(),
-                size: None,
-            },
-        }
-    }
-}
-
-
-/// Config information required for Zaino.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct IndexerConfig {
-    /// Network type (Mainnet, Testnet, Regtest).
-    pub network: Network,
-    /// Server configuration (zaino's own JSON-RPC and gRPC servers).
-    pub server: ServerConfig,
-    /// Validator connection and authentication configuration (includes backend config).
-    pub validator: ValidatorConfig,
-    /// Service-level configuration.
-    pub service: ServiceConfig,
-    /// Storage configuration (cache and database).
-    pub storage: StorageConfig,
-    /// Debug and testing configuration.
-    pub debug: DebugConfig,
-}
-
-impl IndexerConfig {
-    /// Performs checks on config data.
-    pub fn check_config(&self) -> Result<(), IndexerError> {
-        // Network validation is now handled by the Network enum, no string checking needed
-
-        // Check TLS settings for gRPC server.
-        match self.server.grpc.tls {
+impl ServerConfig {
+    /// Validates TLS configuration for gRPC server.
+    pub fn validate_tls(&self) -> Result<(), IndexerError> {
+        match self.grpc.tls {
             TlsConfig::Enabled {
                 ref cert_path,
                 ref key_path,
@@ -152,65 +100,121 @@ impl IndexerConfig {
                 // TLS is disabled, no validation needed
             }
         }
+        Ok(())
+    }
 
-        // Check validator authentication settings
-        if let AuthMethod::Cookie { ref path } = self.validator.auth {
-            if !path.exists() {
-                return Err(IndexerError::ConfigError(
-                    format!("Validator cookie authentication is enabled, but cookie path '{}' does not exist.", path.display()),
-                ));
-            }
-        }
-
-        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
-        let grpc_addr =
-            fetch_socket_addr_from_hostname(&self.server.grpc.listen_address.to_string())?;
-        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
-        let _ = fetch_socket_addr_from_hostname(&self.server.grpc.listen_address.to_string())?;
-
-        let validator_addr =
-            fetch_socket_addr_from_hostname(&self.validator.rpc_address.to_string())?;
-
-        // Ensure validator listen address is private.
-        if !is_private_listen_addr(&validator_addr) {
-            return Err(IndexerError::ConfigError(
-                "Zaino may only connect to Zebra with private IP addresses.".to_string(),
-            ));
-        }
-
-        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
-        {
-            // Ensure TLS is used when connecting to external addresses.
-            let grpc_tls_enabled = matches!(self.server.grpc.tls, TlsConfig::Enabled { .. });
-            if !is_private_listen_addr(&grpc_addr) && !grpc_tls_enabled {
-                return Err(IndexerError::ConfigError(
-                    "TLS required when connecting to external addresses.".to_string(),
-                ));
-            }
-
-            // Ensure validator rpc cookie authentication is used when connecting to non-loopback addresses.
-            if !is_loopback_listen_addr(&validator_addr) {
-                if let AuthMethod::Basic { .. } = self.validator.auth {
-                    return Err(IndexerError::ConfigError(
-                        "Validator listen address is not loopback, so cookie authentication must be enabled."
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
-        {
-            warn!("Zaino built using disable_tls_unencrypted_traffic_mode feature, proceed with caution.");
-        }
-
-        // Check gRPC and JsonRPC server are not listening on the same address.
-        if let Some(ref json_rpc_config) = self.server.json_rpc {
-            if json_rpc_config.listen_address == self.server.grpc.listen_address {
+    /// Validates that gRPC and JSON-RPC servers don't conflict.
+    pub fn validate_server_addresses(&self) -> Result<(), IndexerError> {
+        if let Some(ref json_rpc_config) = self.json_rpc {
+            if json_rpc_config.listen_address == self.grpc.listen_address {
                 return Err(IndexerError::ConfigError(
                     "gRPC server and JsonRPC server must listen on different addresses."
                         .to_string(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Validates network security requirements for external access.
+    #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
+    pub fn validate_network_security(&self) -> Result<(), IndexerError> {
+        let grpc_addr = fetch_socket_addr_from_hostname(&self.grpc.listen_address.to_string())?;
+        let grpc_tls_enabled = matches!(self.grpc.tls, TlsConfig::Enabled { .. });
+
+        if !is_private_listen_addr(&grpc_addr) && !grpc_tls_enabled {
+            return Err(IndexerError::ConfigError(
+                "TLS required when connecting to external addresses.".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// No-op for TLS disabled mode.
+    #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
+    pub fn validate_network_security(&self) -> Result<(), IndexerError> {
+        Ok(())
+    }
+}
+
+/// Config information required for Zaino.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct IndexerConfig {
+    /// Network type (Mainnet, Testnet, Regtest).
+    pub network: Network,
+    /// Server configuration (zaino's own JSON-RPC and gRPC servers).
+    pub server: ServerConfig,
+    /// Backend configuration (validator and backend type).
+    pub backend: BackendConfig,
+    /// Service-level configuration.
+    pub service: ServiceConfig,
+    /// Storage configuration (cache and database).
+    pub storage: StorageConfig,
+    /// Debug and testing configuration.
+    pub debug: DebugConfig,
+}
+
+impl IndexerConfig {
+    /// Performs checks on config data.
+    pub fn check_config(&self) -> Result<(), IndexerError> {
+        // Validate server configuration
+        self.server.validate_tls()?;
+        self.server.validate_server_addresses()?;
+        self.server.validate_network_security()?;
+
+        // Validate backend configuration
+        self.backend
+            .validate_auth()
+            .map_err(|e| IndexerError::ConfigError(e.to_string()))?;
+
+        // Validate backend network security
+        let validator_addr =
+            fetch_socket_addr_from_hostname(&self.backend.rpc_address().to_string())?;
+        if !is_private_listen_addr(&validator_addr) {
+            return Err(IndexerError::ConfigError(
+                "Zaino may only connect to validator with private IP addresses.".to_string(),
+            ));
+        }
+
+        // Additional backend-specific validation for non-loopback addresses
+        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
+        {
+            // todo!: move to BackendConfig method
+            if !is_loopback_listen_addr(&validator_addr) {
+                match &self.backend {
+                    BackendConfig::LocalZebra { auth, .. }
+                    | BackendConfig::RemoteZebra { auth, .. } => {
+                        if matches!(auth, zaino_commons::config::ZebradAuth::Disabled) {
+                            return Err(IndexerError::ConfigError(
+                                "Validator listen address is not loopback, so authentication must be enabled."
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    BackendConfig::RemoteZcashd { auth, .. } => {
+                        if matches!(auth, zaino_commons::config::ZcashdAuth::Disabled) {
+                            return Err(IndexerError::ConfigError(
+                                "Validator listen address is not loopback, so authentication must be enabled."
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    BackendConfig::RemoteZainod { auth, .. } => {
+                        if matches!(auth, zaino_commons::config::ZcashdAuth::Disabled) {
+                            return Err(IndexerError::ConfigError(
+                                "Validator listen address is not loopback, so authentication must be enabled."
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
+        {
+            warn!("Zaino built using disable_tls_unencrypted_traffic_mode feature, proceed with caution.");
         }
 
         Ok(())
@@ -220,11 +224,9 @@ impl IndexerConfig {
     fn finalize_config_logic(mut self) -> Self {
         // Ensure cookie path is set for enabled cookie auth in JSON-RPC server config
         if let Some(ref mut json_rpc_config) = self.server.json_rpc {
-            if let CookieAuth::Enabled { ref path } = json_rpc_config.auth {
-                if path.as_os_str().is_empty() {
-                    json_rpc_config.auth = CookieAuth::Enabled {
-                        path: default_ephemeral_cookie_path(),
-                    };
+            if let JsonRpcAuth::Cookie(ref mut cookie_auth) = json_rpc_config.auth {
+                if cookie_auth.path.as_os_str().is_empty() {
+                    cookie_auth.path = default_ephemeral_cookie_path();
                 }
             }
         }
@@ -237,7 +239,7 @@ impl Default for IndexerConfig {
         Self {
             network: Network::Testnet,
             server: ServerConfig::default(),
-            validator: ValidatorConfig::default(),
+            backend: BackendConfig::default(),
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
             debug: DebugConfig::default(),
@@ -316,13 +318,13 @@ pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
 
 /// Attempts to load config data from a TOML file at the specified path.
 ///
-/// If the file cannot be read, or if its contents cannot be parsed into `IndexerConfig`,
+/// If the file cannot be read, or if its contents cannot be parsed into `ZainoConfig`,
 /// a warning is logged, and a default configuration is returned.
 /// The loaded or default configuration undergoes further checks and finalization.
 pub fn load_config(file_path: &PathBuf) -> Result<IndexerConfig, IndexerError> {
     // Configuration sources are layered: Env > TOML > Defaults.
     let figment = Figment::new()
-        // 1. Base defaults from `IndexerConfig::default()`.
+        // 1. Base defaults from `ZainoConfig::default()`.
         .merge(Serialized::defaults(IndexerConfig::default()))
         // 2. Override with values from the TOML configuration file.
         .merge(Toml::file(file_path))
@@ -349,45 +351,70 @@ pub fn load_config(file_path: &PathBuf) -> Result<IndexerConfig, IndexerError> {
     }
 }
 
-impl TryFrom<IndexerConfig> for BackendConfig {
-    type Error = IndexerError;
+/// Creates service configurations from ZainoConfig.
+impl IndexerConfig {
+    /// Create appropriate service config based on backend type.
+    pub fn to_service_config(self) -> Result<ServiceBackendConfig, IndexerError> {
+        let daemon = ZainodServiceConfig {
+            service: self.service,
+            storage: self.storage,
+            network: self.network,
+            debug: self.debug,
+        };
+        match &self.backend {
+            BackendConfig::LocalZebra {
+                rpc_address,
+                auth,
+                zebra_state,
+                indexer_rpc_address,
+                zebra_database,
+            } => {
+                let state_config = ZebradStateConfig {
+                    rpc_address: *rpc_address,
+                    auth: auth.clone(),
+                    state: zebra_state.clone(),
+                    indexer_rpc_address: *indexer_rpc_address,
+                    database: zebra_database.clone(),
+                };
 
-    fn try_from(cfg: IndexerConfig) -> Result<Self, Self::Error> {
-        let _network: zebra_chain::parameters::Network = cfg.network.into();
+                Ok(ServiceBackendConfig::State(StateServiceConfig {
+                    zebrad: state_config,
+                    daemon,
+                }))
+            }
+            BackendConfig::RemoteZebra { rpc_address, auth } => {
+                let fetch_config = ValidatorFetchConfig::Zebrad {
+                    rpc_address: *rpc_address,
+                    auth: auth.clone(),
+                };
 
-        match cfg.backend {
-            BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
-                validator: ValidatorConfig {
-                    config: ZainoStateConfig {
-                        cache_dir: cfg.storage.zebra_database.path,
-                        ephemeral: false,
-                        delete_old_database: true,
-                        debug_stop_at_height: None,
-                        debug_validity_check_interval: None,
-                    },
-                    ..cfg.validator
-                },
-                service: cfg.service,
-                block_cache: BlockCacheConfig {
-                    cache: cfg.storage.cache,
-                    database: cfg.storage.zaino_database,
-                    network: cfg.network,
-                    no_sync: cfg.debug.no_sync,
-                    no_db: cfg.debug.no_db,
-                },
-            })),
+                Ok(ServiceBackendConfig::Fetch(FetchServiceConfig {
+                    validator: fetch_config,
+                    daemon,
+                }))
+            }
+            BackendConfig::RemoteZcashd { rpc_address, auth } => {
+                let fetch_config = ValidatorFetchConfig::Zcashd {
+                    rpc_address: *rpc_address,
+                    auth: auth.clone(),
+                };
 
-            BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
-                validator: cfg.validator,
-                service: cfg.service,
-                block_cache: BlockCacheConfig {
-                    cache: cfg.storage.cache,
-                    database: cfg.storage.zaino_database,
-                    network: cfg.network,
-                    no_sync: cfg.debug.no_sync,
-                    no_db: cfg.debug.no_db,
-                },
-            })),
+                Ok(ServiceBackendConfig::Fetch(FetchServiceConfig {
+                    validator: fetch_config,
+                    daemon,
+                }))
+            }
+            BackendConfig::RemoteZainod { rpc_address, auth } => {
+                let fetch_config = ValidatorFetchConfig::Zcashd {
+                    rpc_address: *rpc_address,
+                    auth: auth.clone(),
+                };
+
+                Ok(ServiceBackendConfig::Fetch(FetchServiceConfig {
+                    validator: fetch_config,
+                    daemon,
+                }))
+            }
         }
     }
 }
