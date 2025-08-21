@@ -3,7 +3,6 @@
 //! TODO: - Add option for http connector.
 //!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [<https://github.com/zingolabs/zaino/issues/67>].
 
-use base64::Engine;
 use http::Uri;
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
@@ -19,7 +18,9 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zaino_commons::config::{AuthHeader, ValidatorConfig, ValidatorFetchConfig, ZebradAuth, ZebradStateConfig, ZcashdAuth};
+use zaino_commons::config::{
+    AuthHeader, ValidatorConfig, ValidatorFetchConfig, ZcashdAuth, ZebradAuth, ZebradStateConfig,
+};
 
 use zebra_rpc::client::ValidateAddressResponse;
 
@@ -160,7 +161,7 @@ pub struct JsonRpSeeConnector {
 
 impl JsonRpSeeConnector {
     /// Creates a new JsonRpSeeConnector with optional authentication header.
-    /// 
+    ///
     /// The service should handle authentication and provide the pre-computed
     /// auth header. This keeps the connector focused on JSON-RPC transport.
     pub fn new(url: Url, auth_header: Option<AuthHeader>) -> Result<Self, TransportError> {
@@ -180,17 +181,23 @@ impl JsonRpSeeConnector {
     }
 
     /// Creates a connector from a ValidatorFetchConfig.
-    pub fn from_validator_fetch_config(config: &ValidatorFetchConfig) -> Result<Self, TransportError> {
+    pub fn from_validator_fetch_config(
+        config: &ValidatorFetchConfig,
+    ) -> Result<Self, TransportError> {
         let (rpc_address, auth) = match config {
-            ValidatorFetchConfig::Zebrad { rpc_address, auth } => (rpc_address, auth.get_auth_header()),
-            ValidatorFetchConfig::Zcashd { rpc_address, auth } => (rpc_address, auth.get_auth_header()),
+            ValidatorFetchConfig::Zebrad { rpc_address, auth } => {
+                (rpc_address, auth.get_auth_header())
+            }
+            ValidatorFetchConfig::Zcashd { rpc_address, auth } => {
+                (rpc_address, auth.get_auth_header())
+            }
         };
 
         let url = reqwest::Url::parse(&format!("http://{}", rpc_address))
             .map_err(|e| TransportError::BadNodeData(Box::new(e), "URL parsing"))?;
-        
-        let auth_header = auth
-            .map_err(|e| TransportError::BadNodeData(Box::new(e), "Auth header"))?;
+
+        let auth_header =
+            auth.map_err(|e| TransportError::BadNodeData(Box::new(e), "Auth header"))?;
 
         Self::new(url, auth_header)
     }
@@ -199,14 +206,14 @@ impl JsonRpSeeConnector {
     pub fn from_zebrad_state_config(config: &ZebradStateConfig) -> Result<Self, TransportError> {
         let url = reqwest::Url::parse(&format!("http://{}", config.rpc_address))
             .map_err(|e| TransportError::BadNodeData(Box::new(e), "URL parsing"))?;
-        
-        let auth_header = config.auth
+
+        let auth_header = config
+            .auth
             .get_auth_header()
             .map_err(|e| TransportError::BadNodeData(Box::new(e), "Auth header"))?;
 
         Self::new(url, auth_header)
     }
-
 
     /// Returns the http::uri the JsonRpSeeConnector is configured to send requests to.
     pub fn uri(&self) -> Result<Uri, TransportError> {
