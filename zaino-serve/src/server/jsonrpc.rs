@@ -5,7 +5,7 @@ use crate::{
     server::{config::JsonRpcConfig, error::ServerError},
 };
 
-use zaino_commons::config::CookieAuth;
+use zaino_commons::config::JsonRpcAuth;
 
 use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusType, ZcashIndexer};
 
@@ -48,14 +48,14 @@ impl JsonRpcServer {
 
         // Initialize Zebra-compatible cookie-based authentication if enabled.
         let (cookie, cookie_dir) = match &server_config.auth {
-            CookieAuth::Enabled { path } => {
+            JsonRpcAuth::Cookie(cookie_auth) => {
                 let cookie = Cookie::default();
-                write_to_disk(&cookie, path.parent().unwrap()).map_err(|e| {
+                write_to_disk(&cookie, cookie_auth.path.parent().unwrap()).map_err(|e| {
                     ServerError::ServerConfigError(format!("Failed to write cookie: {e}"))
                 })?;
-                (Some(cookie), Some(path.parent().unwrap().to_path_buf()))
+                (Some(cookie), Some(cookie_auth.path.parent().unwrap().to_path_buf()))
             }
-            CookieAuth::Disabled => (None, None),
+            JsonRpcAuth::Disabled => (None, None),
         };
 
         // Set up Zebra HTTP request compatibility middleware (handles auth and content-type issues)
