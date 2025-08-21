@@ -193,6 +193,10 @@ pub enum FetchServiceError {
     /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(#[from] zebra_chain::serialization::SerializationError),
+
+    /// Custom error message.
+    #[error("Custom error: {0}")]
+    Custom(String),
 }
 
 impl From<FetchServiceError> for tonic::Status {
@@ -215,6 +219,7 @@ impl From<FetchServiceError> for tonic::Status {
             FetchServiceError::SerializationError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
             }
+            FetchServiceError::Custom(message) => tonic::Status::internal(message),
         }
     }
 }
