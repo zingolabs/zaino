@@ -122,8 +122,9 @@ impl ZebradConfig {
 
             // Add authentication header if configured
             match self.auth.get_auth_header() {
-                Ok(Some((header_name, header_value))) => {
-                    request_builder = request_builder.header(header_name, header_value);
+                Ok(Some(auth_header)) => {
+                    request_builder =
+                        request_builder.header(auth_header.key(), auth_header.value());
                 }
                 Ok(None) => {
                     // No authentication required
@@ -250,7 +251,24 @@ impl ZebradAuth {
                 let cookie_token = cookie_auth.read_cookie_token()?;
                 let credentials = base64::engine::general_purpose::STANDARD
                     .encode(format!("__cookie__:{}", cookie_token));
-                Ok(Some(AuthHeader::authorization(format!("Basic {}", credentials))))
+                Ok(Some(AuthHeader::authorization(format!(
+                    "Basic {}",
+                    credentials
+                ))))
+            }
+        }
+    }
+
+    /// Validates authentication configuration for a given address.
+    pub fn validate_for_address(
+        &self,
+        _rpc_address: &std::net::SocketAddr,
+    ) -> Result<(), AuthError> {
+        match self {
+            ZebradAuth::Disabled => Ok(()),
+            ZebradAuth::Cookie(cookie_auth) => {
+                // Validate that cookie file exists and is readable
+                cookie_auth.read_cookie_token().map(|_| ())
             }
         }
     }
@@ -272,7 +290,30 @@ impl ZcashdAuth {
                     "{}:{}",
                     password_auth.username, password_auth.password
                 ));
-                Ok(Some(AuthHeader::authorization(format!("Basic {}", credentials))))
+                Ok(Some(AuthHeader::authorization(format!(
+                    "Basic {}",
+                    credentials
+                ))))
+            }
+        }
+    }
+
+    /// Validates authentication configuration for a given address.
+    pub fn validate_for_address(
+        &self,
+        _rpc_address: &std::net::SocketAddr,
+    ) -> Result<(), AuthError> {
+        match self {
+            ZcashdAuth::Disabled => Ok(()),
+            ZcashdAuth::Password(password_auth) => {
+                // Basic validation - ensure username and password are not empty
+                if password_auth.username.is_empty() {
+                    return Err(AuthError::InvalidCookieFormat); // Reusing error for simplicity
+                }
+                if password_auth.password.is_empty() {
+                    return Err(AuthError::InvalidCookieFormat);
+                }
+                Ok(())
             }
         }
     }
@@ -326,8 +367,9 @@ impl ZcashdConfig {
 
             // Add authentication header if configured
             match self.auth.get_auth_header() {
-                Ok(Some((header_name, header_value))) => {
-                    request_builder = request_builder.header(header_name, header_value);
+                Ok(Some(auth_header)) => {
+                    request_builder =
+                        request_builder.header(auth_header.key(), auth_header.value());
                 }
                 Ok(None) => {
                     // No authentication required
@@ -448,14 +490,14 @@ impl Default for DatabaseConfig {
 
 /// Storage configuration for Zaino (shared across all backends)
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ZainoStorageConfig {
+pub struct StorageConfig {
     /// Cache configuration for DashMaps
     pub cache: CacheConfig,
     /// Zaino database configuration
     pub database: DatabaseConfig,
 }
 
-impl Default for ZainoStorageConfig {
+impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             cache: CacheConfig::default(),
@@ -472,10 +514,8 @@ impl Default for ZainoStorageConfig {
 pub struct ZainodServiceConfig {
     /// Service-level configuration (timeouts, channels)
     pub service: ServiceConfig,
-    /// Cache configuration for DashMaps
-    pub cache: CacheConfig,
-    /// Zaino database configuration
-    pub database: DatabaseConfig,
+    /// Zaino storage configuration
+    pub storage: StorageConfig,
     /// Network type
     pub network: Network,
     /// Debug and testing configuration
@@ -486,8 +526,7 @@ impl Default for ZainodServiceConfig {
     fn default() -> Self {
         Self {
             service: ServiceConfig::default(),
-            cache: CacheConfig::default(),
-            database: DatabaseConfig::default(),
+            storage: StorageConfig::default(),
             network: Network::default(),
             debug: DebugConfig::default(),
         }
@@ -543,40 +582,228 @@ pub struct ZebradStateConfig {
     /// Zebra authentication configuration
     pub auth: ZebradAuth,
     /// Zebra state configuration
-    pub zebra_state: ZebraStateConfig,
+    pub state: ZebraStateConfig,
     /// Zebra gRPC address for state syncing
     pub indexer_rpc_address: std::net::SocketAddr,
     /// Zebra database configuration
-    pub zebra_database: DatabaseConfig,
+    pub database: DatabaseConfig,
 }
 
-impl ZebradStateConfig {
-    /// Extract from a ZebradConfig with State backend
-    pub fn from_zebrad_state_backend(
-        zebra_config: &ZebradConfig,
-        state_config: &ZebraStateConfig,
-        indexer_rpc_address: std::net::SocketAddr,
-        zebra_database: &DatabaseConfig,
-    ) -> Self {
-        Self {
-            rpc_address: zebra_config.rpc_address,
-            auth: zebra_config.auth.clone(),
-            zebra_state: state_config.clone(),
-            indexer_rpc_address,
-            zebra_database: zebra_database.clone(),
-        }
-    }
-}
+// impl ZebradStateConfig {
+//     /// Extract from a ZebradConfig with State backend
+//     pub fn from_zebrad_state_backend(
+//         zebra_config: &ZebradConfig,
+//         state_config: &ZebraStateConfig,
+//         indexer_rpc_address: std::net::SocketAddr,
+//         zebra_database: &DatabaseConfig,
+//     ) -> Self {
+//         Self {
+//             rpc_address: zebra_config.rpc_address,
+//             auth: zebra_config.auth.clone(),
+//             state: state_config.clone(),
+//             indexer_rpc_address,
+//             database: zebra_database.clone(),
+//         }
+//     }
+// }
 
 impl Default for ZebradStateConfig {
     fn default() -> Self {
         Self {
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
             auth: ZebradAuth::default(),
-            zebra_state: ZebraStateConfig::default(),
+            state: ZebraStateConfig::default(),
             indexer_rpc_address: "127.0.0.1:8983".parse().expect("Valid socket address"),
-            zebra_database: DatabaseConfig::default(),
+            database: DatabaseConfig::default(),
         }
+    }
+}
+
+/// Backend configuration for Zaino.
+///
+/// These represent different backend scenarios that Zaino supports,
+/// each with type-safe configuration to prevent invalid combinations.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BackendConfig {
+    /// Local Zebra with direct state access
+    LocalZebra {
+        /// Zebra JsonRPC address for fallback
+        rpc_address: std::net::SocketAddr,
+        /// Zebra authentication configuration
+        auth: ZebradAuth,
+        /// Zebra state configuration
+        zebra_state: ZebraStateConfig,
+        /// Zebra gRPC address for state syncing
+        indexer_rpc_address: std::net::SocketAddr,
+        /// Zebra database configuration
+        zebra_database: DatabaseConfig,
+    },
+    /// Remote Zebra using JsonRPC
+    RemoteZebra {
+        /// Zebra JsonRPC address
+        rpc_address: std::net::SocketAddr,
+        /// Zebra authentication configuration
+        auth: ZebradAuth,
+    },
+    /// Remote Zcashd using JsonRPC
+    RemoteZcashd {
+        /// Zcashd JsonRPC address  
+        rpc_address: std::net::SocketAddr,
+        /// Zcashd authentication configuration
+        auth: ZcashdAuth,
+    },
+    RemoteZainod {
+        /// Zainod JsonRPC address  
+        rpc_address: std::net::SocketAddr,
+        /// Zainod authentication configuration
+        // todo! evaluate custom zainod auth struct or have them share some PasswordAuth
+        auth: ZcashdAuth,
+    },
+}
+
+impl Default for BackendConfig {
+    fn default() -> Self {
+        BackendConfig::RemoteZebra {
+            rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
+            auth: ZebradAuth::default(),
+        }
+    }
+}
+
+impl BackendConfig {
+    /// Get the RPC address for this backend configuration.
+    pub fn rpc_address(&self) -> std::net::SocketAddr {
+        match self {
+            BackendConfig::LocalZebra { rpc_address, .. } => *rpc_address,
+            BackendConfig::RemoteZebra { rpc_address, .. } => *rpc_address,
+            BackendConfig::RemoteZcashd { rpc_address, .. } => *rpc_address,
+            BackendConfig::RemoteZainod { rpc_address, .. } => *rpc_address,
+        }
+    }
+
+    /// Validates network security for the backend address.
+    pub fn validate_network_security(&self) -> Result<(), ConfigError> {
+        // Note: This needs to be moved to a common location or we need to import the validation functions
+        // For now, this is a placeholder that shows the intended structure
+        let _rpc_address = self.rpc_address();
+
+        // This validation logic would need the helper functions from zainod/config.rs
+        // We should either move those functions to zaino-commons or implement the validation differently
+        Ok(())
+    }
+
+    /// Validates authentication configuration for the backend.
+    pub fn validate_auth(&self) -> Result<(), AuthError> {
+        match self {
+            BackendConfig::LocalZebra {
+                auth, rpc_address, ..
+            }
+            | BackendConfig::RemoteZebra {
+                auth, rpc_address, ..
+            } => auth.validate_for_address(rpc_address),
+            BackendConfig::RemoteZcashd {
+                auth, rpc_address, ..
+            } => auth.validate_for_address(rpc_address),
+            BackendConfig::RemoteZainod {
+                rpc_address, auth, ..
+            } => auth.validate_for_address(rpc_address),
+        }
+    }
+
+    /// Tests connection to the validator node and returns the correct URL.
+    ///
+    /// This method tries to connect to the validator using the configured RPC address
+    /// and authentication, retrying up to 3 times with a 3-second delay between attempts.
+    pub async fn test_and_get_url(&self) -> Result<reqwest::Url, std::io::Error> {
+        use std::net::SocketAddr;
+
+        let rpc_address = self.rpc_address();
+        let host = match rpc_address {
+            SocketAddr::V4(_) => rpc_address.ip().to_string(),
+            SocketAddr::V6(_) => format!("[{}]", rpc_address.ip()),
+        };
+
+        let url_string = format!("http://{}:{}", host, rpc_address.port());
+        let url: reqwest::Url = url_string.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid URL: {}", e),
+            )
+        })?;
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Client build error: {}", e),
+                )
+            })?;
+
+        for attempt in 0..3 {
+            let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
+            let mut request_builder = client
+                .post(url.clone())
+                .header("Content-Type", "application/json")
+                .body(request_body);
+
+            // Add authentication header based on backend variant
+            let auth_result = match self {
+                BackendConfig::LocalZebra { auth, .. }
+                | BackendConfig::RemoteZebra { auth, .. } => auth.get_auth_header(),
+                BackendConfig::RemoteZcashd { auth, .. }
+                | BackendConfig::RemoteZainod { auth, .. } => auth.get_auth_header(),
+            };
+
+            match auth_result {
+                Ok(Some(auth_header)) => {
+                    request_builder =
+                        request_builder.header(auth_header.key(), auth_header.value());
+                }
+                Ok(None) => {
+                    // No authentication required
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("Authentication error: {}", e),
+                    ));
+                }
+            }
+
+            match request_builder.send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        let _body = response.bytes().await.map_err(|e| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("Response read error: {}", e),
+                            )
+                        })?;
+                        return Ok(url);
+                    }
+                }
+                Err(_) if attempt < 2 => {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        format!("Connection failed after {} attempts: {}", attempt + 1, e),
+                    ));
+                }
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Could not establish connection with validator node after 3 attempts",
+        ))
     }
 }
 
@@ -925,20 +1152,68 @@ impl TlsConfig {
     }
 }
 
+/// JSON-RPC server authentication configuration.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JsonRpcAuth {
+    /// No authentication required
+    Disabled,
+    /// Cookie-based authentication
+    Cookie(CookieAuth),
+}
+
+impl Default for JsonRpcAuth {
+    fn default() -> Self {
+        JsonRpcAuth::Disabled
+    }
+}
+
+impl JsonRpcAuth {
+    /// Get authentication header for HTTP requests
+    pub fn get_auth_header(&self) -> Result<Option<AuthHeader>, AuthError> {
+        match self {
+            JsonRpcAuth::Disabled => Ok(None),
+            JsonRpcAuth::Cookie(cookie_auth) => {
+                let cookie_token = cookie_auth.read_cookie_token()?;
+                let credentials = base64::engine::general_purpose::STANDARD
+                    .encode(format!("__cookie__:{}", cookie_token));
+                Ok(Some(AuthHeader::authorization(format!(
+                    "Basic {}",
+                    credentials
+                ))))
+            }
+        }
+    }
+
+    /// Validates authentication configuration for a given address.
+    pub fn validate_for_address(
+        &self,
+        _rpc_address: &std::net::SocketAddr,
+    ) -> Result<(), AuthError> {
+        match self {
+            JsonRpcAuth::Disabled => Ok(()),
+            JsonRpcAuth::Cookie(cookie_auth) => {
+                // Validate that cookie file exists and is readable
+                cookie_auth.read_cookie_token().map(|_| ())
+            }
+        }
+    }
+}
+
 /// Configuration data for Zaino's JSON-RPC server.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct JsonRpcConfig {
     /// Server bind address.
     pub listen_address: SocketAddr,
     /// Cookie-based authentication configuration.
-    pub auth: CookieAuth,
+    pub auth: JsonRpcAuth,
 }
 
 impl Default for JsonRpcConfig {
     fn default() -> Self {
         Self {
             listen_address: "127.0.0.1:8237".parse().expect("Valid socket address"),
-            auth: CookieAuth::default(),
+            auth: JsonRpcAuth::default(),
         }
     }
 }
