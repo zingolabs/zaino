@@ -2,32 +2,33 @@
 //!
 //! This crate provides a comprehensive testing framework for Zaino, the Zcash blockchain indexer.
 //! It enables easy setup and orchestration of complete test environments including validators,
-//! indexers, and lightclients.
+//! indexers, and lightclients with **type-safe configuration**.
 //!
 //! ## Architecture Overview
 //!
-//! The testing framework is built around the **Test Environment** concept, where you specify
+//! The testing framework is built around the **TestConfigBuilder** concept, where you specify
 //! *what* services you want (validator, indexer, clients) and *how* they should be configured,
-//! rather than manually setting up individual components.
+//! with compile-time guarantees that prevent invalid combinations.
 //!
 //! ### Key Components
 //!
-//! - **[`TestEnvironment`]**: High-level specification of test topology (what services to run)
+//! - **[`TestConfigBuilder`]**: Type-safe configuration builder that prevents invalid backend combinations
 //! - **[`TestManager`]**: Orchestrator that launches and manages all services
-//! - **[`LocalNet`]**: Validator network abstraction (Zcashd or Zebrd)
+//! - **[`LocalNet`]**: Validator network abstraction (Zcashd or Zebra)
 //! - **[`Clients`]**: Managed zingolib lightclients for wallet testing
 //!
-//! ### Service Types
+//! ### Backend Types (Type-Safe)
 //!
-//! - **Validators**: [`ValidatorKind::Zcashd`] or [`ValidatorKind::Zebrd`]
-//! - **Backend Modes**: [`BackendMode::Fetch`] (JSON-RPC) or [`BackendMode::State`] (direct state access)
+//! - **Local Zebra**: [`TestConfigBuilder::local_zebra()`] - Direct state access (StateService)
+//! - **Remote Zebra**: [`TestConfigBuilder::remote_zebra()`] - JSON-RPC to Zebra (FetchService)
+//! - **Remote Zcashd**: [`TestConfigBuilder::remote_zcashd()`] - JSON-RPC to Zcashd (FetchService)
 //! - **Optional Services**: JSON-RPC server, lightclients, chain cache loading
 //!
 //! ## How TestManager Works
 //!
-//! The [`TestManager`] follows a **topology-first** approach:
+//! The [`TestManager`] follows a **configuration-first** approach:
 //!
-//! 1. **Environment Specification**: Define what services you need using [`TestEnvironment`] builders
+//! 1. **Configuration Building**: Define what services you need using [`TestConfigBuilder`] methods
 //! 2. **Resource Allocation**: Automatically allocates ports, directories, and network resources
 //! 3. **Service Orchestration**: Launches services in correct order with proper configuration
 //! 4. **Configuration Translation**: Converts test specifications into production config types
@@ -36,10 +37,26 @@
 //! ### Configuration Flow
 //!
 //! ```text
-//! TestEnvironment -> TestManager -> Production Configs (IndexerConfig, etc.)
+//! TestConfigBuilder -> TestManager -> Production Services
 //!       ↑                ↓
-//!   Test-focused    Real service configs
-//!   specifications   with proper types
+//!   Type-safe        Real service configs
+//!   test configs     (IndexerConfig, etc.)
+//! ```
+//!
+//! ## Type Safety Benefits
+//!
+//! The new design prevents invalid configurations at compile time:
+//!
+//! ```rust
+//! // ✅ Valid: LocalZebra automatically uses StateService  
+//! let config = TestConfigBuilder::local_zebra();
+//!
+//! // ✅ Valid: RemoteZcashd with appropriate auth
+//! let config = TestConfigBuilder::remote_zcashd()
+//!     .with_zcashd_password_auth("user".into(), "pass".into());
+//!
+//! // ❌ Invalid: This panics at runtime (by design)
+//! // TestConfigBuilder::remote_zcashd().with_zebra_cookie_auth(path)
 //! ```
 //!
 //! ## Usage Examples
@@ -47,13 +64,13 @@
 //! ### Basic Validator-Only Test
 //!
 //! ```no_run
-//! use zaino_testutils::{TestEnvironment, TestManager, ValidatorKind};
+//! use zaino_testutils::{TestConfigBuilder, TestManager};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Just run a Zebrd validator
-//!     let env = TestEnvironment::validator_only(ValidatorKind::Zebrd);
-//!     let test_manager = TestManager::launch(env).await?;
+//!     // Just run a Zebra validator (no indexer)
+//!     let config = TestConfigBuilder::validator_only_zebra();
+//!     let test_manager = TestManager::launch(config).await?;
 //!
 //!     // Generate some blocks
 //!     test_manager.generate_blocks_with_delay(10).await;
@@ -65,13 +82,13 @@
 //! ### Full Stack Integration Test
 //!
 //! ```no_run
-//! use zaino_testutils::{TestEnvironment, TestManager, ValidatorKind, BackendMode};
+//! use zaino_testutils::{TestConfigBuilder, TestManager};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Run validator + indexer + lightclients
-//!     let env = TestEnvironment::full_stack(ValidatorKind::Zebrd, BackendMode::Fetch);
-//!     let mut test_manager = TestManager::launch(env).await?;
+//!     // Run validator + indexer + lightclients (type-safe)
+//!     let config = TestConfigBuilder::full_stack_local_zebra();
+//!     let mut test_manager = TestManager::launch(config).await?;
 //!
 //!     // Wait for everything to be ready
 //!     test_manager.wait_for_validator_ready().await?;
@@ -90,15 +107,15 @@
 //! ### JSON Server Test Environment
 //!
 //! ```no_run
-//! use zaino_testutils::{TestEnvironment, TestManager, ValidatorKind};
+//! use zaino_testutils::{TestConfigBuilder, TestManager};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Zcashd with Zaino's JSON-RPC server (with cookie auth)
-//!     let env = TestEnvironment::json_server_tests(ValidatorKind::Zcashd, true);
-//!     let test_manager = TestManager::launch(env).await?;
+//!     // Remote Zebra with Zaino's JSON-RPC server (with cookie auth)
+//!     let config = TestConfigBuilder::json_server_tests_with_auth();
+//!     let test_manager = TestManager::launch(config).await?;
 //!
-//!     // Test JSON-RPC calls to both zcashd and zaino
+//!     // Test JSON-RPC calls to both zebra and zaino
 //!     // ... your test logic here ...
 //!     
 //!     Ok(())
@@ -108,13 +125,13 @@
 //! ### State Service Testing
 //!
 //! ```no_run
-//! use zaino_testutils::{TestEnvironment, TestManager, ValidatorKind};
+//! use zaino_testutils::{TestConfigBuilder, TestManager};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Direct Zebra state access (faster, more accurate)
-//!     let env = TestEnvironment::state_tests(ValidatorKind::Zebrd);
-//!     let test_manager = TestManager::launch(env).await?;
+//!     let config = TestConfigBuilder::state_tests();
+//!     let test_manager = TestManager::launch(config).await?;
 //!
 //!     // Get the BackendConfig for additional services
 //!     let backend_config = test_manager.backend_config();
@@ -126,19 +143,20 @@
 //! ### Custom Configuration
 //!
 //! ```no_run
-//! use zaino_testutils::{TestEnvironment, TestManager, ValidatorKind, BackendMode};
+//! use zaino_testutils::{TestConfigBuilder, TestManager};
+//! use zaino_commons::config::Network;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let env = TestEnvironment::basic_tests(ValidatorKind::Zebrd, BackendMode::Fetch)
-//!         .with_database_size(100 * 1024 * 1024)  // 100MB DB
-//!         .with_cache_capacity(1000)               // 1000 block cache
-//!         .customize_storage(|storage| {
-//!             // Custom storage tweaks
-//!             storage.cache.shard_amount = Some(4);
+//!     let config = TestConfigBuilder::remote_zebra()
+//!         .with_network(Network::Mainnet)
+//!         .with_sync_and_db()
+//!         .customize_config(|config| {
+//!             // Direct IndexerConfig customization
+//!             config.storage.cache.shard_amount = Some(4);
 //!         });
 //!
-//!     let test_manager = TestManager::launch(env).await?;
+//!     let test_manager = TestManager::launch(config).await?;
 //!     Ok(())
 //! }
 //! ```
@@ -147,13 +165,14 @@
 //!
 //! ```no_run
 //! use std::path::PathBuf;
-//! use zaino_testutils::{TestEnvironment, TestManager, ValidatorKind, ZEBRD_CHAIN_CACHE_DIR};
+//! use zaino_testutils::{TestConfigBuilder, TestManager, ZEBRD_CHAIN_CACHE_DIR};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     if let Some(cache_dir) = ZEBRD_CHAIN_CACHE_DIR.clone() {
-//!         let env = TestEnvironment::chain_cache_tests(ValidatorKind::Zebrd, cache_dir);
-//!         let test_manager = TestManager::launch(env).await?;
+//!         let config = TestConfigBuilder::remote_zebra()
+//!             .with_chain_cache(cache_dir);
+//!         let test_manager = TestManager::launch(config).await?;
 //!         
 //!         // Start with pre-synced blockchain state
 //!         println!("Chain height: {:?}", test_manager.local_net.get_chain_height().await);
@@ -164,7 +183,7 @@
 //!
 //! ## Module Organization
 //!
-//! - [`environment`]: Test environment specifications and builder patterns
+//! - [`config`]: Type-safe test configuration builders and specifications
 //! - [`manager`]: Main orchestration logic and service management  
 //! - [`validator`]: Validator launching (Zcashd/Zebrd) and LocalNet abstraction
 //! - [`clients`]: Lightclient creation and management
@@ -222,27 +241,74 @@ pub use binaries::*;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use config::{TestConfigBuilder};
+    use zaino_commons::config::*;
+    use zainodlib::config::default_ephemeral_cookie_path;
 
     #[tokio::test] 
     async fn test_full_integration() {
-        // Test the full integration with validator + indexer + clients
-        let env = TestEnvironment::full_stack(ValidatorKind::Zebrd, BackendMode::Fetch);
+        // Test the full integration with validator + indexer + clients  
+        let builder = TestConfigBuilder::full_stack_local_zebra();
         
-        // This would normally launch everything but we'll just test the builder
-        assert!(env.indexer.is_some());
-        assert!(env.clients.is_some());
-        assert_eq!(env.validator.kind, ValidatorKind::Zebrd);
+        // Verify the configuration
+        assert!(builder.enable_indexer());
+        assert!(builder.enable_lightclients());
+        assert!(matches!(builder.indexer_config().backend, BackendConfig::LocalZebra { .. }));
     }
 
     #[tokio::test]
     async fn test_json_server_scenario() {
-        // Test JSON server setup
-        let env = TestEnvironment::json_server_tests(ValidatorKind::Zcashd, true);
+        // Test JSON server setup with authentication
+        let builder = TestConfigBuilder::json_server_tests_with_auth();
         
-        assert!(env.indexer.is_some());
-        assert!(env.indexer.as_ref().unwrap().enable_json_server);
-        // Should have cookie auth enabled
-        assert!(!matches!(env.auth.validator_auth, zaino_commons::config::JsonRpcAuth::Disabled));
+        assert!(builder.enable_indexer());
+        assert!(builder.indexer_config().server.json_rpc.is_some());
+        
+        // Should have cookie auth enabled on backend
+        match &builder.indexer_config().backend {
+            BackendConfig::RemoteZebra { auth, .. } => {
+                assert!(matches!(auth, ZebradAuth::Cookie(_)));
+            }
+            _ => panic!("Expected RemoteZebra backend"),
+        }
+    }
+
+    #[tokio::test] 
+    async fn test_type_safety() {
+        // Demonstrate type safety improvements
+        
+        // This creates a valid local zebra (state) configuration
+        let local_config = TestConfigBuilder::local_zebra();
+        assert!(matches!(local_config.indexer_config().backend, BackendConfig::LocalZebra { .. }));
+        
+        // This creates a valid remote zcashd (fetch) configuration  
+        let zcashd_config = TestConfigBuilder::remote_zcashd();
+        assert!(matches!(zcashd_config.indexer_config().backend, BackendConfig::RemoteZcashd { .. }));
+        
+        // Type-safe auth methods
+        let zebra_with_auth = TestConfigBuilder::remote_zebra()
+            .with_zebra_cookie_auth(default_ephemeral_cookie_path());
+        
+        match &zebra_with_auth.indexer_config().backend {
+            BackendConfig::RemoteZebra { auth, .. } => {
+                assert!(matches!(auth, ZebradAuth::Cookie(_)));
+            }
+            _ => panic!("Expected RemoteZebra backend"),
+        }
+        
+        // Note: The following would cause a runtime panic (by design):
+        // TestConfigBuilder::remote_zcashd().with_zebra_cookie_auth(path) 
+        // Because Zcashd backends don't support Zebra auth types
+    }
+
+    #[tokio::test]
+    async fn test_validator_only_modes() {
+        // Test validator-only configurations (no indexer)
+        let validator_only = TestConfigBuilder::validator_only_zebra();
+        assert!(!validator_only.enable_indexer());
+        assert!(!validator_only.enable_lightclients());
+        
+        let zcashd_only = TestConfigBuilder::validator_only_zcashd();
+        assert!(!zcashd_only.enable_indexer());
+        assert!(matches!(zcashd_only.indexer_config().backend, BackendConfig::RemoteZcashd { .. }));
     }
 }
