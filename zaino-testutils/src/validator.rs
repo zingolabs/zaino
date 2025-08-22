@@ -8,9 +8,10 @@ pub use zingo_infra_services::validator::Validator;
 
 use crate::{
     binaries::*,
-    config::{TestConfigBuilder},
     ports::TestPorts,
 };
+use zaino_commons::config::BackendConfig;
+use zainodlib::config::IndexerConfig;
 
 /// Config for validators.
 pub enum ValidatorConfig {
@@ -195,23 +196,26 @@ impl zingo_infra_services::validator::Validator for LocalNet {
 
 impl LocalNet {
     /// Launch validator from test environment specification.
-    pub async fn launch_from_env(
-        env: &TestEnvironment,
+    pub async fn launch_from_config(
+        config: &IndexerConfig,
+        chain_cache: &Option<PathBuf>,
         ports: &TestPorts,
     ) -> Result<Self, std::io::Error> {
-        let validator_config = match env.validator.kind {
-            ValidatorKind::Zcashd => {
+        let validator_config = match &config.backend {
+            BackendConfig::RemoteZcashd { .. } => {
                 let cfg = zingo_infra_services::validator::ZcashdConfig {
                     zcashd_bin: ZCASHD_BIN.clone(),
                     zcash_cli_bin: ZCASH_CLI_BIN.clone(),
                     rpc_listen_port: Some(ports.validator_rpc.port()),
                     activation_heights: zingo_infra_services::network::ActivationHeights::default(),
                     miner_address: Some(REG_O_ADDR_FROM_ABANDONART),
-                    chain_cache: env.validator.chain_cache.clone(),
+                    chain_cache: chain_cache.clone(),
                 };
                 ValidatorConfig::ZcashdConfig(cfg)
             }
-            ValidatorKind::Zebrd => {
+            BackendConfig::LocalZebra { .. } 
+            | BackendConfig::RemoteZebra { .. } 
+            | BackendConfig::RemoteZainod { .. } => {
                 let cfg = zingo_infra_services::validator::ZebradConfig {
                     zebrad_bin: ZEBRD_BIN.clone(),
                     network_listen_port: None,
@@ -219,8 +223,8 @@ impl LocalNet {
                     indexer_listen_port: Some(ports.validator_grpc.port()),
                     activation_heights: zingo_infra_services::network::ActivationHeights::default(),
                     miner_address: zingo_infra_services::validator::ZEBRAD_DEFAULT_MINER,
-                    chain_cache: env.validator.chain_cache.clone(),
-                    network: env.validator.network.into(),
+                    chain_cache: chain_cache.clone(),
+                    network: config.network.into(),
                 };
                 ValidatorConfig::ZebrdConfig(cfg)
             }

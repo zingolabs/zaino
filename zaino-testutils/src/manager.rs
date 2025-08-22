@@ -15,15 +15,21 @@ use zingo_infra_services::validator::Validator as _;
 
 use crate::{
     clients::Clients,
-    config::{TestConfigBuilder},
+    config::TestConfigBuilder,
     ports::TestPorts,
     validator::LocalNet,
 };
 
 /// Test environment orchestrator.
 pub struct TestManager {
-    /// Test environment specification.
-    pub env: TestEnvironment,
+    /// Indexer configuration.
+    pub config: IndexerConfig,
+    /// Enable indexer flag.
+    pub enable_indexer: bool,
+    /// Enable lightclients flag.
+    pub enable_lightclients: bool,
+    /// Validator chain cache directory.
+    pub chain_cache: Option<PathBuf>,
     /// Network ports and paths.
     pub ports: TestPorts,
     /// Validator network.
@@ -37,28 +43,15 @@ pub struct TestManager {
 }
 
 impl TestManager {
-    /// Launch test environment from topology specification.
-    pub async fn launch(env: TestEnvironment) -> Result<Self, std::io::Error> {
-        // Validation
-        if (env.validator.kind == ValidatorKind::Zcashd)
-            && env
-                .indexer
-                .as_ref()
-                .map_or(false, |i| i.backend_mode == BackendMode::State)
-        {
+    /// Launch test environment from configuration builder.
+    pub async fn launch(builder: TestConfigBuilder) -> Result<Self, std::io::Error> {
+        // Extract parts from builder
+        let (mut config, enable_indexer, enable_lightclients, chain_cache) = builder.into_parts();
+        
+        // Validation: Can't enable clients without indexer (gRPC server needed)
+        if enable_lightclients && !enable_indexer {
             return Err(std::io::Error::other(
-                "Cannot use state backend with zcashd.",
-            ));
-        }
-
-        if env
-            .clients
-            .as_ref()
-            .map_or(false, |c| c.enable_lightclients)
-            && env.indexer.is_none()
-        {
-            return Err(std::io::Error::other(
-                "Cannot enable clients when indexer is not enabled.",
+                "Cannot enable lightclients without indexer (gRPC server needed).",
             ));
         }
 
@@ -75,22 +68,20 @@ impl TestManager {
         let ports = TestPorts::allocate().await?;
 
         // 2. Launch validator
-        let local_net = LocalNet::launch_from_env(&env, &ports).await?;
+        let local_net = LocalNet::launch_from_config(&config, &chain_cache, &ports).await?;
 
         // 3. Launch indexer if requested
-        let (zaino_handle, json_server_cookie_dir) = if env.indexer.is_some() {
-            let (handle, cookie_dir) = Self::launch_indexer(&env, &ports).await?;
+        let (zaino_handle, json_server_cookie_dir) = if enable_indexer {
+            // Update config with real ports
+            Self::update_config_with_ports(&mut config, &ports);
+            let (handle, cookie_dir) = Self::launch_indexer(&config, &ports).await?;
             (Some(handle), cookie_dir)
         } else {
             (None, None)
         };
 
         // 4. Launch clients if requested
-        let clients = if env
-            .clients
-            .as_ref()
-            .map_or(false, |c| c.enable_lightclients)
-        {
+        let clients = if enable_lightclients {
             let zaino_grpc_port = ports
                 .zaino_grpc
                 .ok_or_else(|| {
@@ -103,7 +94,10 @@ impl TestManager {
         };
 
         Ok(Self {
-            env,
+            config,
+            enable_indexer,
+            enable_lightclients,
+            chain_cache,
             ports,
             local_net,
             zaino_handle,
@@ -112,9 +106,38 @@ impl TestManager {
         })
     }
 
+    /// Update IndexerConfig placeholder ports with real allocated ports.
+    fn update_config_with_ports(config: &mut IndexerConfig, ports: &TestPorts) {
+        // Update backend RPC addresses with real validator port
+        match &mut config.backend {
+            BackendConfig::LocalZebra { rpc_address, indexer_rpc_address, .. } => {
+                *rpc_address = ports.validator_rpc;
+                if let Some(zaino_grpc) = ports.zaino_grpc {
+                    *indexer_rpc_address = zaino_grpc;
+                }
+            },
+            BackendConfig::RemoteZebra { rpc_address, .. } 
+            | BackendConfig::RemoteZcashd { rpc_address, .. } 
+            | BackendConfig::RemoteZainod { rpc_address, .. } => {
+                *rpc_address = ports.validator_rpc;
+            },
+        }
+
+        // Update server addresses with real zaino ports
+        if let Some(zaino_grpc) = ports.zaino_grpc {
+            config.server.grpc.listen_address = zaino_grpc;
+        }
+        
+        if let Some(ref mut json_rpc) = config.server.json_rpc {
+            if let Some(zaino_json) = ports.zaino_json {
+                json_rpc.listen_address = zaino_json;
+            }
+        }
+    }
+
     /// Launch indexer.
     async fn launch_indexer(
-        env: &TestEnvironment,
+        config: &IndexerConfig,
         ports: &TestPorts,
     ) -> Result<
         (
@@ -123,33 +146,19 @@ impl TestManager {
         ),
         std::io::Error,
     > {
-        let indexer_spec = env.indexer.as_ref().unwrap();
-
         // Allocate additional ports if needed
         let mut ports = ports.clone();
         ports.with_zaino_ports()?;
 
-        let zaino_grpc_address = ports.zaino_grpc.unwrap();
-        let zaino_json_address = ports.zaino_json.unwrap();
-
-        let json_server_cookie_dir = if indexer_spec.enable_json_server {
+        // Determine JSON server cookie directory
+        let json_server_cookie_dir = if config.server.json_rpc.is_some() {
             Some(default_ephemeral_cookie_path())
         } else {
             None
         };
 
-        let mut indexer_config = Self::build_indexer_config(
-            env,
-            &ports,
-            zaino_grpc_address,
-            zaino_json_address,
-            json_server_cookie_dir.clone(),
-        );
-
-        // Apply any customizations
-        for customizer in &env.indexer_customizers {
-            customizer(&mut indexer_config);
-        }
+        // Config is already properly configured with real ports
+        let indexer_config = config.clone();
 
         let handle = zainodlib::indexer::spawn_indexer(indexer_config)
             .await
@@ -161,84 +170,10 @@ impl TestManager {
         Ok((handle, json_server_cookie_dir))
     }
 
-    /// Build production IndexerConfig from test specification.
-    fn build_indexer_config(
-        env: &TestEnvironment,
-        ports: &TestPorts,
-        zaino_grpc_address: SocketAddr,
-        zaino_json_address: SocketAddr,
-        _json_server_cookie_dir: Option<PathBuf>,
-    ) -> IndexerConfig {
-        let indexer_spec = env.indexer.as_ref().unwrap();
-
-        let backend = Self::build_backend_config(env, ports);
-
-        let server = ServerConfig {
-            json_rpc: if indexer_spec.enable_json_server {
-                Some(JsonRpcConfig {
-                    listen_address: zaino_json_address,
-                    auth: env.auth.server_auth.clone(),
-                })
-            } else {
-                None
-            },
-            grpc: GrpcConfig {
-                listen_address: zaino_grpc_address,
-                tls: TlsConfig::Disabled,
-            },
-        };
-
-        IndexerConfig {
-            network: env.validator.network,
-            backend,
-            server,
-            service: ServiceConfig::default(),
-            storage: StorageConfig {
-                cache: CacheConfig {
-                    capacity: None,
-                    shard_amount: None,
-                },
-                database: DatabaseConfig {
-                    path: ports.zaino_db.clone(),
-                    size: None,
-                },
-            },
-            debug: indexer_spec.testing_flags.clone().into(),
-        }
-    }
-
-    /// Build production BackendConfig from test specification.
-    fn build_backend_config(env: &TestEnvironment, ports: &TestPorts) -> BackendConfig {
-        let indexer_spec = env.indexer.as_ref().unwrap();
-
-        match (env.validator.kind, indexer_spec.backend_mode) {
-            (ValidatorKind::Zebrd, BackendMode::State) => BackendConfig::LocalZebra {
-                rpc_address: ports.validator_rpc,
-                auth: env.auth.validator_auth.clone(),
-                zebra_state: ZebradStateConfig::default(),
-                indexer_rpc_address: ports.validator_grpc,
-                zebra_database: DatabaseConfig {
-                    path: ports.zebra_db.clone(),
-                    size: None,
-                },
-            },
-            (ValidatorKind::Zebrd, BackendMode::Fetch) => BackendConfig::RemoteZebra {
-                rpc_address: ports.validator_rpc,
-                auth: env.auth.validator_auth.clone(),
-            },
-            (ValidatorKind::Zcashd, BackendMode::Fetch) => BackendConfig::RemoteZcashd {
-                rpc_address: ports.validator_rpc,
-                auth: env.auth.validator_auth.clone(),
-            },
-            (ValidatorKind::Zcashd, BackendMode::State) => {
-                panic!("State backend not supported with zcashd")
-            }
-        }
-    }
 
     /// Get BackendConfig representing this test environment.
-    pub fn backend_config(&self) -> BackendConfig {
-        Self::build_backend_config(&self.env, &self.ports)
+    pub fn backend_config(&self) -> &BackendConfig {
+        &self.config.backend
     }
 
     /// Generates `blocks` regtest blocks.
@@ -275,17 +210,17 @@ impl TestManager {
                 .body(request_body);
 
             // Add authentication if configured
-            let request = match &self.env.auth.validator_auth {
-                JsonRpcAuth::Disabled => request,
-                JsonRpcAuth::Cookie(cookie_auth) => {
-                    if !cookie_auth.path.as_os_str().is_empty() {
-                        // For cookie auth, we'd need to read the cookie file
-                        // For now, just proceed without auth for simplicity
-                        request
-                    } else {
-                        request
-                    }
-                }
+            let validator_auth = match &self.config.backend {
+                BackendConfig::LocalZebra { auth, .. } 
+                | BackendConfig::RemoteZebra { auth, .. } => auth.get_auth_header(),
+                BackendConfig::RemoteZcashd { auth, .. } 
+                | BackendConfig::RemoteZainod { auth, .. } => auth.get_auth_header(),
+            };
+            
+            let request = match validator_auth {
+                Ok(Some(auth_header)) => request.header(auth_header.key(), auth_header.value()),
+                Ok(None) => request, // No auth
+                Err(_) => request, // Auth error - proceed without auth for now
             };
 
             if let Ok(response) = request.send().await {
