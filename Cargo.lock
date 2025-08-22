@@ -2163,6 +2163,7 @@ dependencies = [
 name = "integration-tests"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
  "core2 0.4.0",
  "futures",
  "prost",

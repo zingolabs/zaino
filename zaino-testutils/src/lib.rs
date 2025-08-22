@@ -48,6 +48,8 @@
 //! The new design prevents invalid configurations at compile time:
 //!
 //! ```rust
+//! use zaino_testutils::TestConfigBuilder;
+//!
 //! // ✅ Valid: LocalZebra automatically uses StateService  
 //! let config = TestConfigBuilder::local_zebra();
 //!
@@ -85,7 +87,7 @@
 //! use zaino_testutils::{TestConfigBuilder, TestManager};
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //!     // Run validator + indexer + lightclients (type-safe)
 //!     let config = TestConfigBuilder::full_stack_local_zebra();
 //!     let mut test_manager = TestManager::launch(config).await?;
@@ -165,7 +167,7 @@
 //!
 //! ```no_run
 //! use std::path::PathBuf;
-//! use zaino_testutils::{TestConfigBuilder, TestManager, ZEBRD_CHAIN_CACHE_DIR};
+//! use zaino_testutils::{TestConfigBuilder, TestManager, ZEBRD_CHAIN_CACHE_DIR, Validator};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -30,5 +30,8 @@ tokio = { workspace = true }
 # Logging
 tracing-subscriber = { workspace = true }
 
+# Error handling  
+anyhow = { workspace = true }
+
 # Url
 url = { workspace = true }

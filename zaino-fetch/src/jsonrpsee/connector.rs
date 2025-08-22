@@ -19,7 +19,7 @@ use std::{
 };
 use tracing::error;
 use zaino_commons::config::{
-    AuthHeader, ValidatorConfig, ValidatorFetchConfig, ZcashdAuth, ZebradAuth, ZebradStateConfig,
+    AuthHeader, BackendConfig, ValidatorConfig, ValidatorFetchConfig, ZcashdAuth, ZebradAuth, ZebradStateConfig,
 };
 
 use zebra_rpc::client::ValidateAddressResponse;
@@ -211,6 +211,31 @@ impl JsonRpSeeConnector {
             .auth
             .get_auth_header()
             .map_err(|e| TransportError::BadNodeData(Box::new(e), "Auth header"))?;
+
+        Self::new(url, auth_header)
+    }
+
+    /// Creates a connector from a BackendConfig.
+    /// This provides a convenient way to create a connector directly from the
+    /// backend configuration, handling connection testing and auth automatically.
+    pub async fn from_backend_config(config: &BackendConfig) -> Result<Self, TransportError> {
+        // Use test_and_get_url to get a validated, tested URL
+        let url = config.test_and_get_url()
+            .await
+            .map_err(|e| TransportError::BadNodeData(Box::new(e), "Backend connection test failed"))?;
+
+        let auth_header = match config {
+            BackendConfig::LocalZebra { auth, .. } 
+            | BackendConfig::RemoteZebra { auth, .. } => {
+                auth.get_auth_header()
+                    .map_err(|e| TransportError::BadNodeData(Box::new(e), "Zebra auth header"))?
+            },
+            BackendConfig::RemoteZcashd { auth, .. } 
+            | BackendConfig::RemoteZainod { auth, .. } => {
+                auth.get_auth_header()
+                    .map_err(|e| TransportError::BadNodeData(Box::new(e), "Zcashd auth header"))?
+            },
+        };
 
         Self::new(url, auth_header)
     }
