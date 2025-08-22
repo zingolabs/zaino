@@ -131,6 +131,7 @@ impl LocalCacheTestEnvironment {
             cache: test_manager.config.storage.cache.clone(),
             database: test_manager.config.storage.database.clone(),
             network: test_manager.config.network,
+            // todo!: this smells off... let's investigate the proper source of these flags...
             no_sync: !config.enable_sync || test_manager.config.debug.no_sync,
             no_db: !config.enable_db || test_manager.config.debug.no_db,
         };
