@@ -48,6 +48,8 @@ impl From<TestingFlags> for DebugConfig {
 pub struct TestConfigBuilder {
     /// Complete indexer configuration.
     config: IndexerConfig,
+    /// Enable zaino indexer service.
+    enable_indexer: bool,
     /// Enable zingolib lightclients.
     enable_lightclients: bool,
     /// Optional chain cache directory for validator.
@@ -72,6 +74,7 @@ impl TestConfigBuilder {
                 storage: StorageConfig::default(),
                 debug: DebugConfig::default(),
             },
+            enable_indexer: true,
             enable_lightclients: false,
             chain_cache: None,
         }
@@ -91,6 +94,7 @@ impl TestConfigBuilder {
                 storage: StorageConfig::default(),
                 debug: DebugConfig::default(),
             },
+            enable_indexer: true,
             enable_lightclients: false,
             chain_cache: None,
         }
@@ -110,6 +114,47 @@ impl TestConfigBuilder {
                 storage: StorageConfig::default(),
                 debug: DebugConfig::default(),
             },
+            enable_indexer: true,
+            enable_lightclients: false,
+            chain_cache: None,
+        }
+    }
+
+    /// Create a validator-only configuration (no indexer).
+    pub fn validator_only_zebra() -> Self {
+        Self {
+            config: IndexerConfig {
+                network: Network::Regtest,
+                server: ServerConfig::default(),
+                backend: BackendConfig::RemoteZebra {
+                    rpc_address: "127.0.0.1:0".parse().unwrap(), // Placeholder port
+                    auth: ZebradAuth::Disabled,
+                },
+                service: ServiceConfig::default(),
+                storage: StorageConfig::default(),
+                debug: DebugConfig::default(),
+            },
+            enable_indexer: false,
+            enable_lightclients: false,
+            chain_cache: None,
+        }
+    }
+
+    /// Create a validator-only configuration with Zcashd (no indexer).
+    pub fn validator_only_zcashd() -> Self {
+        Self {
+            config: IndexerConfig {
+                network: Network::Regtest,
+                server: ServerConfig::default(),
+                backend: BackendConfig::RemoteZcashd {
+                    rpc_address: "127.0.0.1:0".parse().unwrap(), // Placeholder port
+                    auth: ZcashdAuth::Disabled,
+                },
+                service: ServiceConfig::default(),
+                storage: StorageConfig::default(),
+                debug: DebugConfig::default(),
+            },
+            enable_indexer: false,
             enable_lightclients: false,
             chain_cache: None,
         }
@@ -156,6 +201,18 @@ impl TestConfigBuilder {
             listen_address: "127.0.0.1:0".parse().unwrap(), // Placeholder port
             auth: JsonRpcAuth::Disabled,
         });
+        self
+    }
+
+    /// Enable indexer service.
+    pub fn with_indexer(mut self) -> Self {
+        self.enable_indexer = true;
+        self
+    }
+
+    /// Disable indexer service (validator-only mode).
+    pub fn without_indexer(mut self) -> Self {
+        self.enable_indexer = false;
         self
     }
 
@@ -247,6 +304,10 @@ impl TestConfigBuilder {
         &self.config
     }
 
+    pub(crate) fn enable_indexer(&self) -> bool {
+        self.enable_indexer
+    }
+
     pub(crate) fn enable_lightclients(&self) -> bool {
         self.enable_lightclients
     }
@@ -255,8 +316,8 @@ impl TestConfigBuilder {
         self.chain_cache.as_ref()
     }
 
-    pub(crate) fn into_parts(self) -> (IndexerConfig, bool, Option<PathBuf>) {
-        (self.config, self.enable_lightclients, self.chain_cache)
+    pub(crate) fn into_parts(self) -> (IndexerConfig, bool, bool, Option<PathBuf>) {
+        (self.config, self.enable_indexer, self.enable_lightclients, self.chain_cache)
     }
 }
 
