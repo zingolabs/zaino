@@ -191,7 +191,7 @@ pub mod binaries;
 pub mod clients;
 
 /// Test environment specifications and builders.
-pub mod environment;
+pub mod config;
 
 /// Test environment orchestration and management.
 pub mod manager;
@@ -203,9 +203,8 @@ pub mod ports;
 pub mod validator;
 
 // Re-export main types for convenience
-pub use environment::{
-    AuthSpec, BackendMode, ClientSpec, IndexerSpec, TestEnvironment, TestingFlags, ValidatorKind,
-    ValidatorSpec,
+pub use config::{
+    TestConfigBuilder, TestingFlags,
 };
 pub use manager::TestManager;
 pub use validator::{LocalNet, ValidatorConfig};
@@ -223,7 +222,7 @@ pub use binaries::*;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use environment::{BackendMode, TestEnvironment, ValidatorKind};
+    use config::{TestConfigBuilder};
 
     #[tokio::test] 
     async fn test_full_integration() {

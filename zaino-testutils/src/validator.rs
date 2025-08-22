@@ -8,7 +8,7 @@ pub use zingo_infra_services::validator::Validator;
 
 use crate::{
     binaries::*,
-    environment::{TestEnvironment, ValidatorKind},
+    config::{TestConfigBuilder},
     ports::TestPorts,
 };
 

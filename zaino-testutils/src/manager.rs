@@ -15,7 +15,7 @@ use zingo_infra_services::validator::Validator as _;
 
 use crate::{
     clients::Clients,
-    environment::{BackendMode, TestEnvironment, ValidatorKind},
+    config::{TestConfigBuilder},
     ports::TestPorts,
     validator::LocalNet,
 };
