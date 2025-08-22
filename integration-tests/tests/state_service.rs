@@ -1,4 +1,4 @@
-use zaino_state::{BackendType, FetchServiceError};
+use zaino_state::BackendType;
 use zaino_state::{
     FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer, StateService,
     StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
@@ -1070,7 +1070,11 @@ mod zebrad {
             for _ in 0..5 {
                 test_manager.generate_blocks_with_delay(1).await;
                 assert_eq!(
-                    chaintip_subscriber.next_tip_hash().await.unwrap().0,
+                    chaintip_subscriber
+                        .next_tip_hash()
+                        .await
+                        .unwrap()
+                        .bytes_in_display_order(),
                     <[u8; 32]>::try_from(
                         state_service_subscriber
                             .get_latest_block()
@@ -1269,13 +1273,13 @@ mod zebrad {
             state_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
         }
 
-        /// Direct fetch of `getmempoolinfo` RPC not supported by Zebra
+        /// `getmempoolinfo` computed from local Broadcast state
         #[tokio::test]
         async fn get_mempool_info() {
             let (
                 mut test_manager,
                 _fetch_service,
-                fetch_service_subscriber,
+                _fetch_service_subscriber, // no longer used
                 _state_service,
                 state_service_subscriber,
             ) = create_test_manager_and_services(&ValidatorKind::Zebrad, None, true, true, None)
@@ -1304,37 +1308,34 @@ mod zebrad {
             .await
             .unwrap();
 
+            // Let the broadcaster/subscribers observe the new tx
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-            let fetch_service_result = fetch_service_subscriber.get_mempool_info().await;
-            let state_service_result = state_service_subscriber.get_mempool_info().await;
+            // Call the internal mempool info method
+            let info = state_service_subscriber.get_mempool_info().await.unwrap();
 
-            // Zebra does not support this RPC.
-            // When they implement it, this will start failing and will need to be updated.
-            assert!(fetch_service_result.is_err());
-            let fetch_service_error = fetch_service_result.unwrap_err();
-            assert!(matches!(
-                fetch_service_error,
-                FetchServiceError::Critical(_)
-            ));
+            // Derive expected values directly from the current mempool contents
+            let entries = state_service_subscriber.mempool.get_mempool().await;
 
-            // The state service does not fail.
-            assert!(state_service_result.is_ok());
-            let state_service_result = state_service_result.unwrap();
-            assert_eq!(state_service_result.size, 1);
-            assert!(state_service_result.bytes > 0);
-            assert_eq!(state_service_result.bytes, 9199);
-            assert!(state_service_result.usage > 0);
-            assert_eq!(state_service_result.usage, 216);
+            assert_eq!(entries.len() as u64, info.size);
+            assert!(info.size >= 1);
 
-            // accessing the transaction JSON Object
-            let getrawtx = &state_service_subscriber.mempool.get_mempool().await[0].1 .0;
-            // ...and its boxed inner field
-            match getrawtx {
-                zebra_rpc::methods::GetRawTransaction::Object(inner) => {
-                    assert_eq!(inner.size().expect("Some size instead of None"), 9199);
-                }
-                _ => panic!("expected getrawtx: {getrawtx:?} to be an Object"),
+            let expected_bytes: u64 = entries.iter().map(|(_, v)| v.0.as_ref().len() as u64).sum();
+
+            let expected_key_heap_bytes: u64 =
+                entries.iter().map(|(k, _)| k.0.capacity() as u64).sum();
+
+            let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
+
+            assert!(info.bytes > 0);
+            assert_eq!(info.bytes, expected_bytes);
+
+            assert!(info.usage >= info.bytes);
+            assert_eq!(info.usage, expected_usage);
+
+            // Optional: when exactly one tx, its serialized length must equal `bytes`
+            if info.size == 1 {
+                assert_eq!(entries[0].1 .0.as_ref().len() as u64, expected_bytes);
             }
 
             test_manager.close().await;

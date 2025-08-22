@@ -17,6 +17,8 @@ zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
 # LibRustZcash
+zcash_address = { workspace = true }
+zcash_keys = { workspace = true }
 zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
@@ -60,7 +62,6 @@ nonempty = "0.11.0"
 arc-swap = "1.7.1"
 reqwest.workspace = true
 bitflags = { workspace = true }
-zcash_address = { workspace = true }
 derive_more = { version = "2.0.1", features = ["from"] }
 
 [dev-dependencies]

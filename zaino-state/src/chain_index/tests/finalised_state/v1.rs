@@ -12,6 +12,7 @@ use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::test::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
+use crate::chain_index::types::TransactionHash;
 use crate::error::FinalisedStateError;
 use crate::{AddrScript, ChainBlock, ChainWork, Height, Outpoint};
 
@@ -71,6 +72,8 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
 ) {
     let (blocks, faucet, recipient) = load_test_vectors().unwrap();
 
+    dbg!(blocks.len());
+
     let source = build_mockchain_source(blocks.clone());
 
     let (db_dir, zaino_db) = spawn_v1_zaino_db(source).await.unwrap();
@@ -86,13 +89,13 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
     ) in blocks.clone()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block,
+            &zebra_block,
             sapling_root,
             sapling_root_size as u32,
             orchard_root,
             orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -257,13 +260,13 @@ async fn load_db_from_file() {
             ) in blocks_clone
             {
                 let chain_block = ChainBlock::try_from((
-                    zebra_block,
+                    &zebra_block,
                     sapling_root,
                     sapling_root_size as u32,
                     orchard_root,
                     orchard_root_size as u32,
-                    parent_chain_work,
-                    zebra_chain::parameters::Network::new_regtest(
+                    &parent_chain_work,
+                    &zebra_chain::parameters::Network::new_regtest(
                         zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                             before_overwinter: Some(1),
                             overwinter: Some(1),
@@ -403,13 +406,13 @@ async fn get_chain_blocks() {
     ) in blocks.iter()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block.clone(),
+            zebra_block,
             *sapling_root,
             *sapling_root_size as u32,
             *orchard_root,
             *orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -430,7 +433,7 @@ async fn get_chain_blocks() {
         parent_chain_work = *chain_block.index().chainwork();
 
         let reader_chain_block = db_reader.get_chain_block(Height(*height)).await.unwrap();
-        assert_eq!(chain_block, reader_chain_block);
+        assert_eq!(Some(chain_block), reader_chain_block);
         println!("ChainBlock at height {height} OK");
     }
 }
@@ -453,13 +456,13 @@ async fn get_compact_blocks() {
     ) in blocks.iter()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block.clone(),
+            zebra_block,
             *sapling_root,
             *sapling_root_size as u32,
             *orchard_root,
             *orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -495,6 +498,7 @@ async fn get_faucet_txids() {
 
     let start = Height(blocks.first().unwrap().0);
     let end = Height(blocks.last().unwrap().0);
+    dbg!(&start, &end);
 
     let (faucet_txids, faucet_utxos, _faucet_balance) = faucet;
     let (_faucet_address, _txid, _output_index, faucet_script, _satoshis, _height) =
@@ -513,13 +517,13 @@ async fn get_faucet_txids() {
     ) in blocks.iter()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block.clone(),
+            zebra_block,
             *sapling_root,
             *sapling_root_size as u32,
             *orchard_root,
             *orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -544,7 +548,7 @@ async fn get_faucet_txids() {
         let block_txids: Vec<String> = chain_block
             .transactions()
             .iter()
-            .map(|tx_data| hex::encode(tx_data.txid()))
+            .map(|tx_data| tx_data.txid().to_string())
             .collect();
         let filtered_block_txids: Vec<String> = block_txids
             .into_iter()
@@ -556,7 +560,7 @@ async fn get_faucet_txids() {
             .addr_tx_locations_by_range(faucet_addr_script, block_height, block_height)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap_or_default();
         let mut reader_block_txids = Vec::new();
         for tx_location in reader_faucet_tx_locations {
             let txid = db_reader.get_txid(tx_location).await.unwrap();
@@ -611,13 +615,13 @@ async fn get_recipient_txids() {
     ) in blocks.iter()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block.clone(),
+            zebra_block,
             *sapling_root,
             *sapling_root_size as u32,
             *orchard_root,
             *orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -642,7 +646,7 @@ async fn get_recipient_txids() {
         let block_txids: Vec<String> = chain_block
             .transactions()
             .iter()
-            .map(|tx_data| hex::encode(tx_data.txid()))
+            .map(|tx_data| tx_data.txid().to_string())
             .collect();
 
         // Get block txids that are relevant to recipient.
@@ -837,13 +841,13 @@ async fn check_faucet_spent_map() {
     ) in blocks.iter()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block.clone(),
+            zebra_block,
             *sapling_root,
             *sapling_root_size as u32,
             *orchard_root,
             *orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -864,11 +868,11 @@ async fn check_faucet_spent_map() {
         parent_chain_work = *chain_block.index().chainwork();
 
         for tx in chain_block.transactions() {
-            let txid = tx.txid();
+            let txid = tx.txid().0;
             let outputs = tx.transparent().outputs();
             for (vout_idx, output) in outputs.iter().enumerate() {
                 if output.script_hash() == faucet_addr_script.hash() {
-                    let outpoint = Outpoint::new_from_be(txid, vout_idx as u32);
+                    let outpoint = Outpoint::new(txid, vout_idx as u32);
 
                     let spender = db_reader.get_outpoint_spender(outpoint).await.unwrap();
 
@@ -899,7 +903,7 @@ async fn check_faucet_spent_map() {
         .zip(faucet_ouptpoints_spent_status.iter())
     {
         let outpoint_tuple = (
-            crate::Hash::from(*outpoint.prev_txid()).to_string(),
+            TransactionHash::from(*outpoint.prev_txid()).to_string(),
             outpoint.prev_index(),
         );
         match spender_option {
@@ -973,13 +977,13 @@ async fn check_recipient_spent_map() {
     ) in blocks.iter()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block.clone(),
+            zebra_block,
             *sapling_root,
             *sapling_root_size as u32,
             *orchard_root,
             *orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -1000,11 +1004,11 @@ async fn check_recipient_spent_map() {
         parent_chain_work = *chain_block.index().chainwork();
 
         for tx in chain_block.transactions() {
-            let txid = tx.txid();
+            let txid = tx.txid().0;
             let outputs = tx.transparent().outputs();
             for (vout_idx, output) in outputs.iter().enumerate() {
                 if output.script_hash() == recipient_addr_script.hash() {
-                    let outpoint = Outpoint::new_from_be(txid, vout_idx as u32);
+                    let outpoint = Outpoint::new(txid, vout_idx as u32);
 
                     let spender = db_reader.get_outpoint_spender(outpoint).await.unwrap();
 
@@ -1035,7 +1039,7 @@ async fn check_recipient_spent_map() {
         .zip(recipient_ouptpoints_spent_status.iter())
     {
         let outpoint_tuple = (
-            crate::Hash::from(*outpoint.prev_txid()).to_string(),
+            TransactionHash::from(*outpoint.prev_txid()).to_string(),
             outpoint.prev_index(),
         );
         match spender_option {

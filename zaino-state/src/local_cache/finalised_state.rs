@@ -103,9 +103,9 @@ pub struct FinalisedState {
     state: Option<ReadStateService>,
     /// LMDB Database Environmant.
     database: Arc<Environment>,
-    /// LMDB Databas containing `<block_height, block_hash>`.
+    /// LMDB Database containing `<block_height, block_hash>`.
     heights_to_hashes: Database,
-    /// LMDB Databas containing `<block_hash, compact_block>`.
+    /// LMDB Database containing `<block_hash, compact_block>`.
     hashes_to_blocks: Database,
     /// Database reader request sender.
     request_sender: tokio::sync::mpsc::Sender<DbRequest>,

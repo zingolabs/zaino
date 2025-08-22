@@ -237,6 +237,63 @@ pub(crate) fn build_mockchain_source(
     MockchainSource::new(zebra_blocks, block_roots, block_hashes)
 }
 
+#[allow(clippy::type_complexity)]
+pub(crate) fn build_active_mockchain_source(
+    // the input data for this function could be reduced for wider use
+    // but is more simple to pass all test block data here.
+    blockchain_data: Vec<(
+        u32,
+        ChainBlock,
+        CompactBlock,
+        zebra_chain::block::Block,
+        (
+            zebra_chain::sapling::tree::Root,
+            u64,
+            zebra_chain::orchard::tree::Root,
+            u64,
+        ),
+    )>,
+) -> MockchainSource {
+    let (
+        mut heights,
+        mut chain_blocks,
+        mut compact_blocks,
+        mut zebra_blocks,
+        mut block_roots,
+        mut block_hashes,
+    ) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    for (
+        height,
+        chain_block,
+        compact_block,
+        zebra_block,
+        (sapling_root, sapling_tree_size, orchard_root, orchard_tree_size),
+    ) in blockchain_data.clone()
+    {
+        heights.push(height);
+        chain_blocks.push(chain_block.clone());
+        compact_blocks.push(compact_block);
+        zebra_blocks.push(Arc::new(zebra_block));
+
+        block_roots.push((
+            Some((sapling_root, sapling_tree_size)),
+            Some((orchard_root, orchard_tree_size)),
+        ));
+
+        block_hashes.push(*chain_block.index().hash());
+    }
+
+    MockchainSource::new_with_active_height(zebra_blocks, block_roots, block_hashes, 0)
+}
+
 // ***** Tests *****
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -248,23 +305,22 @@ async fn vectors_can_be_loaded_and_deserialised() {
         !blocks.is_empty(),
         "expected at least one block in test-vectors"
     );
-    let mut prev_h: u32 = 0;
-    for (h, chain_block, compact_block, _zebra_block, _block_roots) in &blocks {
+    let mut expected_height: u32 = 0;
+    for (height, chain_block, compact_block, _zebra_block, _block_roots) in &blocks {
         // println!("Checking block at height {h}");
 
         assert_eq!(
-            prev_h,
-            (h - 1),
-            "Chain height continuity check failed at height {h}"
+            expected_height, *height,
+            "Chain height continuity check failed at height {height}"
         );
-        prev_h = *h;
+        expected_height = *height + 1;
 
         let compact_block_hash = compact_block.hash.clone();
         let chain_block_hash_bytes = chain_block.hash().0.to_vec();
 
         assert_eq!(
             compact_block_hash, chain_block_hash_bytes,
-            "Block hash check failed at height {h}"
+            "Block hash check failed at height {height}"
         );
 
         // ChainBlock round trip check.
@@ -272,7 +328,7 @@ async fn vectors_can_be_loaded_and_deserialised() {
         let reparsed = ChainBlock::from_bytes(&bytes).unwrap();
         assert_eq!(
             chain_block, &reparsed,
-            "ChainBlock round-trip failed at height {h}"
+            "ChainBlock round-trip failed at height {height}"
         );
     }
 

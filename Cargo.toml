@@ -8,6 +8,7 @@ members = [
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
+    "zaino-testvectors"
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -33,16 +34,17 @@ zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git
 zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "7509a6d26c6424b2e22585fabd0bb974bff6bf55" }
 
 # Librustzcash
-zcash_client_backend = { version = "0.18.0", features = ["lightwalletd-tonic"] }
-zcash_protocol = "0.5.1"
-zcash_primitives = "0.22"
-zcash_transparent = "0.3"
+zcash_address = "0.9"
+zcash_keys = "0.10"
+zcash_protocol = "0.6"
+zcash_primitives = "0.24"
+zcash_transparent = "0.4"
 
 # Zebra
 # Can be updated to 2.4.0 once lands. Should be updated to crates.io releases once available.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0893e1a7f499cadad1d9480216b3057dfd7900c7" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0893e1a7f499cadad1d9480216b3057dfd7900c7" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "0893e1a7f499cadad1d9480216b3057dfd7900c7" }
+zebra-chain = "2.0"
+zebra-state = "2.0"
+zebra-rpc = "2.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -119,11 +121,11 @@ zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
 zaino-testutils = { path = "zaino-testutils" }
+zaino-testvectors = { path = "zaino-testvectors" }
 zainod = { path = "zainod" }
 figment = "0.10"
 nonempty = "0.11.0"
 proptest = "~1.2"
-zcash_address = "0.7.1"
 
 # Patch for vulnerable dependency
 slab = "0.4.11"

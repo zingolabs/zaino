@@ -24,6 +24,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 futures.workspace = true
 zcash_primitives = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
+tempfile.workspace = true
 
 # Runtime
 tokio = { workspace = true }
@@ -33,3 +34,6 @@ tracing-subscriber = { workspace = true }
 
 # Url
 url = { workspace = true }
+
+[dev-dependencies]
+anyhow = "1.0"

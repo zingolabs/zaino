@@ -9,8 +9,10 @@ use super::{
 };
 
 use crate::{
-    chain_index::source::BlockchainSource, config::BlockCacheConfig, error::FinalisedStateError,
-    ChainBlock, ChainWork, Hash, Height,
+    chain_index::{source::BlockchainSource, types::GENESIS_HEIGHT},
+    config::BlockCacheConfig,
+    error::FinalisedStateError,
+    BlockHash, ChainBlock, ChainWork, Height,
 };
 
 use async_trait::async_trait;
@@ -132,8 +134,20 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                 // start from shadow_db_height in case database was shutdown mid-migration.
                 let mut parent_chain_work = ChainWork::from_u256(0.into());
 
-                let mut shadow_db_height = shadow.db_height().await?.unwrap_or(Height(0));
-                let mut primary_db_height = router.db_height().await?.unwrap_or(Height(0));
+                let shadow_db_height_opt = shadow.db_height().await?;
+                let mut shadow_db_height = shadow_db_height_opt.unwrap_or(GENESIS_HEIGHT);
+                let mut build_start_height = if shadow_db_height_opt.is_some() {
+                    parent_chain_work = *shadow
+                        .get_block_header(shadow_db_height)
+                        .await?
+                        .index()
+                        .chainwork();
+
+                    shadow_db_height + 1
+                } else {
+                    shadow_db_height
+                };
+                let mut primary_db_height = router.db_height().await?.unwrap_or(GENESIS_HEIGHT);
 
                 info!(
                     "Starting shadow database build, current database tips: v0:{} v1:{}",
@@ -145,15 +159,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                         break;
                     }
 
-                    if shadow_db_height.0 > 0 {
-                        parent_chain_work = *shadow
-                            .get_block_header(shadow_db_height)
-                            .await?
-                            .index()
-                            .chainwork();
-                    }
-
-                    for height in (shadow_db_height.0 + 1)..=primary_db_height.0 {
+                    for height in (build_start_height.0)..=primary_db_height.0 {
                         let block = source
                             .get_block(zebra_state::HashOrHeight::Height(
                                 zebra_chain::block::Height(height),
@@ -164,7 +170,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                                     "block not found at height {height}"
                                 ))
                             })?;
-                        let hash = Hash::from(block.hash().0);
+                        let hash = BlockHash::from(block.hash().0);
 
                         let (sapling_root_data, orchard_root_data) =
                             source.get_commitment_tree_roots(hash).await?;
@@ -182,15 +188,17 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                             })?;
 
                         let chain_block = ChainBlock::try_from((
-                            (*block).clone(),
+                            block.as_ref(),
                             sapling_root,
                             sapling_root_size as u32,
                             orchard_root,
                             orchard_root_size as u32,
-                            parent_chain_work,
-                            cfg.network.clone(),
+                            &parent_chain_work,
+                            &cfg.network,
                         ))
                         .map_err(FinalisedStateError::Custom)?;
+
+                        parent_chain_work = *chain_block.chainwork();
 
                         shadow.write_block(chain_block).await?;
                     }
@@ -198,6 +206,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                     std::thread::sleep(std::time::Duration::from_millis(100));
 
                     shadow_db_height = shadow.db_height().await?.unwrap_or(Height(0));
+                    build_start_height = shadow_db_height + 1;
                     primary_db_height = router.db_height().await?.unwrap_or(Height(0));
                 }
 

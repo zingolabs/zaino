@@ -7,15 +7,18 @@ use v0::DbV0;
 use v1::DbV1;
 
 use crate::{
-    chain_index::finalised_state::capability::{
-        BlockCoreExt, BlockShieldedExt, BlockTransparentExt, ChainBlockExt, CompactBlockExt,
-        DbCore, DbMetadata, DbRead, DbWrite, TransparentHistExt,
+    chain_index::{
+        finalised_state::capability::{
+            BlockCoreExt, BlockShieldedExt, BlockTransparentExt, ChainBlockExt, CompactBlockExt,
+            DbCore, DbMetadata, DbRead, DbWrite, TransparentHistExt,
+        },
+        types::TransactionHash,
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    AddrScript, BlockHeaderData, ChainBlock, CommitmentTreeData, Hash, Height, OrchardCompactTx,
-    OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx,
-    TransparentTxList, TxLocation, TxidList,
+    AddrScript, BlockHash, BlockHeaderData, ChainBlock, CommitmentTreeData, Height,
+    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
 };
 
 use async_trait::async_trait;
@@ -108,14 +111,20 @@ impl DbRead for DbBackend {
         }
     }
 
-    async fn get_block_height(&self, hash: Hash) -> Result<Height, FinalisedStateError> {
+    async fn get_block_height(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<Height>, FinalisedStateError> {
         match self {
             Self::V0(db) => db.get_block_height(hash).await,
             Self::V1(db) => db.get_block_height(hash).await,
         }
     }
 
-    async fn get_block_hash(&self, height: Height) -> Result<Hash, FinalisedStateError> {
+    async fn get_block_hash(
+        &self,
+        height: Height,
+    ) -> Result<Option<BlockHash>, FinalisedStateError> {
         match self {
             Self::V0(db) => db.get_block_hash(height).await,
             Self::V1(db) => db.get_block_hash(height).await,
@@ -204,7 +213,10 @@ impl BlockCoreExt for DbBackend {
         }
     }
 
-    async fn get_txid(&self, tx_location: TxLocation) -> Result<Hash, FinalisedStateError> {
+    async fn get_txid(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<TransactionHash, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_txid(tx_location).await,
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
@@ -213,7 +225,7 @@ impl BlockCoreExt for DbBackend {
 
     async fn get_tx_location(
         &self,
-        txid: &Hash,
+        txid: &TransactionHash,
     ) -> Result<Option<TxLocation>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_tx_location(txid).await,
@@ -353,7 +365,10 @@ impl CompactBlockExt for DbBackend {
 
 #[async_trait]
 impl ChainBlockExt for DbBackend {
-    async fn get_chain_block(&self, height: Height) -> Result<ChainBlock, FinalisedStateError> {
+    async fn get_chain_block(
+        &self,
+        height: Height,
+    ) -> Result<Option<ChainBlock>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_chain_block(height).await,
             _ => Err(FinalisedStateError::FeatureUnavailable("chain_block")),

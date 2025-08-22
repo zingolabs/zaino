@@ -11,7 +11,7 @@ use zaino_proto::proto::compact_formats::{
 
 /// Txin format as described in <https://en.bitcoin.it/wiki/Transaction>
 #[derive(Debug, Clone)]
-struct TxIn {
+pub struct TxIn {
     // PrevTxHash - Size\[bytes\]: 32
     prev_txid: Vec<u8>,
     // PrevTxOutIndex - Size\[bytes\]: 4
@@ -72,7 +72,7 @@ impl ParseFromSlice for TxIn {
 
 /// Txout format as described in <https://en.bitcoin.it/wiki/Transaction>
 #[derive(Debug, Clone)]
-struct TxOut {
+pub struct TxOut {
     /// Non-negative int giving the number of zatoshis to be transferred
     ///
     /// Size\[bytes\]: 8
@@ -146,10 +146,10 @@ fn parse_transparent(data: &[u8]) -> Result<(&[u8], Vec<TxIn>, Vec<TxOut>), Pars
     Ok((&data[cursor.position() as usize..], tx_ins, tx_outs))
 }
 
-/// spend is a Sapling Spend Description as described in 7.3 of the Zcash
+/// Spend is a Sapling Spend Description as described in 7.3 of the Zcash
 /// protocol specification.
 #[derive(Debug, Clone)]
-struct Spend {
+pub struct Spend {
     // Cv \[IGNORED\] - Size\[bytes\]: 32
     // Anchor \[IGNORED\] - Size\[bytes\]: 32
     /// A nullifier to a sapling note.
@@ -203,7 +203,7 @@ impl ParseFromSlice for Spend {
 /// output is a Sapling Output Description as described in section 7.4 of the
 /// Zcash protocol spec.
 #[derive(Debug, Clone)]
-struct Output {
+pub struct Output {
     // Cv \[IGNORED\] - Size\[bytes\]: 32
     /// U-coordinate of the note commitment, derived from the note's value, recipient, and a
     /// random value.
@@ -296,11 +296,16 @@ impl ParseFromSlice for JoinSplit {
                 "txid must be None for JoinSplit::parse_from_slice".to_string(),
             ));
         }
-        if tx_version.is_some() {
-            return Err(ParseError::InvalidData(
-                "tx_version must be None for JoinSplit::parse_from_slice".to_string(),
-            ));
-        }
+        let proof_size = match tx_version {
+            Some(2) | Some(3) => 296, // BCTV14 proof for v2/v3 transactions
+            Some(4) => 192,           // Groth16 proof for v4 transactions
+            None => 192,              // Default to Groth16 for unknown versions
+            _ => {
+                return Err(ParseError::InvalidData(format!(
+                    "Unsupported tx_version {tx_version:?} for JoinSplit::parse_from_slice"
+                )))
+            }
+        };
         let mut cursor = Cursor::new(data);
 
         skip_bytes(&mut cursor, 8, "Error skipping JoinSplit::vpubOld")?;
@@ -311,7 +316,11 @@ impl ParseFromSlice for JoinSplit {
         skip_bytes(&mut cursor, 32, "Error skipping JoinSplit::ephemeralKey")?;
         skip_bytes(&mut cursor, 32, "Error skipping JoinSplit::randomSeed")?;
         skip_bytes(&mut cursor, 64, "Error skipping JoinSplit::vmacs")?;
-        skip_bytes(&mut cursor, 192, "Error skipping JoinSplit::proofGroth16")?;
+        skip_bytes(
+            &mut cursor,
+            proof_size,
+            &format!("Error skipping JoinSplit::proof (size {proof_size})"),
+        )?;
         skip_bytes(
             &mut cursor,
             1202,
@@ -395,7 +404,7 @@ impl ParseFromSlice for Action {
     }
 }
 
-/// Full Zcash Transactrion data.
+/// Full Zcash transaction data.
 #[derive(Debug, Clone)]
 struct TransactionData {
     /// Indicates if the transaction is an Overwinter-enabled transaction.
@@ -409,7 +418,7 @@ struct TransactionData {
     /// Version group ID, used to specify transaction type and validate its components.
     ///
     /// Size\[bytes\]: 4
-    n_version_group_id: u32,
+    n_version_group_id: Option<u32>,
     /// Consensus branch ID, used to identify the network upgrade that the transaction is valid for.
     ///
     /// Size\[bytes\]: 4
@@ -458,6 +467,198 @@ struct TransactionData {
 }
 
 impl TransactionData {
+    /// Parses a v1 transaction.
+    ///
+    /// A v1 transaction contains the following fields:
+    ///
+    /// - header: u32
+    /// - tx_in_count: usize
+    /// - tx_in: tx_in
+    /// - tx_out_count: usize
+    /// - tx_out: tx_out
+    /// - lock_time: u32
+    pub(crate) fn parse_v1(data: &[u8], version: u32) -> Result<(&[u8], Self), ParseError> {
+        let mut cursor = Cursor::new(data);
+
+        let (remaining_data, transparent_inputs, transparent_outputs) =
+            parse_transparent(&data[cursor.position() as usize..])?;
+        cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+
+        // let lock_time = read_u32(&mut cursor, "Error reading TransactionData::lock_time")?;
+        skip_bytes(&mut cursor, 4, "Error skipping TransactionData::nLockTime")?;
+
+        Ok((
+            &data[cursor.position() as usize..],
+            TransactionData {
+                f_overwintered: true,
+                version,
+                consensus_branch_id: 0,
+                transparent_inputs,
+                transparent_outputs,
+                // lock_time: Some(lock_time),
+                n_version_group_id: None,
+                value_balance_sapling: None,
+                shielded_spends: Vec::new(),
+                shielded_outputs: Vec::new(),
+                join_splits: Vec::new(),
+                orchard_actions: Vec::new(),
+                value_balance_orchard: None,
+                anchor_orchard: None,
+            },
+        ))
+    }
+
+    /// Parses a v2 transaction.
+    ///
+    /// A v2 transaction contains the following fields:
+    ///
+    /// - header: u32
+    /// - tx_in_count: usize
+    /// - tx_in: tx_in
+    /// - tx_out_count: usize
+    /// - tx_out: tx_out
+    /// - lock_time: u32
+    /// - nJoinSplit: compactSize <- New
+    /// - vJoinSplit: JSDescriptionBCTV14\[nJoinSplit\] <- New
+    /// - joinSplitPubKey: byte\[32\] <- New
+    /// - joinSplitSig: byte\[64\] <- New
+    pub(crate) fn parse_v2(data: &[u8], version: u32) -> Result<(&[u8], Self), ParseError> {
+        let mut cursor = Cursor::new(data);
+
+        let (remaining_data, transparent_inputs, transparent_outputs) =
+            parse_transparent(&data[cursor.position() as usize..])?;
+        cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+
+        skip_bytes(&mut cursor, 4, "Error skipping TransactionData::nLockTime")?;
+
+        let join_split_count = CompactSize::read(&mut cursor)?;
+        let mut join_splits = Vec::with_capacity(join_split_count as usize);
+        for _ in 0..join_split_count {
+            let (remaining_data, join_split) = JoinSplit::parse_from_slice(
+                &data[cursor.position() as usize..],
+                None,
+                Some(version),
+            )?;
+            join_splits.push(join_split);
+            cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+        }
+
+        if join_split_count > 0 {
+            skip_bytes(
+                &mut cursor,
+                32,
+                "Error skipping TransactionData::joinSplitPubKey",
+            )?;
+            skip_bytes(
+                &mut cursor,
+                64,
+                "could not skip TransactionData::joinSplitSig",
+            )?;
+        }
+
+        Ok((
+            &data[cursor.position() as usize..],
+            TransactionData {
+                f_overwintered: true,
+                version,
+                consensus_branch_id: 0,
+                transparent_inputs,
+                transparent_outputs,
+                join_splits,
+                n_version_group_id: None,
+                value_balance_sapling: None,
+                shielded_spends: Vec::new(),
+                shielded_outputs: Vec::new(),
+                orchard_actions: Vec::new(),
+                value_balance_orchard: None,
+                anchor_orchard: None,
+            },
+        ))
+    }
+
+    /// Parses a v3 transaction.
+    ///
+    /// A v3 transaction contains the following fields:
+    ///
+    /// - header: u32
+    /// - nVersionGroupId: u32 = 0x03C48270 <- New
+    /// - tx_in_count: usize
+    /// - tx_in: tx_in
+    /// - tx_out_count: usize
+    /// - tx_out: tx_out
+    /// - lock_time: u32
+    /// - nExpiryHeight: u32 <- New
+    /// - nJoinSplit: compactSize
+    /// - vJoinSplit: JSDescriptionBCTV14\[nJoinSplit\]
+    /// - joinSplitPubKey: byte\[32\]
+    /// - joinSplitSig: byte\[64\]
+    pub(crate) fn parse_v3(
+        data: &[u8],
+        version: u32,
+        n_version_group_id: u32,
+    ) -> Result<(&[u8], Self), ParseError> {
+        if n_version_group_id != 0x03C48270 {
+            return Err(ParseError::InvalidData(
+                "n_version_group_id must be 0x03C48270".to_string(),
+            ));
+        }
+        let mut cursor = Cursor::new(data);
+
+        let (remaining_data, transparent_inputs, transparent_outputs) =
+            parse_transparent(&data[cursor.position() as usize..])?;
+        cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+
+        skip_bytes(&mut cursor, 4, "Error skipping TransactionData::nLockTime")?;
+        skip_bytes(
+            &mut cursor,
+            4,
+            "Error skipping TransactionData::nExpiryHeight",
+        )?;
+
+        let join_split_count = CompactSize::read(&mut cursor)?;
+        let mut join_splits = Vec::with_capacity(join_split_count as usize);
+        for _ in 0..join_split_count {
+            let (remaining_data, join_split) = JoinSplit::parse_from_slice(
+                &data[cursor.position() as usize..],
+                None,
+                Some(version),
+            )?;
+            join_splits.push(join_split);
+            cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
+        }
+
+        if join_split_count > 0 {
+            skip_bytes(
+                &mut cursor,
+                32,
+                "Error skipping TransactionData::joinSplitPubKey",
+            )?;
+            skip_bytes(
+                &mut cursor,
+                64,
+                "could not skip TransactionData::joinSplitSig",
+            )?;
+        }
+        Ok((
+            &data[cursor.position() as usize..],
+            TransactionData {
+                f_overwintered: true,
+                version,
+                consensus_branch_id: 0,
+                transparent_inputs,
+                transparent_outputs,
+                join_splits,
+                n_version_group_id: None,
+                value_balance_sapling: None,
+                shielded_spends: Vec::new(),
+                shielded_outputs: Vec::new(),
+                orchard_actions: Vec::new(),
+                value_balance_orchard: None,
+                anchor_orchard: None,
+            },
+        ))
+    }
+
     fn parse_v4(
         data: &[u8],
         version: u32,
@@ -504,8 +705,11 @@ impl TransactionData {
         let join_split_count = CompactSize::read(&mut cursor)?;
         let mut join_splits = Vec::with_capacity(join_split_count as usize);
         for _ in 0..join_split_count {
-            let (remaining_data, join_split) =
-                JoinSplit::parse_from_slice(&data[cursor.position() as usize..], None, None)?;
+            let (remaining_data, join_split) = JoinSplit::parse_from_slice(
+                &data[cursor.position() as usize..],
+                None,
+                Some(version),
+            )?;
             join_splits.push(join_split);
             cursor.set_position(data.len() as u64 - remaining_data.len() as u64);
         }
@@ -535,7 +739,7 @@ impl TransactionData {
             TransactionData {
                 f_overwintered: true,
                 version,
-                n_version_group_id,
+                n_version_group_id: Some(n_version_group_id),
                 consensus_branch_id: 0,
                 transparent_inputs,
                 transparent_outputs,
@@ -699,7 +903,7 @@ impl TransactionData {
             TransactionData {
                 f_overwintered: true,
                 version,
-                n_version_group_id,
+                n_version_group_id: Some(n_version_group_id),
                 consensus_branch_id,
                 transparent_inputs,
                 transparent_outputs,
@@ -739,6 +943,7 @@ impl ParseFromSlice for FullTransaction {
                 "txid must be used for FullTransaction::parse_from_slice".to_string(),
             )
         })?;
+        // TODO: 🤯
         if tx_version.is_some() {
             return Err(ParseError::InvalidData(
                 "tx_version must be None for FullTransaction::parse_from_slice".to_string(),
@@ -748,34 +953,63 @@ impl ParseFromSlice for FullTransaction {
 
         let header = read_u32(&mut cursor, "Error reading FullTransaction::header")?;
         let f_overwintered = (header >> 31) == 1;
-        if !f_overwintered {
-            return Err(ParseError::InvalidData(
-                "fOverwinter flag must be set".to_string(),
-            ));
-        }
-        let version = header & 0x7FFFFFFF;
-        if version < 4 {
-            return Err(ParseError::InvalidData(format!(
-                "version number {version} must be greater or equal to 4"
-            )));
-        }
-        let n_version_group_id = read_u32(
-            &mut cursor,
-            "Error reading FullTransaction::n_version_group_id",
-        )?;
 
-        let (remaining_data, transaction_data) = if version <= 4 {
-            TransactionData::parse_v4(
+        let version = header & 0x7FFFFFFF;
+
+        match version {
+            1 | 2 => {
+                if f_overwintered {
+                    return Err(ParseError::InvalidData(
+                        "fOverwintered must be unset for tx versions 1 and 2".to_string(),
+                    ));
+                }
+            }
+            3..=5 => {
+                if !f_overwintered {
+                    return Err(ParseError::InvalidData(
+                        "fOverwintered must be set for tx versions 3 and above".to_string(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(ParseError::InvalidData(format!(
+                    "Unsupported tx version {version}"
+                )))
+            }
+        }
+
+        let n_version_group_id: Option<u32> = match version {
+            3..=5 => Some(read_u32(
+                &mut cursor,
+                "Error reading FullTransaction::n_version_group_id",
+            )?),
+            _ => None,
+        };
+
+        let (remaining_data, transaction_data) = match version {
+            1 => TransactionData::parse_v1(&data[cursor.position() as usize..], version)?,
+            2 => TransactionData::parse_v2(&data[cursor.position() as usize..], version)?,
+            3 => TransactionData::parse_v3(
                 &data[cursor.position() as usize..],
                 version,
-                n_version_group_id,
-            )?
-        } else {
-            TransactionData::parse_v5(
+                n_version_group_id.unwrap(), // This won't fail, because of the above match
+            )?,
+            4 => TransactionData::parse_v4(
                 &data[cursor.position() as usize..],
                 version,
-                n_version_group_id,
-            )?
+                n_version_group_id.unwrap(), // This won't fail, because of the above match
+            )?,
+            5 => TransactionData::parse_v5(
+                &data[cursor.position() as usize..],
+                version,
+                n_version_group_id.unwrap(), // This won't fail, because of the above match
+            )?,
+
+            _ => {
+                return Err(ParseError::InvalidData(format!(
+                    "Unsupported tx version {version}"
+                )))
+            }
         };
 
         let full_transaction = FullTransaction {
@@ -800,7 +1034,7 @@ impl FullTransaction {
     }
 
     /// Returns the transaction version group id.
-    pub fn n_version_group_id(&self) -> u32 {
+    pub fn n_version_group_id(&self) -> Option<u32> {
         self.raw_transaction.n_version_group_id
     }
 
@@ -941,5 +1175,226 @@ impl FullTransaction {
         !self.raw_transaction.shielded_spends.is_empty()
             || !self.raw_transaction.shielded_outputs.is_empty()
             || !self.raw_transaction.orchard_actions.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zaino_testvectors::transactions::get_test_vectors;
+
+    /// Test parsing v1 transactions using test vectors.
+    /// Validates that FullTransaction::parse_from_slice correctly handles v1 transaction format.
+    #[test]
+    fn test_v1_transaction_parsing_with_test_vectors() {
+        let test_vectors = get_test_vectors();
+        let v1_vectors: Vec<_> = test_vectors.iter().filter(|tv| tv.version == 1).collect();
+
+        assert!(!v1_vectors.is_empty(), "No v1 test vectors found");
+
+        for (i, vector) in v1_vectors.iter().enumerate() {
+            let result = FullTransaction::parse_from_slice(
+                &vector.tx,
+                Some(vec![vector.txid.to_vec()]),
+                None,
+            );
+
+            assert!(
+                result.is_ok(),
+                "Failed to parse v1 test vector #{}: {:?}. Description: {}",
+                i,
+                result.err(),
+                vector.description
+            );
+
+            let (remaining, parsed_tx) = result.unwrap();
+            assert!(
+                remaining.is_empty(),
+                "Should consume all data for v1 transaction #{i}"
+            );
+
+            // Verify version matches
+            assert_eq!(
+                parsed_tx.raw_transaction.version, 1,
+                "Version mismatch for v1 transaction #{i}"
+            );
+
+            // Verify transaction properties match test vector expectations
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_inputs.len(),
+                vector.transparent_inputs,
+                "Transparent inputs mismatch for v1 transaction #{i}"
+            );
+
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_outputs.len(),
+                vector.transparent_outputs,
+                "Transparent outputs mismatch for v1 transaction #{i}"
+            );
+        }
+
+        println!("Successfully parsed {} v1 test vectors", v1_vectors.len());
+    }
+
+    /// Test parsing v2 transactions using test vectors.
+    /// Validates that FullTransaction::parse_from_slice correctly handles v2 transaction format.
+    #[test]
+    fn test_v2_transaction_parsing_with_test_vectors() {
+        let test_vectors = get_test_vectors();
+        let v2_vectors: Vec<_> = test_vectors.iter().filter(|tv| tv.version == 2).collect();
+
+        assert!(!v2_vectors.is_empty(), "No v2 test vectors found");
+
+        for (i, vector) in v2_vectors.iter().enumerate() {
+            let result = FullTransaction::parse_from_slice(
+                &vector.tx,
+                Some(vec![vector.txid.to_vec()]),
+                None,
+            );
+
+            assert!(
+                result.is_ok(),
+                "Failed to parse v2 test vector #{}: {:?}. Description: {}",
+                i,
+                result.err(),
+                vector.description
+            );
+
+            let (remaining, parsed_tx) = result.unwrap();
+            assert!(
+                remaining.is_empty(),
+                "Should consume all data for v2 transaction #{}: {} bytes remaining, total length: {}",
+                i, remaining.len(), vector.tx.len()
+            );
+
+            // Verify version matches
+            assert_eq!(
+                parsed_tx.raw_transaction.version, 2,
+                "Version mismatch for v2 transaction #{i}"
+            );
+
+            // Verify transaction properties match test vector expectations
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_inputs.len(),
+                vector.transparent_inputs,
+                "Transparent inputs mismatch for v2 transaction #{i}"
+            );
+
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_outputs.len(),
+                vector.transparent_outputs,
+                "Transparent outputs mismatch for v2 transaction #{i}"
+            );
+        }
+
+        println!("Successfully parsed {} v2 test vectors", v2_vectors.len());
+    }
+
+    /// Test parsing v3 transactions using test vectors.
+    /// Validates that FullTransaction::parse_from_slice correctly handles v3 transaction format.
+    #[test]
+    fn test_v3_transaction_parsing_with_test_vectors() {
+        let test_vectors = get_test_vectors();
+        let v3_vectors: Vec<_> = test_vectors.iter().filter(|tv| tv.version == 3).collect();
+
+        assert!(!v3_vectors.is_empty(), "No v3 test vectors found");
+
+        for (i, vector) in v3_vectors.iter().enumerate() {
+            let result = FullTransaction::parse_from_slice(
+                &vector.tx,
+                Some(vec![vector.txid.to_vec()]),
+                None,
+            );
+
+            assert!(
+                result.is_ok(),
+                "Failed to parse v3 test vector #{}: {:?}. Description: {}",
+                i,
+                result.err(),
+                vector.description
+            );
+
+            let (remaining, parsed_tx) = result.unwrap();
+            assert!(
+                remaining.is_empty(),
+                "Should consume all data for v3 transaction #{}: {} bytes remaining, total length: {}",
+                i, remaining.len(), vector.tx.len()
+            );
+
+            // Verify version matches
+            assert_eq!(
+                parsed_tx.raw_transaction.version, 3,
+                "Version mismatch for v3 transaction #{i}"
+            );
+
+            // Verify transaction properties match test vector expectations
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_inputs.len(),
+                vector.transparent_inputs,
+                "Transparent inputs mismatch for v3 transaction #{i}"
+            );
+
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_outputs.len(),
+                vector.transparent_outputs,
+                "Transparent outputs mismatch for v3 transaction #{i}"
+            );
+        }
+
+        println!("Successfully parsed {} v3 test vectors", v3_vectors.len());
+    }
+
+    /// Test parsing v4 transactions using test vectors.
+    /// Validates that FullTransaction::parse_from_slice correctly handles v4 transaction format.
+    /// This also serves as a regression test for current v4 functionality.
+    #[test]
+    fn test_v4_transaction_parsing_with_test_vectors() {
+        let test_vectors = get_test_vectors();
+        let v4_vectors: Vec<_> = test_vectors.iter().filter(|tv| tv.version == 4).collect();
+
+        assert!(!v4_vectors.is_empty(), "No v4 test vectors found");
+
+        for (i, vector) in v4_vectors.iter().enumerate() {
+            let result = FullTransaction::parse_from_slice(
+                &vector.tx,
+                Some(vec![vector.txid.to_vec()]),
+                None,
+            );
+
+            assert!(
+                result.is_ok(),
+                "Failed to parse v4 test vector #{}: {:?}. Description: {}",
+                i,
+                result.err(),
+                vector.description
+            );
+
+            let (remaining, parsed_tx) = result.unwrap();
+            assert!(
+                remaining.is_empty(),
+                "Should consume all data for v4 transaction #{i}"
+            );
+
+            // Verify version matches
+            assert_eq!(
+                parsed_tx.raw_transaction.version, 4,
+                "Version mismatch for v4 transaction #{i}"
+            );
+
+            // Verify transaction properties match test vector expectations
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_inputs.len(),
+                vector.transparent_inputs,
+                "Transparent inputs mismatch for v4 transaction #{i}"
+            );
+
+            assert_eq!(
+                parsed_tx.raw_transaction.transparent_outputs.len(),
+                vector.transparent_outputs,
+                "Transparent outputs mismatch for v4 transaction #{i}"
+            );
+        }
+
+        println!("Successfully parsed {} v4 test vectors", v4_vectors.len());
     }
 }

@@ -154,8 +154,8 @@ pub enum RpcRequestError<MethodError> {
     JsonRpc(serde_json::Error),
 
     /// Internal unrecoverable error.
-    #[error("Internal unrecoverable error")]
-    InternalUnrecoverable,
+    #[error("Internal unrecoverable error: {0}")]
+    InternalUnrecoverable(String),
 
     /// Server at capacity
     #[error("rpc server at capacity, please try again")]

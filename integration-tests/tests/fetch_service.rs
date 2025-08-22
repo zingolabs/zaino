@@ -5,7 +5,7 @@ use zaino_proto::proto::service::{
     TransparentAddressBlockFilter, TxFilter,
 };
 use zaino_state::{
-    BackendType, FetchService, FetchServiceConfig, FetchServiceError, FetchServiceSubscriber,
+    BackendType, BlockHash, FetchService, FetchServiceConfig, FetchServiceSubscriber,
     LightWalletIndexer, StatusType, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::Validator as _;
@@ -243,92 +243,83 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
-// Zebra hasn't yet implemented the `getmempoolinfo` RPC.
-async fn test_get_mempool_info(validator: &ValidatorKind) {
+// `getmempoolinfo` computed from local Broadcast state for all validators
+pub async fn test_get_mempool_info(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+
     let mut clients = test_manager
         .clients
         .take()
         .expect("Clients are not initialized");
 
-    let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
-
     test_manager.local_net.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
     clients.faucet.sync_and_await().await.unwrap();
 
-    // We do this because Zebra does not support mine-to-Orchard
-    // so we need to shield it manually.
+    // Zebra cannot mine directly to Orchard in this setup, so shield funds first.
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
+
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
+
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     }
 
-    let recipient_ua = clients.get_recipient_address("unified").await;
-    let recipient_taddr = clients.get_recipient_address("transparent").await;
+    let recipient_unified_address = clients.get_recipient_address("unified").await;
+    let recipient_transparent_address = clients.get_recipient_address("transparent").await;
+
     zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
-        vec![(&recipient_taddr, 250_000, None)],
-    )
-    .await
-    .unwrap();
-    zaino_testutils::from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(&recipient_ua, 250_000, None)],
+        vec![(&recipient_transparent_address, 250_000, None)],
     )
     .await
     .unwrap();
 
+    zaino_testutils::from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(&recipient_unified_address, 250_000, None)],
+    )
+    .await
+    .unwrap();
+
+    // Allow the broadcaster and subscribers to observe new transactions.
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    match validator {
-        ValidatorKind::Zebrad => {
-            // Zebra doesn’t implement this RPC, so we expect a failure.
-            let err = fetch_service_subscriber
-                .get_mempool_info()
-                .await
-                .expect_err("Zebrad should return an error for get_mempool_info.");
+    // Internal method now used for all validators.
+    let info = fetch_service_subscriber.get_mempool_info().await.unwrap();
 
-            assert!(
-                matches!(err, FetchServiceError::Critical(_)),
-                "Unexpected error variant: {err:?}"
-            );
-        }
-        ValidatorKind::Zcashd => {
-            // Zcashd implements the RPC, so the call should succeed and match JSON-RPC output.
-            let fetch_info = fetch_service_subscriber.get_mempool_info().await.unwrap();
-            let json_info = json_service.get_mempool_info().await.unwrap();
+    // Derive expected values directly from the current mempool contents.
+    let entries = fetch_service_subscriber.mempool.get_mempool().await;
 
-            assert_eq!(json_info.size, fetch_info.size);
-            assert_eq!(json_info.bytes, fetch_info.bytes);
-            assert_eq!(json_info.usage, fetch_info.usage);
-            assert!(fetch_info.usage > 0);
-        }
-    };
+    // Size
+    assert_eq!(info.size, entries.len() as u64);
+    assert!(info.size >= 1);
+
+    // Bytes: sum of SerializedTransaction lengths
+    let expected_bytes: u64 = entries
+        .iter()
+        .map(|(_, value)| value.0.as_ref().len() as u64)
+        .sum();
+
+    // Key heap bytes: sum of txid String capacities
+    let expected_key_heap_bytes: u64 = entries.iter().map(|(key, _)| key.0.capacity() as u64).sum();
+
+    let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
+
+    assert!(info.bytes > 0);
+    assert_eq!(info.bytes, expected_bytes);
+
+    assert!(info.usage >= info.bytes);
+    assert_eq!(info.usage, expected_usage);
 
     test_manager.close().await;
 }
@@ -578,7 +569,11 @@ async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
 
     let json_service_get_latest_block = dbg!(BlockId {
         height: json_service_blockchain_info.blocks.0 as u64,
-        hash: json_service_blockchain_info.best_block_hash.0.to_vec(),
+        hash: BlockHash::from_bytes_in_display_order(
+            &json_service_blockchain_info.best_block_hash.0
+        )
+        .0
+        .to_vec(),
     });
 
     assert_eq!(fetch_service_get_latest_block.height, 2);

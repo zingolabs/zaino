@@ -11,7 +11,7 @@ use super::{
 
 use crate::{
     chain_index::finalised_state::capability::CapabilityRequest, error::FinalisedStateError,
-    ChainBlock, Hash, Height, StatusType,
+    BlockHash, ChainBlock, Height, StatusType,
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -188,13 +188,16 @@ impl DbRead for Router {
         self.backend(CapabilityRequest::ReadCore)?.db_height().await
     }
 
-    async fn get_block_height(&self, hash: Hash) -> Result<Height, FinalisedStateError> {
+    async fn get_block_height(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<Height>, FinalisedStateError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_block_height(hash)
             .await
     }
 
-    async fn get_block_hash(&self, h: Height) -> Result<Hash, FinalisedStateError> {
+    async fn get_block_hash(&self, h: Height) -> Result<Option<BlockHash>, FinalisedStateError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_block_hash(h)
             .await

@@ -182,13 +182,13 @@ async fn v0_to_v1_interrupted() {
         }
 
         let chain_block = ChainBlock::try_from((
-            zebra_block,
+            &zebra_block,
             sapling_root,
             sapling_root_size as u32,
             orchard_root,
             orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),
@@ -310,13 +310,13 @@ async fn v0_to_v1_partial() {
     ) in blocks.clone()
     {
         let chain_block = ChainBlock::try_from((
-            zebra_block,
+            &zebra_block,
             sapling_root,
             sapling_root_size as u32,
             orchard_root,
             orchard_root_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
+            &parent_chain_work,
+            &zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
                     before_overwinter: Some(1),
                     overwinter: Some(1),

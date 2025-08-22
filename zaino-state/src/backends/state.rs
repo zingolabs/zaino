@@ -1,7 +1,10 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
 use crate::{
-    chain_index::mempool::{Mempool, MempoolSubscriber},
+    chain_index::{
+        mempool::{Mempool, MempoolSubscriber},
+        source::ValidatorConnector,
+    },
     config::StateServiceConfig,
     error::{BlockCacheError, StateServiceError},
     indexer::{
@@ -14,7 +17,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
-    MempoolKey, MempoolValue,
+    BlockHash, MempoolKey,
 };
 
 use nonempty::NonEmpty;
@@ -35,11 +38,11 @@ use zaino_proto::proto::{
     },
 };
 
+use zcash_protocol::consensus::NetworkType;
 use zebra_chain::{
     block::{merkle::Root, Hash, Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
-    primitives,
     serialization::ZcashSerialize,
     subtree::NoteCommitmentSubtreeIndex,
     work::{difficulty::CompactDifficulty, equihash::Solution},
@@ -107,7 +110,7 @@ pub struct StateService {
     /// Local compact block cache.
     block_cache: BlockCache,
     /// Internal mempool.
-    mempool: Mempool,
+    mempool: Mempool<ValidatorConnector>,
     /// Service metadata.
     data: ServiceMetadata,
     /// StateService config data.
@@ -246,7 +249,12 @@ impl ZcashService for StateService {
         )
         .await?;
 
-        let mempool = Mempool::spawn(&rpc_client, None).await?;
+        let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
+            read_state_service: read_state_service.clone(),
+            mempool_fetcher: rpc_client.clone(),
+        });
+
+        let mempool = Mempool::spawn(mempool_source, None).await?;
 
         let state_service = Self {
             chain_tip_change,
@@ -1265,26 +1273,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// `usage` is the total memory usage for the mempool, in bytes.
     /// the [optional `fullyNotified` field](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1549>), is only utilized for zcashd regtests, is deprecated, and is not included.
     async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error> {
-        let mempool_state = self.mempool.get_mempool().await;
-
-        let approx_mem_usage = std::mem::size_of::<Vec<(MempoolKey, MempoolValue)>>()
-            + mempool_state.capacity() * std::mem::size_of::<(MempoolKey, MempoolValue)>();
-
-        Ok(GetMempoolInfoResponse {
-            size: mempool_state.len() as u64,
-            bytes: mempool_state
-                .iter()
-                .map(|mempool_entry| {
-                    // mempool_entry.1 is a MempoolValue, .0 is the first (and only) field, a GetRawTransaction.
-                    match &mempool_entry.1 .0 {
-                        // .as_ref() is a slice of bytes, a view into a contiguous block of memory
-                        GetRawTransaction::Object(tx) => tx.hex().as_ref().len() as u64,
-                        GetRawTransaction::Raw(tx) => tx.as_ref().len() as u64,
-                    }
-                })
-                .sum(),
-            usage: approx_mem_usage as u64,
-        })
+        Ok(self.mempool.get_mempool_info().await?)
     }
 
     async fn z_get_address_balance(
@@ -1445,50 +1434,35 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         raw_address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
-        let network = self.config.network.clone();
+        use zcash_keys::address::Address;
+        use zcash_transparent::address::TransparentAddress;
 
         let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
             return Ok(ValidateAddressResponse::invalid());
         };
 
-        let address = match address.convert::<primitives::Address>() {
-            Ok(address) => address,
-            Err(err) => {
-                tracing::debug!(?err, "conversion error");
-                return Ok(ValidateAddressResponse::invalid());
-            }
-        };
+        let address =
+            match address.convert_if_network::<Address>(match self.config.network.kind() {
+                NetworkKind::Mainnet => NetworkType::Main,
+                NetworkKind::Testnet => NetworkType::Test,
+                NetworkKind::Regtest => NetworkType::Regtest,
+            }) {
+                Ok(address) => address,
+                Err(err) => {
+                    tracing::debug!(?err, "conversion error");
+                    return Ok(ValidateAddressResponse::invalid());
+                }
+            };
 
         // we want to match zcashd's behaviour
-        if !address.is_transparent() {
-            return Ok(ValidateAddressResponse::invalid());
-        }
-
-        match address.network() {
-            NetworkKind::Mainnet => {
-                if network.kind() != NetworkKind::Mainnet {
-                    Ok(ValidateAddressResponse::invalid())
-                } else {
-                    Ok(ValidateAddressResponse::new(
-                        true,
-                        Some(raw_address),
-                        Some(address.is_script_hash()),
-                    ))
-                }
-            }
-            // Both testnet and regtest have the same address format
-            NetworkKind::Testnet | NetworkKind::Regtest => {
-                if network.kind() == NetworkKind::Mainnet {
-                    Ok(ValidateAddressResponse::invalid())
-                } else {
-                    Ok(ValidateAddressResponse::new(
-                        true,
-                        Some(raw_address),
-                        Some(address.is_script_hash()),
-                    ))
-                }
-            }
-        }
+        Ok(match address {
+            Address::Transparent(taddr) => ValidateAddressResponse::new(
+                true,
+                Some(raw_address),
+                Some(matches!(taddr, TransparentAddress::ScriptHash(_))),
+            ),
+            _ => ValidateAddressResponse::invalid(),
+        })
     }
 
     async fn z_get_subtrees_by_index(
@@ -1589,10 +1563,32 @@ impl ZcashIndexer for StateServiceSubscriber {
                     .await
                 {
                     Some(tx) => {
-                        if let GetRawTransaction::Object(transaction_object) = &tx.0 {
-                            Ok(GetRawTransaction::Object(transaction_object.clone()))
-                        } else {
-                            unreachable!("unmatched response to a `Transaction` read request")
+                        let serialized = tx.as_ref().0.clone();
+
+                        match verbose {
+                            // Return an object view, matching the chain path semantics.
+                            Some(_verbosity) => {
+                                let parsed_tx: zebra_chain::transaction::Transaction =
+                            zebra_chain::serialization::ZcashDeserialize::zcash_deserialize(
+                                serialized.as_ref(),
+                            )
+                            .map_err(|_| not_found_error())?;
+
+                                Ok(GetRawTransaction::Object(Box::new(
+                                    TransactionObject::from_transaction(
+                                        parsed_tx.into(),
+                                        None,                 // best_chain_height
+                                        Some(0),              // confirmations
+                                        &self.config.network, // network
+                                        None,                 // block_time
+                                        None,                 // block_hash
+                                        Some(false),          // in_best_chain
+                                        txid,                 // txid
+                                    ),
+                                )))
+                            }
+                            // Return raw bytes when not verbose.
+                            None => Ok(GetRawTransaction::Raw(serialized)),
                         }
                     }
                     None => Err(not_found_error()),
@@ -1658,11 +1654,6 @@ impl ZcashIndexer for StateServiceSubscriber {
         )?;
 
         let mut error_string = None;
-        if start == 0 || end == 0 {
-            error_string = Some(format!(
-                "start {start:?} and end {end:?} must both be greater than zero"
-            ));
-        }
         if start > end {
             error_string = Some(format!(
                 "start {start:?} must be less than or equal to end {end:?}"
@@ -1779,7 +1770,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
         )?;
         Ok(BlockId {
             height: chain_height.as_usize() as u64,
-            hash: chain_hash.0.to_vec(),
+            hash: BlockHash::from_bytes_in_display_order(&chain_hash.0)
+                .0
+                .to_vec(),
         })
     }
 
@@ -1916,7 +1909,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 Err(_) => {
                     transmitter
                         .send(Err(tonic::Status::deadline_exceeded(
-                            "Error: get_mempool_stream gRPC request timed out",
+                            "Error: get_taddredd_txids_stream gRPC request timed out",
                         )))
                         .await
                         .ok();
@@ -2073,73 +2066,59 @@ impl LightWalletIndexer for StateServiceSubscriber {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for (txid, transaction) in mempool.get_filtered_mempool(exclude_txids).await {
-                        match transaction.0 {
-                            GetRawTransaction::Object(transaction_object) => {
-                                let txid_bytes = match hex::decode(txid.0) {
-                                    Ok(bytes) => bytes,
-                                    Err(e) => {
-                                        if channel_tx
-                                            .send(Err(tonic::Status::unknown(e.to_string())))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        } else {
-                                            continue;
-                                        }
+                    for (txid, serialized_transaction) in
+                        mempool.get_filtered_mempool(exclude_txids).await
+                    {
+                        let txid_bytes = match hex::decode(txid.0) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                if channel_tx
+                                    .send(Err(tonic::Status::unknown(error.to_string())))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                } else {
+                                    continue;
+                                }
+                            }
+                        };
+                        match <FullTransaction as ParseFromSlice>::parse_from_slice(
+                            serialized_transaction.0.as_ref(),
+                            Some(vec![txid_bytes]),
+                            None,
+                        ) {
+                            Ok(transaction) => {
+                                // ParseFromSlice returns any data left after the conversion to a
+                                // FullTransaction, If the conversion has succeeded this should be empty.
+                                if transaction.0.is_empty() {
+                                    if channel_tx
+                                        .send(
+                                            transaction
+                                                .1
+                                                .to_compact(0)
+                                                .map_err(|e| tonic::Status::unknown(e.to_string())),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
                                     }
-                                };
-                                match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                                    transaction_object.hex().as_ref(),
-                                    Some(vec![txid_bytes]),
-                                    None,
-                                ) {
-                                    Ok(transaction) => {
-                                        // ParseFromSlice returns any data left after
-                                        // the conversion to a FullTransaction, If the
-                                        // conversion has succeeded this should be empty.
-                                        if transaction.0.is_empty() {
-                                            if channel_tx
-                                                .send(transaction.1.to_compact(0).map_err(|e| {
-                                                    tonic::Status::unknown(e.to_string())
-                                                }))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        } else {
-                                            // TODO: Hide server error from clients before
-                                            // release. Currently useful for dev purposes.
-                                            if channel_tx
-                                                .send(Err(tonic::Status::unknown("Error: ")))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // TODO: Hide server error from clients
-                                        // before release. Currently useful for dev purposes.
-                                        if channel_tx
-                                            .send(Err(tonic::Status::unknown(e.to_string())))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
+                                } else {
+                                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                                    if channel_tx
+                                        .send(Err(tonic::Status::unknown("Error: ")))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
                                     }
                                 }
                             }
-                            GetRawTransaction::Raw(_) => {
+                            Err(e) => {
+                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                                 if channel_tx
-                                    .send(Err(tonic::Status::internal(
-                                        "Error: Received raw transaction type, \
-                                        this should not be possible.",
-                                    )))
+                                    .send(Err(tonic::Status::unknown(e.to_string())))
                                     .await
                                     .is_err()
                                 {
@@ -2194,32 +2173,18 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     };
                     while let Some(result) = mempool_stream.recv().await {
                         match result {
-                            Ok((_mempool_key, mempool_value)) => match mempool_value.0 {
-                                GetRawTransaction::Object(transaction_object) => {
-                                    if channel_tx
-                                        .send(Ok(RawTransaction {
-                                            data: transaction_object.hex().as_ref().to_vec(),
-                                            height: mempool_height as u64,
-                                        }))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
+                            Ok((_mempool_key, mempool_value)) => {
+                                if channel_tx
+                                    .send(Ok(RawTransaction {
+                                        data: mempool_value.0.as_ref().to_vec(),
+                                        height: mempool_height as u64,
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
                                 }
-                                GetRawTransaction::Raw(_) => {
-                                    if channel_tx
-                                        .send(Err(tonic::Status::internal(
-                                            "Error: Received raw transaction type, \
-                                                this should not be possible.",
-                                        )))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                            },
+                            }
                             Err(e) => {
                                 channel_tx
                                     .send(Err(tonic::Status::internal(format!(

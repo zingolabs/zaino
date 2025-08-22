@@ -3,11 +3,12 @@
 use core::fmt;
 
 use crate::{
-    chain_index::types::AddrEventBytes, error::FinalisedStateError, read_fixed_le, read_u32_le,
-    read_u8, version, write_fixed_le, write_u32_le, write_u8, AddrScript, BlockHeaderData,
-    ChainBlock, CommitmentTreeData, FixedEncodedLen, Hash, Height, OrchardCompactTx, OrchardTxList,
-    Outpoint, SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
-    TxLocation, TxidList, ZainoVersionedSerialise,
+    chain_index::types::{AddrEventBytes, TransactionHash},
+    error::FinalisedStateError,
+    read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
+    AddrScript, BlockHash, BlockHeaderData, ChainBlock, CommitmentTreeData, FixedEncodedLen,
+    Height, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerialise,
 };
 
 use async_trait::async_trait;
@@ -390,10 +391,16 @@ pub trait DbRead: Send + Sync {
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError>;
 
     /// Lookup height of a block by its hash.
-    async fn get_block_height(&self, hash: Hash) -> Result<Height, FinalisedStateError>;
+    async fn get_block_height(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<Height>, FinalisedStateError>;
 
     /// Lookup hash of a block by its height.
-    async fn get_block_hash(&self, height: Height) -> Result<Hash, FinalisedStateError>;
+    async fn get_block_hash(
+        &self,
+        height: Height,
+    ) -> Result<Option<BlockHash>, FinalisedStateError>;
 
     /// Return the persisted `DbMetadata` singleton.
     async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError>;
@@ -458,11 +465,16 @@ pub trait BlockCoreExt: Send + Sync {
     ) -> Result<Vec<TxidList>, FinalisedStateError>;
 
     /// Fetch the txid bytes for a given TxLocation.
-    async fn get_txid(&self, tx_location: TxLocation) -> Result<Hash, FinalisedStateError>;
+    async fn get_txid(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<TransactionHash, FinalisedStateError>;
 
     /// Fetch the TxLocation for the given txid, transaction data is indexed by TxLocation internally.
-    async fn get_tx_location(&self, txid: &Hash)
-        -> Result<Option<TxLocation>, FinalisedStateError>;
+    async fn get_tx_location(
+        &self,
+        txid: &TransactionHash,
+    ) -> Result<Option<TxLocation>, FinalisedStateError>;
 }
 
 /// Transparent block data extension.
@@ -557,7 +569,10 @@ pub trait ChainBlockExt: Send + Sync {
     /// Returns the ChainBlock for the given Height.
     ///
     /// TODO: Add separate range fetch method!
-    async fn get_chain_block(&self, height: Height) -> Result<ChainBlock, FinalisedStateError>;
+    async fn get_chain_block(
+        &self,
+        height: Height,
+    ) -> Result<Option<ChainBlock>, FinalisedStateError>;
 }
 
 /// ChainBlock v1 extension.

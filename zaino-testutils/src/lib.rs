@@ -3,6 +3,11 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+/// Convenience reexport of zaino_testvectors
+pub mod test_vectors {
+    pub use zaino_testvectors::*;
+}
+
 use once_cell::sync::Lazy;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -14,6 +19,7 @@ use tracing_subscriber::EnvFilter;
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
 pub use zingo_infra_services as services;
+use zingo_infra_services::network::ActivationHeights;
 pub use zingo_infra_services::network::Network;
 pub use zingo_infra_services::validator::Validator;
 use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
@@ -503,12 +509,191 @@ impl TestManager {
         })
     }
 
+    /// Launches zcash-local-net<Empty, Validator>.
+    ///
+    /// Possible validators: Zcashd, Zebrad.
+    ///
+    /// If chain_cache is given a path the chain will be loaded.
+    ///
+    /// If clients is set to active zingolib lightclients will be created for test use.
+    ///
+    /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn launch_with_activation_heights(
+        validator: &ValidatorKind,
+        backend: &BackendType,
+        network: Option<Network>,
+        activation_heights: Option<ActivationHeights>,
+        chain_cache: Option<PathBuf>,
+        enable_zaino: bool,
+        enable_zaino_jsonrpc_server: bool,
+        enable_zaino_jsonrpc_server_cookie_auth: bool,
+        zaino_no_sync: bool,
+        zaino_no_db: bool,
+        enable_clients: bool,
+    ) -> Result<Self, std::io::Error> {
+        if (validator == &ValidatorKind::Zcashd) && (backend == &BackendType::State) {
+            return Err(std::io::Error::other(
+                "Cannot use state backend with zcashd.",
+            ));
+        }
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            )
+            .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+            .with_target(true)
+            .try_init();
+
+        if enable_clients && !enable_zaino {
+            return Err(std::io::Error::other(
+                "Cannot enable clients when zaino is not enabled.",
+            ));
+        }
+
+        let network = network.unwrap_or(Network::Regtest);
+
+        // Launch LocalNet:
+        let zebrad_rpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
+        let zebrad_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
+        let zebrad_rpc_listen_address =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zebrad_rpc_listen_port);
+        let zebrad_grpc_listen_address =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zebrad_grpc_listen_port);
+
+        let validator_config = match validator {
+            ValidatorKind::Zcashd => {
+                let cfg = zingo_infra_services::validator::ZcashdConfig {
+                    zcashd_bin: ZCASHD_BIN.clone(),
+                    zcash_cli_bin: ZCASH_CLI_BIN.clone(),
+                    rpc_listen_port: Some(zebrad_rpc_listen_port),
+                    activation_heights: activation_heights.unwrap_or_default(),
+                    miner_address: Some(REG_O_ADDR_FROM_ABANDONART),
+                    chain_cache: chain_cache.clone(),
+                };
+                ValidatorConfig::ZcashdConfig(cfg)
+            }
+            ValidatorKind::Zebrad => {
+                let cfg = zingo_infra_services::validator::ZebradConfig {
+                    zebrad_bin: ZEBRAD_BIN.clone(),
+                    network_listen_port: None,
+                    rpc_listen_port: Some(zebrad_rpc_listen_port),
+                    indexer_listen_port: Some(zebrad_grpc_listen_port),
+                    activation_heights: activation_heights.unwrap_or_default(),
+                    miner_address: zingo_infra_services::validator::ZEBRAD_DEFAULT_MINER,
+                    chain_cache: chain_cache.clone(),
+                    network,
+                };
+                ValidatorConfig::ZebradConfig(cfg)
+            }
+        };
+        let local_net = LocalNet::launch(validator_config).await.unwrap();
+        let data_dir = local_net.data_dir().path().to_path_buf();
+        let zaino_db_path = data_dir.join("zaino");
+
+        let zebra_db_path = match chain_cache {
+            Some(cache) => cache,
+            None => data_dir.clone(),
+        };
+
+        // Launch Zaino:
+        let (
+            zaino_grpc_listen_address,
+            zaino_json_listen_address,
+            zaino_json_server_cookie_dir,
+            zaino_handle,
+        ) = if enable_zaino {
+            let zaino_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
+            let zaino_grpc_listen_address =
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_grpc_listen_port);
+
+            let zaino_json_listen_port = portpicker::pick_unused_port().expect("No ports free");
+            let zaino_json_listen_address =
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_json_listen_port);
+            let zaino_json_server_cookie_dir = Some(default_ephemeral_cookie_path());
+
+            let indexer_config = zainodlib::config::IndexerConfig {
+                // TODO: Make configurable.
+                backend: *backend,
+                enable_json_server: enable_zaino_jsonrpc_server,
+                json_rpc_listen_address: zaino_json_listen_address,
+                enable_cookie_auth: enable_zaino_jsonrpc_server_cookie_auth,
+                cookie_dir: zaino_json_server_cookie_dir.clone(),
+                grpc_listen_address: zaino_grpc_listen_address,
+                grpc_tls: false,
+                tls_cert_path: None,
+                tls_key_path: None,
+                validator_listen_address: zebrad_rpc_listen_address,
+                validator_grpc_listen_address: zebrad_grpc_listen_address,
+                validator_cookie_auth: false,
+                validator_cookie_path: None,
+                validator_user: Some("xxxxxx".to_string()),
+                validator_password: Some("xxxxxx".to_string()),
+                map_capacity: None,
+                map_shard_amount: None,
+                zaino_db_path,
+                zebra_db_path,
+                db_size: None,
+                network: network.to_string(),
+                no_sync: zaino_no_sync,
+                no_db: zaino_no_db,
+                slow_sync: false,
+            };
+            let handle = zainodlib::indexer::spawn_indexer(indexer_config)
+                .await
+                .unwrap();
+
+            // NOTE: This is required to give the server time to launch, this is not used in production code but could be rewritten to improve testing efficiency.
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            (
+                Some(zaino_grpc_listen_address),
+                Some(zaino_json_listen_address),
+                zaino_json_server_cookie_dir,
+                Some(handle),
+            )
+        } else {
+            (None, None, None, None)
+        };
+
+        // Launch Zingolib Lightclients:
+        let clients = if enable_clients {
+            let lightclient_dir = tempfile::tempdir().unwrap();
+            let lightclients = build_lightclients(
+                lightclient_dir.path().to_path_buf(),
+                zaino_grpc_listen_address
+                    .expect("Error launching zingo lightclients. `enable_zaino` is None.")
+                    .port(),
+            )
+            .await;
+            Some(Clients {
+                lightclient_dir,
+                faucet: lightclients.0,
+                recipient: lightclients.1,
+            })
+        } else {
+            None
+        };
+
+        Ok(Self {
+            local_net,
+            data_dir,
+            network,
+            zebrad_rpc_listen_address,
+            zebrad_grpc_listen_address,
+            zaino_handle,
+            zaino_json_rpc_listen_address: zaino_json_listen_address,
+            zaino_grpc_listen_address,
+            json_server_cookie_dir: zaino_json_server_cookie_dir,
+            clients,
+        })
+    }
+
     /// Generates `blocks` regtest blocks.
     /// Adds a delay between blocks to allow zaino / zebra to catch up with test.
     pub async fn generate_blocks_with_delay(&self, blocks: u32) {
         for _ in 0..blocks {
             self.local_net.generate_blocks(1).await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         }
     }
 
