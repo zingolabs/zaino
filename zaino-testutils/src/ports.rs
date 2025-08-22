@@ -35,7 +35,7 @@ impl TestPorts {
         let validator_rpc = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), validator_rpc_port);
         let validator_grpc = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), validator_grpc_port);
 
-        let data_dir = tempfile::tempdir()?.keep()?;
+        let data_dir = tempfile::tempdir()?.keep();
         let zaino_db = data_dir.join("zaino");
         let zebra_db = data_dir.clone();
 
