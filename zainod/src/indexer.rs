@@ -88,11 +88,11 @@ pub async fn spawn_indexer(
             rpc_address,
             ref auth,
         } => {
-            use zaino_commons::config::{ValidatorFetchConfig, ZainodServiceConfig};
+            use zaino_commons::config::{JsonRpcEndpointConfig, ZainodServiceConfig};
             use zaino_fetch::config::FetchServiceConfig;
 
             let fetch_config = FetchServiceConfig {
-                validator: ValidatorFetchConfig::Zebrad {
+                validator: JsonRpcEndpointConfig::Zebrad {
                     rpc_address: *rpc_address,
                     auth: auth.clone(),
                 },
@@ -109,11 +109,11 @@ pub async fn spawn_indexer(
             rpc_address,
             ref auth,
         } => {
-            use zaino_commons::config::{ValidatorFetchConfig, ZainodServiceConfig};
+            use zaino_commons::config::{JsonRpcEndpointConfig, ZainodServiceConfig};
             use zaino_fetch::config::FetchServiceConfig;
 
             let fetch_config = FetchServiceConfig {
-                validator: ValidatorFetchConfig::Zcashd {
+                validator: JsonRpcEndpointConfig::Zcashd {
                     rpc_address: *rpc_address,
                     auth: auth.clone(),
                 },
@@ -130,12 +130,12 @@ pub async fn spawn_indexer(
             rpc_address,
             ref auth,
         } => {
-            use zaino_commons::config::{ValidatorFetchConfig, ZainodServiceConfig};
+            use zaino_commons::config::{JsonRpcEndpointConfig, ZainodServiceConfig};
             use zaino_fetch::config::FetchServiceConfig;
 
             // Note: RemoteZainod uses Zcashd variant as they share the same auth type
             let fetch_config = FetchServiceConfig {
-                validator: ValidatorFetchConfig::Zcashd {
+                validator: JsonRpcEndpointConfig::Zcashd {
                     rpc_address: *rpc_address,
                     auth: auth.clone(),
                 },

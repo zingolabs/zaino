@@ -20,7 +20,7 @@ use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
     BackendConfig, CacheConfig, DatabaseConfig, DebugConfig, GrpcConfig, JsonRpcAuth,
-    JsonRpcConfig, Network, ServiceConfig, StorageConfig, TlsConfig, ValidatorFetchConfig,
+    JsonRpcConfig, JsonRpcEndpointConfig, Network, ServiceConfig, StorageConfig, TlsConfig,
     ZainodServiceConfig, ZebradStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
@@ -383,7 +383,7 @@ impl IndexerConfig {
                 }))
             }
             BackendConfig::RemoteZebra { rpc_address, auth } => {
-                let fetch_config = ValidatorFetchConfig::Zebrad {
+                let fetch_config = JsonRpcEndpointConfig::Zebrad {
                     rpc_address: *rpc_address,
                     auth: auth.clone(),
                 };
@@ -394,7 +394,7 @@ impl IndexerConfig {
                 }))
             }
             BackendConfig::RemoteZcashd { rpc_address, auth } => {
-                let fetch_config = ValidatorFetchConfig::Zcashd {
+                let fetch_config = JsonRpcEndpointConfig::Zcashd {
                     rpc_address: *rpc_address,
                     auth: auth.clone(),
                 };
@@ -405,7 +405,7 @@ impl IndexerConfig {
                 }))
             }
             BackendConfig::RemoteZainod { rpc_address, auth } => {
-                let fetch_config = ValidatorFetchConfig::Zcashd {
+                let fetch_config = JsonRpcEndpointConfig::Zcashd {
                     rpc_address: *rpc_address,
                     auth: auth.clone(),
                 };

@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use zaino_commons::config::DatabaseConfig;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_state::bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber};
 use zaino_testutils::Validator as _;

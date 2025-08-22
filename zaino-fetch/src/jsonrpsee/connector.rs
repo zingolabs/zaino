@@ -10,7 +10,6 @@ use std::{
     any::type_name,
     convert::Infallible,
     fmt,
-    path::Path,
     sync::{
         atomic::{AtomicI32, Ordering},
         Arc,
@@ -18,9 +17,7 @@ use std::{
     time::Duration,
 };
 use tracing::error;
-use zaino_commons::config::{
-    AuthHeader, BackendConfig, ValidatorConfig, ValidatorFetchConfig, ZcashdAuth, ZebradAuth, ZebradStateConfig,
-};
+use zaino_commons::config::{AuthHeader, BackendConfig, JsonRpcValidatorConfig, ZebradStateConfig};
 
 use zebra_rpc::client::ValidateAddressResponse;
 
@@ -180,15 +177,16 @@ impl JsonRpSeeConnector {
         })
     }
 
-    /// Creates a connector from a ValidatorFetchConfig.
-    pub fn from_validator_fetch_config(
-        config: &ValidatorFetchConfig,
-    ) -> Result<Self, TransportError> {
+    /// Creates a connector from a JsonRpcValidatorConfig.
+    pub fn from_validator_config(config: &JsonRpcValidatorConfig) -> Result<Self, TransportError> {
         let (rpc_address, auth) = match config {
-            ValidatorFetchConfig::Zebrad { rpc_address, auth } => {
+            JsonRpcValidatorConfig::Zebrd { rpc_address, auth } => {
                 (rpc_address, auth.get_auth_header())
             }
-            ValidatorFetchConfig::Zcashd { rpc_address, auth } => {
+            JsonRpcValidatorConfig::Zcashd { rpc_address, auth } => {
+                (rpc_address, auth.get_auth_header())
+            }
+            JsonRpcValidatorConfig::Zaino { rpc_address, auth } => {
                 (rpc_address, auth.get_auth_header())
             }
         };
@@ -220,21 +218,19 @@ impl JsonRpSeeConnector {
     /// backend configuration, handling connection testing and auth automatically.
     pub async fn from_backend_config(config: &BackendConfig) -> Result<Self, TransportError> {
         // Use test_and_get_url to get a validated, tested URL
-        let url = config.test_and_get_url()
-            .await
-            .map_err(|e| TransportError::BadNodeData(Box::new(e), "Backend connection test failed"))?;
+        let url = config.test_and_get_url().await.map_err(|e| {
+            TransportError::BadNodeData(Box::new(e), "Backend connection test failed")
+        })?;
 
         let auth_header = match config {
-            BackendConfig::LocalZebra { auth, .. } 
-            | BackendConfig::RemoteZebra { auth, .. } => {
+            BackendConfig::LocalZebra { auth, .. } | BackendConfig::RemoteZebra { auth, .. } => {
                 auth.get_auth_header()
                     .map_err(|e| TransportError::BadNodeData(Box::new(e), "Zebra auth header"))?
-            },
-            BackendConfig::RemoteZcashd { auth, .. } 
-            | BackendConfig::RemoteZainod { auth, .. } => {
+            }
+            BackendConfig::RemoteZcashd { auth, .. } | BackendConfig::RemoteZainod { auth, .. } => {
                 auth.get_auth_header()
                     .map_err(|e| TransportError::BadNodeData(Box::new(e), "Zcashd auth header"))?
-            },
+            }
         };
 
         Self::new(url, auth_header)

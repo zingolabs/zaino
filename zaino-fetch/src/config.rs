@@ -1,6 +1,6 @@
 //! Configuration types for Zaino-Fetch services.
 
-use zaino_commons::config::{BlockCacheConfig, ValidatorFetchConfig, ZainodServiceConfig};
+use zaino_commons::config::{BlockCacheConfig, JsonRpcValidatorConfig, ZainodServiceConfig};
 
 /// Type-safe configuration for FetchService.
 ///
@@ -8,8 +8,8 @@ use zaino_commons::config::{BlockCacheConfig, ValidatorFetchConfig, ZainodServic
 /// can be passed to the Fetch service, preventing runtime errors.
 #[derive(Debug, Clone)]
 pub struct FetchServiceConfig {
-    /// Validator with Fetch backend configuration (type-safe)
-    pub validator: ValidatorFetchConfig,
+    /// JSON-RPC validator configuration - the validator for this service
+    pub validator: JsonRpcValidatorConfig,
     /// Zaino daemon service configuration
     pub daemon: ZainodServiceConfig,
 }

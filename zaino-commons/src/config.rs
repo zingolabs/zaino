@@ -807,36 +807,47 @@ impl BackendConfig {
     }
 }
 
-/// Type-safe validator configuration for Fetch backends only.
+/// Configuration for connecting to JSON-RPC validator endpoints.
 ///
-/// This enum ensures that only valid validator + Fetch backend combinations
+/// This enum ensures that only valid JSON-RPC validator configurations
 /// can be constructed, preventing runtime errors from invalid configurations.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum ValidatorFetchConfig {
-    /// Zebra daemon with Fetch backend
-    Zebrad {
+pub enum JsonRpcValidatorConfig {
+    /// Zebra daemon JSON-RPC endpoint
+    Zebrd {
         /// Zebra JsonRPC address
         rpc_address: std::net::SocketAddr,
         /// Zebra authentication configuration
         auth: ZebradAuth,
     },
-    /// Zcashd daemon with Fetch backend
+    /// Zcashd daemon JSON-RPC endpoint
     Zcashd {
         /// Zcashd JsonRPC address  
         rpc_address: std::net::SocketAddr,
         /// Zcashd authentication configuration
         auth: ZcashdAuth,
     },
+    /// Zaino server JSON-RPC endpoint
+    Zaino {
+        /// Zaino JSON-RPC server address
+        rpc_address: std::net::SocketAddr,
+        /// Zaino authentication configuration
+        auth: JsonRpcAuth,
+    },
 }
 
-impl Default for ValidatorFetchConfig {
+impl Default for JsonRpcValidatorConfig {
     fn default() -> Self {
-        ValidatorFetchConfig::Zebrad {
+        JsonRpcValidatorConfig::Zebrd {
             rpc_address: "127.0.0.1:8232".parse().expect("Valid socket address"),
             auth: ZebradAuth::default(),
         }
     }
 }
+
+// Backwards compatibility aliases - TODO: Remove after migration is complete
+pub type JsonRpcConfig = JsonRpcServerConfig;
+pub type JsonRpcEndpointConfig = JsonRpcValidatorConfig;
 
 /// Holds config data for `[ChainIndex]`.
 /// TODO: Rename when ChainIndex update is complete.
@@ -1200,16 +1211,16 @@ impl JsonRpcAuth {
     }
 }
 
-/// Configuration data for Zaino's JSON-RPC server.
+/// Server-side configuration for providing JSON-RPC service.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct JsonRpcConfig {
+pub struct JsonRpcServerConfig {
     /// Server bind address.
     pub listen_address: SocketAddr,
-    /// Cookie-based authentication configuration.
+    /// Authentication configuration for incoming requests.
     pub auth: JsonRpcAuth,
 }
 
-impl Default for JsonRpcConfig {
+impl Default for JsonRpcServerConfig {
     fn default() -> Self {
         Self {
             listen_address: "127.0.0.1:8237".parse().expect("Valid socket address"),
