@@ -2,15 +2,15 @@
 
 #![forbid(unsafe_code)]
 
-use zaino_commons::config::BackendType;
-use zaino_commons::config::{AuthMethod, ValidatorConfig, ZainoStateConfig};
+use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
+use zaino_state::BackendType;
 use zaino_testutils::from_inputs;
-use zaino_testutils::{TestManager, TestManagerConfig};
+use zaino_testutils::TestManager;
 use zaino_testutils::ValidatorKind;
 
 async fn connect_to_node_get_info_for_validator(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch_with_config(
-        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
+    let mut test_manager = TestManager::launch(
+        validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
     .unwrap();
@@ -26,8 +26,8 @@ async fn connect_to_node_get_info_for_validator(validator: &ValidatorKind, backe
 }
 
 async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch_with_config(
-        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
+    let mut test_manager = TestManager::launch(
+        validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
     .unwrap();
@@ -67,8 +67,8 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch_with_config(
-        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
+    let mut test_manager = TestManager::launch(
+        validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
     .unwrap();
@@ -108,8 +108,8 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch_with_config(
-        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
+    let mut test_manager = TestManager::launch(
+        validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
     .unwrap();
@@ -135,15 +135,16 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 
     test_manager.generate_blocks_with_delay(1).await;
 
-    let validator_config = ValidatorConfig {
-        config: ZainoStateConfig::default(),
-        rpc_address: test_manager.zebrad_rpc_listen_address,
-        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-        auth: AuthMethod::default(),
-    };
-
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        validator_config.test_and_get_url().await.unwrap(),
+        test_node_and_return_url(
+            test_manager.zebrad_rpc_listen_address,
+            false,
+            None,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap(),
         "xxxxxx".to_string(),
         "xxxxxx".to_string(),
     )
@@ -209,8 +210,8 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch_with_config(
-        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
+    let mut test_manager = TestManager::launch(
+        validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
     .unwrap();
@@ -294,8 +295,8 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
 }
 
 async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch_with_config(
-        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
+    let mut test_manager = TestManager::launch(
+        validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
     .unwrap();
@@ -362,8 +363,8 @@ async fn monitor_unverified_mempool_for_validator(
     validator: &ValidatorKind,
     backend: &BackendType,
 ) {
-    let mut test_manager = TestManager::launch_with_config(
-        TestManagerConfig::for_wallet_tests(validator.clone(), backend.clone()),
+    let mut test_manager = TestManager::launch(
+        validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
     .unwrap();
@@ -413,15 +414,16 @@ async fn monitor_unverified_mempool_for_validator(
 
     // test_manager.local_net.print_stdout();
 
-    let validator_config = ValidatorConfig {
-        config: ZainoStateConfig::default(),
-        rpc_address: test_manager.zebrad_rpc_listen_address,
-        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-        auth: AuthMethod::default(),
-    };
-
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        validator_config.test_and_get_url().await.unwrap(),
+        test_node_and_return_url(
+            test_manager.zebrad_rpc_listen_address,
+            false,
+            None,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap(),
         "xxxxxx".to_string(),
         "xxxxxx".to_string(),
     )

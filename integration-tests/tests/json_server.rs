@@ -1,7 +1,10 @@
-use zaino_state::{FetchService, FetchServiceSubscriber, ZcashIndexer, ZcashService as _};
+use zaino_state::{
+    BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, ZcashIndexer,
+    ZcashService as _,
+};
 use zaino_testutils::{from_inputs, Validator as _};
-use zaino_testutils::{TestManager, TestManagerConfig, ValidatorKind};
-use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
+use zaino_testutils::{TestManager, ValidatorKind};
+use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
 async fn create_test_manager_and_fetch_services(
@@ -15,70 +18,107 @@ async fn create_test_manager_and_fetch_services(
     FetchServiceSubscriber,
 ) {
     println!("Launching test manager..");
-
-    // Create TestManagerConfig for the JSON server scenario
-    let config = TestManagerConfig::for_json_server_tests(ValidatorKind::Zcashd, enable_cookie_auth)
-        .with_clients_if(clients);
-
-    let test_manager = TestManager::launch_with_config(config).await.unwrap();
+    let test_manager = TestManager::launch(
+        &ValidatorKind::Zcashd,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        true,
+        enable_cookie_auth,
+        true,
+        true,
+        clients,
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     println!("Launching zcashd fetch service..");
-    // Use TestManager helper for zcashd connection
-    let zaino_db_path = test_manager.data_dir.join("zaino");
-    let zebra_db_path = test_manager.data_dir.clone();
-    let zcashd_fetch_service_config =
-        test_manager.get_fetch_service_config(zaino_db_path.clone(), zebra_db_path.clone());
-
-    let zcashd_fetch_service = FetchService::spawn(zcashd_fetch_service_config)
-        .await
-        .unwrap();
+    let zcashd_fetch_service = FetchService::spawn(FetchServiceConfig::new(
+        test_manager.zebrad_rpc_listen_address,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        test_manager
+            .local_net
+            .data_dir()
+            .path()
+            .to_path_buf()
+            .join("zaino"),
+        None,
+        Network::new_regtest(
+            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+                before_overwinter: Some(1),
+                overwinter: Some(1),
+                sapling: Some(1),
+                blossom: Some(1),
+                heartwood: Some(1),
+                canopy: Some(1),
+                nu5: Some(1),
+                nu6: Some(1),
+                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
+                nu6_1: None,
+                nu7: None,
+            },
+        ),
+        true,
+        true,
+    ))
+    .await
+    .unwrap();
     let zcashd_subscriber = zcashd_fetch_service.get_subscriber().inner();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     println!("Launching zaino fetch service..");
     let zaino_json_server_address = dbg!(test_manager.zaino_json_rpc_listen_address.unwrap());
-
-    // Create a custom ValidatorConfig for connecting to zaino's JSON server
-    use zaino_commons::config::{AuthMethod, ValidatorConfig, ZainoStateConfig};
-    let zaino_server_validator_config = ValidatorConfig {
-        config: ZainoStateConfig::default(),
-        rpc_address: zaino_json_server_address,
-        indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-        auth: if enable_cookie_auth {
-            AuthMethod::Cookie {
-                path: test_manager
-                    .json_server_cookie_dir
-                    .clone()
-                    .unwrap_or_else(|| "/tmp/zaino.cookie".into()),
-            }
-        } else {
-            AuthMethod::default()
-        },
-    };
-
-    // Create a custom FetchServiceConfig for zaino server connection
-    use zaino_commons::config::{BlockCacheConfig, CacheConfig, DatabaseConfig, ServiceConfig};
-    let zaino_fetch_service_config = zaino_fetch::config::FetchServiceConfig {
-        validator: zaino_server_validator_config,
-        service: ServiceConfig::default(),
-        block_cache: BlockCacheConfig {
-            cache: CacheConfig::default(),
-            database: DatabaseConfig {
-                path: zaino_db_path,
-                size: None,
+    let zaino_fetch_service = FetchService::spawn(FetchServiceConfig::new(
+        zaino_json_server_address,
+        enable_cookie_auth,
+        test_manager
+            .json_server_cookie_dir
+            .clone()
+            .map(|p| p.to_string_lossy().into_owned()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        test_manager
+            .local_net
+            .data_dir()
+            .path()
+            .to_path_buf()
+            .join("zaino"),
+        None,
+        Network::new_regtest(
+            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+                before_overwinter: Some(1),
+                overwinter: Some(1),
+                sapling: Some(1),
+                blossom: Some(1),
+                heartwood: Some(1),
+                canopy: Some(1),
+                nu5: Some(1),
+                nu6: Some(1),
+                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
+                nu6_1: None,
+                nu7: None,
             },
-            network: zaino_commons::config::Network::Regtest,
-            no_sync: true,
-            no_db: true,
-        },
-    };
-
-    let zaino_fetch_service = FetchService::spawn(zaino_fetch_service_config)
-        .await
-        .unwrap();
+        ),
+        true,
+        true,
+    ))
+    .await
+    .unwrap();
     let zaino_subscriber = zaino_fetch_service.get_subscriber().inner();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;

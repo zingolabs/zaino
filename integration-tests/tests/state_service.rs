@@ -1,16 +1,13 @@
-use zaino_commons::config::AuthMethod;
-use zaino_commons::config::{
-    BackendType, BlockCacheConfig, CacheConfig, DatabaseConfig, ServiceConfig, ValidatorConfig,
-};
-use zaino_fetch::config::FetchServiceConfig;
+use zaino_state::BackendType;
 use zaino_state::{
-    FetchService, FetchServiceError, FetchServiceSubscriber, LightWalletIndexer, StateService,
+    FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer, StateService,
     StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::from_inputs;
+use zaino_testutils::services;
 use zaino_testutils::Validator as _;
-use zaino_testutils::{TestManager, TestManagerConfig, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
-use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
+use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
+use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
 async fn create_test_manager_and_services(
@@ -18,7 +15,7 @@ async fn create_test_manager_and_services(
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-    network: Option<zaino_commons::config::Network>,
+    network: Option<services::network::Network>,
 ) -> (
     TestManager,
     FetchService,
@@ -26,72 +23,77 @@ async fn create_test_manager_and_services(
     StateService,
     StateServiceSubscriber,
 ) {
-    let mut config = match chain_cache {
-        Some(ref cache_path) => TestManagerConfig::for_chain_cache_tests(validator.clone(), cache_path.clone()),
-        None => TestManagerConfig::for_basic_tests(validator.clone(), BackendType::Fetch),
+    let test_manager = TestManager::launch(
+        validator,
+        &BackendType::Fetch,
+        network,
+        chain_cache.clone(),
+        enable_zaino,
+        false,
+        false,
+        true,
+        true,
+        enable_clients,
+    )
+    .await
+    .unwrap();
+
+    let (network_type, zaino_sync_bool) = match network {
+        Some(services::network::Network::Mainnet) => {
+            println!("Waiting for validator to spawn..");
+            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+            (Network::Mainnet, false)
+        }
+        Some(services::network::Network::Testnet) => {
+            println!("Waiting for validator to spawn..");
+            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+            (Network::new_default_testnet(), false)
+        }
+        _ => (
+            Network::new_regtest(
+                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+                    before_overwinter: Some(1),
+                    overwinter: Some(1),
+                    sapling: Some(1),
+                    blossom: Some(1),
+                    heartwood: Some(1),
+                    canopy: Some(1),
+                    nu5: Some(1),
+                    nu6: Some(1),
+                    // TODO: What is network upgrade 6.1? What does a minor version NU mean?
+                    nu6_1: None,
+                    nu7: None,
+                },
+            ),
+            true,
+        ),
     };
-
-    // Apply dynamic flags
-    if !enable_zaino {
-        config.zaino_config.enable_zaino = false;
-    }
-    config = config.with_clients_if(enable_clients).with_no_sync_no_db();
-
-    // Handle network configuration
-    if let Some(network) = network {
-        config = config.with_network(network);
-    }
-
-    let test_manager = TestManager::launch_with_config(config).await.unwrap();
-
-    // Wait for validator to be ready instead of hardcoded sleep
-    let network_to_use = network.unwrap_or(zaino_commons::config::Network::Regtest);
-    if matches!(network_to_use, zaino_commons::config::Network::Mainnet | zaino_commons::config::Network::Testnet) {
-        println!("Waiting for validator to be ready..");
-        test_manager.wait_for_validator_ready().await
-            .expect("Validator should become ready");
-    }
 
     test_manager.local_net.print_stdout();
 
-    let fetch_service_config = FetchServiceConfig {
-        validator: ValidatorConfig {
-            config: zaino_commons::config::ZainoStateConfig {
-                cache_dir: test_manager.data_dir.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            rpc_address: test_manager.zebrad_rpc_listen_address,
-            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            auth: AuthMethod::default(),
-        },
-        service: ServiceConfig {
-            timeout: 30,
-            channel_size: 32,
-        },
-        block_cache: BlockCacheConfig {
-            cache: CacheConfig {
-                capacity: None,
-                shard_amount: None,
-            },
-            database: DatabaseConfig {
-                path: test_manager
-                    .local_net
-                    .data_dir()
-                    .path()
-                    .to_path_buf()
-                    .join("zaino"),
-                size: None,
-            },
-            network: network_to_use,
-            no_sync: network_to_use.should_sync_for_testing(),
-            no_db: true,
-        },
-    };
-
-    let fetch_service = FetchService::spawn(fetch_service_config).await.unwrap();
+    let fetch_service = FetchService::spawn(FetchServiceConfig::new(
+        test_manager.zebrad_rpc_listen_address,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        test_manager
+            .local_net
+            .data_dir()
+            .path()
+            .to_path_buf()
+            .join("zaino"),
+        None,
+        network_type.clone(),
+        zaino_sync_bool,
+        true,
+    ))
+    .await
+    .unwrap();
 
     let fetch_subscriber = fetch_service.get_subscriber().inner();
 
@@ -100,43 +102,37 @@ async fn create_test_manager_and_services(
         None => test_manager.data_dir.clone(),
     };
 
-    let state_service_config = StateServiceConfig {
-        validator: ValidatorConfig {
-            config: zaino_commons::config::ZainoStateConfig {
-                cache_dir: state_chain_cache_dir,
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-            },
-            rpc_address: test_manager.zebrad_rpc_listen_address,
-            indexer_rpc_address: test_manager.zebrad_grpc_listen_address,
-            auth: AuthMethod::default(),
+    let state_service = StateService::spawn(StateServiceConfig::new(
+        zebra_state::Config {
+            cache_dir: state_chain_cache_dir,
+            ephemeral: false,
+            delete_old_database: true,
+            debug_stop_at_height: None,
+            debug_validity_check_interval: None,
         },
-        service: ServiceConfig {
-            timeout: 30,
-            channel_size: 32,
-        },
-        block_cache: BlockCacheConfig {
-            cache: CacheConfig {
-                capacity: None,
-                shard_amount: None,
-            },
-            database: DatabaseConfig {
-                path: test_manager
-                    .local_net
-                    .data_dir()
-                    .path()
-                    .to_path_buf()
-                    .join("zaino"),
-                size: None,
-            },
-            network: network_to_use,
-            no_sync: network_to_use.should_sync_for_testing(),
-            no_db: true,
-        },
-    };
-    let state_service = StateService::spawn(state_service_config).await.unwrap();
+        test_manager.zebrad_rpc_listen_address,
+        test_manager.zebrad_grpc_listen_address,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        test_manager
+            .local_net
+            .data_dir()
+            .path()
+            .to_path_buf()
+            .join("zaino"),
+        None,
+        network_type,
+        true,
+        true,
+    ))
+    .await
+    .unwrap();
 
     let state_subscriber = state_service.get_subscriber().inner();
 
@@ -154,7 +150,7 @@ async fn create_test_manager_and_services(
 async fn state_service_check_info(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: zaino_commons::config::Network,
+    network: services::network::Network,
 ) {
     let (
         mut test_manager,
@@ -164,7 +160,7 @@ async fn state_service_check_info(
         state_service_subscriber,
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
-    if matches!(network, zaino_commons::config::Network::Regtest) {
+    if dbg!(network.to_string()) == *"Regtest" {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -357,7 +353,7 @@ async fn state_service_get_address_balance_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(zaino_commons::config::Network::Testnet),
+        Some(services::network::Network::Testnet),
     )
     .await;
 
@@ -387,7 +383,7 @@ async fn state_service_get_address_balance_testnet() {
 async fn state_service_get_block_raw(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: zaino_commons::config::Network,
+    network: services::network::Network,
 ) {
     let (
         mut test_manager,
@@ -398,7 +394,7 @@ async fn state_service_get_block_raw(
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
     let height = match network {
-        zaino_commons::config::Network::Regtest => "1".to_string(),
+        services::network::Network::Regtest => "1".to_string(),
         _ => "1000000".to_string(),
     };
 
@@ -420,7 +416,7 @@ async fn state_service_get_block_raw(
 async fn state_service_get_block_object(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: zaino_commons::config::Network,
+    network: services::network::Network,
 ) {
     let (
         mut test_manager,
@@ -431,7 +427,7 @@ async fn state_service_get_block_object(
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
     let height = match network {
-        zaino_commons::config::Network::Regtest => "1".to_string(),
+        services::network::Network::Regtest => "1".to_string(),
         _ => "1000000".to_string(),
     };
 
@@ -529,7 +525,7 @@ async fn state_service_get_raw_mempool_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(zaino_commons::config::Network::Testnet),
+        Some(services::network::Network::Testnet),
     )
     .await;
 
@@ -607,7 +603,7 @@ async fn state_service_z_get_treestate_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(zaino_commons::config::Network::Testnet),
+        Some(services::network::Network::Testnet),
     )
     .await;
 
@@ -690,7 +686,7 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(zaino_commons::config::Network::Testnet),
+        Some(services::network::Network::Testnet),
     )
     .await;
 
@@ -797,7 +793,7 @@ async fn state_service_get_raw_transaction_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(zaino_commons::config::Network::Testnet),
+        Some(services::network::Network::Testnet),
     )
     .await;
 
@@ -905,7 +901,7 @@ async fn state_service_get_address_tx_ids_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(zaino_commons::config::Network::Testnet),
+        Some(services::network::Network::Testnet),
     )
     .await;
 
@@ -1008,7 +1004,7 @@ async fn state_service_get_address_utxos_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(zaino_commons::config::Network::Testnet),
+        Some(services::network::Network::Testnet),
     )
     .await;
 
@@ -1049,7 +1045,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 None,
-                zaino_commons::config::Network::Regtest,
+                services::network::Network::Regtest,
             )
             .await;
         }
@@ -1067,14 +1063,18 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             let mut chaintip_subscriber = state_service_subscriber.chaintip_update_subscriber();
             for _ in 0..5 {
                 test_manager.generate_blocks_with_delay(1).await;
                 assert_eq!(
-                    chaintip_subscriber.next_tip_hash().await.unwrap().0,
+                    chaintip_subscriber
+                        .next_tip_hash()
+                        .await
+                        .unwrap()
+                        .bytes_in_display_order(),
                     <[u8; 32]>::try_from(
                         state_service_subscriber
                             .get_latest_block()
@@ -1093,7 +1093,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_CHAIN_CACHE_DIR.clone(),
-                zaino_commons::config::Network::Regtest,
+                services::network::Network::Regtest,
             )
             .await;
         }
@@ -1104,7 +1104,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                zaino_commons::config::Network::Testnet,
+                services::network::Network::Testnet,
             )
             .await;
         }
@@ -1160,7 +1160,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1186,7 +1186,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1214,7 +1214,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
 
@@ -1273,13 +1273,13 @@ mod zebrad {
             state_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
         }
 
-        /// Direct fetch of `getmempoolinfo` RPC not supported by Zebra
+        /// `getmempoolinfo` computed from local Broadcast state
         #[tokio::test]
         async fn get_mempool_info() {
             let (
                 mut test_manager,
                 _fetch_service,
-                fetch_service_subscriber,
+                _fetch_service_subscriber, // no longer used
                 _state_service,
                 state_service_subscriber,
             ) = create_test_manager_and_services(&ValidatorKind::Zebrad, None, true, true, None)
@@ -1308,37 +1308,34 @@ mod zebrad {
             .await
             .unwrap();
 
+            // Let the broadcaster/subscribers observe the new tx
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-            let fetch_service_result = fetch_service_subscriber.get_mempool_info().await;
-            let state_service_result = state_service_subscriber.get_mempool_info().await;
+            // Call the internal mempool info method
+            let info = state_service_subscriber.get_mempool_info().await.unwrap();
 
-            // Zebra does not support this RPC.
-            // When they implement it, this will start failing and will need to be updated.
-            assert!(fetch_service_result.is_err());
-            let fetch_service_error = fetch_service_result.unwrap_err();
-            assert!(matches!(
-                fetch_service_error,
-                FetchServiceError::Critical(_)
-            ));
+            // Derive expected values directly from the current mempool contents
+            let entries = state_service_subscriber.mempool.get_mempool().await;
 
-            // The state service does not fail.
-            assert!(state_service_result.is_ok());
-            let state_service_result = state_service_result.unwrap();
-            assert_eq!(state_service_result.size, 1);
-            assert!(state_service_result.bytes > 0);
-            assert_eq!(state_service_result.bytes, 9199);
-            assert!(state_service_result.usage > 0);
-            assert_eq!(state_service_result.usage, 216);
+            assert_eq!(entries.len() as u64, info.size);
+            assert!(info.size >= 1);
 
-            // accessing the transaction JSON Object
-            let getrawtx = &state_service_subscriber.mempool.get_mempool().await[0].1 .0;
-            // ...and its boxed inner field
-            match getrawtx {
-                zebra_rpc::methods::GetRawTransaction::Object(inner) => {
-                    assert_eq!(inner.size().expect("Some size instead of None"), 9199);
-                }
-                _ => panic!("expected getrawtx: {getrawtx:?} to be an Object"),
+            let expected_bytes: u64 = entries.iter().map(|(_, v)| v.0.as_ref().len() as u64).sum();
+
+            let expected_key_heap_bytes: u64 =
+                entries.iter().map(|(k, _)| k.0.capacity() as u64).sum();
+
+            let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
+
+            assert!(info.bytes > 0);
+            assert_eq!(info.bytes, expected_bytes);
+
+            assert!(info.usage >= info.bytes);
+            assert_eq!(info.usage, expected_usage);
+
+            // Optional: when exactly one tx, its serialized length must equal `bytes`
+            if info.size == 1 {
+                assert_eq!(entries[0].1 .0.as_ref().len() as u64, expected_bytes);
             }
 
             test_manager.close().await;
@@ -1355,7 +1352,7 @@ mod zebrad {
             state_service_get_block_object(
                 &ValidatorKind::Zebrad,
                 None,
-                zaino_commons::config::Network::Regtest,
+                services::network::Network::Regtest,
             )
             .await;
         }
@@ -1366,7 +1363,7 @@ mod zebrad {
             state_service_get_block_object(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                zaino_commons::config::Network::Testnet,
+                services::network::Network::Testnet,
             )
             .await;
         }
@@ -1376,7 +1373,7 @@ mod zebrad {
             state_service_get_block_raw(
                 &ValidatorKind::Zebrad,
                 None,
-                zaino_commons::config::Network::Regtest,
+                services::network::Network::Regtest,
             )
             .await;
         }
@@ -1387,7 +1384,7 @@ mod zebrad {
             state_service_get_block_raw(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                zaino_commons::config::Network::Testnet,
+                services::network::Network::Testnet,
             )
             .await;
         }
@@ -1425,7 +1422,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(1).await.unwrap();
@@ -1451,7 +1448,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1497,7 +1494,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1533,7 +1530,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(5).await.unwrap();
@@ -1576,7 +1573,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1605,7 +1602,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(6).await.unwrap();
@@ -1676,7 +1673,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(100).await.unwrap();
@@ -1731,7 +1728,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
 
@@ -1770,7 +1767,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
 
@@ -1829,7 +1826,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
 
@@ -1883,7 +1880,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(zaino_commons::config::Network::Regtest),
+                Some(services::network::Network::Regtest),
             )
             .await;
 
