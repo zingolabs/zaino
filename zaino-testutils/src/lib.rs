@@ -211,12 +211,14 @@ pub mod validator;
 
 // Re-export configuration types
 pub use config::{
-    JsonRpcAuthConfig, JsonServerComparisonTestConfig, JsonServerTestConfig, ServiceTestConfig, 
+    ChainCacheTestConfig, FetchServiceTestConfig, JsonRpcAuthConfig, JsonServerComparisonTestConfig, JsonServerTestConfig, ServiceTestConfig, 
     StateServiceComparisonTestConfig, TestConfig, WalletTestConfig,
 };
 pub use manager::{
     factories::{BlockCacheBuilder, FetchServiceBuilder, StateServiceBuilder},
     tests::{
+        chain_cache::{ChainCacheTestManager, ChainCacheTestsBuilder},
+        fetch_service::{FetchServiceTestManager, FetchServiceTestsBuilder},
         json_server::{JsonServerTestManager, JsonServerTestsBuilder},
         json_server_comparison::{JsonServerComparisonTestManager, JsonServerComparisonTestsBuilder},
         service::{ServiceTestManager, ServiceTestsBuilder},
