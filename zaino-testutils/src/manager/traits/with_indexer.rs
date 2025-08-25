@@ -24,7 +24,7 @@ pub trait WithIndexer {
 
     /// Get the Zaino JSON-RPC service address (if running).
     fn zaino_json_address(&self) -> Option<SocketAddr> {
-        todo!("Implement zaino_json_address access")  
+        todo!("Implement zaino_json_address access")
     }
 
     /// Get the JSON server cookie directory (if cookie auth enabled).

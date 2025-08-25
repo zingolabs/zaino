@@ -4,7 +4,7 @@
 //! sensible defaults, eliminating the massive boilerplate typically required
 //! for service creation in integration tests.
 
-use crate::manager::factories::{FetchServiceBuilder, StateServiceBuilder, BlockCacheBuilder};
+use crate::manager::factories::{BlockCacheBuilder, FetchServiceBuilder, StateServiceBuilder};
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 
 /// Service creation with sensible defaults.

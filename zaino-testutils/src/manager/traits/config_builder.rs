@@ -3,9 +3,9 @@
 //! This module defines the generic traits used by all test manager builders,
 //! providing consistent interfaces for configuration and launching.
 
+use crate::validator::ValidatorKind;
 use std::path::PathBuf;
 use zaino_commons::config::Network;
-use crate::validator::ValidatorKind;
 
 /// Common interface for all test manager builders.
 ///
@@ -15,7 +15,7 @@ use crate::validator::ValidatorKind;
 pub trait ConfigurableBuilder: Sized {
     /// The manager type this builder creates.
     type Manager;
-    
+
     /// The configuration type this builder generates.
     type Config: TestConfiguration;
 
@@ -39,23 +39,23 @@ pub trait ConfigurableBuilder: Sized {
     // Convenience methods for common configurations
 
     /// Use Zebra validator (shortcut for .validator(ValidatorKind::Zebra)).
-    fn zebra(self) -> Self { 
-        self.validator(ValidatorKind::Zebra) 
+    fn zebra(self) -> Self {
+        self.validator(ValidatorKind::Zebra)
     }
 
     /// Use Zcashd validator (shortcut for .validator(ValidatorKind::Zcashd)).
-    fn zcashd(self) -> Self { 
-        self.validator(ValidatorKind::Zcashd) 
+    fn zcashd(self) -> Self {
+        self.validator(ValidatorKind::Zcashd)
     }
 
     /// Use regtest network (shortcut for .network(Network::Regtest)).
-    fn regtest(self) -> Self { 
-        self.network(Network::Regtest) 
+    fn regtest(self) -> Self {
+        self.network(Network::Regtest)
     }
 
     /// Use testnet network (shortcut for .network(Network::Testnet)).
-    fn testnet(self) -> Self { 
-        self.network(Network::Testnet) 
+    fn testnet(self) -> Self {
+        self.network(Network::Testnet)
     }
 }
 
@@ -75,7 +75,7 @@ pub trait LaunchManager<M> {
 pub trait TestConfiguration {
     /// Get the network this configuration targets.
     fn network(&self) -> &Network;
-    
+
     /// Get the validator kind this configuration uses.
     fn validator_kind(&self) -> ValidatorKind;
 }

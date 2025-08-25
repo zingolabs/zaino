@@ -3,9 +3,9 @@
 //! This trait provides the fundamental validator operations that all test managers need,
 //! including block generation, address access, and lifecycle management.
 
+use crate::validator::LocalNet;
 use std::net::SocketAddr;
 use zaino_commons::config::Network;
-use crate::validator::LocalNet;
 
 /// Core validator operations available to all test managers.
 ///
@@ -20,10 +20,10 @@ pub trait WithValidator {
 
     /// Get the validator's RPC listen address.
     fn validator_rpc_address(&self) -> SocketAddr;
-    
+
     /// Get the validator's gRPC listen address.
     fn validator_grpc_address(&self) -> SocketAddr;
-    
+
     /// Get the network configuration.
     fn network(&self) -> &Network;
 
@@ -35,7 +35,10 @@ pub trait WithValidator {
     }
 
     /// Generate blocks with delays to allow sync processes.
-    async fn generate_blocks_with_delay(&self, count: u32) -> Result<(), Box<dyn std::error::Error>> {
+    async fn generate_blocks_with_delay(
+        &self,
+        count: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Generate blocks one by one with delays to allow sync processes to catch up
         for _ in 0..count {
             self.generate_blocks(1).await?;
