@@ -5,7 +5,7 @@ use tracing::info;
 
 use zaino_serve::server::{grpc::TonicServer, jsonrpc::JsonRpcServer};
 use zaino_state::{
-    FetchService, IndexerService, LightWalletService, StateService, StateServiceConfig, StatusType,
+    FetchService, IndexerService, LightWalletService, StateService, StatusType,
     ZcashIndexer, ZcashService,
 };
 
@@ -57,95 +57,21 @@ pub async fn spawn_indexer(
         // BackendConfig::Fetch(fetch_service_config) => {
         //         Indexer::<FetchService>::spawn_inner(fetch_service_config, config).await
         //     }
-        BackendConfig::LocalZebra {
-            rpc_address,
-            ref auth,
-            ref zebra_state,
-            indexer_rpc_address,
-            ref zebra_database,
-        } => {
-            use zaino_commons::config::{ZainodServiceConfig, ZebradStateConfig};
-            use zaino_state::StateServiceConfig;
+        BackendConfig::LocalZebra { .. } => {
 
-            let state_config = StateServiceConfig {
-                zebrad: ZebradStateConfig {
-                    rpc_address: *rpc_address,
-                    auth: auth.clone(),
-                    state: zebra_state.clone(),
-                    indexer_rpc_address: *indexer_rpc_address,
-                    database: zebra_database.clone(),
-                },
-                daemon: ZainodServiceConfig {
-                    service: config.service.clone(),
-                    storage: config.storage.clone(),
-                    network: config.network,
-                    debug: config.debug.clone(),
-                },
-            };
+            let state_config = config.to_state_service_config()?;
             Indexer::<StateService>::spawn_inner(state_config, config).await
         }
-        BackendConfig::RemoteZebra {
-            rpc_address,
-            ref auth,
-        } => {
-            use zaino_commons::config::{JsonRpcEndpointConfig, ZainodServiceConfig};
-            use zaino_fetch::config::FetchServiceConfig;
-
-            let fetch_config = FetchServiceConfig {
-                validator: JsonRpcEndpointConfig::Zebrad {
-                    rpc_address: *rpc_address,
-                    auth: auth.clone(),
-                },
-                daemon: ZainodServiceConfig {
-                    service: config.service.clone(),
-                    storage: config.storage.clone(),
-                    network: config.network,
-                    debug: config.debug.clone(),
-                },
-            };
+        BackendConfig::RemoteZebra { .. } => {
+            let fetch_config = config.to_fetch_service_config()?;
             Indexer::<FetchService>::spawn_inner(fetch_config, config).await
         }
-        BackendConfig::RemoteZcashd {
-            rpc_address,
-            ref auth,
-        } => {
-            use zaino_commons::config::{JsonRpcEndpointConfig, ZainodServiceConfig};
-            use zaino_fetch::config::FetchServiceConfig;
-
-            let fetch_config = FetchServiceConfig {
-                validator: JsonRpcEndpointConfig::Zcashd {
-                    rpc_address: *rpc_address,
-                    auth: auth.clone(),
-                },
-                daemon: ZainodServiceConfig {
-                    service: config.service.clone(),
-                    storage: config.storage.clone(),
-                    network: config.network,
-                    debug: config.debug.clone(),
-                },
-            };
+        BackendConfig::RemoteZcashd { .. } => {
+            let fetch_config = config.to_fetch_service_config()?;
             Indexer::<FetchService>::spawn_inner(fetch_config, config).await
         }
-        BackendConfig::RemoteZainod {
-            rpc_address,
-            ref auth,
-        } => {
-            use zaino_commons::config::{JsonRpcEndpointConfig, ZainodServiceConfig};
-            use zaino_fetch::config::FetchServiceConfig;
-
-            // Note: RemoteZainod uses Zcashd variant as they share the same auth type
-            let fetch_config = FetchServiceConfig {
-                validator: JsonRpcEndpointConfig::Zcashd {
-                    rpc_address: *rpc_address,
-                    auth: auth.clone(),
-                },
-                daemon: ZainodServiceConfig {
-                    service: config.service.clone(),
-                    storage: config.storage.clone(),
-                    network: config.network,
-                    debug: config.debug.clone(),
-                },
-            };
+        BackendConfig::RemoteZainod { .. } => {
+            let fetch_config = config.to_fetch_service_config()?;
             Indexer::<FetchService>::spawn_inner(fetch_config, config).await
         }
     }
