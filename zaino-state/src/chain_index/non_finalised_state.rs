@@ -115,7 +115,10 @@ impl NonFinalizedState {
     /// TODO: Currently, we can't initate without an snapshot, we need to create a cache
     /// of at least one block. Should this be tied to the instantiation of the data structure
     /// itself?
-    pub async fn initialize(source: BlockchainSource, network: zaino_commons::config::Network) -> Result<Self, InitError> {
+    pub async fn initialize(
+        source: BlockchainSource,
+        network: zaino_commons::config::Network,
+    ) -> Result<Self, InitError> {
         // TODO: Consider arbitrary buffer length
         let (staging_sender, staging_receiver) = mpsc::channel(100);
         let staged = Mutex::new(staging_receiver);

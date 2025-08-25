@@ -709,8 +709,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.service.channel_size as usize);
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(time::Duration::from_secs((service_timeout*4) as u64), async {
                     for height in start..=end {
@@ -806,8 +805,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.service.channel_size as usize);
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -909,8 +907,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let txids = self.get_taddress_txids_helper(request).await?;
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
-        let (transmitter, receiver) =
-            mpsc::channel(self.config.service.channel_size as usize);
+        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1085,8 +1082,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
         let mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.service.channel_size as usize);
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout*4) as u64),
@@ -1188,8 +1184,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.service.channel_size as usize);
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let mempool_height = self.block_cache.get_chain_height().await?.0;
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1417,8 +1412,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let taddrs = AddressStrings::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.service.channel_size as usize);
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),

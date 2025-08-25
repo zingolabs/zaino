@@ -1,6 +1,9 @@
 //! Holds config data for Zaino-State services.
 
-pub use zaino_commons::config::{BlockCacheConfig, DebugConfig, Network, ServiceConfig, StorageConfig, ZainodServiceConfig, ZebradStateConfig};
+pub use zaino_commons::config::{
+    BlockCacheConfig, DebugConfig, Network, ServiceConfig, StorageConfig, ZainodServiceConfig,
+    ZebradStateConfig,
+};
 
 /// Minimal configuration for StateService containing only required dependencies.
 ///
@@ -43,4 +46,3 @@ impl From<StateServiceConfig> for BlockCacheConfig {
         }
     }
 }
-

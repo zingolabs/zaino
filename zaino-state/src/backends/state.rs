@@ -2048,7 +2048,10 @@ impl LightWalletIndexer for StateServiceSubscriber {
     }
 
     fn timeout_channel_size(&self) -> (u32, u32) {
-        (self.config.service.timeout, self.config.service.channel_size)
+        (
+            self.config.service.timeout,
+            self.config.service.channel_size,
+        )
     }
 
     /// Returns all unspent outputs for a list of addresses.

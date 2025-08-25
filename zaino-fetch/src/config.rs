@@ -1,6 +1,9 @@
 //! Configuration types for Zaino-Fetch services.
 
-use zaino_commons::config::{BlockCacheConfig, DebugConfig, JsonRpcValidatorConfig, Network, ServiceConfig, StorageConfig, ZainodServiceConfig};
+use zaino_commons::config::{
+    BlockCacheConfig, DebugConfig, JsonRpcValidatorConfig, Network, ServiceConfig, StorageConfig,
+    ZainodServiceConfig,
+};
 
 /// Minimal configuration for FetchService containing only required dependencies.
 ///

@@ -53,7 +53,10 @@ impl JsonRpcServer {
                 write_to_disk(&cookie, cookie_auth.path.parent().unwrap()).map_err(|e| {
                     ServerError::ServerConfigError(format!("Failed to write cookie: {e}"))
                 })?;
-                (Some(cookie), Some(cookie_auth.path.parent().unwrap().to_path_buf()))
+                (
+                    Some(cookie),
+                    Some(cookie_auth.path.parent().unwrap().to_path_buf()),
+                )
             }
             JsonRpcAuth::Disabled => (None, None),
         };
