@@ -7,6 +7,23 @@ use zingolib::{
     config::RegtestNetwork, lightclient::LightClient, testutils::scenarios::setup::ClientBuilder,
 };
 
+#[derive(Debug, Clone, Copy)]
+pub enum ClientAddressType {
+    Unified,
+    Sapling,
+    Transparent,
+}
+
+impl std::fmt::Display for ClientAddressType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClientAddressType::Unified => write!(f, "unified"),
+            ClientAddressType::Sapling => write!(f, "sapling"),
+            ClientAddressType::Transparent => write!(f, "transparent"),
+        }
+    }
+}
+
 /// Holds zingo lightclients along with their TempDir for wallet-2-validator tests.
 #[derive(Debug)]
 pub struct Clients {
@@ -22,24 +39,21 @@ pub struct Clients {
 
 impl Clients {
     /// Returns the zcash address of the faucet.
-    pub async fn get_faucet_address(&self, pool: &str) -> String {
-        zingolib::get_base_address_macro!(self.faucet, pool)
+    pub async fn get_faucet_address(&self, pool: ClientAddressType) -> String {
+        zingolib::get_base_address_macro!(self.faucet, pool.to_string().as_str())
     }
 
     /// Returns the zcash address of the recipient.
-    pub async fn get_recipient_address(&self, pool: &str) -> String {
-        zingolib::get_base_address_macro!(self.recipient, pool)
+    pub async fn get_recipient_address(&self, pool: ClientAddressType) -> String {
+        zingolib::get_base_address_macro!(self.recipient, pool.to_string().as_str())
     }
 
     /// Launch lightclients for the given gRPC port.
     pub async fn launch(zaino_grpc_port: u16) -> Result<Self, std::io::Error> {
         let lightclient_dir = tempfile::tempdir()?;
 
-        let (faucet, recipient) = build_lightclients(
-            lightclient_dir.path().to_path_buf(),
-            zaino_grpc_port,
-        )
-        .await;
+        let (faucet, recipient) =
+            build_lightclients(lightclient_dir.path().to_path_buf(), zaino_grpc_port).await;
 
         Ok(Self {
             lightclient_dir,
