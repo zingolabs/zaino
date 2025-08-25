@@ -223,7 +223,7 @@ impl LaunchManager<crate::manager::tests::json_server_comparison::JsonServerComp
     ) -> Result<crate::manager::tests::json_server_comparison::JsonServerComparisonTestManager, Box<dyn std::error::Error>>
     {
         use crate::ports::TestPorts;
-        use crate::validator::{LocalNet, ValidatorConfig, ValidatorKind};
+        use crate::validator::{LocalNet, ValidatorConfig};
         use zingo_infra_services::{
             network::{ActivationHeights, Network as InfraNetwork},
             validator::{Validator as _, ZcashdConfig},
@@ -233,7 +233,7 @@ impl LaunchManager<crate::manager::tests::json_server_comparison::JsonServerComp
         let ports = TestPorts::allocate().await?;
 
         // Convert network type
-        let infra_network = match self.base.network {
+        let _infra_network = match self.base.network {
             zaino_commons::config::Network::Regtest => InfraNetwork::Regtest,
             zaino_commons::config::Network::Testnet => InfraNetwork::Testnet,
             zaino_commons::config::Network::Mainnet => InfraNetwork::Mainnet,

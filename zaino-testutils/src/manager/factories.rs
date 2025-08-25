@@ -99,7 +99,7 @@ impl FetchServiceBuilder {
     }
 
     /// Enable sync (convenience method with clearer naming).
-    pub fn enable_sync(mut self, enable: bool) -> Self {
+    pub fn enable_sync(self, enable: bool) -> Self {
         self.with_sync(enable)
     }
 
@@ -206,7 +206,7 @@ impl StateServiceBuilder {
     }
 
     /// Set the chain cache directory (alias for with_cache_dir).
-    pub fn with_chain_cache(mut self, dir: std::path::PathBuf) -> Self {
+    pub fn with_chain_cache(self, dir: std::path::PathBuf) -> Self {
         self.with_cache_dir(dir)
     }
 
