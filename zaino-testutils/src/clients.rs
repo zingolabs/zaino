@@ -8,6 +8,7 @@ use zingolib::{
 };
 
 /// Holds zingo lightclients along with their TempDir for wallet-2-validator tests.
+#[derive(Debug)]
 pub struct Clients {
     /// Lightclient TempDir location.
     pub lightclient_dir: TempDir,

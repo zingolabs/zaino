@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
-use zaino_commons::config::IndexerConfig;
+use zainodlib::config::IndexerConfig;
 use zainodlib::error::IndexerError;
 
 /// Access to indexer state and configuration.

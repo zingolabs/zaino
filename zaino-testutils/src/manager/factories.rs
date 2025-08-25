@@ -7,10 +7,14 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use zaino_commons::config::Network;
-use zaino_state::bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber};
-use zaino_fetch::{FetchService, FetchServiceSubscriber, FetchServiceConfig};
+use zaino_state::{
+    FetchService, FetchServiceSubscriber, IndexerSubscriber,
+    StateService, StateServiceSubscriber, ZcashService,
+    BlockCacheConfig,
+    bench::{BlockCache, BlockCacheSubscriber},
+};
+use zaino_fetch::config::FetchServiceConfig;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-use zaino_state::{StateService, StateServiceConfig};
 
 /// Builder for FetchService with sensible defaults.
 ///
@@ -57,8 +61,44 @@ impl FetchServiceBuilder {
     }
 
     /// Build the final FetchService and subscriber.
-    pub async fn build(self) -> Result<(FetchService, FetchServiceSubscriber), Box<dyn std::error::Error>> {
-        todo!("Implement FetchService creation with configured options")
+    pub async fn build(self) -> Result<(FetchService, IndexerSubscriber<FetchServiceSubscriber>), Box<dyn std::error::Error>> {
+        use zaino_commons::config::{JsonRpcValidatorConfig, ZcashdAuth, PasswordAuth, ServiceConfig, StorageConfig, DebugConfig};
+
+        // Create FetchServiceConfig directly - no IndexerConfig needed!
+        let fetch_config = FetchServiceConfig {
+            validator: JsonRpcValidatorConfig::Zcashd {
+                rpc_address: self.validator_address,
+                auth: if self.auth_enabled { 
+                    ZcashdAuth::Password(PasswordAuth {
+                        username: "user".to_string(), 
+                        password: "pass".to_string() 
+                    })
+                } else {
+                    ZcashdAuth::Disabled
+                }
+            },
+            service: ServiceConfig::default(),
+            storage: StorageConfig {
+                cache: Default::default(),
+                database: zaino_commons::config::DatabaseConfig {
+                    path: self.data_dir.clone(),
+                    ..Default::default()
+                }
+            },
+            network: self.network,
+            debug: DebugConfig {
+                no_sync: !self.enable_sync,
+                no_db: !self.enable_db,
+                slow_sync: false,
+            },
+        };
+
+        use zaino_state::ZcashService;
+        
+        let service = FetchService::spawn(fetch_config).await?;
+        let subscriber = service.get_subscriber();
+
+        Ok((service, subscriber))
     }
 }
 
@@ -97,8 +137,43 @@ impl StateServiceBuilder {
     }
 
     /// Build the final StateService.
-    pub async fn build(self) -> Result<StateService, Box<dyn std::error::Error>> {
-        todo!("Implement StateService creation with configured options")
+    pub async fn build(self) -> Result<(StateService, StateServiceSubscriber), Box<dyn std::error::Error>> {
+        use zaino_state::StateServiceConfig;
+        use zaino_commons::config::{ZebradStateConfig, ZebradAuth, ServiceConfig, StorageConfig, DebugConfig, ZebraStateConfig, DatabaseConfig};
+
+        // Create StateServiceConfig directly - no IndexerConfig needed!
+        let state_config = StateServiceConfig {
+            zebra: ZebradStateConfig {
+                rpc_address: self.validator_rpc_address,
+                auth: ZebradAuth::Disabled, // Usually disabled for local testing
+                state: ZebraStateConfig {
+                    cache_dir: self.cache_dir.clone(),
+                    ephemeral: self.ephemeral,
+                    ..Default::default()
+                },
+                indexer_rpc_address: self.validator_grpc_address,
+                database: DatabaseConfig::default(),
+            },
+            service: ServiceConfig::default(),
+            storage: StorageConfig {
+                cache: Default::default(),
+                database: zaino_commons::config::DatabaseConfig {
+                    path: self.cache_dir.clone(),
+                    ..Default::default()
+                }
+            },
+            network: self.network,
+            debug: DebugConfig {
+                no_sync: false,
+                no_db: self.ephemeral,
+                slow_sync: false, // Disable slow sync for tests
+            },
+        };
+
+        let service = StateService::spawn(state_config).await?;
+        let subscriber = service.get_subscriber();
+
+        Ok((service, subscriber))
     }
 }
 
@@ -139,6 +214,21 @@ impl BlockCacheBuilder {
 
     /// Build the final BlockCache and subscriber.
     pub async fn build(self) -> Result<(BlockCache, BlockCacheSubscriber), Box<dyn std::error::Error>> {
-        todo!("Implement BlockCache creation with configured options")
+        // Create BlockCacheConfig directly  
+        let cache_config = BlockCacheConfig {
+            cache: Default::default(),
+            database: zaino_commons::config::DatabaseConfig {
+                path: self.db_path.clone(),
+                ..Default::default()
+            },
+            network: self.network,
+            no_sync: self.no_sync,
+            no_db: self.no_db,
+        };
+
+        let cache = BlockCache::spawn(&self.connector, None, cache_config).await?;
+        let subscriber = cache.subscriber();
+
+        Ok((cache, subscriber))
     }
 }

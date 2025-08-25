@@ -6,7 +6,8 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
-use zaino_commons::config::{IndexerConfig, Network};
+use zaino_commons::config::Network;
+use zainodlib::config::IndexerConfig;
 use zainodlib::error::IndexerError;
 use crate::{
     validator::{LocalNet, ValidatorKind},
@@ -14,8 +15,7 @@ use crate::{
     clients::Clients,
     config::{JsonServerTestConfig, JsonRpcAuthConfig, TestConfig},
     manager::{
-        traits::{WithValidator, WithClients, WithIndexer, ConfigurableBuilder, TestConfiguration},
-        factories::{FetchServiceBuilder, StateServiceBuilder, BlockCacheBuilder},
+        traits::{WithValidator, WithClients, WithIndexer, ConfigurableBuilder, LaunchManager},
     },
 };
 
@@ -35,32 +35,32 @@ pub struct JsonServerTestManager {
 }
 
 impl WithValidator for JsonServerTestManager {
+    fn local_net(&self) -> &LocalNet {
+        &self.local_net
+    }
+
+    fn local_net_mut(&mut self) -> &mut LocalNet {
+        &mut self.local_net
+    }
+
     fn validator_rpc_address(&self) -> SocketAddr {
-        todo!("Return validator RPC address from ports")
+        self.ports.validator_rpc
     }
     
     fn validator_grpc_address(&self) -> SocketAddr {
-        todo!("Return validator gRPC address from ports")
+        self.ports.validator_grpc
     }
     
     fn network(&self) -> &Network {
         &self.network
     }
 
-    async fn generate_blocks(&self, count: u32) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Implement block generation using local_net")
-    }
-
-    async fn generate_blocks_with_delay(&self, count: u32) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Implement block generation with delays for sync")
-    }
-
-    async fn wait_for_validator_ready(&self) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Implement validator readiness check")
-    }
-
     async fn close(&mut self) {
-        todo!("Implement validator, indexer, and JSON server cleanup")
+        // Close indexer first
+        self.indexer_handle.abort();
+        // Then close validator using default implementation
+        use crate::validator::Validator as _;
+        self.local_net_mut().stop();
     }
 }
 
@@ -68,25 +68,6 @@ impl WithValidator for JsonServerTestManager {
 impl WithClients for JsonServerTestManager {
     fn clients(&self) -> &Clients {
         self.clients.as_ref().expect("JsonServerTestManager was not configured with clients")
-    }
-
-    async fn sync_clients(&self) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Implement client synchronization")
-    }
-
-    async fn get_faucet_address(&self, addr_type: &str) -> String {
-        todo!("Implement faucet address generation")
-    }
-
-    async fn get_recipient_address(&self, addr_type: &str) -> String {
-        todo!("Implement recipient address generation")
-    }
-
-    async fn prepare_for_shielding(&self, blocks: u32) -> Result<(), Box<dyn std::error::Error>>
-    where 
-        Self: WithValidator 
-    {
-        todo!("Implement prepare_for_shielding workflow")
     }
 }
 
@@ -96,11 +77,11 @@ impl WithIndexer for JsonServerTestManager {
     }
 
     fn zaino_grpc_address(&self) -> Option<SocketAddr> {
-        todo!("Return zaino gRPC address if configured")
+        self.ports.zaino_grpc
     }
 
     fn zaino_json_address(&self) -> Option<SocketAddr> {
-        todo!("Return zaino JSON address if configured")
+        self.ports.zaino_json
     }
 
     fn json_server_cookie_dir(&self) -> Option<&PathBuf> {
@@ -167,7 +148,9 @@ impl ConfigurableBuilder for JsonServerTestsBuilder {
 
     fn build_config(&self) -> Self::Config {
         let json_auth = if self.enable_cookie_auth {
-            JsonRpcAuthConfig::Cookie(todo!("Generate ephemeral cookie path"))
+            // Generate a temporary directory for cookie authentication
+            let temp_dir = std::env::temp_dir().join(format!("zaino_cookie_{}", std::process::id()));
+            JsonRpcAuthConfig::Cookie(temp_dir)
         } else {
             JsonRpcAuthConfig::None
         };
@@ -178,14 +161,15 @@ impl ConfigurableBuilder for JsonServerTestsBuilder {
                 validator_kind: self.validator_kind,
                 chain_cache: self.chain_cache.clone(),
             },
-            indexer: todo!("Create default IndexerConfig for JSON server tests"),
+            indexer: IndexerConfig::default(),
             json_auth,
             enable_clients: self.enable_clients,
         }
     }
 
     async fn launch(self) -> Result<Self::Manager, Box<dyn std::error::Error>> {
-        todo!("Launch JsonServerTestManager from builder configuration")
+        let config = self.build_config();
+        config.launch_manager().await
     }
 
     fn validator(mut self, kind: ValidatorKind) -> Self {

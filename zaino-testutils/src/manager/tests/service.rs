@@ -12,7 +12,7 @@ use crate::{
     ports::TestPorts,
     config::{ServiceTestConfig, TestConfig},
     manager::{
-        traits::{WithValidator, WithServiceFactories, ConfigurableBuilder, TestConfiguration},
+        traits::{WithValidator, WithServiceFactories, ConfigurableBuilder, LaunchManager},
         factories::{FetchServiceBuilder, StateServiceBuilder, BlockCacheBuilder},
     },
 };
@@ -32,50 +32,63 @@ pub struct ServiceTestManager {
 }
 
 impl WithValidator for ServiceTestManager {
+    fn local_net(&self) -> &LocalNet {
+        &self.local_net
+    }
+
+    fn local_net_mut(&mut self) -> &mut LocalNet {
+        &mut self.local_net
+    }
+
     fn validator_rpc_address(&self) -> SocketAddr {
-        todo!("Return validator RPC address from ports")
+        self.ports.validator_rpc
     }
     
     fn validator_grpc_address(&self) -> SocketAddr {
-        todo!("Return validator gRPC address from ports")
+        self.ports.validator_grpc
     }
     
     fn network(&self) -> &Network {
         &self.network
     }
-
-    async fn generate_blocks(&self, count: u32) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Implement block generation using local_net")
-    }
-
-    async fn generate_blocks_with_delay(&self, count: u32) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Implement block generation with delays for sync")
-    }
-
-    async fn wait_for_validator_ready(&self) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Implement validator readiness check")
-    }
-
-    async fn close(&mut self) {
-        todo!("Implement validator cleanup")
-    }
 }
 
 impl WithServiceFactories for ServiceTestManager {
     fn create_fetch_service(&self) -> FetchServiceBuilder {
-        todo!("Create pre-configured FetchServiceBuilder")
+        FetchServiceBuilder::new(
+            self.validator_rpc_address(),
+            self.network.clone(),
+            self.ports.zaino_db.clone()
+        )
     }
 
     fn create_state_service(&self) -> StateServiceBuilder {
-        todo!("Create pre-configured StateServiceBuilder")
+        StateServiceBuilder::new(
+            self.validator_rpc_address(),
+            self.validator_grpc_address(),
+            self.network.clone(),
+            self.ports.zaino_db.clone()
+        )
     }
 
     fn create_json_connector(&self) -> Result<JsonRpSeeConnector, Box<dyn std::error::Error>> {
-        todo!("Create authenticated JSON-RPC connector")
+        use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
+        
+        let url = format!("http://{}", self.validator_rpc_address()).parse()?;
+        let connector = JsonRpSeeConnector::new(url, None)?; // No auth for test validators
+        Ok(connector)
     }
 
     fn create_block_cache(&self) -> BlockCacheBuilder {
-        todo!("Create pre-configured BlockCacheBuilder")
+        // Create a basic connector for the cache (we need it for initialization)
+        let connector = self.create_json_connector()
+            .expect("Failed to create connector for block cache");
+        
+        BlockCacheBuilder::new(
+            connector,
+            self.network.clone(),
+            self.ports.zaino_db.clone()
+        )
     }
 }
 
@@ -112,7 +125,8 @@ impl ConfigurableBuilder for ServiceTestsBuilder {
     }
 
     async fn launch(self) -> Result<Self::Manager, Box<dyn std::error::Error>> {
-        todo!("Launch ServiceTestManager from builder configuration")
+        let config = self.build_config();
+        config.launch_manager().await
     }
 
     fn validator(mut self, kind: ValidatorKind) -> Self {

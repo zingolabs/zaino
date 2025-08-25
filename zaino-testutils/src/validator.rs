@@ -13,6 +13,15 @@ use crate::{
 use zaino_commons::config::BackendConfig;
 use zainodlib::config::IndexerConfig;
 
+/// Validator type selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidatorKind {
+    /// Use Zebra validator.
+    Zebra,
+    /// Use Zcashd validator.
+    Zcashd,
+}
+
 /// Config for validators.
 pub enum ValidatorConfig {
     /// Zcashd Config.
@@ -41,6 +50,15 @@ pub enum LocalNet {
             zingo_infra_services::validator::Zebrad,
         >,
     ),
+}
+
+impl std::fmt::Debug for LocalNet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LocalNet::Zcashd(_) => f.debug_tuple("LocalNet::Zcashd").finish(),
+            LocalNet::Zebrd(_) => f.debug_tuple("LocalNet::Zebrd").finish(),
+        }
+    }
 }
 
 impl zingo_infra_services::validator::Validator for LocalNet {
