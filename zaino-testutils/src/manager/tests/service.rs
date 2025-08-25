@@ -55,20 +55,18 @@ impl WithValidator for ServiceTestManager {
 
 impl WithServiceFactories for ServiceTestManager {
     fn create_fetch_service(&self) -> FetchServiceBuilder {
-        FetchServiceBuilder::new(
-            self.validator_rpc_address(),
-            self.network.clone(),
-            self.ports.zaino_db.clone(),
-        )
+        FetchServiceBuilder::new()
+            .with_validator_address(self.validator_rpc_address())
+            .with_network(self.network.clone())
+            .with_data_dir(self.ports.zaino_db.clone())
     }
 
     fn create_state_service(&self) -> StateServiceBuilder {
-        StateServiceBuilder::new(
-            self.validator_rpc_address(),
-            self.validator_grpc_address(),
-            self.network.clone(),
-            self.ports.zaino_db.clone(),
-        )
+        StateServiceBuilder::new()
+            .with_validator_rpc_address(self.validator_rpc_address())
+            .with_validator_grpc_address(self.validator_grpc_address())
+            .with_network(self.network.clone())
+            .with_cache_dir(self.ports.zaino_db.clone())
     }
 
     fn create_json_connector(&self) -> Result<JsonRpSeeConnector, Box<dyn std::error::Error>> {
