@@ -16,7 +16,7 @@ use crate::{
     },
     ports::TestPorts,
     validator::{LocalNet, ValidatorKind},
-    clients::{ClientAddressType, Clients},
+    clients::Clients,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -319,20 +319,7 @@ impl StateServiceComparisonTestsBuilder {
 
     /// Configure for regtest with custom activation heights.
     pub fn for_regtest_with_activations(mut self) -> Self {
-        self.network = Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                nu6_1: None,
-                nu7: None,
-            },
-        );
+        self.network = Network::Regtest;
         self
     }
 }

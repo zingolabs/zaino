@@ -16,12 +16,12 @@ use crate::{
     },
     ports::TestPorts,
     validator::{LocalNet, ValidatorKind},
-    clients::{ClientAddressType, Clients},
+    clients::Clients,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use zaino_commons::config::Network;
-use zaino_state::{FetchService, FetchServiceSubscriber};
+use zaino_state::{FetchService, FetchServiceSubscriber, ZcashService};
 
 /// Test manager for json_server.rs integration tests.
 /// 
@@ -303,20 +303,7 @@ impl JsonServerComparisonTestsBuilder {
 
     /// Configure for regtest with all network upgrades active.
     pub fn for_regtest(mut self) -> Self {
-        self.network = Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                nu6_1: None,
-                nu7: None,
-            },
-        );
+        self.network = Network::Regtest;
         self
     }
 }
