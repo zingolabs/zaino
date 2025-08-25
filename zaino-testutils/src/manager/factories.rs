@@ -29,16 +29,42 @@ pub struct FetchServiceBuilder {
 }
 
 impl FetchServiceBuilder {
-    /// Create a new FetchServiceBuilder with basic configuration.
-    pub fn new(validator_address: SocketAddr, network: Network, data_dir: PathBuf) -> Self {
+    /// Create a new FetchServiceBuilder with sensible defaults.
+    /// 
+    /// **Defaults:**
+    /// - Validator: localhost:8232 (typical test validator port)
+    /// - Network: Regtest (most common for testing)
+    /// - Sync: Enabled
+    /// - Database: Enabled  
+    /// - Auth: Disabled (typical for test environments)
+    /// - Data dir: Temporary directory
+    pub fn new() -> Self {
         Self {
-            validator_address,
-            network,
+            validator_address: "127.0.0.1:8232".parse().unwrap(),
+            network: zaino_commons::config::Network::Regtest,
             enable_sync: true,
             enable_db: true,
             auth_enabled: false,
-            data_dir,
+            data_dir: std::env::temp_dir().join("zaino-test-fetch"),
         }
+    }
+
+    /// Set the validator address to connect to.
+    pub fn with_validator_address(mut self, address: SocketAddr) -> Self {
+        self.validator_address = address;
+        self
+    }
+
+    /// Set the network type.
+    pub fn with_network(mut self, network: zaino_commons::config::Network) -> Self {
+        self.network = network;
+        self
+    }
+
+    /// Set the data directory for the service.
+    pub fn with_data_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.data_dir = dir;
+        self
     }
 
     /// Enable or disable sync functionality.
@@ -57,6 +83,24 @@ impl FetchServiceBuilder {
     pub fn with_auth(mut self) -> Self {
         self.auth_enabled = true;
         self
+    }
+
+    /// Disable authentication (convenience method).
+    pub fn disable_auth(mut self) -> Self {
+        self.auth_enabled = false;
+        self
+    }
+
+    /// Enable cookie-based authentication with cookie directory path.
+    pub fn enable_cookie_auth(mut self, _cookie_dir: String) -> Self {
+        // TODO: Implement cookie auth configuration
+        self.auth_enabled = true;
+        self
+    }
+
+    /// Enable sync (convenience method with clearer naming).
+    pub fn enable_sync(mut self, enable: bool) -> Self {
+        self.with_sync(enable)
     }
 
     /// Build the final FetchService and subscriber.
@@ -119,20 +163,51 @@ pub struct StateServiceBuilder {
 }
 
 impl StateServiceBuilder {
-    /// Create a new StateServiceBuilder with basic configuration.
-    pub fn new(
-        validator_rpc_address: SocketAddr,
-        validator_grpc_address: SocketAddr,
-        network: Network,
-        cache_dir: PathBuf,
-    ) -> Self {
+    /// Create a new StateServiceBuilder with sensible defaults.
+    /// 
+    /// **Defaults:**
+    /// - Validator RPC: localhost:8232 (typical test validator RPC port)
+    /// - Validator gRPC: localhost:8233 (typical test validator gRPC port)
+    /// - Network: Regtest (most common for testing)
+    /// - Cache dir: Temporary directory
+    /// - Ephemeral: false (persistent state by default)
+    pub fn new() -> Self {
         Self {
-            validator_rpc_address,
-            validator_grpc_address,
-            network,
-            cache_dir,
+            validator_rpc_address: "127.0.0.1:8232".parse().unwrap(),
+            validator_grpc_address: "127.0.0.1:8233".parse().unwrap(),
+            network: zaino_commons::config::Network::Regtest,
+            cache_dir: std::env::temp_dir().join("zaino-test-state"),
             ephemeral: false,
         }
+    }
+
+    /// Set the validator RPC address to connect to.
+    pub fn with_validator_rpc_address(mut self, address: SocketAddr) -> Self {
+        self.validator_rpc_address = address;
+        self
+    }
+
+    /// Set the validator gRPC address to connect to.
+    pub fn with_validator_grpc_address(mut self, address: SocketAddr) -> Self {
+        self.validator_grpc_address = address;
+        self
+    }
+
+    /// Set the network type.
+    pub fn with_network(mut self, network: zaino_commons::config::Network) -> Self {
+        self.network = network;
+        self
+    }
+
+    /// Set the cache directory for zebra-state.
+    pub fn with_cache_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.cache_dir = dir;
+        self
+    }
+
+    /// Set the chain cache directory (alias for with_cache_dir).
+    pub fn with_chain_cache(mut self, dir: std::path::PathBuf) -> Self {
+        self.with_cache_dir(dir)
     }
 
     /// Use ephemeral (in-memory) state.
