@@ -98,14 +98,23 @@ fn test_deserialize_full_valid_config() {
         assert_eq!(finalized_config.network, Network::Mainnet);
         assert!(finalized_config.server.json_rpc.is_some());
         assert_eq!(
-            finalized_config.server.json_rpc.as_ref().unwrap().listen_address,
+            finalized_config
+                .server
+                .json_rpc
+                .as_ref()
+                .unwrap()
+                .listen_address,
             "127.0.0.1:8000".parse().unwrap()
         );
         assert!(matches!(
             finalized_config.server.json_rpc.as_ref().unwrap().auth,
             CookieAuth::Enabled { .. }
         ));
-        if let TlsConfig::Enabled { cert_path, key_path } = &finalized_config.server.grpc.tls {
+        if let TlsConfig::Enabled {
+            cert_path,
+            key_path,
+        } = &finalized_config.server.grpc.tls
+        {
             assert_eq!(*cert_path, PathBuf::from(cert_file_name));
             assert_eq!(*key_path, PathBuf::from(key_file_name));
         } else {
@@ -127,7 +136,10 @@ fn test_deserialize_full_valid_config() {
             finalized_config.server.grpc.listen_address,
             "0.0.0.0:9000".parse().unwrap()
         );
-        assert!(matches!(finalized_config.server.grpc.tls, TlsConfig::Enabled { .. }));
+        assert!(matches!(
+            finalized_config.server.grpc.tls,
+            TlsConfig::Enabled { .. }
+        ));
         if let AuthMethod::Basic { username, .. } = &finalized_config.validator.auth {
             assert_eq!(*username, "user".to_string());
         } else {

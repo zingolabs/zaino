@@ -57,8 +57,14 @@ impl TestPorts {
         let zaino_json_port = portpicker::pick_unused_port()
             .ok_or_else(|| std::io::Error::other("No ports free for zaino JSON"))?;
 
-        self.zaino_grpc = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_grpc_port));
-        self.zaino_json = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_json_port));
+        self.zaino_grpc = Some(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            zaino_grpc_port,
+        ));
+        self.zaino_json = Some(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            zaino_json_port,
+        ));
 
         Ok(())
     }

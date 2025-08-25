@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_commons::config::{
     AuthMethod, BackendType, CacheConfig, CookieAuth, DatabaseConfig, Network, ServiceConfig,
-    ValidatorConfig, TlsConfig,
+    TlsConfig, ValidatorConfig,
 };
 use zainodlib::config::{DebugConfig, IndexerConfig, ServerConfig, StorageConfig};
 
@@ -22,7 +22,7 @@ fn test_programmatic_config_construction() {
         server: ServerConfig {
             json_rpc: Some(zaino_commons::config::JsonRpcConfig {
                 listen_address: "127.0.0.1:0".parse().unwrap(), // random port
-                auth: CookieAuth::Disabled,                      // no auth needed for tests
+                auth: CookieAuth::Disabled,                     // no auth needed for tests
             }),
             grpc: zaino_commons::config::GrpcConfig {
                 listen_address: "127.0.0.1:0".parse().unwrap(),
@@ -130,7 +130,10 @@ fn test_production_config_construction() {
     // Verify the structure
     assert_eq!(production_config.network, Network::Mainnet);
     assert_eq!(production_config.backend, BackendType::State);
-    assert!(matches!(production_config.server.grpc.tls, TlsConfig::Enabled { .. }));
+    assert!(matches!(
+        production_config.server.grpc.tls,
+        TlsConfig::Enabled { .. }
+    ));
 
     // Verify cookie auth is enabled
     if let Some(json_rpc) = &production_config.server.json_rpc {
@@ -268,7 +271,8 @@ fn test_toml_file_loading() {
             filename
         );
         assert_eq!(
-            config.server.json_rpc.is_some(), expected_json_server,
+            config.server.json_rpc.is_some(),
+            expected_json_server,
             "JSON server mismatch in {}",
             filename
         );
@@ -325,7 +329,8 @@ fn test_toml_round_trip_fidelity() {
             filename
         );
         assert_eq!(
-            config1.server.json_rpc.is_some(), config2.server.json_rpc.is_some(),
+            config1.server.json_rpc.is_some(),
+            config2.server.json_rpc.is_some(),
             "JSON server differs after round-trip in {}",
             filename
         );
@@ -338,8 +343,11 @@ fn test_toml_round_trip_fidelity() {
                     filename
                 );
             }
-            (None, None) => {}, // Both disabled, OK
-            _ => panic!("JSON RPC enabled/disabled state differs after round-trip in {}", filename),
+            (None, None) => {} // Both disabled, OK
+            _ => panic!(
+                "JSON RPC enabled/disabled state differs after round-trip in {}",
+                filename
+            ),
         }
         assert_eq!(
             config1.server.grpc.listen_address, config2.server.grpc.listen_address,
@@ -364,24 +372,22 @@ fn test_toml_round_trip_fidelity() {
 
         // Test cookie auth round-trip for JSON RPC
         match (&config1.server.json_rpc, &config2.server.json_rpc) {
-            (Some(json_rpc1), Some(json_rpc2)) => {
-                match (&json_rpc1.auth, &json_rpc2.auth) {
-                    (CookieAuth::Enabled { path: p1 }, CookieAuth::Enabled { path: p2 }) => {
-                        assert_eq!(
-                            p1, p2,
-                            "JSON RPC cookie path differs after round-trip in {}",
-                            filename
-                        );
-                    }
-                    (CookieAuth::Disabled, CookieAuth::Disabled) => {}
-                    _ => panic!(
-                        "JSON RPC cookie auth type differs after round-trip in {}",
+            (Some(json_rpc1), Some(json_rpc2)) => match (&json_rpc1.auth, &json_rpc2.auth) {
+                (CookieAuth::Enabled { path: p1 }, CookieAuth::Enabled { path: p2 }) => {
+                    assert_eq!(
+                        p1, p2,
+                        "JSON RPC cookie path differs after round-trip in {}",
                         filename
-                    ),
+                    );
                 }
-            }
-            (None, None) => {}, // Both disabled
-            _ => {} // Already checked above
+                (CookieAuth::Disabled, CookieAuth::Disabled) => {}
+                _ => panic!(
+                    "JSON RPC cookie auth type differs after round-trip in {}",
+                    filename
+                ),
+            },
+            (None, None) => {} // Both disabled
+            _ => {}            // Already checked above
         }
 
         println!("✓ Round-trip fidelity verified for {}", filename);

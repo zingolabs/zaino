@@ -5,8 +5,8 @@ use tracing::info;
 
 use zaino_serve::server::{grpc::TonicServer, jsonrpc::JsonRpcServer};
 use zaino_state::{
-    FetchService, IndexerService, LightWalletService, StateService, StatusType,
-    ZcashIndexer, ZcashService,
+    FetchService, IndexerService, LightWalletService, StateService, StatusType, ZcashIndexer,
+    ZcashService,
 };
 
 use crate::{config::IndexerConfig, error::IndexerError};
@@ -58,7 +58,6 @@ pub async fn spawn_indexer(
         //         Indexer::<FetchService>::spawn_inner(fetch_service_config, config).await
         //     }
         BackendConfig::LocalZebra { .. } => {
-
             let state_config = config.to_state_service_config()?;
             Indexer::<StateService>::spawn_inner(state_config, config).await
         }

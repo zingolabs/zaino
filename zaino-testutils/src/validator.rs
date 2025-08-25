@@ -6,10 +6,7 @@ use testvectors::REG_O_ADDR_FROM_ABANDONART;
 use zingo_infra_services::network::Network as InfraNetwork;
 pub use zingo_infra_services::validator::Validator;
 
-use crate::{
-    binaries::*,
-    ports::TestPorts,
-};
+use crate::{binaries::*, ports::TestPorts};
 use zaino_commons::config::BackendConfig;
 use zainodlib::config::IndexerConfig;
 
@@ -231,8 +228,8 @@ impl LocalNet {
                 };
                 ValidatorConfig::ZcashdConfig(cfg)
             }
-            BackendConfig::LocalZebra { .. } 
-            | BackendConfig::RemoteZebra { .. } 
+            BackendConfig::LocalZebra { .. }
+            | BackendConfig::RemoteZebra { .. }
             | BackendConfig::RemoteZainod { .. } => {
                 let cfg = zingo_infra_services::validator::ZebradConfig {
                     zebrad_bin: ZEBRD_BIN.clone(),
