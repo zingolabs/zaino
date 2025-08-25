@@ -1,5 +1,6 @@
 //! Zaino config.
 
+use core::panic;
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
@@ -19,9 +20,8 @@ use serde::{
 use tracing::warn;
 use tracing::{error, info};
 use zaino_commons::config::{
-    BackendConfig, CacheConfig, DatabaseConfig, DebugConfig, GrpcConfig, JsonRpcAuth,
-    JsonRpcConfig, JsonRpcEndpointConfig, Network, ServiceConfig, StorageConfig, TlsConfig,
-    ZainodServiceConfig, ZebradStateConfig,
+    BackendConfig, DebugConfig, GrpcConfig, JsonRpcAuth, JsonRpcConfig, JsonRpcEndpointConfig,
+    Network, ServiceConfig, StorageConfig, TlsConfig, ZainodServiceConfig, ZebradStateConfig,
 };
 use zaino_fetch::config::FetchServiceConfig;
 use zaino_state::StateServiceConfig;
@@ -353,14 +353,50 @@ pub fn load_config(file_path: &PathBuf) -> Result<IndexerConfig, IndexerError> {
 
 /// Creates service configurations from ZainoConfig.
 impl IndexerConfig {
+    pub fn to_state_service_config(self) -> Result<StateServiceConfig, IndexerError> {
+        match &self.backend {
+            BackendConfig::LocalZebra {
+                rpc_address,
+                auth,
+                zebra_state,
+                indexer_rpc_address,
+                zebra_database,
+            } => Ok(StateServiceConfig {
+                zebra: ZebradStateConfig {
+                    rpc_address: *rpc_address,
+                    auth: auth.clone(),
+                    state: zebra_state.clone(),
+                    indexer_rpc_address: *indexer_rpc_address,
+                    database: zebra_database.clone(),
+                },
+                service: self.service,
+                storage: self.storage,
+                network: self.network,
+                debug: self.debug,
+            }),
+            // todo!: find a static way to avoid this situation
+            _ => panic!("Called to_state_service_config with invalid backend variant. Only LocalZebra supports state service"),
+        }
+    }
+
+    pub fn to_fetch_service_config(self) -> FetchServiceConfig {
+        match self.backend {
+            BackendConfig::RemoteZebra { rpc_address, auth } => {
+                FetchServiceConfig {
+                    validator: zaino_commons::config::JsonRpcValidatorConfig::Zebrd { rpc_address , auth },
+                    service: self.service,
+                    storage: self.storage,
+                    network: self.network,
+                    debug: self.debug
+                }
+            },
+            // todo!: find a static way to avoid this situation
+            BackendConfig::LocalZebra { .. } => panic!("Called to_fetch_service_config with invalid backend variant. LocalZebra doesn't support fetch service"),
+        }
+    }
+
     /// Create appropriate service config based on backend type.
     pub fn to_service_config(self) -> Result<ServiceBackendConfig, IndexerError> {
-        let daemon = ZainodServiceConfig {
-            service: self.service,
-            storage: self.storage,
-            network: self.network,
-            debug: self.debug,
-        };
         match &self.backend {
             BackendConfig::LocalZebra {
                 rpc_address,
@@ -369,7 +405,7 @@ impl IndexerConfig {
                 indexer_rpc_address,
                 zebra_database,
             } => {
-                let state_config = ZebradStateConfig {
+                let zebra_state_config = ZebradStateConfig {
                     rpc_address: *rpc_address,
                     auth: auth.clone(),
                     state: zebra_state.clone(),
@@ -378,8 +414,11 @@ impl IndexerConfig {
                 };
 
                 Ok(ServiceBackendConfig::State(StateServiceConfig {
-                    zebrad: state_config,
-                    daemon,
+                    zebra: zebra_state_config,
+                    service: self.service,
+                    storage: self.storage,
+                    network: self.network,
+                    debug: self.debug,
                 }))
             }
             BackendConfig::RemoteZebra { rpc_address, auth } => {
@@ -390,7 +429,10 @@ impl IndexerConfig {
 
                 Ok(ServiceBackendConfig::Fetch(FetchServiceConfig {
                     validator: fetch_config,
-                    daemon,
+                    service: self.service,
+                    storage: self.storage,
+                    network: self.network,
+                    debug: self.debug,
                 }))
             }
             BackendConfig::RemoteZcashd { rpc_address, auth } => {
@@ -401,7 +443,10 @@ impl IndexerConfig {
 
                 Ok(ServiceBackendConfig::Fetch(FetchServiceConfig {
                     validator: fetch_config,
-                    daemon,
+                    service: self.service,
+                    storage: self.storage,
+                    network: self.network,
+                    debug: self.debug,
                 }))
             }
             BackendConfig::RemoteZainod { rpc_address, auth } => {
@@ -412,7 +457,10 @@ impl IndexerConfig {
 
                 Ok(ServiceBackendConfig::Fetch(FetchServiceConfig {
                     validator: fetch_config,
-                    daemon,
+                    service: self.service,
+                    storage: self.storage,
+                    network: self.network,
+                    debug: self.debug,
                 }))
             }
         }
