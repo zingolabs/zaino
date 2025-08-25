@@ -95,11 +95,13 @@ mod mockchain_tests {
             .await
             .unwrap();
 
-        loop {
-            if indexer.finalized_state.db_height().await.unwrap() == Some(crate::Height(100)) {
-                break;
+        if !active_mockchain_source {
+            loop {
+                if indexer.finalized_state.db_height().await.unwrap() == Some(crate::Height(100)) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
         }
 
         (blocks, indexer, source)
@@ -354,13 +356,24 @@ mod mockchain_tests {
             .map(|(_height, _chain_block, _compact_block, zebra_block, _roots)| zebra_block.clone())
             .collect();
 
-        dbg!(indexer.snapshot_nonfinalized_state().best_tip);
+        let mut tip_height = indexer.snapshot_nonfinalized_state().best_tip.0;
 
         for _ in 0..150 {
             mockchain.mine_blocks(1);
             sleep(Duration::from_millis(200)).await;
+            let tip_height = indexer.snapshot_nonfinalized_state().best_tip.0;
+            println!("tip height: {tip_height}")
         }
-        sleep(Duration::from_millis(2000)).await;
+
+        loop {
+            let new_tip_height = indexer.snapshot_nonfinalized_state().best_tip.0;
+            if tip_height == new_tip_height {
+                break;
+            } else {
+                tip_height = new_tip_height
+            }
+            sleep(Duration::from_millis(2000)).await;
+        }
 
         dbg!(indexer.snapshot_nonfinalized_state().best_tip);
 

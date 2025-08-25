@@ -341,7 +341,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
     /// sync to the top of the chain
     pub(crate) async fn sync(&self, finalzed_db: Arc<ZainoDB>) -> Result<(), SyncError> {
-        dbg!("syncing");
         let initial_state = self.get_snapshot();
         let mut new_blocks = Vec::new();
         let mut nonbest_blocks = HashMap::new();
@@ -354,9 +353,10 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
         while let Some(block) = self
             .source
-            .get_block(HashOrHeight::Height(zebra_chain::block::Height(
-                u32::from(best_tip.0) + 1,
-            )))
+            .get_block({
+                println!("syncing block {}", u32::from(best_tip.0) + 1);
+                HashOrHeight::Height(zebra_chain::block::Height(u32::from(best_tip.0) + 1))
+            })
             .await
             .map_err(|e| {
                 // TODO: Check error. Determine what kind of error to return, this may be recoverable
@@ -365,7 +365,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 )))
             })?
         {
-            dbg!("syncing block", best_tip.0 + 1);
+            let height = block.coinbase_height();
+            println!("got block {:?}", height);
             // If this block is next in the chain, we sync it as normal
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == best_tip.1 {
@@ -415,6 +416,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 // best chain blocks
                 nonbest_blocks.insert(block.hash(), block);
             }
+            println!("accounted for block {:?}", height);
         }
 
         for block in new_blocks {
@@ -500,7 +502,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             }
         }
 
-        dbg!("synced");
         Ok(())
     }
 
@@ -512,7 +513,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         if let Err(e) = self.stage(block.clone()) {
             match *e {
                 mpsc::error::TrySendError::Full(_) => {
+                    println!("sender full, updating");
                     self.update(finalzed_db.clone()).await?;
+                    println!("updated");
                     Box::pin(self.sync_stage_update_loop(block, finalzed_db)).await?;
                 }
                 mpsc::error::TrySendError::Closed(_block) => {
