@@ -83,6 +83,13 @@ pub struct LocalCacheTestConfig {
     pub base: TestConfig,
 }
 
+/// Configuration for test vector generation tests (validator + StateService + clients).
+#[derive(Debug, Clone)]
+pub struct TestVectorTestConfig {
+    /// Base configuration.
+    pub base: TestConfig,
+}
+
 impl TestConfiguration for ServiceTestConfig {
     fn network(&self) -> &Network {
         &self.base.network
@@ -134,6 +141,16 @@ impl TestConfiguration for ChainCacheTestConfig {
 }
 
 impl TestConfiguration for LocalCacheTestConfig {
+    fn network(&self) -> &Network {
+        &self.base.network
+    }
+
+    fn validator_kind(&self) -> ValidatorKind {
+        self.base.validator_kind
+    }
+}
+
+impl TestConfiguration for TestVectorTestConfig {
     fn network(&self) -> &Network {
         &self.base.network
     }
@@ -528,6 +545,70 @@ impl LaunchManager<crate::manager::tests::local_cache::LocalCacheTestManager> fo
             ports,
             network: self.base.network,
             chain_cache: self.base.chain_cache,
+        })
+    }
+}
+
+impl LaunchManager<crate::manager::tests::test_vectors::TestVectorGeneratorTestManager> for TestVectorTestConfig {
+    async fn launch_manager(
+        self,
+    ) -> Result<crate::manager::tests::test_vectors::TestVectorGeneratorTestManager, Box<dyn std::error::Error>>
+    {
+        use crate::ports::TestPorts;
+        use crate::validator::{LocalNet, ValidatorConfig};
+        use zingo_infra_services::{
+            network::{ActivationHeights, Network as InfraNetwork},
+            validator::{Validator as _, ZcashdConfig, ZebradConfig},
+        };
+
+        // Allocate ports and directories
+        let ports = TestPorts::allocate().await?;
+
+        // Convert network type
+        let _infra_network = match self.base.network {
+            zaino_commons::config::Network::Regtest => InfraNetwork::Regtest,
+            zaino_commons::config::Network::Testnet => InfraNetwork::Testnet,
+            zaino_commons::config::Network::Mainnet => InfraNetwork::Mainnet,
+        };
+
+        // Create validator configuration based on kind
+        let validator_config = match self.base.validator_kind {
+            ValidatorKind::Zcashd => ValidatorConfig::ZcashdConfig(ZcashdConfig {
+                zcashd_bin: crate::binaries::ZCASHD_BIN.clone(),
+                zcash_cli_bin: crate::binaries::ZCASH_CLI_BIN.clone(),
+                rpc_listen_port: Some(ports.validator_rpc.port()),
+                activation_heights: ActivationHeights::default(),
+                miner_address: Some(testvectors::REG_O_ADDR_FROM_ABANDONART),
+                chain_cache: self.base.chain_cache.clone(),
+            }),
+            ValidatorKind::Zebra => {
+                ValidatorConfig::ZebrdConfig(ZebradConfig {
+                    zebrad_bin: crate::binaries::ZEBRD_BIN.clone(),
+                    network_listen_port: None, // Auto-select
+                    rpc_listen_port: Some(ports.validator_rpc.port()),
+                    indexer_listen_port: Some(ports.validator_grpc.port()),
+                    activation_heights: ActivationHeights::default(),
+                    miner_address: testvectors::REG_O_ADDR_FROM_ABANDONART,
+                    chain_cache: self.base.chain_cache.clone(),
+                    network: _infra_network,
+                })
+            }
+        };
+
+        // Launch validator
+        let local_net = LocalNet::launch(validator_config)
+            .await
+            .map_err(|e| format!("Failed to launch validator: {}", e))?;
+
+        // Test vector generation always requires clients
+        let clients = crate::clients::Clients::launch(8232).await?;
+
+        Ok(crate::manager::tests::test_vectors::TestVectorGeneratorTestManager {
+            local_net,
+            ports,
+            network: self.base.network,
+            chain_cache: self.base.chain_cache,
+            clients,
         })
     }
 }

@@ -10,6 +10,7 @@ pub mod json_server_comparison;
 pub mod local_cache;
 pub mod service;
 pub mod state_service_comparison;
+pub mod test_vectors;
 pub mod wallet;
 
 // Re-export all manager types and builders for convenience
@@ -20,4 +21,5 @@ pub use json_server_comparison::{JsonServerComparisonTestManager, JsonServerComp
 pub use local_cache::{LocalCacheTestManager, LocalCacheTestsBuilder};
 pub use service::{ServiceTestManager, ServiceTestsBuilder};
 pub use state_service_comparison::{StateServiceComparisonTestManager, StateServiceComparisonTestsBuilder};
+pub use test_vectors::{TestVectorGeneratorTestManager, TestVectorGeneratorTestsBuilder, TransactionOperation};
 pub use wallet::{WalletTestManager, WalletTestsBuilder};
