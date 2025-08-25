@@ -211,21 +211,17 @@ pub mod validator;
 
 // Re-export configuration types
 pub use config::{
-    TestConfig, ServiceTestConfig, WalletTestConfig, JsonServerTestConfig, JsonRpcAuthConfig,
+    JsonRpcAuthConfig, JsonServerTestConfig, ServiceTestConfig, TestConfig, WalletTestConfig,
 };
 pub use manager::{
-    TestManagerBuilder,
+    factories::{BlockCacheBuilder, FetchServiceBuilder, StateServiceBuilder},
     tests::{
+        json_server::{JsonServerTestManager, JsonServerTestsBuilder},
         service::{ServiceTestManager, ServiceTestsBuilder},
         wallet::{WalletTestManager, WalletTestsBuilder},
-        json_server::{JsonServerTestManager, JsonServerTestsBuilder},
     },
-    traits::{
-        WithValidator, WithClients, WithIndexer, WithServiceFactories,
-    },
-    factories::{
-        FetchServiceBuilder, StateServiceBuilder, BlockCacheBuilder,
-    },
+    traits::{WithClients, WithIndexer, WithServiceFactories, WithValidator},
+    TestManagerBuilder,
 };
 pub use validator::{LocalNet, ValidatorConfig};
 
@@ -242,15 +238,15 @@ pub use binaries::*;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use zaino_commons::config::Network;
     use crate::validator::ValidatorKind;
+    use zaino_commons::config::Network;
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn test_service_manager_creation() {
         // Test that we can create service managers with the new API
         let builder = ServiceTestsBuilder::default();
         let config = builder.build_config();
-        
+
         // Verify the configuration structure
         assert_eq!(config.validator_kind(), ValidatorKind::Zebra);
         assert_eq!(config.network(), &Network::Regtest);
@@ -261,19 +257,19 @@ mod integration_tests {
         // Test that we can create wallet managers with the new API
         let builder = WalletTestsBuilder::default();
         let config = builder.build_config();
-        
+
         // Verify the configuration structure
         assert_eq!(config.validator_kind(), ValidatorKind::Zebra);
         assert_eq!(config.network(), &Network::Regtest);
         assert!(config.enable_clients); // Should be true by default for wallet tests
     }
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn test_json_server_manager_creation() {
         // Test that we can create JSON server managers with the new API
         let builder = JsonServerTestsBuilder::default();
         let config = builder.build_config();
-        
+
         // Verify the configuration structure
         assert_eq!(config.validator_kind(), ValidatorKind::Zebra);
         assert_eq!(config.network(), &Network::Regtest);
@@ -283,11 +279,9 @@ mod integration_tests {
     #[tokio::test]
     async fn test_builder_customization() {
         // Test builder customization methods
-        let builder = ServiceTestsBuilder::default()
-            .zcashd()
-            .testnet();
+        let builder = ServiceTestsBuilder::default().zcashd().testnet();
         let config = builder.build_config();
-        
+
         assert_eq!(config.validator_kind(), ValidatorKind::Zcashd);
         assert_eq!(config.network(), &Network::Testnet);
     }

@@ -4,14 +4,14 @@
 //! replacing the monolithic TestManager with specialized managers for different
 //! test scenarios.
 
-pub mod traits;
-pub mod tests; 
 pub mod factories;
+pub mod tests;
+pub mod traits;
 
 use self::tests::{
-    service::{ServiceTestManager, ServiceTestsBuilder},
-    wallet::{WalletTestManager, WalletTestsBuilder}, 
     json_server::{JsonServerTestManager, JsonServerTestsBuilder},
+    service::{ServiceTestManager, ServiceTestsBuilder},
+    wallet::{WalletTestManager, WalletTestsBuilder},
 };
 
 /// Public facade for creating specialized test managers.
@@ -29,7 +29,8 @@ impl TestManagerBuilder {
     }
 
     /// Zero-config shortcut for JSON server tests (validator + indexer + JSON server).
-    pub async fn for_json_server_tests() -> Result<JsonServerTestManager, Box<dyn std::error::Error>> {
+    pub async fn for_json_server_tests() -> Result<JsonServerTestManager, Box<dyn std::error::Error>>
+    {
         todo!("Implement zero-config JSON server test manager")
     }
 
