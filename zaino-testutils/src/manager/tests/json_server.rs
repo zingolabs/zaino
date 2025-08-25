@@ -3,21 +3,21 @@
 //! This manager provides a complete JSON-RPC server testing environment with
 //! validator, indexer, JSON server, and optional lightclients.
 
+use crate::{
+    clients::Clients,
+    config::{JsonRpcAuthConfig, JsonServerTestConfig, TestConfig},
+    manager::traits::{
+        ConfigurableBuilder, LaunchManager, WithClients, WithIndexer, WithValidator,
+    },
+    ports::TestPorts,
+    validator::{LocalNet, ValidatorKind},
+};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
 use zaino_commons::config::Network;
 use zainodlib::config::IndexerConfig;
 use zainodlib::error::IndexerError;
-use crate::{
-    validator::{LocalNet, ValidatorKind},
-    ports::TestPorts,
-    clients::Clients,
-    config::{JsonServerTestConfig, JsonRpcAuthConfig, TestConfig},
-    manager::{
-        traits::{WithValidator, WithClients, WithIndexer, ConfigurableBuilder, LaunchManager},
-    },
-};
 
 /// Test manager for JSON server tests (validator + indexer + JSON server).
 ///
@@ -25,13 +25,13 @@ use crate::{
 /// lightclient support based on configuration.
 #[derive(Debug)]
 pub struct JsonServerTestManager {
-    local_net: LocalNet,
-    ports: TestPorts,
-    network: Network,
-    indexer_config: IndexerConfig,
-    indexer_handle: JoinHandle<Result<(), IndexerError>>,
-    json_server_cookie_dir: Option<PathBuf>,
-    clients: Option<Clients>, // Optional for JSON server tests
+    pub local_net: LocalNet,
+    pub ports: TestPorts,
+    pub network: Network,
+    pub indexer_config: IndexerConfig,
+    pub indexer_handle: JoinHandle<Result<(), IndexerError>>,
+    pub json_server_cookie_dir: Option<PathBuf>,
+    pub clients: Option<Clients>, // Optional for JSON server tests
 }
 
 impl WithValidator for JsonServerTestManager {
@@ -46,11 +46,11 @@ impl WithValidator for JsonServerTestManager {
     fn validator_rpc_address(&self) -> SocketAddr {
         self.ports.validator_rpc
     }
-    
+
     fn validator_grpc_address(&self) -> SocketAddr {
         self.ports.validator_grpc
     }
-    
+
     fn network(&self) -> &Network {
         &self.network
     }
@@ -67,7 +67,15 @@ impl WithValidator for JsonServerTestManager {
 // Conditional implementation of WithClients only when clients are present
 impl WithClients for JsonServerTestManager {
     fn clients(&self) -> &Clients {
-        self.clients.as_ref().expect("JsonServerTestManager was not configured with clients")
+        self.clients
+            .as_ref()
+            .expect("JsonServerTestManager was not configured with clients")
+    }
+
+    fn clients_mut(&mut self) -> &mut Clients {
+        self.clients
+            .as_mut()
+            .expect("JsonServerTestManager was not configured with clients")
     }
 }
 
@@ -116,8 +124,8 @@ impl Default for JsonServerTestsBuilder {
             validator_kind: ValidatorKind::Zebra,
             network: Network::Regtest,
             chain_cache: None,
-            enable_cookie_auth: true,  // Common for JSON server tests
-            enable_clients: false,     // Optional for JSON server tests
+            enable_cookie_auth: true, // Common for JSON server tests
+            enable_clients: false,    // Optional for JSON server tests
         }
     }
 }
@@ -149,7 +157,8 @@ impl ConfigurableBuilder for JsonServerTestsBuilder {
     fn build_config(&self) -> Self::Config {
         let json_auth = if self.enable_cookie_auth {
             // Generate a temporary directory for cookie authentication
-            let temp_dir = std::env::temp_dir().join(format!("zaino_cookie_{}", std::process::id()));
+            let temp_dir =
+                std::env::temp_dir().join(format!("zaino_cookie_{}", std::process::id()));
             JsonRpcAuthConfig::Cookie(temp_dir)
         } else {
             JsonRpcAuthConfig::None
