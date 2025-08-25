@@ -20,6 +20,7 @@ zcash_client_backend = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
 
 # Zingo-infra
 zingo-infra-services = { workspace = true }
