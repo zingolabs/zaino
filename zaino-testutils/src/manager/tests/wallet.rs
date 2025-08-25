@@ -3,23 +3,26 @@
 //! This manager provides a complete wallet testing environment with validator,
 //! indexer, and guaranteed lightclient availability. No Option unwrapping needed.
 
+use crate::{
+    clients::Clients,
+    config::{TestConfig, WalletTestConfig},
+    manager::{
+        factories::{BlockCacheBuilder, FetchServiceBuilder, StateServiceBuilder},
+        traits::{
+            ConfigurableBuilder, LaunchManager, WithClients, WithIndexer, WithServiceFactories,
+            WithValidator,
+        },
+    },
+    ports::TestPorts,
+    validator::{LocalNet, ValidatorKind},
+};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
 use zaino_commons::config::Network;
+use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zainodlib::config::IndexerConfig;
 use zainodlib::error::IndexerError;
-use crate::{
-    validator::{LocalNet, ValidatorKind},
-    ports::TestPorts,
-    clients::Clients,
-    config::{WalletTestConfig, TestConfig},
-    manager::{
-        traits::{WithValidator, WithClients, WithIndexer, WithServiceFactories, ConfigurableBuilder, LaunchManager},
-        factories::{FetchServiceBuilder, StateServiceBuilder, BlockCacheBuilder},
-    },
-};
-use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 
 /// Test manager for wallet tests (validator + indexer + clients).
 ///
@@ -27,12 +30,12 @@ use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// the need for Option unwrapping in wallet test code.
 #[derive(Debug)]
 pub struct WalletTestManager {
-    local_net: LocalNet,
-    ports: TestPorts,
-    network: Network,
-    indexer_config: IndexerConfig,
-    indexer_handle: JoinHandle<Result<(), IndexerError>>,
-    clients: Clients, // Always present, not Option!
+    pub local_net: LocalNet,
+    pub ports: TestPorts,
+    pub network: Network,
+    pub indexer_config: IndexerConfig,
+    pub indexer_handle: JoinHandle<Result<(), IndexerError>>,
+    pub clients: Clients, // Always present, not Option!
 }
 
 impl WithValidator for WalletTestManager {
@@ -47,11 +50,11 @@ impl WithValidator for WalletTestManager {
     fn validator_rpc_address(&self) -> SocketAddr {
         self.ports.validator_rpc
     }
-    
+
     fn validator_grpc_address(&self) -> SocketAddr {
         self.ports.validator_grpc
     }
-    
+
     fn network(&self) -> &Network {
         &self.network
     }
@@ -68,6 +71,10 @@ impl WithValidator for WalletTestManager {
 impl WithClients for WalletTestManager {
     fn clients(&self) -> &Clients {
         &self.clients
+    }
+
+    fn clients_mut(&mut self) -> &mut Clients {
+        &mut self.clients
     }
 }
 
@@ -98,7 +105,7 @@ impl WithServiceFactories for WalletTestManager {
         FetchServiceBuilder::new(
             self.validator_rpc_address(),
             self.network.clone(),
-            self.ports.zaino_db.clone()
+            self.ports.zaino_db.clone(),
         )
     }
 
@@ -107,27 +114,24 @@ impl WithServiceFactories for WalletTestManager {
             self.validator_rpc_address(),
             self.validator_grpc_address(),
             self.network.clone(),
-            self.ports.zaino_db.clone()
+            self.ports.zaino_db.clone(),
         )
     }
 
     fn create_json_connector(&self) -> Result<JsonRpSeeConnector, Box<dyn std::error::Error>> {
         use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-        
+
         let url = format!("http://{}", self.validator_rpc_address()).parse()?;
         let connector = JsonRpSeeConnector::new(url, None)?; // No auth for test validators
         Ok(connector)
     }
 
     fn create_block_cache(&self) -> BlockCacheBuilder {
-        let connector = self.create_json_connector()
+        let connector = self
+            .create_json_connector()
             .expect("Failed to create connector for block cache");
-        
-        BlockCacheBuilder::new(
-            connector,
-            self.network.clone(),
-            self.ports.zaino_db.clone()
-        )
+
+        BlockCacheBuilder::new(connector, self.network.clone(), self.ports.zaino_db.clone())
     }
 }
 
