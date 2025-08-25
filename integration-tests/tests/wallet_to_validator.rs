@@ -2,153 +2,127 @@
 
 #![forbid(unsafe_code)]
 
-use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_state::BackendType;
-use zaino_testutils::from_inputs;
-use zaino_testutils::TestManager;
-use zaino_testutils::ValidatorKind;
+use zaino_testutils::{
+    from_inputs,
+    manager::{
+        config_builder::ConfigurableBuilder,
+        tests::wallet::WalletTestsBuilder,
+        traits::{WithClients, WithValidator},
+    },
+    ValidatorKind,
+};
 
 async fn connect_to_node_get_info_for_validator(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
-    )
-    .await
-    .unwrap();
-    let clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let manager = WalletTestsBuilder::default()
+        .validator(validator.clone())
+        .backend(backend.clone())
+        .launch()
+        .await
+        .unwrap();
 
-    clients.faucet.do_info().await;
-    clients.recipient.do_info().await;
-
-    test_manager.close().await;
+    manager.faucet().do_info().await;
+    manager.recipient().do_info().await;
 }
 
 async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
-    )
-    .await
-    .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
-
-    clients.faucet.sync_and_await().await.unwrap();
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(1).await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
-
-    let recipient_ua = clients.get_recipient_address("unified").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
+    let manager = WalletTestsBuilder::default()
+        .validator(validator.clone())
+        .backend(backend.clone())
+        .launch()
         .await
         .unwrap();
-    test_manager.generate_blocks_with_delay(1).await;
-    clients.recipient.sync_and_await().await.unwrap();
+
+    manager.faucet().sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(1).await;
+        manager.faucet().sync_and_await().await.unwrap();
+    };
+
+    let recipient_ua = manager.get_recipient_address(ClientAddressType::Unified).await;
+    from_inputs::quick_send(manager.faucet(), vec![(&recipient_ua, 250_000, None)])
+        .await
+        .unwrap();
+    manager.generate_blocks_with_delay(1).await;
+    manager.recipient().sync_and_await().await.unwrap();
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .orchard_balance
             .unwrap(),
         250_000
     );
-
-    test_manager.close().await;
 }
 
 async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
-    )
-    .await
-    .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
-
-    clients.faucet.sync_and_await().await.unwrap();
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(1).await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
-
-    let recipient_zaddr = clients.get_recipient_address("sapling").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
+    let manager = WalletTestsBuilder::default()
+        .validator(validator.clone())
+        .backend(backend.clone())
+        .launch()
         .await
         .unwrap();
-    test_manager.generate_blocks_with_delay(1).await;
-    clients.recipient.sync_and_await().await.unwrap();
+
+    manager.faucet().sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(1).await;
+        manager.faucet().sync_and_await().await.unwrap();
+    };
+
+    let recipient_zaddr = manager.get_recipient_address(ClientAddressType::Sapling).await;
+    from_inputs::quick_send(manager.faucet(), vec![(&recipient_zaddr, 250_000, None)])
+        .await
+        .unwrap();
+    manager.generate_blocks_with_delay(1).await;
+    manager.recipient().sync_and_await().await.unwrap();
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .sapling_balance
             .unwrap(),
         250_000
     );
-
-    test_manager.close().await;
 }
 
 async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
-    )
-    .await
-    .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
-
-    clients.faucet.sync_and_await().await.unwrap();
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(1).await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
-
-    let recipient_taddr = clients.get_recipient_address("transparent").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
+    let manager = WalletTestsBuilder::default()
+        .validator(validator.clone())
+        .backend(backend.clone())
+        .launch()
         .await
         .unwrap();
 
-    test_manager.generate_blocks_with_delay(1).await;
+    manager.faucet().sync_and_await().await.unwrap();
 
-    let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
+    if matches!(validator, ValidatorKind::Zebrad) {
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(1).await;
+        manager.faucet().sync_and_await().await.unwrap();
+    };
+
+    let recipient_taddr = manager.get_recipient_address(ClientAddressType::Transparent).await;
+    from_inputs::quick_send(manager.faucet(), vec![(&recipient_taddr, 250_000, None)])
         .await
-        .unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+        .unwrap();
+
+    manager.generate_blocks_with_delay(1).await;
+
+    let fetch_service = manager.create_json_connector().await.unwrap();
 
     println!("\n\nFetching Chain Height!\n");
 
@@ -158,7 +132,7 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 
     let unfinalised_transactions = fetch_service
         .get_address_txids(
-            vec![clients.get_recipient_address("transparent").await],
+            vec![manager.get_recipient_address(ClientAddressType::Transparent).await],
             height,
             height,
         )
@@ -169,11 +143,12 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 
     // Generate blocks
     //
-    // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
+    // NOTE: Generating blocks with zcashd blocks the tokio main thread???,
+    //       stopping background processes from running,
     //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
     for height in 1..=99 {
         dbg!("Generating block at height: {}", height);
-        test_manager.generate_blocks_with_delay(1).await;
+        manager.generate_blocks_with_delay(1).await;
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -182,7 +157,7 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 
     let finalised_transactions = fetch_service
         .get_address_txids(
-            vec![clients.get_recipient_address("transparent").await],
+            vec![manager.get_recipient_address(ClientAddressType::Transparent).await],
             height,
             height,
         )
@@ -191,11 +166,11 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
 
     dbg!(finalised_transactions.clone());
 
-    clients.recipient.sync_and_await().await.unwrap();
+    manager.recipient().sync_and_await().await.unwrap();
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .confirmed_transparent_balance
@@ -204,50 +179,46 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
     );
 
     assert_eq!(unfinalised_transactions, finalised_transactions);
-    // test_manager.local_net.print_stdout();
-
-    test_manager.close().await;
+    // manager.local_net.print_stdout();
 }
 
-async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
-    )
-    .await
-    .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
 
-    test_manager.generate_blocks_with_delay(2).await;
-    clients.faucet.sync_and_await().await.unwrap();
+async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
+    let manager = WalletTestsBuilder::default()
+        .validator(validator.clone())
+        .backend(backend.clone())
+        .launch()
+        .await
+        .unwrap();
+
+    manager.generate_blocks_with_delay(2).await;
+    manager.faucet().sync_and_await().await.unwrap();
 
     // "Create" 3 orchard notes in faucet.
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(1).await;
-        clients.faucet.sync_and_await().await.unwrap();
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(1).await;
+        manager.faucet().sync_and_await().await.unwrap();
     };
 
-    let recipient_ua = clients.get_recipient_address("unified").await;
-    let recipient_zaddr = clients.get_recipient_address("sapling").await;
-    let recipient_taddr = clients.get_recipient_address("transparent").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
+    let recipient_ua = manager.get_recipient_address(ClientAddressType::Unified).await;
+    let recipient_zaddr = manager.get_recipient_address(ClientAddressType::Sapling).await;
+    let recipient_taddr = manager.get_recipient_address(ClientAddressType::Transparent).await;
+    from_inputs::quick_send(manager.faucet(), vec![(&recipient_ua, 250_000, None)])
         .await
         .unwrap();
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
+    from_inputs::quick_send(manager.faucet(), vec![(&recipient_zaddr, 250_000, None)])
         .await
         .unwrap();
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
+    from_inputs::quick_send(manager.faucet(), vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
 
@@ -257,15 +228,15 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
     //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
     for height in 1..=100 {
         dbg!("Generating block at height: {}", height);
-        test_manager.generate_blocks_with_delay(1).await;
+        manager.generate_blocks_with_delay(1).await;
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    clients.recipient.sync_and_await().await.unwrap();
+    manager.recipient().sync_and_await().await.unwrap();
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .orchard_balance
@@ -273,8 +244,8 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
         250_000
     );
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .sapling_balance
@@ -282,41 +253,36 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
         250_000
     );
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .confirmed_transparent_balance
             .unwrap(),
         250_000
     );
-
-    test_manager.close().await;
 }
 
 async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
-    )
-    .await
-    .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let manager = WalletTestsBuilder::default()
+        .validator(validator.clone())
+        .backend(backend.clone())
+        .launch()
+        .await
+        .unwrap();
 
-    clients.faucet.sync_and_await().await.unwrap();
+    manager.faucet().sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(1).await;
-        clients.faucet.sync_and_await().await.unwrap();
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(1).await;
+        manager.faucet().sync_and_await().await.unwrap();
     };
 
-    let recipient_taddr = clients.get_recipient_address("transparent").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
+    let recipient_taddr = manager.get_recipient_address(ClientAddressType::Transparent).await;
+    from_inputs::quick_send(manager.faucet(), vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
 
@@ -326,15 +292,15 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
     //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
     for height in 1..=100 {
         dbg!("Generating block at height: {}", height);
-        test_manager.generate_blocks_with_delay(1).await;
+        manager.generate_blocks_with_delay(1).await;
     }
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    clients.recipient.sync_and_await().await.unwrap();
+    manager.recipient().sync_and_await().await.unwrap();
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .confirmed_transparent_balance
@@ -342,55 +308,50 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
         250_000
     );
 
-    clients.recipient.quick_shield().await.unwrap();
-    test_manager.generate_blocks_with_delay(1).await;
-    clients.recipient.sync_and_await().await.unwrap();
+    manager.recipient().quick_shield().await.unwrap();
+    manager.generate_blocks_with_delay(1).await;
+    manager.recipient().sync_and_await().await.unwrap();
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .orchard_balance
             .unwrap(),
         235_000
     );
-
-    test_manager.close().await;
 }
 
 async fn monitor_unverified_mempool_for_validator(
     validator: &ValidatorKind,
     backend: &BackendType,
 ) {
-    let mut test_manager = TestManager::launch(
-        validator, backend, None, None, true, false, false, true, true, true,
-    )
-    .await
-    .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let manager = WalletTestsBuilder::default()
+        .validator(validator.clone())
+        .backend(backend.clone())
+        .launch()
+        .await
+        .unwrap();
 
-    test_manager.generate_blocks_with_delay(1).await;
-    clients.faucet.sync_and_await().await.unwrap();
+    manager.generate_blocks_with_delay(1).await;
+    manager.faucet().sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(100).await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
-        test_manager.generate_blocks_with_delay(1).await;
-        clients.faucet.sync_and_await().await.unwrap();
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(100).await;
+        manager.faucet().sync_and_await().await.unwrap();
+        manager.faucet().quick_shield().await.unwrap();
+        manager.generate_blocks_with_delay(1).await;
+        manager.faucet().sync_and_await().await.unwrap();
     };
 
     let txid_1 = from_inputs::quick_send(
-        &mut clients.faucet,
+        manager.faucet(),
         vec![(
-            &zaino_testutils::get_base_address_macro!(&mut clients.recipient, "unified"),
+            &zaino_testutils::get_base_address_macro!(manager.recipient(), ClientAddressType::Unified),
             250_000,
             None,
         )],
@@ -398,9 +359,9 @@ async fn monitor_unverified_mempool_for_validator(
     .await
     .unwrap();
     let txid_2 = from_inputs::quick_send(
-        &mut clients.faucet,
+        manager.faucet(),
         vec![(
-            &zaino_testutils::get_base_address_macro!(&mut clients.recipient, "sapling"),
+            &zaino_testutils::get_base_address_macro!(manager.recipient(), ClientAddressType::Sapling),
             250_000,
             None,
         )],
@@ -409,25 +370,12 @@ async fn monitor_unverified_mempool_for_validator(
     .unwrap();
 
     println!("\n\nStarting Mempool!\n");
-    clients.recipient.wallet.lock().await.clear_all();
-    clients.recipient.sync_and_await().await.unwrap();
+    manager.recipient().wallet.lock().await.clear_all();
+    manager.recipient().sync_and_await().await.unwrap();
 
-    // test_manager.local_net.print_stdout();
+    // manager.local_net.print_stdout();
 
-    let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let fetch_service = manager.create_json_connector().await.unwrap();
 
     println!("\n\nFetching Raw Mempool!\n");
     let mempool_txids = fetch_service.get_raw_mempool().await.unwrap();
@@ -450,8 +398,8 @@ async fn monitor_unverified_mempool_for_validator(
     );
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .unverified_orchard_balance
@@ -459,8 +407,8 @@ async fn monitor_unverified_mempool_for_validator(
         250_000
     );
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .unverified_sapling_balance
@@ -468,7 +416,7 @@ async fn monitor_unverified_mempool_for_validator(
         250_000
     );
 
-    test_manager.generate_blocks_with_delay(1).await;
+    manager.generate_blocks_with_delay(1).await;
 
     println!("\n\nFetching Mined Tx 1!\n");
     let _transaction_1 = dbg!(
@@ -484,11 +432,11 @@ async fn monitor_unverified_mempool_for_validator(
             .await
     );
 
-    clients.recipient.sync_and_await().await.unwrap();
+    manager.recipient().sync_and_await().await.unwrap();
 
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .verified_orchard_balance
@@ -496,16 +444,14 @@ async fn monitor_unverified_mempool_for_validator(
         250_000
     );
     assert_eq!(
-        clients
-            .recipient
+        manager
+            .recipient()
             .do_balance()
             .await
             .verified_sapling_balance
             .unwrap(),
         250_000
     );
-
-    test_manager.close().await;
 }
 
 mod zcashd {
