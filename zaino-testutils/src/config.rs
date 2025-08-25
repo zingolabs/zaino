@@ -38,7 +38,47 @@ pub struct ServiceTestConfig {
     pub base: TestConfig,
 }
 
+/// Configuration for state service comparison tests (validator + dual services + optional clients).
+#[derive(Debug, Clone)]
+pub struct StateServiceComparisonTestConfig {
+    /// Base configuration.
+    pub base: TestConfig,
+    /// Whether to enable wallet clients.
+    pub with_clients: bool,
+}
+
+/// Configuration for JSON server comparison tests (zcashd + zaino JSON server + dual FetchServices + optional clients).
+#[derive(Debug, Clone)]
+pub struct JsonServerComparisonTestConfig {
+    /// Base configuration.
+    pub base: TestConfig,
+    /// Whether to enable cookie authentication.
+    pub enable_cookie_auth: bool,
+    /// Whether to enable wallet clients.
+    pub with_clients: bool,
+}
+
 impl TestConfiguration for ServiceTestConfig {
+    fn network(&self) -> &Network {
+        &self.base.network
+    }
+
+    fn validator_kind(&self) -> ValidatorKind {
+        self.base.validator_kind
+    }
+}
+
+impl TestConfiguration for StateServiceComparisonTestConfig {
+    fn network(&self) -> &Network {
+        &self.base.network
+    }
+
+    fn validator_kind(&self) -> ValidatorKind {
+        self.base.validator_kind
+    }
+}
+
+impl TestConfiguration for JsonServerComparisonTestConfig {
     fn network(&self) -> &Network {
         &self.base.network
     }
@@ -104,6 +144,138 @@ impl LaunchManager<crate::manager::tests::service::ServiceTestManager> for Servi
             ports,
             network: self.base.network,
             chain_cache: self.base.chain_cache,
+        })
+    }
+}
+
+impl LaunchManager<crate::manager::tests::state_service_comparison::StateServiceComparisonTestManager> for StateServiceComparisonTestConfig {
+    async fn launch_manager(
+        self,
+    ) -> Result<crate::manager::tests::state_service_comparison::StateServiceComparisonTestManager, Box<dyn std::error::Error>>
+    {
+        use crate::ports::TestPorts;
+        use crate::validator::{LocalNet, ValidatorConfig, ValidatorKind};
+        use zingo_infra_services::{
+            network::{ActivationHeights, Network as InfraNetwork},
+            validator::{Validator as _, ZcashdConfig, ZebradConfig},
+        };
+
+        // Allocate ports and directories
+        let ports = TestPorts::allocate().await?;
+
+        // Convert network type
+        let infra_network = match self.base.network {
+            zaino_commons::config::Network::Regtest => InfraNetwork::Regtest,
+            zaino_commons::config::Network::Testnet => InfraNetwork::Testnet,
+            zaino_commons::config::Network::Mainnet => InfraNetwork::Mainnet,
+        };
+
+        // Create validator configuration based on kind
+        let validator_config = match self.base.validator_kind {
+            ValidatorKind::Zcashd => ValidatorConfig::ZcashdConfig(ZcashdConfig {
+                zcashd_bin: crate::binaries::ZCASHD_BIN.clone(),
+                zcash_cli_bin: crate::binaries::ZCASH_CLI_BIN.clone(),
+                rpc_listen_port: Some(ports.validator_rpc.port()),
+                activation_heights: ActivationHeights::default(),
+                miner_address: Some(testvectors::REG_O_ADDR_FROM_ABANDONART),
+                chain_cache: self.base.chain_cache.clone(),
+            }),
+            ValidatorKind::Zebra => {
+                ValidatorConfig::ZebrdConfig(ZebradConfig {
+                    zebrad_bin: crate::binaries::ZEBRD_BIN.clone(),
+                    network_listen_port: None, // Auto-select
+                    rpc_listen_port: Some(ports.validator_rpc.port()),
+                    indexer_listen_port: Some(ports.validator_grpc.port()),
+                    activation_heights: ActivationHeights::default(),
+                    miner_address: testvectors::REG_O_ADDR_FROM_ABANDONART,
+                    chain_cache: self.base.chain_cache.clone(),
+                    network: infra_network,
+                })
+            }
+        };
+
+        // Launch validator
+        let local_net = LocalNet::launch(validator_config)
+            .await
+            .map_err(|e| format!("Failed to launch validator: {}", e))?;
+
+        // Initialize clients if requested
+        let clients = if self.with_clients {
+            // For now, use a default port - this will need to be configured properly
+            Some(crate::clients::Clients::launch(8232).await?)
+        } else {
+            None
+        };
+
+        Ok(crate::manager::tests::state_service_comparison::StateServiceComparisonTestManager {
+            local_net,
+            ports,
+            network: self.base.network,
+            chain_cache: self.base.chain_cache,
+            clients,
+        })
+    }
+}
+
+impl LaunchManager<crate::manager::tests::json_server_comparison::JsonServerComparisonTestManager> for JsonServerComparisonTestConfig {
+    async fn launch_manager(
+        self,
+    ) -> Result<crate::manager::tests::json_server_comparison::JsonServerComparisonTestManager, Box<dyn std::error::Error>>
+    {
+        use crate::ports::TestPorts;
+        use crate::validator::{LocalNet, ValidatorConfig, ValidatorKind};
+        use zingo_infra_services::{
+            network::{ActivationHeights, Network as InfraNetwork},
+            validator::{Validator as _, ZcashdConfig},
+        };
+
+        // Allocate ports and directories
+        let ports = TestPorts::allocate().await?;
+
+        // Convert network type
+        let infra_network = match self.base.network {
+            zaino_commons::config::Network::Regtest => InfraNetwork::Regtest,
+            zaino_commons::config::Network::Testnet => InfraNetwork::Testnet,
+            zaino_commons::config::Network::Mainnet => InfraNetwork::Mainnet,
+        };
+
+        // JSON server tests always use zcashd for compatibility baseline
+        let validator_config = ValidatorConfig::ZcashdConfig(ZcashdConfig {
+            zcashd_bin: crate::binaries::ZCASHD_BIN.clone(),
+            zcash_cli_bin: crate::binaries::ZCASH_CLI_BIN.clone(),
+            rpc_listen_port: Some(ports.validator_rpc.port()),
+            activation_heights: ActivationHeights::default(),
+            miner_address: Some(testvectors::REG_O_ADDR_FROM_ABANDONART),
+            chain_cache: self.base.chain_cache.clone(),
+        });
+
+        // Launch validator
+        let local_net = LocalNet::launch(validator_config)
+            .await
+            .map_err(|e| format!("Failed to launch validator: {}", e))?;
+
+        // Set up cookie directory if cookie auth is enabled
+        let cookie_dir = if self.enable_cookie_auth {
+            Some(ports.data_dir.join("cookies"))
+        } else {
+            None
+        };
+
+        // Initialize clients if requested
+        let clients = if self.with_clients {
+            Some(crate::clients::Clients::launch(ports.zaino_grpc.map(|addr| addr.port()).unwrap_or(8232)).await?)
+        } else {
+            None
+        };
+
+        Ok(crate::manager::tests::json_server_comparison::JsonServerComparisonTestManager {
+            local_net,
+            ports,
+            network: self.base.network,
+            chain_cache: self.base.chain_cache,
+            cookie_auth_enabled: self.enable_cookie_auth,
+            clients,
+            cookie_dir,
         })
     }
 }
