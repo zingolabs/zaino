@@ -3,13 +3,21 @@ use zaino_state::{
     FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer, StateService,
     StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };
-use zaino_testutils::from_inputs;
-use zaino_testutils::services;
-use zaino_testutils::Validator as _;
-use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
+use zaino_testutils::{
+    clients::ClientAddressType,
+    from_inputs,
+    manager::tests::state_service_comparison::{StateServiceComparisonTestManager, StateServiceComparisonTestsBuilder},
+    manager::traits::{ConfigurableBuilder, WithClients, WithValidator},
+    services, Validator as _, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR,
+};
 use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
+/// Create StateServiceComparison test manager with dual services for behavioral comparison.
+/// 
+/// This function replaces the old monolithic setup with the new dedicated manager approach.
+/// It handles the network type mapping and creates both FetchService and StateService 
+/// configured identically except for their backend type.
 async fn create_test_manager_and_services(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
@@ -17,126 +25,38 @@ async fn create_test_manager_and_services(
     enable_clients: bool,
     network: Option<services::network::Network>,
 ) -> (
-    TestManager,
+    StateServiceComparisonTestManager,
     FetchService,
     FetchServiceSubscriber,
     StateService,
     StateServiceSubscriber,
 ) {
-    let test_manager = TestManager::launch(
-        validator,
-        &BackendType::Fetch,
-        network,
-        chain_cache.clone(),
-        enable_zaino,
-        false,
-        false,
-        true,
-        true,
-        enable_clients,
-    )
-    .await
-    .unwrap();
-
-    let (network_type, zaino_sync_bool) = match network {
-        Some(services::network::Network::Mainnet) => {
-            println!("Waiting for validator to spawn..");
-            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (Network::Mainnet, false)
-        }
-        Some(services::network::Network::Testnet) => {
-            println!("Waiting for validator to spawn..");
-            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (Network::new_default_testnet(), false)
-        }
-        _ => (
-            Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                    nu6_1: None,
-                    nu7: None,
-                },
-            ),
-            true,
-        ),
+    // TODO: Network mapping logic could be moved to TestManager.map_network_type()
+    let (zaino_network, enable_sync) = match network {
+        Some(services::network::Network::Mainnet) => (zaino_commons::config::Network::Mainnet, false),
+        Some(services::network::Network::Testnet) => (zaino_commons::config::Network::Testnet, false),
+        _ => (zaino_commons::config::Network::Regtest, enable_zaino),
     };
 
-    test_manager.local_net.print_stdout();
+    // Create test manager using the new dedicated builder
+    let mut builder = StateServiceComparisonTestsBuilder::default()
+        .validator(validator.clone())
+        .network(zaino_network)
+        .with_clients(enable_clients);
+    
+    if let Some(cache_dir) = chain_cache {
+        builder = builder.chain_cache(cache_dir);
+    }
 
-    let fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.zebrad_rpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        network_type.clone(),
-        zaino_sync_bool,
-        true,
-    ))
-    .await
-    .unwrap();
+    let test_manager = builder.launch().await.unwrap();
 
-    let fetch_subscriber = fetch_service.get_subscriber().inner();
+    // TODO: This debug output could be moved to TestManager.print_debug_info()
+    use crate::Validator as _;
+    test_manager.local_net().print_stdout();
 
-    let state_chain_cache_dir = match chain_cache {
-        Some(dir) => dir,
-        None => test_manager.data_dir.clone(),
-    };
-
-    let state_service = StateService::spawn(StateServiceConfig::new(
-        zebra_state::Config {
-            cache_dir: state_chain_cache_dir,
-            ephemeral: false,
-            delete_old_database: true,
-            debug_stop_at_height: None,
-            debug_validity_check_interval: None,
-        },
-        test_manager.zebrad_rpc_listen_address,
-        test_manager.zebrad_grpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        network_type,
-        true,
-        true,
-    ))
-    .await
-    .unwrap();
-
-    let state_subscriber = state_service.get_subscriber().inner();
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Create dual services using the dedicated manager's method
+    let (fetch_service, fetch_subscriber, state_service, state_subscriber) = 
+        test_manager.create_dual_services_with_network(enable_sync).await.unwrap();
 
     (
         test_manager,
@@ -161,7 +81,8 @@ async fn state_service_check_info(
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
     if dbg!(network.to_string()) == *"Regtest" {
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_if_regtest()
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
@@ -293,11 +214,12 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -308,7 +230,7 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
+    test_manager.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
@@ -469,21 +391,23 @@ async fn state_service_get_raw_mempool(validator: &ValidatorKind) {
         .clients
         .take()
         .expect("Clients are not initialized");
-    test_manager.local_net.generate_blocks(1).await.unwrap();
+    test_manager.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -559,11 +483,12 @@ async fn state_service_z_get_treestate(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -573,7 +498,7 @@ async fn state_service_z_get_treestate(validator: &ValidatorKind) {
         .await
         .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
+    test_manager.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let fetch_service_treestate = dbg!(fetch_service_subscriber
@@ -642,11 +567,12 @@ async fn state_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -656,7 +582,7 @@ async fn state_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
         .await
         .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
+    test_manager.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let fetch_service_subtrees = dbg!(fetch_service_subscriber
@@ -747,11 +673,12 @@ async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -761,10 +688,12 @@ async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
         .await
         .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
+    test_manager.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    test_manager.local_net.print_stdout();
+    // TODO: This debug output could be moved to TestManager.print_debug_info()
+    use crate::Validator as _;
+    test_manager.local_net().print_stdout();
 
     let fetch_service_transaction = dbg!(fetch_service_subscriber
         .get_raw_transaction(tx.first().to_string(), Some(1))
@@ -835,11 +764,12 @@ async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -850,7 +780,7 @@ async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
+    test_manager.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let chain_height = fetch_service_subscriber
@@ -946,11 +876,12 @@ async fn state_service_get_address_utxos(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
+        // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield().await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -961,7 +892,7 @@ async fn state_service_get_address_utxos(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
+    test_manager.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.faucet.sync_and_await().await.unwrap();
@@ -1163,7 +1094,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(2).await.unwrap();
+            test_manager.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(999)).await;
 
             let fetch_service_bbh =
@@ -1189,7 +1120,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(2).await.unwrap();
+            test_manager.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let fetch_service_block_count =
@@ -1227,7 +1158,7 @@ mod zebrad {
                 initial_state_service_difficulty
             );
 
-            test_manager.local_net.generate_blocks(2).await.unwrap();
+            test_manager.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let final_fetch_service_difficulty =
@@ -1293,11 +1224,12 @@ mod zebrad {
 
             clients.faucet.sync_and_await().await.unwrap();
 
-            test_manager.local_net.generate_blocks(100).await.unwrap();
+            // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.sync_and_await().await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
-            test_manager.local_net.generate_blocks(1).await.unwrap();
+            test_manager.generate_blocks(1).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.sync_and_await().await.unwrap();
 
@@ -1425,7 +1357,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(1).await.unwrap();
+            test_manager.generate_blocks(1).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let fetch_service_block =
@@ -1451,7 +1383,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(2).await.unwrap();
+            test_manager.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let second_block_by_height = BlockId {
@@ -1497,7 +1429,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(2).await.unwrap();
+            test_manager.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let second_treestate_by_height = BlockId {
@@ -1533,7 +1465,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(5).await.unwrap();
+            test_manager.generate_blocks(5).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let sapling_subtree_roots_request = GetSubtreeRootsArg {
@@ -1576,7 +1508,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(2).await.unwrap();
+            test_manager.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let fetch_service_treestate = fetch_service_subscriber
@@ -1605,7 +1537,7 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(6).await.unwrap();
+            test_manager.generate_blocks(6).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let start = Some(BlockId {
@@ -1676,7 +1608,8 @@ mod zebrad {
                 Some(services::network::Network::Regtest),
             )
             .await;
-            test_manager.local_net.generate_blocks(100).await.unwrap();
+            // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let mut clients = test_manager
@@ -1686,7 +1619,7 @@ mod zebrad {
             clients.faucet.sync_and_await().await.unwrap();
             clients.faucet.quick_shield().await.unwrap();
 
-            test_manager.local_net.generate_blocks(2).await.unwrap();
+            test_manager.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let block = BlockId {
@@ -1734,7 +1667,8 @@ mod zebrad {
 
             let clients = test_manager.clients.take().unwrap();
             let taddr = clients.get_faucet_address("transparent").await;
-            test_manager.local_net.generate_blocks(100).await.unwrap();
+            // TODO: This block generation pattern could be TestManager.generate_blocks_and_sync()
+        test_manager.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let state_service_taddress_txids = state_service_subscriber
@@ -1776,7 +1710,7 @@ mod zebrad {
                 .take()
                 .expect("Clients are not initialized");
             let taddr = clients.get_faucet_address("transparent").await;
-            test_manager.local_net.generate_blocks(5).await.unwrap();
+            test_manager.generate_blocks(5).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let request = GetAddressUtxosArg {
                 addresses: vec![taddr],
@@ -1835,7 +1769,7 @@ mod zebrad {
                 .take()
                 .expect("Clients are not initialized");
             let taddr = clients.get_faucet_address("transparent").await;
-            test_manager.local_net.generate_blocks(5).await.unwrap();
+            test_manager.generate_blocks(5).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let request = GetAddressUtxosArg {
                 addresses: vec![taddr],
@@ -1886,7 +1820,7 @@ mod zebrad {
 
             let clients = test_manager.clients.take().unwrap();
             let taddr = clients.get_faucet_address("transparent").await;
-            test_manager.local_net.generate_blocks(5).await.unwrap();
+            test_manager.generate_blocks(5).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let state_service_taddress_balance = state_service_subscriber
