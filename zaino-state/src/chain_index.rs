@@ -139,8 +139,40 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         tokio::task::spawn(async move {
             loop {
                 nfs.sync(fs.clone()).await?;
+                {
+                    let snapshot = nfs.get_snapshot();
+                    while snapshot.best_tip.0 .0
+                        > (fs
+                            .to_reader()
+                            .db_height()
+                            .await
+                            .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                            .unwrap_or(types::Height(0))
+                            .0
+                            + 100)
+                    {
+                        let next_finalized_height = fs
+                            .to_reader()
+                            .db_height()
+                            .await
+                            .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                            .map(|height| height + 1)
+                            .unwrap_or(types::Height(0));
+                        let next_finalized_block = snapshot
+                            .blocks
+                            .get(
+                                snapshot
+                                    .heights_to_hashes
+                                    .get(&(next_finalized_height))
+                                    .ok_or(SyncError::CompetingSyncProcess)?,
+                            )
+                            .ok_or(SyncError::CompetingSyncProcess)?;
+                        fs.write_block(next_finalized_block.clone())
+                            .await
+                            .map_err(|_e| SyncError::CompetingSyncProcess)?;
+                    }
+                }
                 //TODO: configure sleep duration?
-                //TODO: sync finalized state
                 tokio::time::sleep(Duration::from_millis(500)).await
             }
         })
