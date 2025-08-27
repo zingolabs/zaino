@@ -78,6 +78,7 @@ RUN --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
     --mount=type=bind,source=zaino-serve,target=zaino-serve \
     --mount=type=bind,source=zaino-state,target=zaino-state \
     --mount=type=bind,source=zaino-testutils,target=zaino-testutils \
+    --mount=type=bind,source=zaino-testvectors,target=zaino-testvectors \
     --mount=type=bind,source=zainod,target=zainod \
     --mount=type=cache,target=${CARGO_HOME} \
     --mount=type=cache,target=${CARGO_TARGET_DIR} \
