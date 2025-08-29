@@ -99,8 +99,8 @@ impl DbWrite for DbV0 {
 
 #[async_trait]
 impl DbCore for DbV0 {
-    async fn status(&self) -> StatusType {
-        self.status().await
+    fn status(&self) -> StatusType {
+        self.status()
     }
 
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
@@ -246,7 +246,7 @@ impl DbV0 {
     }
 
     /// Returns the status of ZainoDB.
-    pub(crate) async fn status(&self) -> StatusType {
+    pub(crate) fn status(&self) -> StatusType {
         (&self.status).into()
     }
 

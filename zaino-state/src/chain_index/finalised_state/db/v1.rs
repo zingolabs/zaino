@@ -147,8 +147,8 @@ impl DbWrite for DbV1 {
 
 #[async_trait]
 impl DbCore for DbV1 {
-    async fn status(&self) -> StatusType {
-        self.status().await
+    fn status(&self) -> StatusType {
+        self.status()
     }
 
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
@@ -575,7 +575,7 @@ impl DbV1 {
     }
 
     /// Returns the status of ZainoDB.
-    pub(crate) async fn status(&self) -> StatusType {
+    pub(crate) fn status(&self) -> StatusType {
         (&self.status).into()
     }
 
@@ -1203,9 +1203,21 @@ impl DbV1 {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready.into());
+
+                info!(
+                    "Successfully committed block {} at height {} to ZainoDB.",
+                    &block.index().hash(),
+                    &block
+                        .index()
+                        .height()
+                        .expect("height always some in the finalised state")
+                );
+
                 Ok(())
             }
             Err(e) => {
+                warn!("Error writing block to DB.");
+
                 let _ = self.delete_block(&block).await;
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
@@ -2591,7 +2603,6 @@ impl DbV1 {
         start_height: Height,
         end_height: Height,
     ) -> Result<Option<Vec<TxLocation>>, FinalisedStateError> {
-        dbg!(&addr_script, &start_height, &end_height);
         let addr_bytes = addr_script.to_bytes()?;
 
         tokio::task::block_in_place(|| {

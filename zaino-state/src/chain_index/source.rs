@@ -685,12 +685,13 @@ pub(crate) mod test {
         ) -> BlockchainSourceResult<Option<zebra_chain::block::Hash>> {
             let active_chain_height = self.active_height() as usize;
 
-            if self.blocks.is_empty() || active_chain_height >= self.blocks.len() {
+            if self.blocks.is_empty() || active_chain_height > self.max_chain_height() as usize {
                 return Ok(None);
             }
 
             Ok(Some(self.blocks[active_chain_height].hash()))
         }
+
         async fn nonfinalized_listener(
             &self,
         ) -> Result<

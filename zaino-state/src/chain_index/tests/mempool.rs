@@ -1,7 +1,7 @@
 //! Zaino-State ChainIndex Mempool unit tests.
 
 use std::{collections::HashMap, io::Cursor, str::FromStr as _};
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use zebra_chain::serialization::ZcashDeserialize as _;
 
 use crate::{
@@ -21,7 +21,7 @@ async fn spawn_mempool_and_mockchain() -> (
 ) {
     let (blocks, _faucet, _recipient) = load_test_vectors().unwrap();
 
-    let mockchain = build_active_mockchain_source(blocks.clone());
+    let mockchain = build_active_mockchain_source(0, blocks.clone());
 
     let mempool = Mempool::spawn(mockchain.clone(), None).await.unwrap();
 
@@ -86,7 +86,7 @@ async fn get_mempool() {
             mockchain.mine_blocks(10);
             active_chain_height = dbg!(mockchain.active_height());
 
-            std::thread::sleep(std::time::Duration::from_millis(2000));
+            sleep(Duration::from_millis(2000)).await;
         }
     }
 }
@@ -98,7 +98,7 @@ async fn get_filtered_mempool() {
     mockchain.mine_blocks(150);
     let active_chain_height = dbg!(mockchain.active_height());
 
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    sleep(Duration::from_millis(2000)).await;
 
     let mempool_index = (active_chain_height as usize) + 1;
     let mempool_transactions = block_data
@@ -176,7 +176,7 @@ async fn get_mempool_transaction() {
     mockchain.mine_blocks(150);
     let active_chain_height = dbg!(mockchain.active_height());
 
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    sleep(Duration::from_millis(2000)).await;
 
     let mempool_index = (active_chain_height as usize) + 1;
     let mempool_transactions = block_data
@@ -211,7 +211,7 @@ async fn get_mempool_info() {
     mockchain.mine_blocks(150);
     let active_chain_height = dbg!(mockchain.active_height());
 
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    sleep(Duration::from_millis(2000)).await;
 
     let mempool_index = (active_chain_height as usize) + 1;
     let mempool_transactions = block_data
@@ -259,12 +259,12 @@ async fn get_mempool_info() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_mempool_stream() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
-    let mut subscriber = subscriber; // get_mempool_stream takes &mut self
+    let mut subscriber = subscriber;
 
     mockchain.mine_blocks(150);
     let active_chain_height = dbg!(mockchain.active_height());
 
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    sleep(Duration::from_millis(2000)).await;
 
     let mempool_index = (active_chain_height as usize) + 1;
     let mempool_transactions = block_data
@@ -272,7 +272,7 @@ async fn get_mempool_stream() {
         .map(|b| b.transactions.clone())
         .unwrap_or_default();
 
-    let (mut rx, handle) = subscriber.get_mempool_stream().await.unwrap();
+    let (mut rx, handle) = subscriber.get_mempool_stream(None).await.unwrap();
 
     let expected_count = mempool_transactions.len();
     let mut received: HashMap<String, Vec<u8>> = HashMap::new();
@@ -283,7 +283,7 @@ async fn get_mempool_stream() {
         while received.len() < expected_count {
             match rx.recv().await {
                 Some(Ok((MempoolKey(k), MempoolValue(v)))) => {
-                    received.insert(k, v.as_ref().to_vec());
+                    received.insert(k, v.as_ref().as_ref().to_vec());
                 }
                 Some(Err(e)) => panic!("stream yielded error: {e:?}"),
                 None => break,

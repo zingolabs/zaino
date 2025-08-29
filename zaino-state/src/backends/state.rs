@@ -1309,7 +1309,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                     .await
                 {
                     Some(tx) => {
-                        let serialized = tx.as_ref().0.clone();
+                        let serialized = tx.as_ref().0.as_ref().clone();
 
                         match verbose {
                             // Return an object view, matching the chain path semantics.
@@ -1830,7 +1830,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                             }
                         };
                         match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                            serialized_transaction.0.as_ref(),
+                            serialized_transaction.0.as_ref().as_ref(),
                             Some(vec![txid_bytes]),
                             None,
                         ) {
@@ -1904,7 +1904,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
                     let (mut mempool_stream, _mempool_handle) = match mempool
-                        .get_mempool_stream()
+                        .get_mempool_stream(None)
                         .await
                     {
                         Ok(stream) => stream,
@@ -1922,7 +1922,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                             Ok((_mempool_key, mempool_value)) => {
                                 if channel_tx
                                     .send(Ok(RawTransaction {
-                                        data: mempool_value.0.as_ref().to_vec(),
+                                        data: mempool_value.0.as_ref().as_ref().to_vec(),
                                         height: mempool_height as u64,
                                     }))
                                     .await

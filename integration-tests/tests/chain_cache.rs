@@ -53,7 +53,10 @@ mod chain_query_interface {
             chain_index::{self, ChainIndex},
             BlockCacheConfig,
         },
-        chain_index::{source::ValidatorConnector, types::TransactionHash, NodeBackedChainIndex},
+        chain_index::{
+            source::ValidatorConnector, types::TransactionHash, NodeBackedChainIndex,
+            NodeBackedChainIndexSubscriber,
+        },
         Height, StateService, StateServiceConfig, ZcashService as _,
     };
     use zebra_chain::serialization::{ZcashDeserialize, ZcashDeserializeInto};
@@ -67,7 +70,12 @@ mod chain_query_interface {
         zaino_no_sync: bool,
         zaino_no_db: bool,
         enable_clients: bool,
-    ) -> (TestManager, StateService, NodeBackedChainIndex) {
+    ) -> (
+        TestManager,
+        StateService,
+        NodeBackedChainIndex,
+        NodeBackedChainIndexSubscriber,
+    ) {
         let (test_manager, json_service) = create_test_manager_and_connector(
             validator,
             chain_cache.clone(),
@@ -168,28 +176,30 @@ mod chain_query_interface {
         )
         .await
         .unwrap();
+        let index_reader = chain_index.subscriber().await;
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        (test_manager, state_service, chain_index)
+        (test_manager, state_service, chain_index, index_reader)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_block_range() {
-        let (test_manager, _json_service, chain_index) = create_test_manager_and_chain_index(
-            &ValidatorKind::Zebrad,
-            None,
-            true,
-            false,
-            false,
-            true,
-        )
-        .await;
+        let (test_manager, _json_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                false,
+                false,
+                true,
+            )
+            .await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
-        let snapshot = chain_index.snapshot_nonfinalized_state();
+        let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 7);
-        let range = chain_index
+        let range = indexer
             .get_block_range(&snapshot, Height::try_from(0).unwrap(), None)
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -215,26 +225,27 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_fork_point() {
-        let (test_manager, _json_service, chain_index) = create_test_manager_and_chain_index(
-            &ValidatorKind::Zebrad,
-            None,
-            true,
-            false,
-            false,
-            true,
-        )
-        .await;
+        let (test_manager, _json_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                false,
+                false,
+                true,
+            )
+            .await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
-        let snapshot = chain_index.snapshot_nonfinalized_state();
+        let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 7);
         for block_hash in snapshot.heights_to_hashes.values() {
             // As all blocks are currently on the main chain,
             // this should be the block provided
             assert_eq!(
                 block_hash,
-                &chain_index
+                &indexer
                     .find_fork_point(&snapshot, block_hash)
                     .unwrap()
                     .unwrap()
@@ -245,26 +256,27 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_raw_transaction() {
-        let (test_manager, _json_service, chain_index) = create_test_manager_and_chain_index(
-            &ValidatorKind::Zebrad,
-            None,
-            true,
-            false,
-            false,
-            true,
-        )
-        .await;
+        let (test_manager, _json_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                false,
+                false,
+                true,
+            )
+            .await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
-        let snapshot = chain_index.snapshot_nonfinalized_state();
+        let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 7);
         for txid in snapshot
             .blocks
             .values()
             .flat_map(|block| block.transactions().iter().map(|txdata| txdata.txid().0))
         {
-            let raw_transaction = chain_index
+            let raw_transaction = indexer
                 .get_raw_transaction(&snapshot, &TransactionHash(txid))
                 .await
                 .unwrap()
@@ -281,23 +293,24 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_transaction_status() {
-        let (test_manager, _json_service, chain_index) = create_test_manager_and_chain_index(
-            &ValidatorKind::Zebrad,
-            None,
-            true,
-            false,
-            false,
-            true,
-        )
-        .await;
-        let snapshot = chain_index.snapshot_nonfinalized_state();
+        let (test_manager, _json_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                false,
+                false,
+                true,
+            )
+            .await;
+        let snapshot = indexer.snapshot_nonfinalized_state();
         // I don't know where this second block is generated. Somewhere in the
         // guts of create_test_manager_and_chain_index
         assert_eq!(snapshot.as_ref().blocks.len(), 2);
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
-        let snapshot = chain_index.snapshot_nonfinalized_state();
+        let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 7);
         for (txid, height, block_hash) in snapshot.blocks.values().flat_map(|block| {
             block
@@ -305,13 +318,74 @@ mod chain_query_interface {
                 .iter()
                 .map(|txdata| (txdata.txid().0, block.height(), block.hash()))
         }) {
-            let transaction_status = chain_index
+            let (transaction_status_blocks, _transaction_mempool_status) = indexer
                 .get_transaction_status(&snapshot, &TransactionHash(txid))
                 .await
                 .unwrap();
-            assert_eq!(1, transaction_status.len());
-            assert_eq!(transaction_status.keys().next().unwrap(), block_hash);
-            assert_eq!(transaction_status.values().next().unwrap(), &height)
+            assert_eq!(1, transaction_status_blocks.len());
+            assert_eq!(transaction_status_blocks.keys().next().unwrap(), block_hash);
+            assert_eq!(transaction_status_blocks.values().next().unwrap(), &height)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_large_chain() {
+        let (test_manager, state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                false,
+                false,
+                true,
+            )
+            .await;
+
+        // this delay had to increase. Maybe we tweak sync loop rerun time?
+        test_manager.generate_blocks_with_delay(5).await;
+        {
+            let chain_height =
+                Height::try_from(state_service.read_state_service().best_tip().unwrap().0 .0)
+                    .unwrap();
+            let indexer_height = indexer.snapshot_nonfinalized_state().best_tip.0;
+            assert_eq!(chain_height, indexer_height);
+        }
+
+        test_manager.generate_blocks_with_delay(150).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+
+        let snapshot = indexer.snapshot_nonfinalized_state();
+        let chain_height = state_service.read_state_service().best_tip().unwrap().0 .0;
+        let indexer_height = snapshot.best_tip.0;
+        assert_eq!(Height::try_from(chain_height).unwrap(), indexer_height);
+
+        let finalised_start = Height::try_from(chain_height - 150).unwrap();
+        let finalised_tip = Height::try_from(chain_height - 100).unwrap();
+        let end = Height::try_from(chain_height - 50).unwrap();
+
+        let finalized_blocks = indexer
+            .get_block_range(&snapshot, finalised_start, Some(finalised_tip))
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        for block in finalized_blocks {
+            block
+                .zcash_deserialize_into::<zebra_chain::block::Block>()
+                .unwrap();
+        }
+
+        let non_finalised_blocks = indexer
+            .get_block_range(&snapshot, finalised_tip, Some(end))
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        for block in non_finalised_blocks {
+            block
+                .zcash_deserialize_into::<zebra_chain::block::Block>()
+                .unwrap();
         }
     }
 }

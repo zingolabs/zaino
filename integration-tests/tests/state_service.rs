@@ -1320,7 +1320,10 @@ mod zebrad {
             assert_eq!(entries.len() as u64, info.size);
             assert!(info.size >= 1);
 
-            let expected_bytes: u64 = entries.iter().map(|(_, v)| v.0.as_ref().len() as u64).sum();
+            let expected_bytes: u64 = entries
+                .iter()
+                .map(|(_, v)| v.0.as_ref().as_ref().len() as u64)
+                .sum();
 
             let expected_key_heap_bytes: u64 =
                 entries.iter().map(|(k, _)| k.0.capacity() as u64).sum();
@@ -1335,7 +1338,10 @@ mod zebrad {
 
             // Optional: when exactly one tx, its serialized length must equal `bytes`
             if info.size == 1 {
-                assert_eq!(entries[0].1 .0.as_ref().len() as u64, expected_bytes);
+                assert_eq!(
+                    entries[0].1 .0.as_ref().as_ref().len() as u64,
+                    expected_bytes
+                );
             }
 
             test_manager.close().await;

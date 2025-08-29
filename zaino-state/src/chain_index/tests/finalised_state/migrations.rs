@@ -78,7 +78,7 @@ async fn v0_to_v1_full() {
         zaino_db.write_block(chain_block).await.unwrap();
     }
     zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status().await);
+    dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
     dbg!(zaino_db.shutdown().await.unwrap());
 
@@ -87,7 +87,7 @@ async fn v0_to_v1_full() {
     // Open v1 database and check migration.
     let zaino_db_2 = ZainoDB::spawn(v1_config, source).await.unwrap();
     zaino_db_2.wait_until_ready().await;
-    dbg!(zaino_db_2.status().await);
+    dbg!(zaino_db_2.status());
     let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
     assert_eq!(db_height.0, 200);
     dbg!(zaino_db_2.shutdown().await.unwrap());
@@ -160,7 +160,7 @@ async fn v0_to_v1_interrupted() {
         zaino_db.write_block(chain_block).await.unwrap();
     }
     zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status().await);
+    dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
     dbg!(zaino_db.shutdown().await.unwrap());
 
@@ -217,7 +217,7 @@ async fn v0_to_v1_interrupted() {
     // Open v1 database and check migration.
     let zaino_db_2 = ZainoDB::spawn(v1_config, source).await.unwrap();
     zaino_db_2.wait_until_ready().await;
-    dbg!(zaino_db_2.status().await);
+    dbg!(zaino_db_2.status());
     let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
     assert_eq!(db_height.0, 200);
     dbg!(zaino_db_2.shutdown().await.unwrap());
@@ -290,7 +290,7 @@ async fn v0_to_v1_partial() {
         zaino_db.write_block(chain_block).await.unwrap();
     }
     zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status().await);
+    dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
     dbg!(zaino_db.shutdown().await.unwrap());
 
@@ -346,7 +346,7 @@ async fn v0_to_v1_partial() {
     // Open v1 database and check migration.
     let zaino_db_2 = ZainoDB::spawn(v1_config, source).await.unwrap();
     zaino_db_2.wait_until_ready().await;
-    dbg!(zaino_db_2.status().await);
+    dbg!(zaino_db_2.status());
     let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
     assert_eq!(db_height.0, 200);
     dbg!(zaino_db_2.shutdown().await.unwrap());

@@ -239,6 +239,7 @@ pub(crate) fn build_mockchain_source(
 
 #[allow(clippy::type_complexity)]
 pub(crate) fn build_active_mockchain_source(
+    loaded_chain_height: u32,
     // the input data for this function could be reduced for wider use
     // but is more simple to pass all test block data here.
     blockchain_data: Vec<(
@@ -291,7 +292,12 @@ pub(crate) fn build_active_mockchain_source(
         block_hashes.push(*chain_block.index().hash());
     }
 
-    MockchainSource::new_with_active_height(zebra_blocks, block_roots, block_hashes, 0)
+    MockchainSource::new_with_active_height(
+        zebra_blocks,
+        block_roots,
+        block_hashes,
+        loaded_chain_height,
+    )
 }
 
 // ***** Tests *****

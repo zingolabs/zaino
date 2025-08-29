@@ -307,7 +307,7 @@ pub async fn test_get_mempool_info(validator: &ValidatorKind) {
     // Bytes: sum of SerializedTransaction lengths
     let expected_bytes: u64 = entries
         .iter()
-        .map(|(_, value)| value.0.as_ref().len() as u64)
+        .map(|(_, value)| value.0.as_ref().as_ref().len() as u64)
         .sum();
 
     // Key heap bytes: sum of txid String capacities
@@ -703,13 +703,7 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
         .await
         .unwrap();
 
-    // Zebra has a bug when doing validation, they don't match against both regtest and testnet.
-    // This will fail when zebra correctly implements this RPC method, and then we'll need to update this test.
-    if matches!(validator, ValidatorKind::Zebrad) {
-        assert_ne!(fetch_service_validate_address, expected_validation);
-    } else {
-        assert_eq!(fetch_service_validate_address, expected_validation);
-    }
+    assert_eq!(fetch_service_validate_address, expected_validation);
 
     // scriptpubkey: "a914000000000000000000000000000000000000000087"
     let expected_validation_script = ValidateAddressResponse::new(
@@ -723,17 +717,10 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
         .await
         .unwrap();
 
-    if matches!(validator, ValidatorKind::Zebrad) {
-        assert_ne!(
-            fetch_service_validate_address_script,
-            expected_validation_script
-        );
-    } else {
-        assert_eq!(
-            fetch_service_validate_address_script,
-            expected_validation_script
-        );
-    }
+    assert_eq!(
+        fetch_service_validate_address_script,
+        expected_validation_script
+    );
 
     test_manager.close().await;
 }
