@@ -4,13 +4,15 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
-    chain_index::source::{BlockchainSource, BlockchainSourceError},
+    chain_index::{
+        source::{BlockchainSource, BlockchainSourceError},
+        types::MempoolInfo,
+    },
     error::{MempoolError, StatusError},
     status::{AtomicStatus, StatusType},
     BlockHash,
 };
 use tracing::{info, warn};
-use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
 use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 
 /// Mempool key
@@ -280,7 +282,7 @@ impl<T: BlockchainSource> Mempool<T> {
 
     /// Returns information about the mempool. Used by the `getmempoolinfo` RPC.
     /// Computed from local Broadcast state.
-    pub async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, MempoolError> {
+    pub async fn get_mempool_info(&self) -> MempoolInfo {
         let map = self.state.get_state();
 
         let size = map.len() as u64;
@@ -298,7 +300,7 @@ impl<T: BlockchainSource> Mempool<T> {
 
         let usage = bytes.saturating_add(key_heap_bytes);
 
-        Ok(GetMempoolInfoResponse { size, bytes, usage })
+        MempoolInfo { size, bytes, usage }
     }
 
     #[inline]
@@ -498,7 +500,7 @@ impl MempoolSubscriber {
 
     /// Returns information about the mempool. Used by the `getmempoolinfo` RPC.
     /// Computed from local Broadcast state.
-    pub async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, MempoolError> {
+    pub async fn get_mempool_info(&self) -> MempoolInfo {
         let mempool_transactions: Vec<(MempoolKey, MempoolValue)> =
             self.subscriber.get_filtered_state(&HashSet::new());
 
@@ -517,7 +519,7 @@ impl MempoolSubscriber {
 
         let usage: u64 = bytes.saturating_add(key_heap_bytes);
 
-        Ok(GetMempoolInfoResponse { size, bytes, usage })
+        MempoolInfo { size, bytes, usage }
     }
 
     /// Returns the status of the mempool.

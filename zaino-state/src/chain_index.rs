@@ -235,6 +235,14 @@ pub trait ChainIndex {
         &self,
         snapshot: &Self::Snapshot,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
+
+    /// Returns Information about the mempool state:
+    /// - size: Current tx count
+    /// - bytes: Sum of all tx sizes
+    /// - usage: Total memory usage for the mempool
+    fn get_mempool_info(
+        &self,
+    ) -> impl std::future::Future<Output = Result<types::MempoolInfo, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -823,6 +831,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))
             }
         }
+    }
+
+    /// Returns Information about the mempool state:
+    /// - size: Current tx count
+    /// - bytes: Sum of all tx sizes
+    /// - usage: Total memory usage for the mempool
+    async fn get_mempool_info(&self) -> Result<types::MempoolInfo, Self::Error> {
+        Ok(self.mempool.get_mempool_info().await)
     }
 }
 
