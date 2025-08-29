@@ -183,6 +183,21 @@ pub trait ChainIndex {
         end: Option<types::Height>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
 
+    /// Returns the *compact* block for the given height.
+    ///
+    /// Returns None if the specified height
+    /// is greater than the snapshot's tip
+    ///
+    /// TODO: Add range fetch method.
+    #[allow(clippy::type_complexity)]
+    fn get_compact_block(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        height: types::Height,
+    ) -> impl std::future::Future<
+        Output = Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error>,
+    >;
+
     /// Finds the newest ancestor of the given block on the main
     /// chain, or the block itself if it is on the main chain.
     fn find_fork_point(
@@ -648,6 +663,30 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             )
         } else {
             None
+        }
+    }
+
+    /// Returns the *compact* block for the given height.
+    ///
+    /// Returns None if the specified height
+    /// is greater than the snapshot's tip
+    async fn get_compact_block(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        height: types::Height,
+    ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
+        if height <= nonfinalized_snapshot.best_tip.0 {
+            Ok(Some(
+                match nonfinalized_snapshot.get_chainblock_by_height(&height) {
+                    Some(block) => block.to_compact_block(),
+                    None => match self.finalized_state.get_compact_block(height).await {
+                        Ok(block) => block,
+                        Err(_e) => return Err(ChainIndexError::database_hole(height)),
+                    },
+                },
+            ))
+        } else {
+            Ok(None)
         }
     }
 
