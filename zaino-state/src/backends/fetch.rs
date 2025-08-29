@@ -141,6 +141,8 @@ impl ZcashService for FetchService {
     fn get_subscriber(&self) -> IndexerSubscriber<FetchServiceSubscriber> {
         IndexerSubscriber::new(FetchServiceSubscriber {
             fetcher: self.fetcher.clone(),
+            block_cache: self.block_cache.subscriber(),
+            mempool: self.mempool.subscriber(),
             indexer: self.indexer.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
@@ -175,6 +177,10 @@ impl Drop for FetchService {
 pub struct FetchServiceSubscriber {
     /// JsonRPC Client.
     pub fetcher: JsonRpSeeConnector,
+    /// Local compact block cache.
+    pub block_cache: BlockCacheSubscriber,
+    /// Internal mempool.
+    pub mempool: MempoolSubscriber,
     /// Core indexer.
     indexer: NodeBackedChainIndexSubscriber,
     /// Service metadata.
