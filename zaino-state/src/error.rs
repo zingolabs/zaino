@@ -49,6 +49,10 @@ pub enum StateServiceError {
     #[error("RPC error: {0:?}")]
     RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
 
+    /// Chain index error.
+    #[error("Chain index error: {0}")]
+    ChainIndexError(#[from] ChainIndexError),
+
     /// Error from the block cache.
     #[error("Mempool error: {0}")]
     BlockCacheError(#[from] BlockCacheError),
@@ -126,6 +130,12 @@ impl From<StateServiceError> for tonic::Status {
                 tonic::Status::internal(err.to_string())
             }
             StateServiceError::UnhandledRpcError(e) => tonic::Status::internal(e.to_string()),
+            StateServiceError::ChainIndexError(err) => match err.kind {
+                ChainIndexErrorKind::InternalServerError => tonic::Status::internal(err.message),
+                ChainIndexErrorKind::InvalidSnapshot => {
+                    tonic::Status::failed_precondition(err.message)
+                }
+            },
         }
     }
 }
@@ -172,6 +182,10 @@ pub enum FetchServiceError {
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
+    /// Chain index error.
+    #[error("Chain index error: {0}")]
+    ChainIndexError(#[from] ChainIndexError),
+
     /// Error from the block cache.
     #[error("Mempool error: {0}")]
     BlockCacheError(#[from] BlockCacheError),
@@ -213,9 +227,16 @@ impl From<FetchServiceError> for tonic::Status {
             FetchServiceError::SerializationError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
             }
+            FetchServiceError::ChainIndexError(err) => match err.kind {
+                ChainIndexErrorKind::InternalServerError => tonic::Status::internal(err.message),
+                ChainIndexErrorKind::InvalidSnapshot => {
+                    tonic::Status::failed_precondition(err.message)
+                }
+            },
         }
     }
 }
+
 /// These aren't the best conversions, but the MempoolError should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for MempoolError {
@@ -323,6 +344,7 @@ pub enum BlockCacheError {
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
 }
+
 /// These aren't the best conversions, but the NonFinalizedStateError should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
@@ -379,6 +401,7 @@ pub enum NonFinalisedStateError {
     #[error("Status error: {0:?}")]
     StatusError(StatusError),
 }
+
 /// These aren't the best conversions, but the FinalizedStateError should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
@@ -561,6 +584,7 @@ impl ChainIndexError {
         }
     }
 }
+
 impl From<FinalisedStateError> for ChainIndexError {
     fn from(value: FinalisedStateError) -> Self {
         let message = match &value {

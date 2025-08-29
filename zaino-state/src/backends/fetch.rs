@@ -39,6 +39,7 @@ use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
+        types,
     },
     config::FetchServiceConfig,
     error::{BlockCacheError, FetchServiceError},
@@ -52,7 +53,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
-    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    ChainIndex as _, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -140,8 +141,6 @@ impl ZcashService for FetchService {
     fn get_subscriber(&self) -> IndexerSubscriber<FetchServiceSubscriber> {
         IndexerSubscriber::new(FetchServiceSubscriber {
             fetcher: self.fetcher.clone(),
-            block_cache: self.block_cache.subscriber(),
-            mempool: self.mempool.subscriber(),
             indexer: self.indexer.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
@@ -176,10 +175,6 @@ impl Drop for FetchService {
 pub struct FetchServiceSubscriber {
     /// JsonRPC Client.
     pub fetcher: JsonRpSeeConnector,
-    /// Local compact block cache.
-    pub block_cache: BlockCacheSubscriber,
-    /// Internal mempool.
-    pub mempool: MempoolSubscriber,
     /// Core indexer.
     indexer: NodeBackedChainIndexSubscriber,
     /// Service metadata.
@@ -191,10 +186,7 @@ pub struct FetchServiceSubscriber {
 impl FetchServiceSubscriber {
     /// Fetches the current status
     pub fn status(&self) -> StatusType {
-        let mempool_status = self.mempool.status();
-        let block_cache_status = self.block_cache.status();
-
-        mempool_status.combine(block_cache_status)
+        self.indexer.status()
     }
 }
 
@@ -252,7 +244,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// Zebra does not support this RPC call directly.
     async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error> {
-        Ok(self.mempool.get_mempool_info().await.into())
+        Ok(self.indexer.get_mempool_info().await?.into())
     }
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
@@ -420,11 +412,16 @@ impl ZcashIndexer for FetchServiceSubscriber {
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
         // Ok(self.fetcher.get_raw_mempool().await?.transactions)
         Ok(self
-            .mempool
-            .get_mempool()
+            .indexer
+            .get_mempool_transactions(Vec::new())
             .await
             .into_iter()
-            .map(|(key, _)| key.0)
+            .map(|mempool_tx| {
+                mempool_tx
+                    .iter()
+                    .map(|tx_bytes| hex::encode(tx_bytes))
+                    .collect()
+            })
             .collect())
     }
 
@@ -518,7 +515,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
-        Ok(self.block_cache.get_chain_height().await?)
+        Ok(Height(
+            self.indexer.snapshot_nonfinalized_state().best_tip.0 .0,
+        ))
     }
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -587,17 +586,11 @@ impl ZcashIndexer for FetchServiceSubscriber {
 impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let latest_height = self.block_cache.get_chain_height().await?;
-        let mut latest_hash = self
-            .block_cache
-            .get_compact_block(latest_height.0.to_string())
-            .await?
-            .hash;
-        latest_hash.reverse();
+        let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
 
         Ok(BlockId {
-            height: latest_height.0 as u64,
-            hash: latest_hash,
+            height: tip.0 .0 as u64,
+            hash: tip.1 .0.to_vec(),
         })
     }
 
@@ -608,14 +601,23 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
+        let height = match hash_or_height {
+            HashOrHeight::Height(height) => height.0,
+            HashOrHeight::Hash(hash) => {
+                // TODO: GET BLOCK HEIGHT ( HASH )
+                todo!()
+            }
+        };
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         match self
-            .block_cache
-            .get_compact_block(hash_or_height.to_string())
+            .indexer
+            .get_compact_block(&snapshot, types::Height(height))
             .await
         {
-            Ok(block) => Ok(block),
+            Ok(Some(block)) => Ok(block),
+            Ok(None) => todo!(),
             Err(e) => {
-                let chain_height = self.block_cache.get_chain_height().await?.0;
+                let chain_height = snapshot.best_tip.0 .0;
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -895,7 +897,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let height: u64 = match height {
                 Some(h) => h as u64,
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
-                None => self.block_cache.get_chain_height().await?.0 as u64,
+                None => self.indexer.snapshot_nonfinalized_state().best_tip.0 .0 as u64,
             };
 
             Ok(RawTransaction {
