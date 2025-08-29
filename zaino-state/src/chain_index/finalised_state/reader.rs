@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// Immutable view onto an already-running [`ZainoDB`].
 ///
 /// Carries a plain reference with the same lifetime as the parent DB
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct DbReader {
     /// Immutable read-only view onto the running ZainoDB
     pub(crate) inner: Arc<ZainoDB>,

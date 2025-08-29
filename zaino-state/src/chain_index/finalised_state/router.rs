@@ -21,6 +21,7 @@ use std::sync::{
     Arc,
 };
 
+#[derive(Debug)]
 pub(crate) struct Router {
     /// Primary active database.
     primary: ArcSwap<DbBackend>,

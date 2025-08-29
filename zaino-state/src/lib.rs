@@ -41,6 +41,7 @@ pub use chain_index::non_finalised_state::{
     UpdateError,
 };
 // NOTE: Should these be pub at all?
+pub use chain_index::mempool::{MempoolKey, MempoolValue};
 pub use chain_index::types::{
     AddrHistRecord, AddrScript, BlockData, BlockHash, BlockHeaderData, BlockIndex, ChainBlock,
     ChainWork, CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes, CompactOrchardAction,
@@ -51,8 +52,6 @@ pub use chain_index::types::{
 };
 
 pub(crate) mod local_cache;
-
-pub use chain_index::mempool::{MempoolKey, MempoolValue};
 
 #[cfg(feature = "bench")]
 /// allow public access to additional APIs, for testing

@@ -730,6 +730,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// NOTE: Currently unimplemented in Zaino.
     async fn ping(&self, request: Duration) -> Result<PingResponse, Self::Error>;
 }
+
 /// Zcash Service functionality.
 #[async_trait]
 pub trait LightWalletService: Sized + ZcashService<Subscriber: LightWalletIndexer> {}

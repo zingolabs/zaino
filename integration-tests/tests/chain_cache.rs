@@ -176,7 +176,7 @@ mod chain_query_interface {
         )
         .await
         .unwrap();
-        let index_reader = chain_index.subscriber().await;
+        let index_reader = chain_index.subscriber();
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         (test_manager, state_service, chain_index, index_reader)

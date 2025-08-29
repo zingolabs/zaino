@@ -360,6 +360,7 @@ pub trait ChainIndex {
 /// - Unified access to finalized and non-finalized blockchain state
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
+#[derive(Debug)]
 pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
@@ -406,7 +407,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
     /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
-    pub async fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
+    pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
         NodeBackedChainIndexSubscriber {
             mempool: self.mempool.subscriber(),
             non_finalized_state: self.non_finalized_state.clone(),
@@ -501,7 +502,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 /// Designed for concurrent efficiency.
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,

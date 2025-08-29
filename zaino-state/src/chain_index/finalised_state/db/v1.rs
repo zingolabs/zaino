@@ -385,6 +385,7 @@ impl TransparentHistExt for DbV1 {
 
 /// Zaino’s Finalised state database V1.
 /// Implements a persistent LMDB-backed chain index for fast read access and verified data.
+#[derive(Debug)]
 pub(crate) struct DbV1 {
     /// Shared LMDB environment.
     env: Arc<Environment>,

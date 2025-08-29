@@ -31,6 +31,7 @@ use super::capability::Capability;
 pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
 
 /// All concrete database implementations.
+#[derive(Debug)]
 pub(crate) enum DbBackend {
     V0(DbV0),
     V1(DbV1),

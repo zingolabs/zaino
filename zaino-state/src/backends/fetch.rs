@@ -52,6 +52,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
+    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -70,6 +71,8 @@ pub struct FetchService {
     block_cache: BlockCache,
     /// Internal mempool.
     mempool: Mempool<ValidatorConnector>,
+    /// Core indexer.
+    indexer: NodeBackedChainIndex,
     /// Service metadata.
     data: ServiceMetadata,
     /// StateService config data.
@@ -102,14 +105,17 @@ impl ZcashService for FetchService {
         );
         info!("Using Zcash build: {}", data);
 
+        let source = ValidatorConnector::Fetch(fetcher.clone());
+        let indexer = NodeBackedChainIndex::new(source, config.clone().into())
+            .await
+            .unwrap();
+
         let block_cache = BlockCache::spawn(&fetcher, None, config.clone().into())
             .await
             .map_err(|e| {
                 FetchServiceError::BlockCacheError(BlockCacheError::Custom(e.to_string()))
             })?;
-
         let mempool_source = ValidatorConnector::Fetch(fetcher.clone());
-
         let mempool = Mempool::spawn(mempool_source, None).await.map_err(|e| {
             FetchServiceError::BlockCacheError(BlockCacheError::Custom(e.to_string()))
         })?;
@@ -118,6 +124,7 @@ impl ZcashService for FetchService {
             fetcher,
             block_cache,
             mempool,
+            indexer,
             data,
             config,
         };
@@ -135,6 +142,7 @@ impl ZcashService for FetchService {
             fetcher: self.fetcher.clone(),
             block_cache: self.block_cache.subscriber(),
             mempool: self.mempool.subscriber(),
+            indexer: self.indexer.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
         })
@@ -172,6 +180,8 @@ pub struct FetchServiceSubscriber {
     pub block_cache: BlockCacheSubscriber,
     /// Internal mempool.
     pub mempool: MempoolSubscriber,
+    /// Core indexer.
+    indexer: NodeBackedChainIndexSubscriber,
     /// Service metadata.
     pub data: ServiceMetadata,
     /// StateService config data.

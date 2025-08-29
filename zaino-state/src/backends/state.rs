@@ -17,7 +17,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
-    BlockHash, MempoolKey,
+    BlockHash, MempoolKey, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
 use nonempty::NonEmpty;
@@ -110,6 +110,8 @@ pub struct StateService {
     block_cache: BlockCache,
     /// Internal mempool.
     mempool: Mempool<ValidatorConnector>,
+    /// Core indexer.
+    indexer: NodeBackedChainIndex,
     /// Service metadata.
     data: ServiceMetadata,
     /// StateService config data.
@@ -241,18 +243,24 @@ impl ZcashService for StateService {
             }
         }
 
+        let source = ValidatorConnector::State(crate::State {
+            read_state_service: read_state_service.clone(),
+            mempool_fetcher: rpc_client.clone(),
+        });
+        let indexer = NodeBackedChainIndex::new(source, config.clone().into())
+            .await
+            .unwrap();
+
         let block_cache = BlockCache::spawn(
             &rpc_client,
             Some(&read_state_service),
             config.clone().into(),
         )
         .await?;
-
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
             read_state_service: read_state_service.clone(),
             mempool_fetcher: rpc_client.clone(),
         });
-
         let mempool = Mempool::spawn(mempool_source, None).await?;
 
         let state_service = Self {
@@ -262,6 +270,7 @@ impl ZcashService for StateService {
             rpc_client: rpc_client.clone(),
             block_cache,
             mempool,
+            indexer,
             data,
             config,
             status: AtomicStatus::new(StatusType::Spawning.into()),
@@ -278,6 +287,7 @@ impl ZcashService for StateService {
             rpc_client: self.rpc_client.clone(),
             block_cache: self.block_cache.subscriber(),
             mempool: self.mempool.subscriber(),
+            indexer: self.indexer.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
             chain_tip_change: self.chain_tip_change.clone(),
@@ -326,6 +336,8 @@ pub struct StateServiceSubscriber {
     pub block_cache: BlockCacheSubscriber,
     /// Internal mempool.
     pub mempool: MempoolSubscriber,
+    /// Core indexer.
+    indexer: NodeBackedChainIndexSubscriber,
     /// Service metadata.
     pub data: ServiceMetadata,
     /// StateService config data.

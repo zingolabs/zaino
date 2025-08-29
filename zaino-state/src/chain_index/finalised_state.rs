@@ -30,6 +30,7 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use super::source::BlockchainSource;
 
+#[derive(Debug)]
 pub(crate) struct ZainoDB {
     db: Arc<Router>,
     cfg: BlockCacheConfig,
