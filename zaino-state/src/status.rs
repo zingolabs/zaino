@@ -40,7 +40,7 @@ impl AtomicStatus {
 }
 
 /// Status of the server's components.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum StatusType {
     /// Running initial startup routine.
     Spawning = 0,

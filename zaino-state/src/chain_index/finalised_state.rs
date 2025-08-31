@@ -122,8 +122,8 @@ impl ZainoDB {
     }
 
     /// Returns the status of the running ZainoDB.
-    pub(crate) async fn status(&self) -> StatusType {
-        self.db.status().await
+    pub(crate) fn status(&self) -> StatusType {
+        self.db.status()
     }
 
     /// Waits until the ZainoDB returns a Ready status.
@@ -132,7 +132,7 @@ impl ZainoDB {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            if self.db.status().await == StatusType::Ready {
+            if self.db.status() == StatusType::Ready {
                 break;
             }
         }

@@ -307,7 +307,7 @@ pub async fn test_get_mempool_info(validator: &ValidatorKind) {
     // Bytes: sum of SerializedTransaction lengths
     let expected_bytes: u64 = entries
         .iter()
-        .map(|(_, value)| value.0.as_ref().len() as u64)
+        .map(|(_, value)| value.0.as_ref().as_ref().len() as u64)
         .sum();
 
     // Key heap bytes: sum of txid String capacities

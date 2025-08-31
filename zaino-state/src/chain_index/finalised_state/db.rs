@@ -56,7 +56,7 @@ impl DbBackend {
 
         loop {
             ticker.tick().await;
-            if self.status().await == StatusType::Ready {
+            if self.status() == StatusType::Ready {
                 break;
             }
         }
@@ -87,10 +87,10 @@ impl From<DbV1> for DbBackend {
 
 #[async_trait]
 impl DbCore for DbBackend {
-    async fn status(&self) -> StatusType {
+    fn status(&self) -> StatusType {
         match self {
-            Self::V0(db) => db.status().await,
-            Self::V1(db) => db.status().await,
+            Self::V0(db) => db.status(),
+            Self::V1(db) => db.status(),
         }
     }
 

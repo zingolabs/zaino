@@ -430,7 +430,7 @@ pub trait DbWrite: Send + Sync {
 #[async_trait]
 pub trait DbCore: DbRead + DbWrite + Send + Sync {
     /// Returns the current runtime status (`Starting`, `Syncing`, `Ready`, …).
-    async fn status(&self) -> StatusType;
+    fn status(&self) -> StatusType;
 
     /// Stops background tasks, syncs, etc.
     async fn shutdown(&self) -> Result<(), FinalisedStateError>;

@@ -142,7 +142,7 @@ pub(crate) async fn load_vectors_v0db_and_reader() -> (
     let zaino_db = std::sync::Arc::new(zaino_db);
 
     zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status().await);
+    dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap()).unwrap();
 
     let db_reader = zaino_db.to_reader();
@@ -166,7 +166,7 @@ async fn sync_to_height() {
     zaino_db.sync_to_height(Height(200), source).await.unwrap();
 
     zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status().await);
+    dbg!(zaino_db.status());
     let built_db_height = dbg!(zaino_db.db_height().await.unwrap()).unwrap();
 
     assert_eq!(built_db_height, Height(200));
@@ -179,7 +179,7 @@ async fn add_blocks_to_db_and_verify() {
     let (_blocks, _faucet, _recipient, _db_dir, zaino_db) =
         load_vectors_and_spawn_and_sync_v0_zaino_db().await;
     zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status().await);
+    dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
 }
 
@@ -199,7 +199,7 @@ async fn delete_blocks_from_db() {
     }
 
     zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status().await);
+    dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
 }
 
@@ -287,7 +287,7 @@ async fn load_db_from_file() {
             }
 
             zaino_db.wait_until_ready().await;
-            dbg!(zaino_db.status().await);
+            dbg!(zaino_db.status());
             dbg!(zaino_db.db_height().await.unwrap());
 
             dbg!(zaino_db.shutdown().await.unwrap());
@@ -305,7 +305,7 @@ async fn load_db_from_file() {
             let zaino_db_2 = ZainoDB::spawn(config, source_clone).await.unwrap();
 
             zaino_db_2.wait_until_ready().await;
-            dbg!(zaino_db_2.status().await);
+            dbg!(zaino_db_2.status());
             let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
 
             assert_eq!(db_height.0, 200);

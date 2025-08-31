@@ -254,6 +254,15 @@ pub enum MempoolError {
     #[error("Critical error: {0}")]
     Critical(String),
 
+    /// Incorrect expected chain tip given from client.
+    #[error(
+        "Incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
+    )]
+    IncorrectChainTip {
+        expected_chain_tip: BlockHash,
+        current_chain_tip: BlockHash,
+    },
+
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
@@ -525,6 +534,32 @@ impl ChainIndexError {
             source: None,
         }
     }
+
+    pub(crate) fn child_process_status_error(process: &str, value: StatusError) -> Self {
+        use crate::status::StatusType;
+
+        let status = value.0;
+        let message = match status {
+            StatusType::Spawning => format!("{process} status: Spawning (not ready yet)"),
+            StatusType::Syncing => format!("{process} status: Syncing (not ready yet)"),
+            StatusType::Ready => format!("{process} status: Ready (unexpected error path)"),
+            StatusType::Busy => format!("{process} status: Busy (temporarily unavailable)"),
+            StatusType::Closing => format!("{process} status: Closing (shutting down)"),
+            StatusType::Offline => format!("{process} status: Offline (not available)"),
+            StatusType::RecoverableError => {
+                format!("{process} status: RecoverableError (retry may succeed)")
+            }
+            StatusType::CriticalError => {
+                format!("{process} status: CriticalError (requires operator action)")
+            }
+        };
+
+        ChainIndexError {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message,
+            source: Some(Box::new(value)),
+        }
+    }
 }
 impl From<FinalisedStateError> for ChainIndexError {
     fn from(value: FinalisedStateError) -> Self {
@@ -550,6 +585,39 @@ impl From<FinalisedStateError> for ChainIndexError {
                 blockchain_source_error.to_string()
             }
         };
+        ChainIndexError {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message,
+            source: Some(Box::new(value)),
+        }
+    }
+}
+
+impl From<MempoolError> for ChainIndexError {
+    fn from(value: MempoolError) -> Self {
+        // Construct a user-facing message depending on the variant
+        let message = match &value {
+            MempoolError::Critical(msg) => format!("critical mempool error: {msg}"),
+            MempoolError::IncorrectChainTip {
+                expected_chain_tip,
+                current_chain_tip,
+            } => {
+                format!(
+                    "incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
+                )
+            }
+            MempoolError::JsonRpcConnectorError(err) => {
+                format!("mempool json-rpc connector error: {err}")
+            }
+            MempoolError::BlockchainSourceError(err) => {
+                format!("mempool blockchain source error: {err}")
+            }
+            MempoolError::WatchRecvError(err) => format!("mempool watch receiver error: {err}"),
+            MempoolError::StatusError(status_err) => {
+                format!("mempool status error: {status_err:?}")
+            }
+        };
+
         ChainIndexError {
             kind: ChainIndexErrorKind::InternalServerError,
             message,

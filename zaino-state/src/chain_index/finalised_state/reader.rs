@@ -27,6 +27,7 @@ use std::sync::Arc;
 /// Immutable view onto an already-running [`ZainoDB`].
 ///
 /// Carries a plain reference with the same lifetime as the parent DB
+#[derive(Clone)]
 pub(crate) struct DbReader {
     /// Immutable read-only view onto the running ZainoDB
     pub(crate) inner: Arc<ZainoDB>,
@@ -41,8 +42,8 @@ impl DbReader {
     // ***** DB Core Read *****
 
     /// Returns the status of the serving ZainoDB.
-    pub(crate) async fn status(&self) -> StatusType {
-        self.inner.status().await
+    pub(crate) fn status(&self) -> StatusType {
+        self.inner.status()
     }
 
     /// Returns the greatest block `Height` stored in the db

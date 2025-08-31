@@ -1,4 +1,7 @@
-//! Response types for jsonRPC client.
+//! Response types for jsonRPSeeConnector.
+//!
+//! These types are redefined rather than imported from zebra_rpc
+//! to prevent locking consumers into a zebra_rpc version
 
 use std::{convert::Infallible, num::ParseIntError};
 
@@ -957,7 +960,7 @@ impl<'de> serde::Deserialize<'de> for TxidsResponse {
 /// Encoded using v0 frontier encoding.
 ///
 /// This is used for the output parameter of [`crate::jsonrpsee::connector::JsonRpSeeConnector::get_treestate`].
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GetTreestateResponse {
     /// The block height corresponding to the treestate, numeric.
     pub height: i32,
@@ -997,42 +1000,6 @@ impl TryFrom<RpcError> for GetTreestateError {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for GetTreestateResponse {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let v = serde_json::Value::deserialize(deserializer)?;
-        let height = v["height"]
-            .as_i64()
-            .ok_or_else(|| DeserError::missing_field("height"))? as i32;
-        let hash = v["hash"]
-            .as_str() // This directly accesses the string value
-            .ok_or_else(|| DeserError::missing_field("hash"))? // Converts Option to Result
-            .to_string();
-        let time = v["time"]
-            .as_i64()
-            .ok_or_else(|| DeserError::missing_field("time"))? as u32;
-        let sapling_final_state = v["sapling"]["commitments"]["finalState"]
-            .as_str()
-            .map(Vec::from);
-        let orchard_final_state = v["orchard"]["commitments"]["finalState"]
-            .as_str()
-            .map(Vec::from);
-        Ok(GetTreestateResponse {
-            height,
-            hash,
-            time,
-            sapling: zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                sapling_final_state,
-            )),
-            orchard: zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                orchard_final_state,
-            )),
-        })
-    }
-}
-
 impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
     type Error = zebra_chain::serialization::SerializationError;
 
@@ -1042,28 +1009,16 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
-        let sapling_bytes = value
-            .sapling
-            .commitments()
-            .final_state()
-            .as_ref()
-            .map(hex::decode)
-            .transpose()?;
+        let sapling_bytes = value.sapling.commitments().final_state();
 
-        let orchard_bytes = value
-            .orchard
-            .commitments()
-            .final_state()
-            .as_ref()
-            .map(hex::decode)
-            .transpose()?;
+        let orchard_bytes = value.orchard.commitments().final_state();
 
         Ok(zebra_rpc::client::GetTreestateResponse::from_parts(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
             value.time,
-            sapling_bytes,
-            orchard_bytes,
+            sapling_bytes.clone(),
+            orchard_bytes.clone(),
         ))
     }
 }

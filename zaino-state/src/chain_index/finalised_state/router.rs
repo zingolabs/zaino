@@ -134,9 +134,9 @@ impl Router {
 
 #[async_trait]
 impl DbCore for Router {
-    async fn status(&self) -> StatusType {
+    fn status(&self) -> StatusType {
         match self.backend(CapabilityRequest::ReadCore) {
-            Ok(backend) => backend.status().await,
+            Ok(backend) => backend.status(),
             Err(_) => StatusType::Busy,
         }
     }
