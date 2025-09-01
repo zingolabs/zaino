@@ -2,13 +2,15 @@
 
 use futures::StreamExt;
 use hex::FromHex;
-use std::time;
+use std::{io::Cursor, time};
 use tokio::{sync::mpsc, time::timeout};
 use tonic::async_trait;
 use tracing::{info, warn};
 use zebra_state::HashOrHeight;
 
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::{
+    block::Height, serialization::ZcashDeserialize as _, subtree::NoteCommitmentSubtreeIndex,
+};
 use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
@@ -419,17 +421,14 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// tags: blockchain
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
         // Ok(self.fetcher.get_raw_mempool().await?.transactions)
+        //
+        // TODO / FIX: Check that this is still returning txids!
         Ok(self
             .indexer
             .get_mempool_transactions(Vec::new())
             .await
             .into_iter()
-            .map(|mempool_tx| {
-                mempool_tx
-                    .iter()
-                    .map(|tx_bytes| hex::encode(tx_bytes))
-                    .collect()
-            })
+            .map(|mempool_tx| mempool_tx.iter().map(hex::encode).collect())
             .collect())
     }
 
@@ -1163,72 +1162,77 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             })
             .collect();
 
-        let mempool = self.mempool.clone();
+        let mempool = self.indexer.clone();
         let service_timeout = self.config.service_timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for (txid, serialized_transaction) in
-                        mempool.get_filtered_mempool(exclude_txids).await
-                    {
-                        let txid_bytes = match hex::decode(txid.0) {
-                            Ok(bytes) => bytes,
-                            Err(error) => {
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(error.to_string())))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                } else {
-                                    continue;
-                                }
-                            }
-                        };
-                        match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                            serialized_transaction.0.as_ref().as_ref(),
-                            Some(vec![txid_bytes]),
-                            None,
-                        ) {
-                            Ok(transaction) => {
-                                // ParseFromSlice returns any data left after the conversion to a
-                                // FullTransaction, If the conversion has succeeded this should be empty.
-                                if transaction.0.is_empty() {
-                                    if channel_tx
-                                        .send(
-                                            transaction
-                                                .1
-                                                .to_compact(0)
-                                                .map_err(|e| tonic::Status::unknown(e.to_string())),
-                                        )
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
+                    match mempool.get_mempool_transactions(exclude_txids).await {
+                        Ok(transactions) => {
+                            for serialized_transaction_bytes in transactions {
+                                // TODO: This implementation should be cleaned up to not use parse_from_slice.
+                                // This could be done by implementing try_from zebra_chain::transaction::Transaction for CompactTxData,
+                                // (which implements to_compact())letting us avoid double parsing of transaction bytes.
+                                let transaction: zebra_chain::transaction::Transaction =
+                                    zebra_chain::transaction::Transaction::zcash_deserialize(
+                                        &mut Cursor::new(&serialized_transaction_bytes),
+                                    )
+                                    .unwrap();
+                                // TODO: Check this is in the correct format and does not need hex decoding or reversing.
+                                let txid = transaction.hash().0.to_vec();
+
+                                match <FullTransaction as ParseFromSlice>::parse_from_slice(
+                                    &serialized_transaction_bytes,
+                                    Some(vec![txid]),
+                                    None,
+                                ) {
+                                    Ok(transaction) => {
+                                        // ParseFromSlice returns any data left after the conversion to a
+                                        // FullTransaction, If the conversion has succeeded this should be empty.
+                                        if transaction.0.is_empty() {
+                                            if channel_tx
+                                                .send(transaction.1.to_compact(0).map_err(|e| {
+                                                    tonic::Status::unknown(e.to_string())
+                                                }))
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                        } else {
+                                            // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                                            if channel_tx
+                                                .send(Err(tonic::Status::unknown("Error: ")))
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
                                     }
-                                } else {
-                                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                    if channel_tx
-                                        .send(Err(tonic::Status::unknown("Error: ")))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
+                                    Err(e) => {
+                                        // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                                        if channel_tx
+                                            .send(Err(tonic::Status::unknown(e.to_string())))
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
                                     }
                                 }
+
+                                todo!()
                             }
-                            Err(e) => {
-                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(e.to_string())))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
+                        }
+                        Err(e) => {
+                            channel_tx
+                                .send(Err(tonic::Status::unknown(e.to_string())))
+                                .await
+                                .ok();
                         }
                     }
                 },
@@ -1253,7 +1257,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return a stream of current Mempool transactions. This will keep the output stream open while
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
-        let mut mempool = self.mempool.clone();
+        let indexer = self.indexer.clone();
         let service_timeout = self.config.service_timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
         let mempool_height = self.block_cache.get_chain_height().await?.0;
@@ -1261,45 +1265,43 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let (mut mempool_stream, _mempool_handle) = match mempool
-                        .get_mempool_stream(None)
-                        .await
-                    {
-                        Ok(stream) => stream,
-                        Err(e) => {
-                            warn!("Error fetching stream from mempool: {:?}", e);
+                    let snapshot = indexer.snapshot_nonfinalized_state();
+                    match indexer.get_mempool_stream(&snapshot) {
+                        Some(mut mempool_stream) => {
+                            while let Some(result) = mempool_stream.next().await {
+                                match result {
+                                    Ok(transaction_bytes) => {
+                                        if channel_tx
+                                            .send(Ok(RawTransaction {
+                                                data: transaction_bytes,
+                                                height: mempool_height as u64,
+                                            }))
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        channel_tx
+                                            .send(Err(tonic::Status::internal(format!(
+                                                "Error in mempool stream: {e:?}"
+                                            ))))
+                                            .await
+                                            .ok();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            warn!("Error fetching stream from mempool, Incorrect chain tip!");
                             channel_tx
                                 .send(Err(tonic::Status::internal("Error getting mempool stream")))
                                 .await
                                 .ok();
-                            return;
                         }
                     };
-                    while let Some(result) = mempool_stream.recv().await {
-                        match result {
-                            Ok((_mempool_key, mempool_value)) => {
-                                if channel_tx
-                                    .send(Ok(RawTransaction {
-                                        data: mempool_value.0.as_ref().as_ref().to_vec(),
-                                        height: mempool_height as u64,
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                channel_tx
-                                    .send(Err(tonic::Status::internal(format!(
-                                        "Error in mempool stream: {e:?}"
-                                    ))))
-                                    .await
-                                    .ok();
-                                break;
-                            }
-                        }
-                    }
                 },
             )
             .await;
