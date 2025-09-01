@@ -6,6 +6,8 @@ use zaino_proto::proto::service::BlockId;
 use zebra_chain::{block::Height, parameters::Network};
 use zebra_state::HashOrHeight;
 
+// *** Metadata structs ***
+
 /// Zaino build info.
 #[derive(Debug, Clone)]
 pub(crate) struct BuildInfo {
@@ -116,6 +118,8 @@ impl fmt::Display for ServiceMetadata {
     }
 }
 
+// *** Data transforms ***
+
 pub(crate) fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
     <[u8; 32]>::try_from(block_id.hash)
         .map(zebra_chain::block::Hash)
@@ -127,4 +131,27 @@ pub(crate) fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight>
                 .map(|height| HashOrHeight::Height(Height(height)))
         })
         .ok()
+}
+
+/// Strips the ouputs and from all transactions, retains only
+/// the nullifier from all orcard actions, and clears the chain
+/// metadata from the block
+pub(crate) fn compact_block_to_nullifiers(
+    mut block: zaino_proto::proto::compact_formats::CompactBlock,
+) -> zaino_proto::proto::compact_formats::CompactBlock {
+    for ctransaction in &mut block.vtx {
+        ctransaction.outputs = Vec::new();
+        for caction in &mut ctransaction.actions {
+            *caction = zaino_proto::proto::compact_formats::CompactOrchardAction {
+                nullifier: caction.nullifier.clone(),
+                ..Default::default()
+            }
+        }
+    }
+
+    block.chain_metadata = Some(zaino_proto::proto::compact_formats::ChainMetadata {
+        sapling_commitment_tree_size: 0,
+        orchard_commitment_tree_size: 0,
+    });
+    block
 }

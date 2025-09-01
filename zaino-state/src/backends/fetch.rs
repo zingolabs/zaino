@@ -52,7 +52,9 @@ use crate::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
     },
-    utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
+    utils::{
+        blockid_to_hashorheight, compact_block_to_nullifiers, get_build_info, ServiceMetadata,
+    },
     ChainIndex as _, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
@@ -657,35 +659,52 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     ///
     /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
     async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
-        let height: u32 = match request.height.try_into() {
-            Ok(height) => height,
-            Err(_) => {
-                return Err(FetchServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument(
-                        "Error: Height out of range. Failed to convert to u32.",
-                    ),
-                ));
+        let hash_or_height = blockid_to_hashorheight(request).ok_or(
+            FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
+            )),
+        )?;
+        let height = match hash_or_height {
+            HashOrHeight::Height(height) => height.0,
+            HashOrHeight::Hash(hash) => {
+                // TODO: GET BLOCK HEIGHT ( HASH )
+                todo!()
             }
         };
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         match self
-            .block_cache
-            .get_compact_block_nullifiers(height.to_string())
+            .indexer
+            .get_compact_block(&snapshot, types::Height(height))
             .await
         {
-            Ok(block) => Ok(block),
+            Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),
+            Ok(None) => todo!(),
             Err(e) => {
-                let chain_height = self.block_cache.get_chain_height().await?.0;
-                if height >= chain_height {
-                    Err(FetchServiceError::TonicStatusError(tonic::Status::out_of_range(
-                            format!(
-                                "Error: Height out of range [{height}]. Height requested is greater than the best chain tip [{chain_height}].",
-                            )
-                        )))
-                } else {
+                let chain_height = snapshot.best_tip.0 .0;
+                match hash_or_height {
+                    HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
+                        FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
+                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is greater than the best chain tip [{chain_height}].",
+                        ))),
+                    ),
+                    HashOrHeight::Height(height)
+                        if height > self.data.network().sapling_activation_height() =>
+                    {
+                        Err(FetchServiceError::TonicStatusError(
+                            tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is below sapling activation height [{chain_height}].",
+                            )),
+                        ))
+                    }
+                    _otherwise =>
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                    Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                        format!("Error: Failed to retrieve block from node. Server Error: {e}",),
-                    )))
+                    {
+                        Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
+                            format!("Error: Failed to retrieve block from node. Server Error: {e}",),
+                        )))
+                    }
                 }
             }
         }
