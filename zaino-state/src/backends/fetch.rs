@@ -754,13 +754,13 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         } else {
             false
         };
-        let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service_timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(time::Duration::from_secs((service_timeout*4) as u64), async {
-                        let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
+                let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
+                let chain_height = snapshot.best_tip.0.0;
                     for height in start..=end {
                         let height = if rev_order {
                             end - (height - start)
@@ -869,13 +869,13 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         } else {
             false
         };
-        let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service_timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(time::Duration::from_secs((service_timeout*4) as u64), async {
-                        let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
+                let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
+                let chain_height = snapshot.best_tip.0.0;
                     for height in start..=end {
                         let height = if rev_order {
                             end - (height - start)
@@ -1260,12 +1260,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let indexer = self.indexer.clone();
         let service_timeout = self.config.service_timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
-        let mempool_height = self.block_cache.get_chain_height().await?.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
                     let snapshot = indexer.snapshot_nonfinalized_state();
+                    let mempool_height = snapshot.best_tip.0 .0;
                     match indexer.get_mempool_stream(&snapshot) {
                         Some(mut mempool_stream) => {
                             while let Some(result) = mempool_stream.next().await {
