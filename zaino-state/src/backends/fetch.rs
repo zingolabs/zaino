@@ -421,14 +421,12 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// tags: blockchain
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
         // Ok(self.fetcher.get_raw_mempool().await?.transactions)
-        //
-        // TODO / FIX: Check that this is still returning txids!
         Ok(self
             .indexer
-            .get_mempool_transactions(Vec::new())
+            .get_mempool_txids()
             .await
             .into_iter()
-            .map(|mempool_tx| mempool_tx.iter().map(hex::encode).collect())
+            .map(|mempool_txids| mempool_txids.iter().map(|txid| txid.to_string()).collect())
             .collect())
     }
 
@@ -608,21 +606,55 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
             HashOrHeight::Height(height) => height.0,
             HashOrHeight::Hash(hash) => {
-                // TODO: GET BLOCK HEIGHT ( HASH )
-                todo!()
+                match self.indexer.get_block_height(&snapshot, hash.into()).await {
+                    Ok(Some(height)) => height.0,
+                    Ok(None) => {
+                        return Err(FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                            "Error: Invalid hash and/or height out of range. Hash not founf in chain",
+                        )));
+                    }
+                    Err(_e) => {
+                        return Err(FetchServiceError::TonicStatusError(
+                            tonic::Status::internal("Error: Internal db error."),
+                        ));
+                    }
+                }
             }
         };
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
         match self
             .indexer
             .get_compact_block(&snapshot, types::Height(height))
             .await
         {
             Ok(Some(block)) => Ok(block),
-            Ok(None) => todo!(),
+            Ok(None) => {
+                let chain_height = snapshot.best_tip.0 .0;
+                match hash_or_height {
+                    HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
+                        FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
+                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is greater than the best chain tip [{chain_height}].",
+                        ))),
+                    ),
+                    HashOrHeight::Height(height)
+                        if height > self.data.network().sapling_activation_height() =>
+                    {
+                        Err(FetchServiceError::TonicStatusError(
+                            tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is below sapling activation height [{chain_height}].",
+                            )),
+                        ))
+                    }
+                    _otherwise => Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
+                        "Error: Failed to retrieve block from state.",
+                    ))),
+                }
+            }
             Err(e) => {
                 let chain_height = snapshot.best_tip.0 .0;
                 match hash_or_height {
@@ -663,21 +695,55 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
             HashOrHeight::Height(height) => height.0,
             HashOrHeight::Hash(hash) => {
-                // TODO: GET BLOCK HEIGHT ( HASH )
-                todo!()
+                match self.indexer.get_block_height(&snapshot, hash.into()).await {
+                    Ok(Some(height)) => height.0,
+                    Ok(None) => {
+                        return Err(FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                            "Error: Invalid hash and/or height out of range. Hash not founf in chain",
+                        )));
+                    }
+                    Err(_e) => {
+                        return Err(FetchServiceError::TonicStatusError(
+                            tonic::Status::internal("Error: Internal db error."),
+                        ));
+                    }
+                }
             }
         };
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
         match self
             .indexer
             .get_compact_block(&snapshot, types::Height(height))
             .await
         {
             Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),
-            Ok(None) => todo!(),
+            Ok(None) => {
+                let chain_height = snapshot.best_tip.0 .0;
+                match hash_or_height {
+                    HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
+                        FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
+                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is greater than the best chain tip [{chain_height}].",
+                        ))),
+                    ),
+                    HashOrHeight::Height(height)
+                        if height > self.data.network().sapling_activation_height() =>
+                    {
+                        Err(FetchServiceError::TonicStatusError(
+                            tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
+                                is below sapling activation height [{chain_height}].",
+                            )),
+                        ))
+                    }
+                    _otherwise => Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
+                        "Error: Failed to retrieve block from state.",
+                    ))),
+                }
+            }
             Err(e) => {
                 let chain_height = snapshot.best_tip.0 .0;
                 match hash_or_height {
@@ -776,7 +842,27 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     break;
                                 }
                             }
-                            Ok(None) => todo!(),
+                            Ok(None) => if height >= chain_height {
+                                    match channel_tx
+                                        .send(Err(tonic::Status::out_of_range(format!(
+                                            "Error: Height out of range [{height}]. Height requested is greater than the best chain tip [{chain_height}].",
+                                        ))))
+                                        .await
+
+                                    {
+                                        Ok(_) => break,
+                                        Err(e) => {
+                                            warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                            break;
+                                        }
+                                    }
+                                } else if channel_tx
+                                        .send(Err(tonic::Status::unknown("Internal error, Failed to fetch block.")))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
                             Err(e) => {
                                 if height >= chain_height {
                                     match channel_tx
@@ -891,7 +977,26 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     break;
                                 }
                             }
-                            Ok(None) => todo!(),
+                            Ok(None) => if height >= chain_height {
+                                match channel_tx
+                                    .send(Err(tonic::Status::out_of_range(format!(
+                                        "Error: Height out of range [{height}]. Height requested is greater than the best chain tip [{chain_height}].",
+                                    ))))
+                                    .await
+                                    {
+                                        Ok(_) => break,
+                                        Err(e) => {
+                                            warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                            break;
+                                        }
+                                    }
+                                } else if channel_tx
+                                        .send(Err(tonic::Status::unknown("Internal error, Failed to fetch block.")))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
                             Err(e) => {
                                 if height >= chain_height {
                                     match channel_tx
@@ -1224,8 +1329,6 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                         }
                                     }
                                 }
-
-                                todo!()
                             }
                         }
                         Err(e) => {
@@ -1264,9 +1367,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let snapshot = indexer.snapshot_nonfinalized_state();
-                    let mempool_height = snapshot.best_tip.0 .0;
-                    match indexer.get_mempool_stream(&snapshot) {
+                    let mempool_height = indexer.snapshot_nonfinalized_state().best_tip.0 .0;
+                    match indexer.get_mempool_stream(None) {
                         Some(mut mempool_stream) => {
                             while let Some(result) = mempool_stream.next().await {
                                 match result {

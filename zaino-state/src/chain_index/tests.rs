@@ -407,7 +407,7 @@ mod mockchain_tests {
         let mempool_stream_task = tokio::spawn(async move {
             let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
             let mut mempool_stream = index_reader
-                .get_mempool_stream(&nonfinalized_snapshot)
+                .get_mempool_stream(Some(&nonfinalized_snapshot))
                 .expect("failed to create mempool stream");
 
             let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
@@ -451,7 +451,7 @@ mod mockchain_tests {
         mockchain.mine_blocks(1);
         sleep(Duration::from_millis(2000)).await;
 
-        let mempool_stream = index_reader.get_mempool_stream(&stale_nonfinalized_snapshot);
+        let mempool_stream = index_reader.get_mempool_stream(Some(&stale_nonfinalized_snapshot));
 
         assert!(mempool_stream.is_none());
     }
