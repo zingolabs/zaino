@@ -1591,7 +1591,7 @@ impl ResponseToError for GetMempoolInfoResponse {
 /// hashBlockCommitments = Merkle roots of transaction commitments, including transparent and shielded ones — into a single value that is effectively committed to by the block.
 /// maybe kind of hashsum for all tx in block.
 ///
-/// A real return from zcashd 6.3.0 running on mainnet using `zcash-cli`
+/// A real return using `zcash-cli` from zcashd 6.3.0 running on mainnet:
 /// getblockheader 000003f9071a74cd0a1f7dba0614cd3dbd38b8afa401849c41a624c6a7b919a3
 /// {
 ///   "hash": "000003f9071a74cd0a1f7dba0614cd3dbd38b8afa401849c41a624c6a7b919a3",
@@ -1613,6 +1613,11 @@ impl ResponseToError for GetMempoolInfoResponse {
 /// this includes all the fields in the online RPC docs, as well as:
 /// solution (visble to me in C++ code)
 /// chainwork (not seen yet)
+/// ... according to https://zcash.github.io/rpc/getblockchaininfo.html
+///  "chainwork": "xxxx"     (string) total amount of work in active chain, in hexadecimal
+/// this number does increment during chain sync with `getblockchaininfo`,
+///  but is a set amount when using getblockheader <hash>
+/// therefore I think it is likely to be able to be found in the block, somehow.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockHeaderResponse {
     // fields taken from zcashd source code pasted above
