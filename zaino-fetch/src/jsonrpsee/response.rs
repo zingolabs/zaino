@@ -1616,6 +1616,7 @@ impl ResponseToError for GetMempoolInfoResponse {
 /// ... according to https://zcash.github.io/rpc/getblockchaininfo.html
 ///  "chainwork": "xxxx"     (string) total amount of work in active chain, in hexadecimal
 /// this number does increment during chain sync with `getblockchaininfo`,
+/// also present in getblockdeltas documentation - but I can confirm the zcash-cli RPC call is not functioning, at least in the same way.
 ///  but is a set amount when using getblockheader <hash>
 /// therefore I think it is likely to be able to be found in the block, somehow.
 /// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/rpc/blockchain.cpp#L126
