@@ -354,11 +354,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         //
         // see https://github.com/ZcashFoundation/zebra/issues/9541
 
+        dbg!(&best_tip);
+
         while let Some(block) = self
             .source
-            .get_block(HashOrHeight::Height(zebra_chain::block::Height(
-                u32::from(best_tip.0) + 1,
-            )))
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(dbg!(
+                u32::from(best_tip.0) + 1
+            ))))
             .await
             .map_err(|e| {
                 // TODO: Check error. Determine what kind of error to return, this may be recoverable
@@ -384,7 +386,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         ))
                     })?,
                 };
+                dbg!(&block.coinbase_height());
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
+                dbg!(&chainblock.index());
                 info!(
                     "syncing block {} at height {}",
                     &chainblock.index().hash(),

@@ -592,6 +592,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
+        dbg!(&tip);
 
         Ok(BlockId {
             height: tip.0 .0 as u64,
@@ -780,6 +781,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
+        dbg!(&request);
         let mut start: u32 = match request.start {
             Some(block_id) => match block_id.height.try_into() {
                 Ok(height) => height,

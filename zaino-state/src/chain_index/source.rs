@@ -200,38 +200,52 @@ impl BlockchainSource for ValidatorConnector {
                 let GetTreestateResponse {
                     sapling, orchard, ..
                 } = tree_responses;
+                // Sapling
                 let sapling_frontier = sapling
                     .commitments()
                     .final_state()
-                    .as_ref()
-                    .map(hex::decode)
-                    .transpose()
-                    .map_err(|_e| {
-                        BlockchainSourceError::Unrecoverable(
-                            InvalidData(format!("could not interpret sapling tree of block {id}"))
-                                .to_string(),
-                        )
-                    })?
-                    .as_deref()
+                    .as_deref() // Option<&[u8]>
                     .map(read_commitment_tree::<zebra_chain::sapling::tree::Node, _, 32>)
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
+
+                // Orchard (same pattern)
                 let orchard_frontier = orchard
                     .commitments()
                     .final_state()
-                    .as_ref()
-                    .map(hex::decode)
-                    .transpose()
-                    .map_err(|_e| {
-                        BlockchainSourceError::Unrecoverable(
-                            InvalidData(format!("could not interpret orchard tree of block {id}"))
-                                .to_string(),
-                        )
-                    })?
                     .as_deref()
                     .map(read_commitment_tree::<zebra_chain::orchard::tree::Node, _, 32>)
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
+                // let sapling_frontier = dbg!(sapling.commitments().final_state().as_ref())
+                //     .map(hex::decode)
+                //     .transpose()
+                //     .map_err(|_e| {
+                //         BlockchainSourceError::Unrecoverable(
+                //             InvalidData(format!("could not interpret sapling tree of block {id}"))
+                //                 .to_string(),
+                //         )
+                //     })?
+                //     .as_deref()
+                //     .map(read_commitment_tree::<zebra_chain::sapling::tree::Node, _, 32>)
+                //     .transpose()
+                //     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
+                // let orchard_frontier = orchard
+                //     .commitments()
+                //     .final_state()
+                //     .as_ref()
+                //     .map(hex::decode)
+                //     .transpose()
+                //     .map_err(|_e| {
+                //         BlockchainSourceError::Unrecoverable(
+                //             InvalidData(format!("could not interpret orchard tree of block {id}"))
+                //                 .to_string(),
+                //         )
+                //     })?
+                //     .as_deref()
+                //     .map(read_commitment_tree::<zebra_chain::orchard::tree::Node, _, 32>)
+                //     .transpose()
+                //     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let sapling_root = sapling_frontier
                     .map(|tree| {
                         zebra_chain::sapling::tree::Root::try_from(*tree.root().as_ref())
