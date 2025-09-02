@@ -1623,7 +1623,8 @@ impl ResponseToError for GetMempoolInfoResponse {
 /// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/rpc/blockchain.cpp#L268 :
 ///  result.pushKV("chainwork", blockindex->nChainWork.GetHex());
 ///
-/// however, zcash-cli when backed by zebrad 2.5.0 does NOT return chainwork and DOES return blockcommitments:
+/// however, zcash-cli when backed by zebrad 2.5.0 does NOT return chainwork and DOES return blockcommitments
+/// (though my example with unsynced zebra was all 000s):
 /// getblockheader 000003f9071a74cd0a1f7dba0614cd3dbd38b8afa401849c41a624c6a7b919a3
 /// {
 ///   "hash": "000003f9071a74cd0a1f7dba0614cd3dbd38b8afa401849c41a624c6a7b919a3",
