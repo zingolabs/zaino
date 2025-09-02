@@ -1618,6 +1618,9 @@ impl ResponseToError for GetMempoolInfoResponse {
 /// this number does increment during chain sync with `getblockchaininfo`,
 ///  but is a set amount when using getblockheader <hash>
 /// therefore I think it is likely to be able to be found in the block, somehow.
+/// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/rpc/blockchain.cpp#L126
+/// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/rpc/blockchain.cpp#L268 :
+///  result.pushKV("chainwork", blockindex->nChainWork.GetHex());
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockHeaderResponse {
     // fields taken from zcashd source code pasted above
