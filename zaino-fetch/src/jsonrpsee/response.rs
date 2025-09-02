@@ -1578,11 +1578,11 @@ impl ResponseToError for GetMempoolInfoResponse {
 /// nonce.
 /// prev. block hash.
 /// --and these that do not:
-/// hash (same as RPC provided argument)
+/// hash (same as provided RPC argument)
 /// confirmations (confirmations but only on best-chain, else -1)
 /// height
 /// finalsaplingroot (The root of the Sapling commitment tree after applying this block): see comment on hashBlockCommitments below.
-/// difficulty (x.xxx)
+/// difficulty ("x.xxx" - floating point)
 /// next block hash
 /// --leaving these in the C++ code unreported in the online docs:
 /// nSolution
@@ -1590,6 +1590,29 @@ impl ResponseToError for GetMempoolInfoResponse {
 ///
 /// hashBlockCommitments = Merkle roots of transaction commitments, including transparent and shielded ones — into a single value that is effectively committed to by the block.
 /// maybe kind of hashsum for all tx in block.
+///
+/// A real return from zcashd 6.3.0 running on mainnet using `zcash-cli`
+/// getblockheader 000003f9071a74cd0a1f7dba0614cd3dbd38b8afa401849c41a624c6a7b919a3
+/// {
+///   "hash": "000003f9071a74cd0a1f7dba0614cd3dbd38b8afa401849c41a624c6a7b919a3",
+///   "confirmations": 1151,
+///   "height": 304,
+///   "version": 4,
+///   "merkleroot": "670da2a6b2b7bcfce573b21edf8432863f5bf33eb904b0450ae4023a38ef8f70",
+///   "finalsaplingroot": "0000000000000000000000000000000000000000000000000000000000000000",
+///   "time": 1477673429,
+///   "nonce": "0000cf5e461e3ed275a3dffecca8ace6c147bd6bcaa6692ad87d29f5aa1d0000",
+///   "solution": "00c886a0b5c5853129ec616a66f0686d1656f9e7e02efa3ff27814cea191134a213b5774629c8e7ae3491eab5bee00f5f5b7d726027974c0edd91de72ac07f2d795feea493070b8b46d6e223f15596f402f87ebe056d6934c7037beaef55219d9c3e770a90913f4cf3187cf606c68bc1e1fb0b030c846e63e90d6a8a74e11a12e32667985829267d61f61fa3c49cb6edbc841e2f54eeaa069fd135eee6e3a256bdc0915b2e9b5e92025954d35a89f2cf8ef1637161ddd719c8d3bb6cd14a014ce3f9345925edf705593c35a4530d553c6cb814eb940a0f874de5da31c2d566b10675a2ac7337981c921355aecbae62abee979458724485eeb850b2530365dc2ca08ac2f8a7ac13e33fd7f82a55fcd4d842175e649848869e250a70c630f5604492216cdb366a10e717201957153f21df41bc97be7538d9e2da1f33172b33b9ee8a6704f21b03c0c0a0da11040f690f6600dc0fec2bc0d55ddf54e5c4b673414d854411fba40f805d4ac4ac88cf99d7c2b017b194eba7bc9dfa4f0e8a0e267e6424534133e240194d9f254b32d9c7e51b3a838981e89779b58185bab0def9c2e50ab8f38e024f25adefaebd5b944e854a07d48a6201ce34cff5125aa09784a404e1b3be66a5916bf4adafe4560aa6260bde0d8a560b5f7e3f82a1616f39497b34924179482f8afcde1cf343160ba74182e645de969d15becb0701f7ef0a54070afd74c64c63d655e9f52b5432cf33295ce70b0e5c7935202539b87ede4b4ad89b56bd23e62476649ef9b10b2bd92baa63d62a57e7b5b472300ccb5e0bdf731fb9e0e8ca1fd919fe67001d0abc115d593476cb7424f1a283bced761c20f393493ef0376324f752a7eb6b871125e04378344d84e74cef562e4c45b098cf5c8f68f5c3d857affa5bbd591e78cd318d29f3af1afbc7788f23ae8164cf39ff04748ff600d525ff32084c14fd817b89cc79d7379cf3fdb2a00228a1b8bb2df2e7e277c357feba972566ba2cdc971329aba7132054b5168ee132b131633af3e079f1514115d719f163ab9d3b7db58a993db1f995d1f10f990195a396b612210d8e0bf15424af0a74bcc9cd367a0ee2df0d6f7f6419fe8ca1e86f7451f95bb3f3676526bfd1a802570aa8d85e177d013cca82fc3579244a39e0b425bc96f0ebdbe0b59a65428a4db0cdf8f05b04180d39fb2bc95bdacf3207362048b66d74f93f60079778e2ffaf6dcbb53c880abd4648c28e7857e06c0f89b10d63adc5a9bbace110ae71d6ce746a1dc5c31b219b2cfd19ed88fa69238e4ba4cae6787c749e85046d8d3a04387d65e927c25dd5160b29774b96d8bd25d542221e0c8fdb38f062a3913abc8165e1eb96c405be5d2d4594ab2bcbe6725af82fe3f9f8adbd3f5d5caf33d5939e19ef2a0526f8ccb9c8fe1cfb5652a404f8f04682ce5a4334af2bef30f247978702dc38ae206db5c783e76d53bb85343bd925315d81382e18f11d5479b5254d818b6bf8f6c68fb9879a9b63fcbfb042711b4c372a8e23fd62d87cfee662fa51f0dce80d0ddc91503fdb029334c1b66929d5525a84f534700c38c00e14aad4949f687687aff2feab223712b6f002153967f0281ae9f5a40ce2b55b458b6aac65fd88702c70f4b070b01bc996d2b43a09d4a6466a7234cba405387387e25c4027e9aa409868d2ed627b429e70ff06020198ea5c5bcd61a8010784d49314f60d9fac24086c8c8b6824cdc7e433b9121cffc7fe80ac1d82331491de5cab0f8178ef76140ddaba6fc98a35b5bcaf0c8bfdab520fb807ea6377b1f8edfada6163f95e7714a078e1fe4d11d8e922c17cfa5bd219ecbc392e131bb4158b6c2a0ff16bb462fdf3f576116bc8f335f939d2ae0ca4ad72d39e4c5a93a97920db264f7e67fd",
+///   "bits": "1e085354",
+///   "difficulty": 245.990748139731,
+///   "chainwork": "0000000000000000000000000000000000000000000000000000000006659ef3",
+///   "previousblockhash": "000001b5ad3057566497fa4cf1ad5519fa6a39acb0cd249aa23ca7d3b2ebd8f5",
+///   "nextblockhash": "0000064be84052d3a4cda52592db6a61cd4cb127e34cd42404bba18d870b1aaa"
+/// }
+///
+/// this includes all the fields in the online RPC docs, as well as:
+/// solution (visble to me in C++ code)
+/// chainwork (not seen yet)
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockHeaderResponse {
     // fields taken from zcashd source code pasted above
