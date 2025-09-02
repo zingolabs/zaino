@@ -1520,40 +1520,91 @@ impl ResponseToError for GetMempoolInfoResponse {
 }
 
 /// The Zcash source code is considered canonical:
+///
+/// block.cpp and block.h define the core data structures for blocks and their serialization, validation, and header logic
+/// within `class CBlockHeader` the first two lines are enums and do not represent fields:
+/// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L30
+/// The HEADER_SIZE enum defines the constant byte size of a block header,
+/// while CURRENT_VERSION specifies the default version number used for newly created blocks.
+/// The fields begin on this line:
+/// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L32
+///   int32_t nVersion;
+///   uint256 hashPrevBlock;
+///   uint256 hashMerkleRoot;
+///   uint256 hashBlockCommitments;
+///   uint32_t nTime;
+///   uint32_t nBits;
+///   uint256 nNonce;
+///   std::vector<unsigned char> nSolution;
+///
+/// SetNull() is used to clear field values:
+/// https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L60
+/// Cblock represents a full block, and inherits from CBlockHeader:
+/// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121>
+///
+/// chain.cpp and .h represent the state of the blockchain: structure, indexing, and chain selection
 /// The function does not modify the state of the object: it is called on `const`,
 /// with a return type defined as CBlockHeader in chain.h file:
 /// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.h#L449>
-///
+/// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.h#L643>
+/// CBlockHeader GetBlockHeader() const
+///    {
+///        CBlockHeader header;
+///        header.nVersion             = nVersion;
+///        header.hashPrevBlock        = hashPrev;
+///        header.hashMerkleRoot       = hashMerkleRoot;
+///        header.hashBlockCommitments = hashBlockCommitments;
+///        header.nTime                = nTime;
+///        header.nBits                = nBits;
+///        header.nNonce               = nNonce;
+///        header.nSolution            = nSolution;
+///        return header;
+///    }
+/// matching what's above.
 /// see also
-/// <https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/primitives/block.h#L121>
-/// GetBlochHeader() seems to take arg of CBlockHeader (hash of block) and has a return with these fields,
-/// including a field of the same data used as argument:
-/// {
-// TODO: this is different than the online docs, we should drill into zcashd
-// maybe setting some default fields when creating the block I don't see here?
-///     CBlockHeader block;
-///     block.nVersion       = nVersion;
-///     block.hashPrevBlock  = hashPrevBlock;
-///     block.hashMerkleRoot = hashMerkleRoot;
-///     block.hashBlockCommitments = hashBlockCommitments;
-///     block.nTime          = nTime;
-///     block.nBits          = nBits;
-///     block.nNonce         = nNonce;
-///     block.nSolution      = nSolution;
-///     return block;
-/// }
 /// [chain.cpp link](https://github.com/zcash/zcash/blob/b65b008a7b334a2f7c2eaae1b028e011f2e21dd1/src/chain.cpp#L82)
+///
+// TODO: compare Chain.cpp, Block.cpp and the online RPC docs.
+/// https://zcash.github.io/rpc/getblockheader.html <verbose=true>:
+/// --has these return fields documented that overlap with the C++ code:
+/// version.
+/// merkleroot.
+/// time.
+/// bits.
+/// nonce.
+/// prev. block hash.
+/// --and these that do not:
+/// hash (same as RPC provided argument)
+/// confirmations (confirmations but only on best-chain, else -1)
+/// height
+/// finalsaplingroot (The root of the Sapling commitment tree after applying this block): see comment on hashBlockCommitments below.
+/// difficulty (x.xxx)
+/// next block hash
+/// --leaving these in the C++ code unreported in the online docs:
+/// nSolution
+/// hashBlockCommitments (thought to be an aggregate including the merkleroot, and finalsapling root )
+///
+/// hashBlockCommitments = Merkle roots of transaction commitments, including transparent and shielded ones — into a single value that is effectively committed to by the block.
+/// maybe kind of hashsum for all tx in block.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockHeaderResponse {
     // fields taken from zcashd source code pasted above
-    version: (),
-    hash_previous_block: (),
-    hash_merkle_root: (),
-    hash_block_commitments: (),
-    time: (),
-    bits: (),
-    nonce: (),
-    solution: (),
+    version: (),                //number
+    hash_previous_block: (),    //hash
+    hash_merkle_root: (),       //hash
+    hash_block_commitments: (), //hash
+    time: (),                   //number
+    bits: (),                   //number
+    nonce: (),                  //number
+    solution: (),               //vec<bytes> (char in C++ often represents bytes, and nSolution appears to mean 'number used once' or a misapplied convention.)
+///   int32_t nVersion;
+///   uint256 hashPrevBlock;
+///   uint256 hashMerkleRoot;
+///   uint256 hashBlockCommitments;
+///   uint32_t nTime;
+///   uint32_t nBits;
+///   uint256 nNonce;
+///   std::vector<unsigned char> nSolution;
 }
 
 impl ResponseToError for GetBlockHeaderResponse {

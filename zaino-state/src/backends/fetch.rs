@@ -231,14 +231,17 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// method: post
     /// tags: blockchain
     // TODO params are only demos
+    /*
     async fn get_block_header_static(
-        _,
-        _,
+        _: _,
+        _: _,
         _hash_or_height_demo: HashOrHeight,
         _verbose: Option<bool>,
     ) -> Result<GetBlockHeaderResponse, Self::Error> {
-        Ok(self.fetcher.get_block_header().await?)
+        unreachable!("so far");
+        //Ok(self.fetcher.get_block_header().await?)
     }
+    */
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
