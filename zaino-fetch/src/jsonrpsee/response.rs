@@ -1589,22 +1589,14 @@ impl ResponseToError for GetMempoolInfoResponse {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockHeaderResponse {
     // fields taken from zcashd source code pasted above
-    version: (),                //number
-    hash_previous_block: (),    //hash
-    hash_merkle_root: (),       //hash
-    hash_block_commitments: (), //hash
-    time: (),                   //number
-    bits: (),                   //number
-    nonce: (),                  //number
-    solution: (),               //vec<bytes> (char in C++ often represents bytes, and nSolution appears to mean 'number used once' or a misapplied convention.)
-///   int32_t nVersion;
-///   uint256 hashPrevBlock;
-///   uint256 hashMerkleRoot;
-///   uint256 hashBlockCommitments;
-///   uint32_t nTime;
-///   uint32_t nBits;
-///   uint256 nNonce;
-///   std::vector<unsigned char> nSolution;
+    version: (),                // int32_t number
+    hash_previous_block: (),    // uint256 hash
+    hash_merkle_root: (),       // uint256 hash
+    hash_block_commitments: (), // uint256 hash
+    time: (),                   // uint32_t number
+    bits: (),                   // uint32_t number
+    nonce: (),                  // uint256 number
+    solution: (), // vec<unsigned char> (char in C++ often represents raw bytes, and nSolution appears to mean 'number used once' or a misapplied convention.)
 }
 
 impl ResponseToError for GetBlockHeaderResponse {
