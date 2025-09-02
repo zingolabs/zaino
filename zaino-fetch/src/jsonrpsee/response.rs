@@ -3,6 +3,10 @@
 //! These types are redefined rather than imported from zebra_rpc
 //! to prevent locking consumers into a zebra_rpc version
 
+// TODO: rust does not have a u256 in its standard library.
+// try ethnum::U256::from_le_bytes or similar
+// or check zebra types
+
 use std::{convert::Infallible, num::ParseIntError};
 
 use hex::FromHex;
