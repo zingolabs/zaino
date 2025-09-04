@@ -7065,7 +7065,7 @@ dependencies = [
 [[package]]
 name = "zingo-infra-services"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=7509a6d26c6424b2e22585fabd0bb974bff6bf55#7509a6d26c6424b2e22585fabd0bb974bff6bf55"
+source = "git+https://github.com/zingolabs/infrastructure.git?tag=pin_number_one#7509a6d26c6424b2e22585fabd0bb974bff6bf55"
 dependencies = [
  "getset",
  "hex",
@@ -7089,7 +7089,7 @@ dependencies = [
 [[package]]
 name = "zingo-infra-testutils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=7509a6d26c6424b2e22585fabd0bb974bff6bf55#7509a6d26c6424b2e22585fabd0bb974bff6bf55"
+source = "git+https://github.com/zingolabs/infrastructure.git?tag=pin_number_one#7509a6d26c6424b2e22585fabd0bb974bff6bf55"
 dependencies = [
  "http",
  "portpicker",
