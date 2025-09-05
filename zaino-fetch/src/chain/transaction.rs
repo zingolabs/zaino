@@ -1232,8 +1232,6 @@ mod tests {
                 "Transparent outputs mismatch for v1 transaction #{i}"
             );
         }
-
-        println!("Successfully parsed {} v1 test vectors", v1_vectors.len());
     }
 
     /// Test parsing v2 transactions using test vectors.
@@ -1286,8 +1284,6 @@ mod tests {
                 "Transparent outputs mismatch for v2 transaction #{i}"
             );
         }
-
-        println!("Successfully parsed {} v2 test vectors", v2_vectors.len());
     }
 
     /// Test parsing v3 transactions using test vectors.
@@ -1340,8 +1336,6 @@ mod tests {
                 "Transparent outputs mismatch for v3 transaction #{i}"
             );
         }
-
-        println!("Successfully parsed {} v3 test vectors", v3_vectors.len());
     }
 
     /// Test parsing v4 transactions using test vectors.
@@ -1394,7 +1388,5 @@ mod tests {
                 "Transparent outputs mismatch for v4 transaction #{i}"
             );
         }
-
-        println!("Successfully parsed {} v4 test vectors", v4_vectors.len());
     }
 }

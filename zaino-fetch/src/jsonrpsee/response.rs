@@ -1049,8 +1049,6 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
 
         let tx_value = serde_json::Value::deserialize(deserializer)?;
 
-        println!("got txvalue");
-
         if let Some(hex_value) = tx_value.get("hex") {
             let hex_str = hex_value
                 .as_str()
@@ -1121,8 +1119,6 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 let block_hash: String = tx_value["blockhash"];
                 let block_time: i64 = tx_value["blocktime"];
             }
-
-            println!("got fields");
 
             let txid = txid.ok_or(DeserError::missing_field("txid"))?;
 
