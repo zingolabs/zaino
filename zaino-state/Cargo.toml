@@ -71,9 +71,6 @@ tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }
 
-# ZingoLib
-zingolib = { workspace = true }
-
 [build-dependencies]
 whoami = { workspace = true }
 cargo-lock = "10.1.0"
