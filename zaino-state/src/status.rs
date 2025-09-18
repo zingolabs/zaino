@@ -34,7 +34,12 @@ impl AtomicStatus {
 
     /// Loads the value held in the AtomicStatus
     pub fn load(&self) -> usize {
-        self.counter.load(Ordering::SeqCst)
+        self.counter().load(Ordering::SeqCst)
+    }
+
+    /// Getter for the counter field
+    pub fn counter(&self) -> &Arc<AtomicUsize> {
+        &self.counter
     }
 
     /// Sets the value held in the AtomicStatus
