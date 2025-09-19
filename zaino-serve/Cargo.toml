@@ -18,7 +18,6 @@ zaino-state = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
-zebra-state = { workspace = true }
 zebra-rpc = { workspace = true }
 
 # Tracing
@@ -27,16 +26,8 @@ tracing = { workspace = true }
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true, features = ["tls"] }
-http = { workspace = true }
 thiserror = { workspace = true }
-
-# Miscellaneous Crate
-prost = { workspace = true }
-hex = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
-async-stream = { workspace = true }
-crossbeam-channel = { workspace = true }
-lazy-regex = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server", "macros"] }
 tower = { workspace = true }
 

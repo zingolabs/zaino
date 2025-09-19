@@ -973,16 +973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctrlc"
-version = "3.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46f93780a459b7d656ef7f071fe699c4d3d2cb201c4b24d085b6ddc505276e73"
-dependencies = [
- "nix 0.30.1",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "curve25519-dalek"
 version = "4.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2206,23 +2196,18 @@ dependencies = [
  "anyhow",
  "core2 0.4.0",
  "futures",
- "hex",
  "prost",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing-subscriber",
- "url",
  "zaino-common",
  "zaino-fetch",
  "zaino-proto",
  "zaino-state",
  "zaino-testutils",
- "zcash_primitives 0.24.0",
  "zebra-chain 2.0.0",
  "zebra-rpc 2.0.1",
  "zebra-state 2.0.0",
- "zingolib",
 ]
 
 [[package]]
@@ -2427,29 +2412,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c644f4623d1c55eb60a9dac35e0858a59f982fb87db6ce34c872372b0a5b728f"
 dependencies = [
  "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "lazy-regex"
-version = "3.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60c7310b93682b36b98fa7ea4de998d3463ccbebd94d935d6b48ba5b6ffa7126"
-dependencies = [
- "lazy-regex-proc_macros",
- "once_cell",
- "regex",
-]
-
-[[package]]
-name = "lazy-regex-proc_macros"
-version = "3.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba01db5ef81e17eb10a5e0f2109d1b3a3e29bac3070fdbd7d156bf7dbd206a1"
-dependencies = [
- "proc-macro2",
- "quote",
- "regex",
- "syn 2.0.106",
 ]
 
 [[package]]
@@ -2754,18 +2716,6 @@ name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
-dependencies = [
- "bitflags 2.9.4",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
-
-[[package]]
-name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
  "bitflags 2.9.4",
  "cfg-if",
@@ -5973,7 +5923,6 @@ name = "zaino-common"
 version = "0.1.2"
 dependencies = [
  "serde",
- "thiserror 1.0.69",
  "zebra-chain 2.0.0",
  "zingo-infra-services",
 ]
@@ -6001,10 +5950,8 @@ dependencies = [
  "url",
  "zaino-proto",
  "zaino-testvectors",
- "zcash_protocol 0.6.1",
  "zebra-chain 2.0.0",
  "zebra-rpc 2.0.1",
- "zebra-state 2.0.0",
 ]
 
 [[package]]
@@ -6021,14 +5968,8 @@ dependencies = [
 name = "zaino-serve"
 version = "0.1.2"
 dependencies = [
- "async-stream",
- "crossbeam-channel",
  "futures",
- "hex",
- "http",
  "jsonrpsee",
- "lazy-regex",
- "prost",
  "thiserror 1.0.69",
  "tokio",
  "tonic",
@@ -6040,7 +5981,6 @@ dependencies = [
  "zaino-state",
  "zebra-chain 2.0.0",
  "zebra-rpc 2.0.1",
- "zebra-state 2.0.0",
 ]
 
 [[package]]
@@ -6051,19 +5991,13 @@ dependencies = [
  "async-trait",
  "bitflags 2.9.4",
  "blake2",
- "bs58",
- "byteorder",
  "cargo-lock",
  "chrono",
  "core2 0.4.0",
  "dashmap",
- "derive_more",
  "futures",
  "hex",
- "http",
  "indexmap 2.11.0",
- "jsonrpsee-core",
- "lazy-regex",
  "lmdb",
  "lmdb-sys",
  "nonempty",
@@ -6082,7 +6016,6 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "tracing-subscriber",
- "url",
  "whoami",
  "zaino-common",
  "zaino-fetch",
@@ -6102,26 +6035,19 @@ dependencies = [
 name = "zaino-testutils"
 version = "0.1.2"
 dependencies = [
- "ctrlc",
  "http",
- "lazy_static",
  "once_cell",
  "portpicker",
- "proptest",
  "tempfile",
  "testvectors",
  "tokio",
  "tonic",
- "tracing",
- "tracing-futures",
  "tracing-subscriber",
  "zaino-common",
  "zaino-state",
  "zaino-testvectors",
- "zainod",
  "zcash_client_backend",
- "zcash_protocol 0.5.4",
- "zebra-chain 2.0.0",
+ "zcash_protocol 0.6.1",
  "zingo-infra-services",
  "zingo-netutils",
  "zingolib",
@@ -6139,7 +6065,6 @@ name = "zainod"
 version = "0.1.2"
 dependencies = [
  "clap",
- "ctrlc",
  "figment",
  "http",
  "serde",
@@ -6147,7 +6072,6 @@ dependencies = [
  "tokio",
  "toml 0.5.11",
  "tracing",
- "tracing-futures",
  "tracing-subscriber",
  "zaino-common",
  "zaino-fetch",
@@ -6869,7 +6793,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-proc-macros",
  "jsonrpsee-types",
- "nix 0.29.0",
+ "nix",
  "rand 0.8.5",
  "semver",
  "serde",
@@ -6907,7 +6831,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-proc-macros",
  "jsonrpsee-types",
- "nix 0.29.0",
+ "nix",
  "prost",
  "rand 0.8.5",
  "semver",

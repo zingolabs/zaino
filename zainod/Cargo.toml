@@ -21,7 +21,7 @@ path = "src/lib.rs"
 no_tls_use_unencrypted_traffic = []
 
 [dependencies]
-zaino-common = { path = "../zaino-common" }
+zaino-common = { workspace = true }
 zaino-fetch = { workspace = true }
 zaino-state = { workspace = true }
 zaino-serve = { workspace = true }
@@ -39,7 +39,6 @@ clap = { workspace = true, features = ["derive"] }
 # Tracing
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time"] }
-tracing-futures = { workspace = true }
 
 # Network / RPC
 http = { workspace = true }
@@ -47,7 +46,6 @@ serde = { workspace = true, features = ["derive"] }
 
 # Utility
 thiserror = { workspace = true }
-ctrlc = { workspace = true }
 
 # Formats
 toml = { workspace = true }
