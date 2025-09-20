@@ -136,35 +136,21 @@ mod mockchain_tests {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-        for (expected_transaction, height) in blocks.into_iter().flat_map(|block| {
-            block
-                .3
-                .transactions
-                .into_iter()
-                .map(move |transaction| (transaction, block.0))
-        }) {
-            let (transaction, branch_id) = index_reader
+        for expected_transaction in blocks
+            .into_iter()
+            .flat_map(|block| block.3.transactions.into_iter())
+        {
+            let zaino_transaction = index_reader
                 .get_raw_transaction(
                     &nonfinalized_snapshot,
                     &TransactionHash::from(expected_transaction.hash()),
                 )
                 .await
                 .unwrap()
-                .unwrap();
-            let zaino_transaction = transaction
+                .unwrap()
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap();
-            assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
-            assert_eq!(
-                branch_id,
-                if height == 0 {
-                    None
-                } else {
-                    zebra_chain::parameters::NetworkUpgrade::Nu6
-                        .branch_id()
-                        .map(u32::from)
-                }
-            );
+            assert_eq!(expected_transaction.as_ref(), &zaino_transaction)
         }
     }
 
@@ -249,24 +235,17 @@ mod mockchain_tests {
 
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
         for expected_transaction in mempool_transactions.into_iter() {
-            let (transaction, branch_id) = index_reader
+            let zaino_transaction = index_reader
                 .get_raw_transaction(
                     &nonfinalized_snapshot,
                     &TransactionHash::from(expected_transaction.hash()),
                 )
                 .await
                 .unwrap()
-                .unwrap();
-            let zaino_transaction = transaction
+                .unwrap()
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap();
-            assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
-            assert_eq!(
-                branch_id,
-                zebra_chain::parameters::NetworkUpgrade::Nu6
-                    .branch_id()
-                    .map(u32::from)
-            );
+            assert_eq!(expected_transaction.as_ref(), &zaino_transaction)
         }
     }
 

@@ -23,8 +23,7 @@ use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tracing::info;
-use types::ChainBlock;
-use zebra_chain::parameters::ConsensusBranchId;
+use types::IndexedBlock;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_state::HashOrHeight;
@@ -195,14 +194,12 @@ pub trait ChainIndex {
         block_hash: &types::BlockHash,
     ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error>;
 
-    /// given a transaction id, returns the transaction, along with
-    /// its consensus branch ID if available
-    #[allow(clippy::type_complexity)]
+    /// given a transaction id, returns the transaction
     fn get_raw_transaction(
         &self,
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
-    ) -> impl std::future::Future<Output = Result<Option<(Vec<u8>, Option<u32>)>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<Vec<u8>>, Self::Error>>;
 
     /// Given a transaction ID, returns all known hashes and heights of blocks
     /// containing that transaction. Height is None for blocks not on the best chain.
@@ -665,11 +662,12 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
+    /// given a transaction id, returns the transaction
     async fn get_raw_transaction(
         &self,
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
-    ) -> Result<Option<(Vec<u8>, Option<u32>)>, Self::Error> {
+    ) -> Result<Option<Vec<u8>>, Self::Error> {
         if let Some(mempool_tx) = self
             .mempool
             .get_transaction(&mempool::MempoolKey {
@@ -677,21 +675,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             })
             .await
         {
-            let bytes = mempool_tx.0.as_ref().as_ref().to_vec();
-            let mempool_height = snapshot
-                .blocks
-                .iter()
-                .find(|(hash, _block)| **hash == self.mempool.mempool_chain_tip())
-                .and_then(|(_hash, block)| block.height());
-            let mempool_branch_id = mempool_height.and_then(|height| {
-                ConsensusBranchId::current(
-                    &self.non_finalized_state.network,
-                    zebra_chain::block::Height::from(height + 1),
-                )
-                .map(u32::from)
-            });
-
-            return Ok(Some((bytes, mempool_branch_id)));
+            let bytes = mempool_tx.serialized_tx.as_ref().as_ref().to_vec();
+            return Ok(Some(bytes));
         }
 
         let Some(block) = self
@@ -716,11 +701,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .await
             .map_err(ChainIndexError::backing_validator)?
             .ok_or_else(|| ChainIndexError::database_hole(block.index().hash()))?;
-        let block_consensus_branch_id = full_block.coinbase_height().and_then(|height| {
-            ConsensusBranchId::current(&self.non_finalized_state.network, dbg!(height))
-                .map(u32::from)
-        });
-        dbg!(block_consensus_branch_id);
         full_block
             .transactions
             .iter()
@@ -731,7 +711,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .map(ZcashSerialize::zcash_serialize_to_vec)
             .ok_or_else(|| ChainIndexError::database_hole(block.index().hash()))?
             .map_err(ChainIndexError::backing_validator)
-            .map(|transaction| (transaction, block_consensus_branch_id))
             .map(Some)
     }
 

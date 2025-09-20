@@ -267,13 +267,12 @@ mod chain_query_interface {
         test_manager.generate_blocks_with_delay(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 7);
-        for (txid, height) in snapshot.blocks.values().flat_map(|block| {
-            block
-                .transactions()
-                .iter()
-                .map(|txdata| (txdata.txid().0, block.height()))
-        }) {
-            let (raw_transaction, branch_id) = indexer
+        for txid in snapshot
+            .blocks
+            .values()
+            .flat_map(|block| block.transactions().iter().map(|txdata| txdata.txid().0))
+        {
+            let raw_transaction = indexer
                 .get_raw_transaction(&snapshot, &TransactionHash(txid))
                 .await
                 .unwrap()
@@ -281,17 +280,6 @@ mod chain_query_interface {
             let zebra_txn =
                 zebra_chain::transaction::Transaction::zcash_deserialize(&raw_transaction[..])
                     .unwrap();
-
-            assert_eq!(
-                branch_id,
-                if height == Some(chain_index::types::GENESIS_HEIGHT) {
-                    None
-                } else {
-                    zebra_chain::parameters::NetworkUpgrade::Nu6
-                        .branch_id()
-                        .map(u32::from)
-                }
-            );
 
             let correct_txid = zebra_txn.hash().0;
 

@@ -27,7 +27,7 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
     /// without interfering with readers, who will hold a stale copy
     current: ArcSwap<NonfinalizedBlockCacheSnapshot>,
     /// Used mostly to determine activation heights
-    pub(crate) network: Network,
+    network: Network,
     /// Listener used to detect non-best-chain blocks, if available
     #[allow(clippy::type_complexity)]
     nfs_change_listener: Option<
