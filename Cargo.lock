@@ -6043,7 +6043,6 @@ dependencies = [
  "portpicker",
  "proptest",
  "tempfile",
- "testvectors",
  "tokio",
  "tonic",
  "tracing-subscriber",
@@ -6056,6 +6055,7 @@ dependencies = [
  "zebra-chain 2.0.0",
  "zingo-infra-services",
  "zingo-netutils",
+ "zingo-testvectors",
  "zingolib",
 ]
 
@@ -7111,6 +7111,14 @@ source = "git+https://github.com/zingolabs/zingolib.git?tag=2.0.0-beta2#2edd282d
 dependencies = [
  "byteorder",
  "zcash_primitives 0.22.1",
+]
+
+[[package]]
+name = "zingo-testvectors"
+version = "0.0.1"
+source = "git+https://github.com/zingolabs/zingolib.git?tag=2.0.7#fd632c4fcbbe612434166692907ff63ce2556261"
+dependencies = [
+ "bip0039",
 ]
 
 [[package]]

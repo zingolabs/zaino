@@ -25,7 +25,7 @@ zingo-infra-services = { workspace = true }
 
 # ZingoLib
 zingolib = { workspace = true }
-testvectors = { workspace = true }
+zingo-testvectors = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
     "fmt",
     "env-filter",
