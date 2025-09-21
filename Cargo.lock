@@ -6023,6 +6023,7 @@ dependencies = [
  "zaino-common",
  "zaino-fetch",
  "zaino-proto",
+ "zaino-state",
  "zcash_address 0.9.0",
  "zcash_keys 0.10.1",
  "zcash_primitives 0.24.0",
