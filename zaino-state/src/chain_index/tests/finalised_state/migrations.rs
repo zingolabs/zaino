@@ -12,6 +12,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::{BlockCacheConfig, ChainWork, IndexedBlock};
 
+use zebra_chain::parameters::{self, testnet};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v0_to_v1_full() {
     init_tracing();
@@ -30,7 +31,19 @@ async fn v0_to_v1_full() {
             ..Default::default()
         },
         db_version: 0,
-        network: Network::Regtest(ActivationHeights::default()),
+
+        network: parameters::Network::new_regtest(testnet::ConfiguredActivationHeights {
+            before_overwinter: Some(1u32),
+            overwinter: Some(1u32),
+            sapling: Some(1u32),
+            blossom: Some(1u32),
+            heartwood: Some(1u32),
+            canopy: Some(1u32),
+            nu5: Some(1u32),
+            nu6: Some(1u32),
+            nu6_1: Some(1u32),
+            nu7: Some(1u32),
+        }),
 
         no_sync: false,
         no_db: false,
