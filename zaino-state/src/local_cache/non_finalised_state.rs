@@ -79,7 +79,6 @@ impl NonFinalisedState {
             non_finalised_state
                 .config
                 .network
-                
                 .sapling_activation_height()
                 .0,
         )..=chain_height
@@ -282,13 +281,9 @@ impl NonFinalisedState {
             .map_err(|e| NonFinalisedStateError::Custom(e.to_string()))?
             .blocks
             .0;
-        for block_height in ((reorg_height.0 + 1).max(
-            self.config
-                .network
-                
-                .sapling_activation_height()
-                .0,
-        ))..=validator_height
+        for block_height in ((reorg_height.0 + 1)
+            .max(self.config.network.sapling_activation_height().0))
+            ..=validator_height
         {
             // Either pop the reorged block or pop the oldest block in non-finalised state.
             // If we pop the oldest (valid) block we send it to the finalised state to be saved to disk.
@@ -369,10 +364,7 @@ impl NonFinalisedState {
     /// Waits for server to sync with p2p network.
     pub async fn wait_on_server(&self) -> Result<(), NonFinalisedStateError> {
         // If no_db is active wait for server to sync with p2p network.
-        if self.config.no_db
-            && !self.config.network.is_regtest()
-            && !self.config.no_sync
-        {
+        if self.config.no_db && !self.config.network.is_regtest() && !self.config.no_sync {
             self.status.store(StatusType::Syncing);
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {
