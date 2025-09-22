@@ -20,6 +20,7 @@ use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
 use zcash_protocol::consensus::NetworkType;
+use zebra_chain::parameters::NetworkKind;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
 use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
@@ -224,7 +225,7 @@ impl zingo_infra_services::validator::Validator for LocalNet {
         }
     }
 
-    fn network(&self) -> Network {
+    fn network(&self) -> NetworkKind {
         match self {
             LocalNet::Zcashd(net) => net.validator().network(),
             LocalNet::Zebrad(net) => *net.validator().network(),
@@ -243,7 +244,7 @@ impl zingo_infra_services::validator::Validator for LocalNet {
     fn load_chain(
         chain_cache: PathBuf,
         validator_data_dir: PathBuf,
-        validator_network: Network,
+        validator_network: NetworkKind,
     ) -> PathBuf {
         if chain_cache.to_string_lossy().contains("zcashd") {
             zingo_infra_services::validator::Zcashd::load_chain(
