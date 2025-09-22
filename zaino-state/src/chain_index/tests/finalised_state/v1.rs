@@ -7,7 +7,6 @@ use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_rpc::methods::GetAddressUtxos;
 
-use crate::bench::BlockCacheConfig;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::test::MockchainSource;
@@ -15,7 +14,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::chain_index::types::TransactionHash;
 use crate::error::FinalisedStateError;
-use crate::{AddrScript, ChainWork, Height, IndexedBlock, Outpoint};
+use crate::{AddrScript, BlockCacheConfig, ChainWork, Height, IndexedBlock, Outpoint};
 use zebra_chain::parameters::{self, testnet};
 
 pub(crate) async fn spawn_v1_zaino_db(

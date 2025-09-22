@@ -27,7 +27,6 @@ mod mockchain_tests {
     use zebra_chain::serialization::ZcashDeserializeInto;
 
     use crate::{
-        bench::BlockCacheConfig,
         chain_index::{
             source::test::MockchainSource,
             tests::vectors::{
@@ -36,7 +35,7 @@ mod mockchain_tests {
             types::{BestChainLocation, TransactionHash},
             ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
         },
-        IndexedBlock,
+        BlockCacheConfig, IndexedBlock,
     };
 
     async fn load_test_vectors_and_sync_chain_index(
