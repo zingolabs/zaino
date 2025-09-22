@@ -967,14 +967,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             (height + 1).expect("valid chain tips are a lot less than Height::MAX");
         let consensus = TipConsensusBranch::from_parts(
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network.clone().into(), height)
+                NetworkUpgrade::current(&self.config.network.clone(), height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
             )
             .inner(),
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network.clone().into(), next_block_height)
+                NetworkUpgrade::current(&self.config.network.clone(), next_block_height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
@@ -1119,33 +1119,32 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        let sapling =
-            match NetworkUpgrade::Sapling.activation_height(&self.config.network.clone().into()) {
-                Some(activation_height) if height >= activation_height => Some(
-                    state
-                        .ready()
-                        .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
-                        .await?,
-                ),
-                _ => None,
-            }
-            .and_then(|sap_response| {
-                expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
-            });
+        let sapling = match NetworkUpgrade::Sapling.activation_height(&self.config.network.clone())
+        {
+            Some(activation_height) if height >= activation_height => Some(
+                state
+                    .ready()
+                    .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
+                    .await?,
+            ),
+            _ => None,
+        }
+        .and_then(|sap_response| {
+            expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
+        });
 
-        let orchard =
-            match NetworkUpgrade::Nu5.activation_height(&self.config.network.clone().into()) {
-                Some(activation_height) if height >= activation_height => Some(
-                    state
-                        .ready()
-                        .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
-                        .await?,
-                ),
-                _ => None,
-            }
-            .and_then(|orch_response| {
-                expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
-            });
+        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network.clone()) {
+            Some(activation_height) if height >= activation_height => Some(
+                state
+                    .ready()
+                    .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
+                    .await?,
+            ),
+            _ => None,
+        }
+        .and_then(|orch_response| {
+            expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
+        });
 
         Ok(GetTreestateResponse::from_parts(
             hash,
@@ -1339,13 +1338,13 @@ impl ZcashIndexer for StateServiceSubscriber {
                                 Ok(GetRawTransaction::Object(Box::new(
                                     TransactionObject::from_transaction(
                                         parsed_tx.into(),
-                                        None,                                // best_chain_height
-                                        Some(0),                             // confirmations
-                                        &self.config.network.clone().into(), // network
-                                        None,                                // block_time
-                                        None,                                // block_hash
-                                        Some(false),                         // in_best_chain
-                                        txid,                                // txid
+                                        None,                         // best_chain_height
+                                        Some(0),                      // confirmations
+                                        &self.config.network.clone(), // network
+                                        None,                         // block_time
+                                        None,                         // block_hash
+                                        Some(false),                  // in_best_chain
+                                        txid,                         // txid
                                     ),
                                 )))
                             }
@@ -1375,7 +1374,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                                     tx.tx.clone(),
                                     best_chain_height,
                                     Some(tx.confirmations),
-                                    &self.config.network.clone().into(),
+                                    &self.config.network.clone(),
                                     Some(tx.block_time),
                                     Some(zebra_chain::block::Hash::from_bytes(
                                         self.block_cache
