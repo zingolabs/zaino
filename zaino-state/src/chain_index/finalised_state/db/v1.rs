@@ -462,7 +462,7 @@ impl DbV1 {
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.to_zebra_network().kind() {
+        let db_path_dir = match config.network.to_zebra_default().kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",

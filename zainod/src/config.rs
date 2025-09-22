@@ -215,7 +215,7 @@ impl IndexerConfig {
 
     /// Returns the network type currently being used by the server.
     pub fn get_network(&self) -> Result<zebra_chain::parameters::Network, IndexerError> {
-        Ok(self.network.to_zebra_network())
+        Ok(self.network.to_zebra_default())
     }
 
     /// Finalizes the configuration after initial parsing, applying conditional defaults.

@@ -155,11 +155,6 @@ impl Network {
         self.into()
     }
 
-    /// Convert to Zebra's network type for internal use (alias for to_zebra_default).
-    pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
-        self.to_zebra_default()
-    }
-
     /// Get the standard regtest activation heights used by Zaino.
     pub fn zaino_regtest_heights() -> zebra_chain::parameters::testnet::ConfiguredActivationHeights
     {
