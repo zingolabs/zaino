@@ -19,7 +19,7 @@ use tracing_subscriber::EnvFilter;
 use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
-use zcash_protocol::consensus::NetworkType as Network;
+use zcash_protocol::consensus::NetworkType;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
 use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
@@ -249,13 +249,13 @@ impl zingo_infra_services::validator::Validator for LocalNet {
             zingo_infra_services::validator::Zcashd::load_chain(
                 chain_cache,
                 validator_data_dir,
-                validator_network,
+                validator_network.into(),
             )
         } else if chain_cache.to_string_lossy().contains("zebrad") {
             zingo_infra_services::validator::Zebrad::load_chain(
                 chain_cache,
                 validator_data_dir,
-                validator_network,
+                validator_network.into(),
             )
         } else {
             panic!(
