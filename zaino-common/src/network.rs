@@ -184,28 +184,6 @@ impl Network {
     }
 }
 
-impl From<Network> for zingo_infra_services::network::Network {
-    fn from(val: Network) -> Self {
-        match val {
-            Network::Mainnet => zingo_infra_services::network::Network::Mainnet,
-            Network::Regtest(_) => zingo_infra_services::network::Network::Regtest,
-            Network::Testnet => zingo_infra_services::network::Network::Testnet,
-        }
-    }
-}
-
-impl From<zingo_infra_services::network::Network> for Network {
-    fn from(value: zingo_infra_services::network::Network) -> Self {
-        match value {
-            zingo_infra_services::network::Network::Regtest => {
-                Network::Regtest(ActivationHeights::default())
-            }
-            zingo_infra_services::network::Network::Testnet => Network::Testnet,
-            zingo_infra_services::network::Network::Mainnet => Network::Mainnet,
-        }
-    }
-}
-
 impl From<zebra_chain::parameters::Network> for Network {
     fn from(value: zebra_chain::parameters::Network) -> Self {
         match value {
