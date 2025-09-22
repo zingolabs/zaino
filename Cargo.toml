@@ -28,7 +28,6 @@ version = "0.1.2"
 # Zingolabs
 
 testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
-zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "7509a6d26c6424b2e22585fabd0bb974bff6bf55" }
 
 # Librustzcash
 zcash_address = "0.9"

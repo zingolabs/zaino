@@ -14,3 +14,6 @@ zebra-chain = { workspace = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
+
+# Error handling
+thiserror = { workspace = true }
