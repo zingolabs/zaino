@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_rpc::methods::GetAddressUtxos;
 
