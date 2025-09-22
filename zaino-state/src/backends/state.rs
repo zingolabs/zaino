@@ -916,12 +916,9 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let now = Utc::now();
-        let zebra_estimated_height = NetworkChainTipHeightEstimator::new(
-            header.time,
-            height,
-            &self.config.network.clone().into(),
-        )
-        .estimate_height_at(now);
+        let zebra_estimated_height =
+            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.network.clone())
+                .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
         } else {
