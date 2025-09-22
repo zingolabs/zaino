@@ -1,0 +1,31 @@
+name: CI (Nightly)
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  cargo-checkmate:
+    uses: ./.github/workflows/cargo-checkmate.yaml
+
+  reject-trailing-whitespace:
+    name: Reject trailing whitespace
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reject trailing whitespace
+        run: ./utils/trailing-whitespace.sh reject
+
+  cargo-hack-build:
+    uses: ./.github/workflows/cargo-hack.yaml
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    # with:                # (optional) override defaults
+    #   hack-flags: "--workspace --all-features --all-targets --target-dir target/hack"
+    #   rustflags: "-D warnings"
+    #   toolchain: "stable"
+
+  test:
+    uses: ./.github/workflows/test.yaml
