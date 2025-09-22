@@ -720,7 +720,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             ConsensusBranchId::current(&self.non_finalized_state.network, dbg!(height))
                 .map(u32::from)
         });
-        dbg!(block_consensus_branch_id);
         full_block
             .transactions
             .iter()
