@@ -17,7 +17,7 @@ use tempfile::TempDir;
 use testvectors::{seeds, REG_O_ADDR_FROM_ABANDONART};
 use tracing_subscriber::EnvFilter;
 use zaino_common::{
-    network::ActivationHeights, CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig,
+    network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
@@ -377,7 +377,11 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let network = network.unwrap_or(NetworkKind::Regtest);
+        let activation_heights = ActivationHeights::default();
+        let network_kind = network.unwrap_or(NetworkKind::Regtest);
+        let zaino_network_kind =
+            Network::from_network_kind_and_activation_heights(&network_kind, &activation_heights);
+
         if enable_clients && !enable_zaino {
             return Err(std::io::Error::other(
                 "Cannot enable clients when zaino is not enabled.",
@@ -404,7 +408,7 @@ impl TestManager {
                 cfg.rpc_listen_port = Some(rpc_listen_port);
                 cfg.indexer_listen_port = Some(grpc_listen_port);
                 cfg.chain_cache = chain_cache;
-                cfg.network = network.into();
+                cfg.network = network_kind;
                 ValidatorConfig::ZebradConfig(cfg)
             }
         };
@@ -459,7 +463,7 @@ impl TestManager {
                     },
                 },
                 zebra_db_path,
-                network: network.into(),
+                network: zaino_network_kind,
                 no_sync: zaino_no_sync,
                 no_db: zaino_no_db,
                 slow_sync: false,
@@ -502,7 +506,7 @@ impl TestManager {
         Ok(Self {
             local_net,
             data_dir,
-            network: network.into(),
+            network: network_kind.into(),
             zebrad_rpc_listen_address,
             zebrad_grpc_listen_address,
             zaino_handle,
