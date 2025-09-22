@@ -131,7 +131,7 @@ arc-swap = "1.7.1"
 cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"
-zcash_client_backend = "0.18.0"
+zcash_client_backend = "0.19.1"
 zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
 
 [profile.test]

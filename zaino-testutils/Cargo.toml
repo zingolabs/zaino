@@ -15,17 +15,19 @@ zaino-testvectors.workspace = true
 zaino-common.workspace = true
 
 # Librustzcash
-zcash_protocol = "0.5.4"
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = [
+  "local-consensus",
+] }
 zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
 
 # Zebra
 zebra-chain = { workspace = true }
 
 # Zingo-infra
-zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "7509a6d26c6424b2e22585fabd0bb974bff6bf55" }
+zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "fa8acf3361441912e0467c71bfc54efe4d733d15" }
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2", features = [
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "78e4c979cd793c9efb274eaa71387b4e3dbf68c5", features = [
     "test-elevation",
 ] }
 testvectors = { workspace = true }
