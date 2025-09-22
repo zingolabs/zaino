@@ -136,7 +136,7 @@ impl FinalisedState {
     ) -> Result<Self, FinalisedStateError> {
         info!("Launching Finalised State..");
         let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.to_zebra_default().kind() {
+        let db_path_dir = match config.network.kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
@@ -268,7 +268,7 @@ impl FinalisedState {
 
                             match fetch_block_from_node(
                                 finalised_state.state.as_ref(),
-                                Some(&finalised_state.config.network.to_zebra_default()),
+                                Some(&finalised_state.config.network),
                                 &finalised_state.fetcher,
                                 HashOrHeight::Height(height),
                             )
@@ -332,7 +332,7 @@ impl FinalisedState {
                         warn!("Failed to fetch block from DB, re-fetching from validator.");
                         match fetch_block_from_node(
                             finalised_state.state.as_ref(),
-                            Some(&finalised_state.config.network.to_zebra_default()),
+                            Some(&finalised_state.config.network),
                             &finalised_state.fetcher,
                             hash_or_height,
                         )
@@ -374,7 +374,7 @@ impl FinalisedState {
     /// - Searches from ZainoDB tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
     async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
-        let network = self.config.network.to_zebra_default();
+        let network = self.config.network;
 
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
         // let reorg_height_int = reorg_height.0.saturating_sub(100);
@@ -441,7 +441,7 @@ impl FinalisedState {
         for block_height in ((reorg_height.0 + 1).max(
             self.config
                 .network
-                .to_zebra_default()
+                
                 .sapling_activation_height()
                 .0,
         ))..=sync_height
@@ -476,7 +476,7 @@ impl FinalisedState {
         }
 
         // Wait for server to sync to with p2p network and sync new blocks.
-        if !self.config.network.to_zebra_default().is_regtest() && !self.config.no_sync {
+        if !self.config.network.is_regtest() && !self.config.no_sync {
             self.status.store(StatusType::Syncing);
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await?;
