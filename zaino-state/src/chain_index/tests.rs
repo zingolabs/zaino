@@ -21,8 +21,9 @@ mod mockchain_tests {
     use tempfile::TempDir;
     use tokio::time::{sleep, Duration};
     use tokio_stream::StreamExt as _;
-    use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
+    use zaino_common::{DatabaseConfig, StorageConfig};
     use zaino_proto::proto::compact_formats::CompactBlock;
+    use zebra_chain::parameters::{self, testnet};
     use zebra_chain::serialization::ZcashDeserializeInto;
 
     use crate::{
@@ -79,7 +80,19 @@ mod mockchain_tests {
                 ..Default::default()
             },
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+
+            network: parameters::Network::new_regtest(testnet::ConfiguredActivationHeights {
+                before_overwinter: Some(1u32),
+                overwinter: Some(1u32),
+                sapling: Some(1u32),
+                blossom: Some(1u32),
+                heartwood: Some(1u32),
+                canopy: Some(1u32),
+                nu5: Some(1u32),
+                nu6: Some(1u32),
+                nu6_1: Some(1u32),
+                nu7: Some(1u32),
+            }),
 
             no_sync: false,
             no_db: false,

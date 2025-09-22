@@ -198,7 +198,7 @@ impl ZcashService for StateService {
         };
         let data = ServiceMetadata::new(
             get_build_info(),
-            config.network,
+            config.network.clone(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -208,7 +208,7 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_config.clone(),
-                &config.network,
+                &config.network.clone(),
                 config.validator_indexer_rpc_address,
             )
             .await??;
@@ -866,7 +866,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         chain_tip_difficulty(
-            self.config.network,
+            self.config.network.clone(),
             self.read_state_service.clone(),
             false,
         )
@@ -916,9 +916,12 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let now = Utc::now();
-        let zebra_estimated_height =
-            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.network.into())
-                .estimate_height_at(now);
+        let zebra_estimated_height = NetworkChainTipHeightEstimator::new(
+            header.time,
+            height,
+            &self.config.network.clone().into(),
+        )
+        .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
         } else {
@@ -928,7 +931,6 @@ impl ZcashIndexer for StateServiceSubscriber {
         let upgrades = IndexMap::from_iter(
             self.config
                 .network
-                
                 .full_activation_list()
                 .into_iter()
                 .filter_map(|(activation_height, network_upgrade)| {
@@ -962,14 +964,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             (height + 1).expect("valid chain tips are a lot less than Height::MAX");
         let consensus = TipConsensusBranch::from_parts(
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network.into(), height)
+                NetworkUpgrade::current(&self.config.network.clone().into(), height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
             )
             .inner(),
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network.into(), next_block_height)
+                NetworkUpgrade::current(&self.config.network.clone().into(), next_block_height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
@@ -979,7 +981,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         // TODO: Remove unwrap()
         let difficulty = chain_tip_difficulty(
-            self.config.network,
+            self.config.network.clone(),
             self.read_state_service.clone(),
             false,
         )
@@ -1115,7 +1117,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let sapling =
-            match NetworkUpgrade::Sapling.activation_height(&self.config.network.into()) {
+            match NetworkUpgrade::Sapling.activation_height(&self.config.network.clone().into()) {
                 Some(activation_height) if height >= activation_height => Some(
                     state
                         .ready()
@@ -1128,18 +1130,19 @@ impl ZcashIndexer for StateServiceSubscriber {
                 expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
             });
 
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network.into()) {
-            Some(activation_height) if height >= activation_height => Some(
-                state
-                    .ready()
-                    .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
-                    .await?,
-            ),
-            _ => None,
-        }
-        .and_then(|orch_response| {
-            expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
-        });
+        let orchard =
+            match NetworkUpgrade::Nu5.activation_height(&self.config.network.clone().into()) {
+                Some(activation_height) if height >= activation_height => Some(
+                    state
+                        .ready()
+                        .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
+                        .await?,
+                ),
+                _ => None,
+            }
+            .and_then(|orch_response| {
+                expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
+            });
 
         Ok(GetTreestateResponse::from_parts(
             hash,
@@ -1193,19 +1196,18 @@ impl ZcashIndexer for StateServiceSubscriber {
             return Ok(ValidateAddressResponse::invalid());
         };
 
-        let address = match address.convert_if_network::<Address>(
-            match self.config.network.kind() {
+        let address =
+            match address.convert_if_network::<Address>(match self.config.network.kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
                 NetworkKind::Regtest => NetworkType::Regtest,
-            },
-        ) {
-            Ok(address) => address,
-            Err(err) => {
-                tracing::debug!(?err, "conversion error");
-                return Ok(ValidateAddressResponse::invalid());
-            }
-        };
+            }) {
+                Ok(address) => address,
+                Err(err) => {
+                    tracing::debug!(?err, "conversion error");
+                    return Ok(ValidateAddressResponse::invalid());
+                }
+            };
 
         // we want to match zcashd's behaviour
         Ok(match address {
@@ -1334,13 +1336,13 @@ impl ZcashIndexer for StateServiceSubscriber {
                                 Ok(GetRawTransaction::Object(Box::new(
                                     TransactionObject::from_transaction(
                                         parsed_tx.into(),
-                                        None,                        // best_chain_height
-                                        Some(0),                     // confirmations
-                                        &self.config.network.into(), // network
-                                        None,                        // block_time
-                                        None,                        // block_hash
-                                        Some(false),                 // in_best_chain
-                                        txid,                        // txid
+                                        None,                                // best_chain_height
+                                        Some(0),                             // confirmations
+                                        &self.config.network.clone().into(), // network
+                                        None,                                // block_time
+                                        None,                                // block_hash
+                                        Some(false),                         // in_best_chain
+                                        txid,                                // txid
                                     ),
                                 )))
                             }
@@ -1370,7 +1372,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                                     tx.tx.clone(),
                                     best_chain_height,
                                     Some(tx.confirmations),
-                                    &self.config.network.into(),
+                                    &self.config.network.clone().into(),
                                     Some(tx.block_time),
                                     Some(zebra_chain::block::Hash::from_bytes(
                                         self.block_cache

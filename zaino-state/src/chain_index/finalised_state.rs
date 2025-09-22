@@ -207,7 +207,7 @@ impl ZainoDB {
     where
         T: BlockchainSource,
     {
-        let network = self.cfg.network;
+        let network = self.cfg.network.clone();
         let db_height_opt = self.db_height().await?;
         let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
 

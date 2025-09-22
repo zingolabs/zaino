@@ -374,7 +374,7 @@ impl FinalisedState {
     /// - Searches from ZainoDB tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
     async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
-        let network = self.config.network;
+        let network = self.config.network.clone();
 
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
         // let reorg_height_int = reorg_height.0.saturating_sub(100);
@@ -438,13 +438,9 @@ impl FinalisedState {
             .blocks
             .0
             .saturating_sub(99);
-        for block_height in ((reorg_height.0 + 1).max(
-            self.config
-                .network
-                
-                .sapling_activation_height()
-                .0,
-        ))..=sync_height
+        for block_height in ((reorg_height.0 + 1)
+            .max(self.config.network.sapling_activation_height().0))
+            ..=sync_height
         {
             if self.get_hash(block_height).is_ok() {
                 self.delete_block(Height(block_height))?;

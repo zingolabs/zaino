@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_rpc::methods::GetAddressUtxos;
 
@@ -16,6 +15,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::error::FinalisedStateError;
 use crate::{ChainWork, Height, IndexedBlock};
+use zebra_chain::parameters::{self, testnet};
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,
@@ -32,7 +32,18 @@ pub(crate) async fn spawn_v0_zaino_db(
             ..Default::default()
         },
         db_version: 0,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: parameters::Network::new_regtest(testnet::ConfiguredActivationHeights {
+            before_overwinter: Some(1u32),
+            overwinter: Some(1u32),
+            sapling: Some(1u32),
+            blossom: Some(1u32),
+            heartwood: Some(1u32),
+            canopy: Some(1u32),
+            nu5: Some(1u32),
+            nu6: Some(1u32),
+            nu6_1: Some(1u32),
+            nu7: Some(1u32),
+        }),
 
         no_sync: false,
         no_db: false,
@@ -212,7 +223,18 @@ async fn load_db_from_file() {
             ..Default::default()
         },
         db_version: 0,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: parameters::Network::new_regtest(testnet::ConfiguredActivationHeights {
+            before_overwinter: Some(1u32),
+            overwinter: Some(1u32),
+            sapling: Some(1u32),
+            blossom: Some(1u32),
+            heartwood: Some(1u32),
+            canopy: Some(1u32),
+            nu5: Some(1u32),
+            nu6: Some(1u32),
+            nu6_1: Some(1u32),
+            nu7: Some(1u32),
+        }),
 
         no_sync: false,
         no_db: false,
