@@ -5925,7 +5925,6 @@ version = "0.1.2"
 dependencies = [
  "serde",
  "zebra-chain 2.0.0",
- "zingo-infra-services",
 ]
 
 [[package]]
