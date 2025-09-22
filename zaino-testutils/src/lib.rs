@@ -16,17 +16,20 @@ use std::{
 use tempfile::TempDir;
 use testvectors::{seeds, REG_O_ADDR_FROM_ABANDONART};
 use tracing_subscriber::EnvFilter;
-use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
+use zaino_common::{
+    network::ActivationHeights, CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig,
+};
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
-use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::{consensus::NetworkType, local_consensus::LocalNetwork};
 use zebra_chain::parameters::NetworkKind;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
-use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
-pub use zingolib::{
-    get_base_address_macro, lightclient::LightClient, testutils::lightclient::from_inputs,
-};
+use zingo_infra_services::validator::{ZcashdConfig, ZebradConfig};
+pub use zingolib::get_base_address_macro;
+pub use zingolib::lightclient::LightClient;
+pub use zingolib::testutils::lightclient::from_inputs;
+use zingolib::testutils::scenarios::ClientBuilder;
 
 /// Helper to get the test binary path from the TEST_BINARIES_DIR env var.
 fn binary_path(binary_name: &str) -> Option<PathBuf> {
@@ -82,7 +85,7 @@ pub enum ValidatorKind {
 /// Config for validators.
 pub enum ValidatorConfig {
     /// Zcashd Config.
-    ZcashdConfig(zingo_infra_services::validator::ZcashdConfig),
+    ZcashdConfig(ZcashdConfig),
     /// Zebrad Config.
     ZebradConfig(zingo_infra_services::validator::ZebradConfig),
 }
@@ -298,7 +301,7 @@ pub struct TestManager {
     /// Data directory for the validator.
     pub data_dir: PathBuf,
     /// Network (chain) type:
-    pub network: Network,
+    pub network: NetworkType,
     /// Zebrad/Zcashd JsonRpc listen address.
     pub zebrad_rpc_listen_address: SocketAddr,
     /// Zebrad/Zcashd gRpc listen address.
@@ -323,16 +326,17 @@ fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
 // NOTE: this should be migrated to zingolib when LocalNet replaces regtest manager in zingoilb::testutils
 /// Builds faucet (miner) and recipient lightclients for local network integration testing
 async fn build_lightclients(
-    lightclient_dir: PathBuf,
+    lightclient_dir: TempDir,
     indexer_port: portpicker::Port,
 ) -> (LightClient, LightClient) {
+    let activation_heights = LocalNetwork::todo();
     let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
-    let faucet = client_builder.build_faucet(true, RegtestNetwork::all_upgrades_active());
+    let faucet = client_builder.build_faucet(true, activation_heights);
     let recipient = client_builder.build_client(
         seeds::HOSPITAL_MUSEUM_SEED.to_string(),
         1,
         true,
-        RegtestNetwork::all_upgrades_active(),
+        activation_heights,
     );
 
     (faucet, recipient)
@@ -351,7 +355,7 @@ impl TestManager {
     pub async fn launch(
         validator: &ValidatorKind,
         backend: &BackendType,
-        network: Option<Network>,
+        network: Option<NetworkKind>,
         chain_cache: Option<PathBuf>,
         enable_zaino: bool,
         enable_zaino_jsonrpc_server: bool,
@@ -373,7 +377,7 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let network = network.unwrap_or(Network::Regtest);
+        let network = network.unwrap_or(NetworkKind::Regtest);
         if enable_clients && !enable_zaino {
             return Err(std::io::Error::other(
                 "Cannot enable clients when zaino is not enabled.",
@@ -381,36 +385,26 @@ impl TestManager {
         }
 
         // Launch LocalNet:
-        let zebrad_rpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
-        let zebrad_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
+        let rpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
+        let grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
         let zebrad_rpc_listen_address =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zebrad_rpc_listen_port);
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_listen_port);
         let zebrad_grpc_listen_address =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zebrad_grpc_listen_port);
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), grpc_listen_port);
 
         let validator_config = match validator {
             ValidatorKind::Zcashd => {
-                let cfg = zingo_infra_services::validator::ZcashdConfig {
-                    zcashd_bin: ZCASHD_BIN.clone(),
-                    zcash_cli_bin: ZCASH_CLI_BIN.clone(),
-                    rpc_listen_port: Some(zebrad_rpc_listen_port),
-                    activation_heights: ActivationHeights::default(),
-                    miner_address: Some(REG_O_ADDR_FROM_ABANDONART),
-                    chain_cache: chain_cache.clone(),
-                };
+                let mut cfg = ZcashdConfig::default_test();
+                cfg.rpc_listen_port = Some(rpc_listen_port);
+                cfg.chain_cache = chain_cache;
                 ValidatorConfig::ZcashdConfig(cfg)
             }
             ValidatorKind::Zebrad => {
-                let cfg = zingo_infra_services::validator::ZebradConfig {
-                    zebrad_bin: ZEBRAD_BIN.clone(),
-                    network_listen_port: None,
-                    rpc_listen_port: Some(zebrad_rpc_listen_port),
-                    indexer_listen_port: Some(zebrad_grpc_listen_port),
-                    activation_heights: ActivationHeights::default(),
-                    miner_address: zingo_infra_services::validator::ZEBRAD_DEFAULT_MINER,
-                    chain_cache: chain_cache.clone(),
-                    network: network.into(),
-                };
+                let mut cfg = ZebradConfig::default_test();
+                cfg.rpc_listen_port = Some(rpc_listen_port);
+                cfg.indexer_listen_port = Some(grpc_listen_port);
+                cfg.chain_cache = chain_cache;
+                cfg.network = network.into();
                 ValidatorConfig::ZebradConfig(cfg)
             }
         };
@@ -490,7 +484,7 @@ impl TestManager {
         let clients = if enable_clients {
             let lightclient_dir = tempfile::tempdir().unwrap();
             let (lightclient_faucet, lightclient_recipient) = build_lightclients(
-                lightclient_dir.path().to_path_buf(),
+                lightclient_dir,
                 zaino_grpc_listen_address
                     .expect("Error launching zingo lightclients. `enable_zaino` is None.")
                     .port(),
@@ -508,7 +502,7 @@ impl TestManager {
         Ok(Self {
             local_net,
             data_dir,
-            network,
+            network: network.into(),
             zebrad_rpc_listen_address,
             zebrad_grpc_listen_address,
             zaino_handle,
@@ -532,7 +526,7 @@ impl TestManager {
     pub async fn launch_with_activation_heights(
         validator: &ValidatorKind,
         backend: &BackendType,
-        network: Option<Network>,
+        network: Option<NetworkKind>,
         activation_heights: Option<ActivationHeights>,
         chain_cache: Option<PathBuf>,
         enable_zaino: bool,
@@ -561,7 +555,7 @@ impl TestManager {
             ));
         }
 
-        let network = network.unwrap_or(Network::Regtest);
+        let network = network.unwrap_or(NetworkKind::Regtest);
 
         // Launch LocalNet:
         let zebrad_rpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
@@ -573,7 +567,7 @@ impl TestManager {
 
         let validator_config = match validator {
             ValidatorKind::Zcashd => {
-                let cfg = zingo_infra_services::validator::ZcashdConfig {
+                let cfg = ZcashdConfig {
                     zcashd_bin: ZCASHD_BIN.clone(),
                     zcash_cli_bin: ZCASH_CLI_BIN.clone(),
                     rpc_listen_port: Some(zebrad_rpc_listen_port),
@@ -673,7 +667,7 @@ impl TestManager {
         let clients = if enable_clients {
             let lightclient_dir = tempfile::tempdir().unwrap();
             let (lightclient_faucet, lightclient_recipient) = build_lightclients(
-                lightclient_dir.path().to_path_buf(),
+                lightclient_dir,
                 zaino_grpc_listen_address
                     .expect("Error launching zingo lightclients. `enable_zaino` is None.")
                     .port(),
