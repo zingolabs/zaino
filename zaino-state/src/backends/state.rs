@@ -198,7 +198,7 @@ impl ZcashService for StateService {
         };
         let data = ServiceMetadata::new(
             get_build_info(),
-            config.network.to_zebra_network(),
+            config.network.to_zebra_default(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -208,7 +208,7 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_config.clone(),
-                &config.network.to_zebra_network(),
+                &config.network.to_zebra_default(),
                 config.validator_indexer_rpc_address,
             )
             .await??;
@@ -866,7 +866,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         chain_tip_difficulty(
-            self.config.network.to_zebra_network(),
+            self.config.network.to_zebra_default(),
             self.read_state_service.clone(),
             false,
         )
@@ -928,7 +928,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         let upgrades = IndexMap::from_iter(
             self.config
                 .network
-                .to_zebra_network()
+                .to_zebra_default()
                 .full_activation_list()
                 .into_iter()
                 .filter_map(|(activation_height, network_upgrade)| {
@@ -979,7 +979,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         // TODO: Remove unwrap()
         let difficulty = chain_tip_difficulty(
-            self.config.network.to_zebra_network(),
+            self.config.network.to_zebra_default(),
             self.read_state_service.clone(),
             false,
         )
@@ -989,7 +989,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockchainInfoResponse::new(
-            self.config.network.to_zebra_network().bip70_network_name(),
+            self.config.network.to_zebra_default().bip70_network_name(),
             height,
             hash,
             estimated_height,
@@ -1194,7 +1194,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let address = match address.convert_if_network::<Address>(
-            match self.config.network.to_zebra_network().kind() {
+            match self.config.network.to_zebra_default().kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
                 NetworkKind::Regtest => NetworkType::Regtest,
@@ -1991,7 +1991,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.network.to_zebra_network().bip70_network_name(),
+            network: self.config.network.to_zebra_default().bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,

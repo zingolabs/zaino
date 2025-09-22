@@ -79,7 +79,7 @@ impl NonFinalisedState {
             non_finalised_state
                 .config
                 .network
-                .to_zebra_network()
+                .to_zebra_default()
                 .sapling_activation_height()
                 .0,
         )..=chain_height
@@ -87,7 +87,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     non_finalised_state.state.as_ref(),
-                    Some(&non_finalised_state.config.network.to_zebra_network()),
+                    Some(&non_finalised_state.config.network.to_zebra_default()),
                     &non_finalised_state.fetcher,
                     HashOrHeight::Height(Height(height)),
                 )
@@ -285,7 +285,7 @@ impl NonFinalisedState {
         for block_height in ((reorg_height.0 + 1).max(
             self.config
                 .network
-                .to_zebra_network()
+                .to_zebra_default()
                 .sapling_activation_height()
                 .0,
         ))..=validator_height
@@ -338,7 +338,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     self.state.as_ref(),
-                    Some(&self.config.network.to_zebra_network()),
+                    Some(&self.config.network.to_zebra_default()),
                     &self.fetcher,
                     HashOrHeight::Height(Height(block_height)),
                 )
@@ -370,7 +370,7 @@ impl NonFinalisedState {
     pub async fn wait_on_server(&self) -> Result<(), NonFinalisedStateError> {
         // If no_db is active wait for server to sync with p2p network.
         if self.config.no_db
-            && !self.config.network.to_zebra_network().is_regtest()
+            && !self.config.network.to_zebra_default().is_regtest()
             && !self.config.no_sync
         {
             self.status.store(StatusType::Syncing);

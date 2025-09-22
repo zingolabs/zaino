@@ -154,7 +154,7 @@ impl ZainoDB {
     /// * `Some(version)` – DB exists, version returned.
     /// * `None`      – directory or key is missing -> fresh DB.
     async fn try_find_current_db_version(cfg: &BlockCacheConfig) -> Option<u32> {
-        let legacy_dir = match cfg.network.to_zebra_network().kind() {
+        let legacy_dir = match cfg.network.to_zebra_default().kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
@@ -164,7 +164,7 @@ impl ZainoDB {
             return Some(0);
         }
 
-        let net_dir = match cfg.network.to_zebra_network().kind() {
+        let net_dir = match cfg.network.to_zebra_default().kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
@@ -278,7 +278,7 @@ impl ZainoDB {
                 orchard_root,
                 orchard_size as u32,
                 &parent_chainwork,
-                &network.to_zebra_network(),
+                &network.to_zebra_default(),
             )) {
                 Ok(block) => block,
                 Err(_) => {
