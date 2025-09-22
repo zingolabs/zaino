@@ -172,7 +172,7 @@ mod mockchain_tests {
                 if height == 0 {
                     None
                 } else {
-                    zebra_chain::parameters::NetworkUpgrade::Nu6_1
+                    zebra_chain::parameters::NetworkUpgrade::Nu6
                         .branch_id()
                         .map(u32::from)
                 }
