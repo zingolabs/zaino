@@ -786,9 +786,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .map_err(ChainIndexError::backing_validator)?
             .ok_or_else(|| ChainIndexError::database_hole(block.index().hash()))?;
         let block_consensus_branch_id = full_block.coinbase_height().and_then(|height| {
+            dbg!(zebra_chain::parameters::NetworkUpgrade::current(
+                &self.non_finalized_state.network,
+                height
+            ));
+            dbg!(self.non_finalized_state.network.full_activation_list());
             ConsensusBranchId::current(&self.non_finalized_state.network, dbg!(height))
                 .map(u32::from)
         });
+        dbg!(block_consensus_branch_id);
         full_block
             .transactions
             .iter()

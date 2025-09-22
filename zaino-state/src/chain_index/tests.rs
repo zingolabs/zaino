@@ -92,7 +92,7 @@ mod mockchain_tests {
                 nu5: Some(1u32),
                 nu6: Some(1u32),
                 nu6_1: Some(1u32),
-                nu7: Some(1u32),
+                nu7: None,
             }),
 
             no_sync: false,
@@ -174,7 +174,7 @@ mod mockchain_tests {
                 if height == 0 {
                     None
                 } else {
-                    zebra_chain::parameters::NetworkUpgrade::Nu7
+                    zebra_chain::parameters::NetworkUpgrade::Nu6_1
                         .branch_id()
                         .map(u32::from)
                 }
