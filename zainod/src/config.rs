@@ -234,7 +234,7 @@ impl IndexerConfig {
 
     /// Returns the network type currently being used by the server.
     pub fn get_network(&self) -> Result<zebra_chain::parameters::Network, IndexerError> {
-        Ok(self.network.to_zebra_default())
+        Ok(self.network.clone())
     }
 
     /// Finalizes the configuration after initial parsing, applying conditional defaults.
@@ -278,7 +278,7 @@ impl Default for IndexerConfig {
                 },
             },
             zebra_db_path: default_zebra_db_path().unwrap(),
-            network: Network::Testnet,
+            network: zebra_chain::parameters::Network::new_default_testnet(),
             no_sync: false,
             no_db: false,
             slow_sync: false,
