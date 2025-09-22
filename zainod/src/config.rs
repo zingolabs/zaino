@@ -18,9 +18,7 @@ use serde::{
 #[cfg(feature = "no_tls_use_unencrypted_traffic")]
 use tracing::warn;
 use tracing::{error, info};
-use zaino_common::{
-    CacheConfig, DatabaseConfig, DatabaseSize, Network, ServiceConfig, StorageConfig,
-};
+use zaino_common::{CacheConfig, DatabaseConfig, DatabaseSize, ServiceConfig, StorageConfig};
 use zaino_state::{BackendConfig, FetchServiceConfig, StateServiceConfig};
 
 use crate::error::IndexerError;
@@ -50,6 +48,26 @@ where
         "fetch" => Ok(zaino_state::BackendType::Fetch),
         _ => Err(de::Error::custom(format!(
             "Invalid backend type '{s}', valid options are 'state' or 'fetch'"
+        ))),
+    }
+}
+
+/// Internal helper to support Deser interface for ZebraNetwork
+fn deserialize_network_from_string<'de, D>(
+    deserializer: D,
+) -> Result<zaino_state::chain_index::ZebraNetwork, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    match s.to_lowercase().as_str() {
+        "mainnet" => Ok(zaino_state::chain_index::ZebraNetwork::Mainnet),
+        "testnet" => Ok(zaino_state::chain_index::ZebraNetwork::new_default_testnet()),
+        "regtest" => Ok(zaino_state::chain_index::ZebraNetwork::new_regtest(
+            Default::default(),
+        )),
+        _ => Err(de::Error::custom(format!(
+            "Invalid network type '{s}', valid options are 'mainnet', 'testnet', or 'regtest'"
         ))),
     }
 }
@@ -103,7 +121,8 @@ pub struct IndexerConfig {
     /// ZebraDB location.
     pub zebra_db_path: PathBuf,
     /// Network chain type.
-    pub network: Network,
+    #[serde(deserialize_with = "deserialize_network_from_string")]
+    pub network: zaino_state::chain_index::ZebraNetwork,
     /// Disables internal sync and stops zaino waiting on server sync.
     /// Used for testing.
     pub no_sync: bool,
