@@ -393,7 +393,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
         let non_finalized_state = crate::NonFinalizedState::initialize(
             source,
-            config.network.to_zebra_default(),
+            config.network,
             top_of_finalized,
         )
         .await?;

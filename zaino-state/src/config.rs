@@ -1,6 +1,7 @@
 //! Holds config data for Zaino-State services.
 
-use zaino_common::{Network, ServiceConfig, StorageConfig};
+use zaino_common::{ServiceConfig, StorageConfig};
+use zebra_chain::parameters::Network;
 
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Copy)]
 #[serde(rename_all = "lowercase")]
