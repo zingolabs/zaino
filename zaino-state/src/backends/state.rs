@@ -208,7 +208,7 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_config.clone(),
-                &config.network.clone(),
+                &config.network,
                 config.validator_indexer_rpc_address,
             )
             .await??;
