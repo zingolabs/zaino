@@ -19,9 +19,9 @@ use tracing_subscriber::EnvFilter;
 use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
+use zcash_protocol::consensus::NetworkType as Network;
 pub use zingo_infra_services as services;
 use zingo_infra_services::network::ActivationHeights;
-pub use zingo_infra_services::network::Network;
 pub use zingo_infra_services::validator::Validator;
 use zingolib::{config::RegtestNetwork, testutils::scenarios::setup::ClientBuilder};
 pub use zingolib::{
@@ -346,7 +346,7 @@ impl TestManager {
     pub async fn launch(
         validator: &ValidatorKind,
         backend: &BackendType,
-        network: Option<services::network::Network>,
+        network: Option<Network>,
         chain_cache: Option<PathBuf>,
         enable_zaino: bool,
         enable_zaino_jsonrpc_server: bool,
@@ -368,7 +368,7 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let network = network.unwrap_or(services::network::Network::Regtest);
+        let network = network.unwrap_or(Network::Regtest);
         if enable_clients && !enable_zaino {
             return Err(std::io::Error::other(
                 "Cannot enable clients when zaino is not enabled.",
