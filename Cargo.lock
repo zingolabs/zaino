@@ -6160,6 +6160,7 @@ dependencies = [
  "zaino-fetch",
  "zaino-serve",
  "zaino-state",
+ "zainod",
  "zebra-chain 2.0.0",
  "zebra-state 2.0.0",
 ]

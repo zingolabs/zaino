@@ -2,10 +2,9 @@
 
 use figment::Jail;
 use std::path::PathBuf;
-use zaino_common::network::ActivationHeights;
-use zaino_common::Network;
 
 // Use the explicit library name `zainodlib` as defined in Cargo.toml [lib] name.
+use zaino_state::chain_index;
 use zainodlib::config::{load_config, IndexerConfig};
 use zainodlib::error::IndexerError;
 // If BackendType is used directly in assertions beyond what IndexerConfig holds:
@@ -105,7 +104,7 @@ fn test_deserialize_full_valid_config() {
             finalized_config.zebra_db_path,
             PathBuf::from(zebra_db_dir_name)
         );
-        assert_eq!(finalized_config.network, Network::Mainnet);
+        assert_eq!(finalized_config.network, chain_index::ZebraNetwork::Mainnet);
         assert_eq!(
             finalized_config.grpc_listen_address,
             "0.0.0.0:9000".parse().unwrap()
@@ -395,7 +394,10 @@ fn test_figment_env_override_toml_and_defaults() {
         let temp_toml_path = jail.directory().join("test_config.toml");
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
 
-        assert_eq!(config.network, Network::Mainnet);
+        assert_eq!(
+            config.network,
+            zaino_state::chain_index::ZebraNetwork::Mainnet
+        );
         assert!(config.enable_json_server);
         assert_eq!(config.storage.cache.capacity, 12345);
         assert_eq!(config.cookie_dir, Some(PathBuf::from("/env/cookie/path")));
@@ -418,7 +420,7 @@ fn test_figment_toml_overrides_defaults() {
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
         assert_eq!(
             config.network,
-            Network::Regtest(ActivationHeights::default())
+            zaino_state::chain_index::testutils::default_regtest_heights()
         );
         assert!(config.enable_json_server);
         Ok(())

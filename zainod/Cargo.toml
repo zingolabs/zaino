@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [features]
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = []
+testutils = ["zaino-state/testutils"]
 
 [dependencies]
 zaino-common = { workspace = true }
@@ -50,3 +51,6 @@ thiserror = { workspace = true }
 # Formats
 toml = { workspace = true }
 figment= { workspace = true, features = ["toml", "env", "test"] }
+
+[dev-dependencies]
+zainod = { path = ".", features = ["testutils"] }
