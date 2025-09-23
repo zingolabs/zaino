@@ -39,6 +39,7 @@ pub mod non_finalised_state;
 /// BlockchainSource
 pub mod source;
 /// testutils for chain_index (and test consumers)
+#[cfg(any(test, feature = "testutils"))]
 pub mod testutils;
 /// Common types used by the rest of this module
 pub mod types;
