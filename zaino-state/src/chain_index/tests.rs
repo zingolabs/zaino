@@ -81,8 +81,8 @@ mod mockchain_tests {
             },
             db_version: 1,
 
-            testutils::default_regtest_heights(),
-            
+            network: testutils::default_regtest_heights(),
+
             no_sync: false,
             no_db: false,
         };
