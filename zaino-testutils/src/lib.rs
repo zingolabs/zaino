@@ -1278,7 +1278,7 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    Some(services::network::Network::Testnet),
+                    Some(NetworkKind::Testnet),
                     ZEBRAD_TESTNET_CACHE_DIR.clone(),
                     true,
                     false,
