@@ -12,7 +12,6 @@ use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vecto
 use crate::chain_index::testutils;
 use crate::{BlockCacheConfig, ChainWork, IndexedBlock};
 
-use zebra_chain::parameters::{self, testnet};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v0_to_v1_full() {
     init_tracing();
