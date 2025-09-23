@@ -58,7 +58,7 @@ zainod = { workspace = true }
 # its rand version update.
 proptest = { workspace = true }
 lazy_static = { workspace = true }
-zip32 = "0.2.1"
+zip32 = {workspace = true}
 
 [dev-dependencies]
 zingo_netutils = { workspace = true }
