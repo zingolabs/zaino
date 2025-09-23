@@ -375,10 +375,10 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let activation_heights = activation_heights::active_nus_regtest_network();
-        let network_kind = network.unwrap_or(NetworkKind::Regtest);
-        let zaino_network_kind =
-            Network::from_network_kind_and_activation_heights(&network_kind, &activation_heights);
+        let nu0_reg_net = activation_heights::active_nus_regtest_network();
+        //let network_kind = network.unwrap_or(NetworkKind::Regtest);
+        //let zaino_network_kind =
+        //    Network::from_network_kind_and_activation_heights(&network_kind, &nu0_reg_net);
 
         if enable_clients && !enable_zaino {
             return Err(std::io::Error::other(
@@ -406,7 +406,7 @@ impl TestManager {
                 cfg.rpc_listen_port = Some(rpc_listen_port);
                 cfg.indexer_listen_port = Some(grpc_listen_port);
                 cfg.chain_cache = chain_cache.clone();
-                cfg.network = network_kind;
+                cfg.network = nu0_reg_net.clone().kind();
                 ValidatorConfig::ZebradConfig(cfg)
             }
         };
@@ -461,7 +461,7 @@ impl TestManager {
                     },
                 },
                 zebra_db_path,
-                network: zaino_network_kind,
+                network: nu0_reg_net.clone(),
                 no_sync: zaino_no_sync,
                 no_db: zaino_no_db,
                 slow_sync: false,
@@ -503,7 +503,7 @@ impl TestManager {
         Ok(Self {
             local_net,
             data_dir,
-            network: network_kind.into(),
+            network: nu0_reg_net.clone().kind(),
             zebrad_rpc_listen_address,
             zebrad_grpc_listen_address,
             zaino_handle,
