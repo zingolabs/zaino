@@ -15,7 +15,6 @@ use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vecto
 use crate::chain_index::testutils;
 use crate::error::FinalisedStateError;
 use crate::{BlockCacheConfig, ChainWork, Height, IndexedBlock};
-use zebra_chain::parameters::{self, testnet};
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,

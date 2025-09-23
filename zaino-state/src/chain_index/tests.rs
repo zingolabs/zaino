@@ -23,7 +23,6 @@ mod mockchain_tests {
     use tokio_stream::StreamExt as _;
     use zaino_common::{DatabaseConfig, StorageConfig};
     use zaino_proto::proto::compact_formats::CompactBlock;
-    use zebra_chain::parameters::{self, testnet};
     use zebra_chain::serialization::ZcashDeserializeInto;
 
     use crate::{

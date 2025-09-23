@@ -16,7 +16,6 @@ use crate::chain_index::testutils;
 use crate::chain_index::types::TransactionHash;
 use crate::error::FinalisedStateError;
 use crate::{AddrScript, BlockCacheConfig, ChainWork, Height, IndexedBlock, Outpoint};
-use zebra_chain::parameters::{self, testnet};
 
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockchainSource,
