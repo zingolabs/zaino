@@ -19,7 +19,7 @@ path = "src/lib.rs"
 [features]
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = []
-testutils = ["zaino-state/testutils"]
+testutils = ["zaino-state/testutils", "zingo_common_components"]
 
 [dependencies]
 zaino-common = { workspace = true }
@@ -51,7 +51,8 @@ thiserror = { workspace = true }
 # Formats
 toml = { workspace = true }
 figment= { workspace = true, features = ["toml", "env", "test"] }
+zingo_common_components = { workspace = true, optional = true }
 
 [dev-dependencies]
 zainod = { path = ".", features = ["testutils"] }
-zingo_common_components = { workspace = true, features = ["test"] }
+zingo_common_components = { workspace = true }
