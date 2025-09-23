@@ -38,6 +38,8 @@ pub mod mempool;
 pub mod non_finalised_state;
 /// BlockchainSource
 pub mod source;
+/// testutils for chain_index (and test consumers)
+pub mod testutils;
 /// Common types used by the rest of this module
 pub mod types;
 
