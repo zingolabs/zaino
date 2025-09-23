@@ -421,7 +421,7 @@ fn test_figment_toml_overrides_defaults() {
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
         assert_eq!(
             config.network,
-            activation_heights::default_regtest_heights()
+            activation_heights::active_nus_regtest_network()
         );
         assert!(config.enable_json_server);
         Ok(())

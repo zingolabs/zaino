@@ -16,12 +16,11 @@ use std::{
 use tempfile::TempDir;
 use testvectors::seeds;
 use tracing_subscriber::EnvFilter;
-use zaino_common::{
-    network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
-};
+use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
 use zebra_chain::parameters::NetworkKind;
+use zingo_common_components::protocol::activation_heights;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
 use zingo_infra_services::validator::{ZcashdConfig, ZebradConfig};
@@ -376,7 +375,7 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let activation_heights = ActivationHeights::default();
+        let activation_heights = activation_heights::active_nus_regtest_network();
         let network_kind = network.unwrap_or(NetworkKind::Regtest);
         let zaino_network_kind =
             Network::from_network_kind_and_activation_heights(&network_kind, &activation_heights);
