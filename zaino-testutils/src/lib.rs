@@ -269,10 +269,9 @@ impl zingo_infra_services::validator::Validator for LocalNet {
     }
 }
 
-/// Holds zingo lightclients along with their TempDir for wallet-2-validator tests.
+/// Holds zingo lightclients for wallet-2-validator tests.
+// used to hold a tempdir, but it was used elsewhere instead
 pub struct Clients {
-    /// Lightclient TempDir location.
-    pub lightclient_dir: TempDir,
     /// Faucet (zingolib lightclient).
     ///
     /// Mining rewards are received by this client for use in tests.
@@ -495,7 +494,6 @@ impl TestManager {
             )
             .await;
             Some(Clients {
-                lightclient_dir,
                 faucet: lightclient_faucet,
                 recipient: lightclient_recipient,
             })
