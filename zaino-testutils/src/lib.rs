@@ -737,6 +737,8 @@ mod launch_testmanager {
 
         mod fetch_service {
 
+            use zip32::AccountId;
+
             use super::*;
 
             #[tokio::test]
@@ -958,7 +960,7 @@ mod launch_testmanager {
                 );
 
                 // *Send all transparent funds to own orchard address.
-                clients.faucet.quick_shield().await.unwrap();
+                clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.faucet.sync_and_await().await.unwrap();
@@ -1025,6 +1027,8 @@ mod launch_testmanager {
         }
 
         mod state_service {
+
+            use zip32::AccountId;
 
             use super::*;
 
@@ -1250,7 +1254,7 @@ mod launch_testmanager {
                 );
 
                 // *Send all transparent funds to own orchard address.
-                clients.faucet.quick_shield().await.unwrap();
+                clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
                 test_manager.generate_blocks_with_delay(1).await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients.faucet.do_balance().await);
