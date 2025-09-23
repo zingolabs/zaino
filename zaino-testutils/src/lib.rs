@@ -21,7 +21,6 @@ use zaino_common::{
 };
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
-use zcash_protocol::consensus::NetworkType;
 use zebra_chain::parameters::NetworkKind;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
@@ -301,7 +300,7 @@ pub struct TestManager {
     /// Data directory for the validator.
     pub data_dir: PathBuf,
     /// Network (chain) type:
-    pub network: NetworkType,
+    pub network: NetworkKind,
     /// Zebrad/Zcashd JsonRpc listen address.
     pub zebrad_rpc_listen_address: SocketAddr,
     /// Zebrad/Zcashd gRpc listen address.
