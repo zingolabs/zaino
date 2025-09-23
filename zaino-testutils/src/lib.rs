@@ -14,14 +14,14 @@ use std::{
     path::PathBuf,
 };
 use tempfile::TempDir;
-use testvectors::{seeds, REG_O_ADDR_FROM_ABANDONART};
+use testvectors::seeds;
 use tracing_subscriber::EnvFilter;
 use zaino_common::{
     network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
-use zcash_protocol::{consensus::NetworkType, local_consensus::LocalNetwork};
+use zcash_protocol::consensus::NetworkType;
 use zebra_chain::parameters::NetworkKind;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
