@@ -9,6 +9,7 @@ use zainodlib::config::{load_config, IndexerConfig};
 use zainodlib::error::IndexerError;
 // If BackendType is used directly in assertions beyond what IndexerConfig holds:
 use zaino_state::BackendType as ZainoBackendType;
+use zingo_common_components::protocol::activation_heights;
 
 #[test]
 // Validates loading a valid configuration via `load_config`,
@@ -420,7 +421,7 @@ fn test_figment_toml_overrides_defaults() {
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
         assert_eq!(
             config.network,
-            zaino_state::chain_index::testutils::default_regtest_heights()
+            activation_heights::default_regtest_heights()
         );
         assert!(config.enable_json_server);
         Ok(())

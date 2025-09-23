@@ -30,12 +30,12 @@ mod mockchain_tests {
             tests::vectors::{
                 build_active_mockchain_source, build_mockchain_source, load_test_vectors,
             },
-            testutils,
             types::{BestChainLocation, TransactionHash},
             ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
         },
         BlockCacheConfig,
     };
+    use zingo_common_components::protocol::activation_heights;
 
     async fn load_test_vectors_and_sync_chain_index(
         active_mockchain_source: bool,
@@ -83,7 +83,7 @@ mod mockchain_tests {
             },
             db_version: 1,
 
-            network: testutils::default_regtest_heights(),
+            network: activation_heights::default_regtest_heights(),
 
             no_sync: false,
             no_db: false,

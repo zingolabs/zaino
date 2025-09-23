@@ -11,7 +11,7 @@ version = { workspace = true }
 [features]
 # (Work)bench - Exposes internal functionality for testing.
 bench = []
-testutils = []
+testutils = ["zingo_common_components/test"]
 
 [dependencies]
 zaino-common = { workspace = true }
@@ -60,9 +60,11 @@ arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }
+zingo_common_components = { workspace = true, optional = true }
 
 
 [dev-dependencies]
+zaino-state = { path = ".", features = ["testutils"] } 
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }
