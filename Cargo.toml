@@ -42,7 +42,7 @@ zebra-chain = "2.0"
 zebra-state = "2.0"
 zebra-rpc = "2.0"
 
-zingo_netutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "9242c4c4a316c368c4a53b16ab65b57b18047e83" }
+zingo_netutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cc2af1ac80cb6b7a7f0a0b8f331f7b0873d667bf" }
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
