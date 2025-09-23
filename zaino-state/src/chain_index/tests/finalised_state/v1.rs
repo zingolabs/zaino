@@ -12,10 +12,10 @@ use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::test::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
-use crate::chain_index::testutils;
 use crate::chain_index::types::TransactionHash;
 use crate::error::FinalisedStateError;
 use crate::{AddrScript, BlockCacheConfig, ChainWork, Height, IndexedBlock, Outpoint};
+use zingo_common_components::protocol::activation_heights;
 
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockchainSource,
@@ -32,7 +32,7 @@ pub(crate) async fn spawn_v1_zaino_db(
             ..Default::default()
         },
         db_version: 1,
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
         no_sync: false,
         no_db: false,
     };
@@ -85,7 +85,7 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
             orchard_root,
             orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 
@@ -199,7 +199,7 @@ async fn load_db_from_file() {
             ..Default::default()
         },
         db_version: 1,
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
 
         no_sync: false,
         no_db: false,
@@ -232,7 +232,7 @@ async fn load_db_from_file() {
                     orchard_root,
                     orchard_root_size as u32,
                     &parent_chain_work,
-                    &testutils::default_regtest_heights(),
+                    &activation_heights::default_regtest_heights(),
                 ))
                 .unwrap();
 
@@ -370,7 +370,7 @@ async fn get_chain_blocks() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 
@@ -406,7 +406,7 @@ async fn get_compact_blocks() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
         let compact_block = chain_block.to_compact_block();
@@ -453,7 +453,7 @@ async fn get_faucet_txids() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 
@@ -537,7 +537,7 @@ async fn get_recipient_txids() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 
@@ -749,7 +749,7 @@ async fn check_faucet_spent_map() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 
@@ -871,7 +871,7 @@ async fn check_recipient_spent_map() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 

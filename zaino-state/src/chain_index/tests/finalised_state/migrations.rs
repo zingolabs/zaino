@@ -9,8 +9,8 @@ use crate::chain_index::finalised_state::db::DbBackend;
 use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
-use crate::chain_index::testutils;
 use crate::{BlockCacheConfig, ChainWork, IndexedBlock};
+use zingo_common_components::protocol::activation_heights;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v0_to_v1_full() {
@@ -31,7 +31,7 @@ async fn v0_to_v1_full() {
         },
         db_version: 0,
 
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
 
         no_sync: false,
         no_db: false,
@@ -46,7 +46,7 @@ async fn v0_to_v1_full() {
         },
         db_version: 1,
 
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
         no_sync: false,
         no_db: false,
     };
@@ -93,7 +93,7 @@ async fn v0_to_v1_interrupted() {
         },
         db_version: 0,
 
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
         no_sync: false,
         no_db: false,
     };
@@ -107,7 +107,7 @@ async fn v0_to_v1_interrupted() {
         },
         db_version: 1,
 
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
         no_sync: false,
         no_db: false,
     };
@@ -148,7 +148,7 @@ async fn v0_to_v1_interrupted() {
             orchard_root,
             orchard_root_size as u32,
             &parent_chain_work,
-            &crate::chain_index::testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 
@@ -188,7 +188,7 @@ async fn v0_to_v1_partial() {
         },
         db_version: 0,
 
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
         no_sync: false,
         no_db: false,
     };
@@ -202,7 +202,7 @@ async fn v0_to_v1_partial() {
         },
         db_version: 1,
 
-        network: testutils::default_regtest_heights(),
+        network: activation_heights::default_regtest_heights(),
         no_sync: false,
         no_db: false,
     };
@@ -241,7 +241,7 @@ async fn v0_to_v1_partial() {
             orchard_root,
             orchard_root_size as u32,
             &parent_chain_work,
-            &testutils::default_regtest_heights(),
+            &activation_heights::default_regtest_heights(),
         ))
         .unwrap();
 

@@ -54,3 +54,4 @@ figment= { workspace = true, features = ["toml", "env", "test"] }
 
 [dev-dependencies]
 zainod = { path = ".", features = ["testutils"] }
+zingo_common_components = { workspace = true, features = ["test"] }
