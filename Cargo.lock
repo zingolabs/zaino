@@ -6108,7 +6108,6 @@ dependencies = [
  "zebra-chain 2.0.0",
  "zebra-rpc 2.0.1",
  "zebra-state 2.0.0",
- "zingo-infra-services",
 ]
 
 [[package]]
