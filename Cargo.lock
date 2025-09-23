@@ -4138,7 +4138,7 @@ dependencies = [
 [[package]]
 name = "pepper-sync"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=78e4c979cd793c9efb274eaa71387b4e3dbf68c5#78e4c979cd793c9efb274eaa71387b4e3dbf68c5"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=bdb5a0aa7b8bb62300cdb6272e7102fa98f388af#bdb5a0aa7b8bb62300cdb6272e7102fa98f388af"
 dependencies = [
  "bip32",
  "byteorder",
@@ -9860,7 +9860,7 @@ dependencies = [
 [[package]]
 name = "zingo-memo"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=78e4c979cd793c9efb274eaa71387b4e3dbf68c5#78e4c979cd793c9efb274eaa71387b4e3dbf68c5"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=bdb5a0aa7b8bb62300cdb6272e7102fa98f388af#bdb5a0aa7b8bb62300cdb6272e7102fa98f388af"
 dependencies = [
  "zcash_address 0.9.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_client_backend 0.19.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
@@ -9884,7 +9884,7 @@ dependencies = [
 [[package]]
 name = "zingo-netutils"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=78e4c979cd793c9efb274eaa71387b4e3dbf68c5#78e4c979cd793c9efb274eaa71387b4e3dbf68c5"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=bdb5a0aa7b8bb62300cdb6272e7102fa98f388af#bdb5a0aa7b8bb62300cdb6272e7102fa98f388af"
 dependencies = [
  "http",
  "http-body",
@@ -9924,7 +9924,7 @@ dependencies = [
 [[package]]
 name = "zingo-price"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=78e4c979cd793c9efb274eaa71387b4e3dbf68c5#78e4c979cd793c9efb274eaa71387b4e3dbf68c5"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=bdb5a0aa7b8bb62300cdb6272e7102fa98f388af#bdb5a0aa7b8bb62300cdb6272e7102fa98f388af"
 dependencies = [
  "byteorder",
  "reqwest",
@@ -9940,7 +9940,7 @@ dependencies = [
 [[package]]
 name = "zingo-status"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=78e4c979cd793c9efb274eaa71387b4e3dbf68c5#78e4c979cd793c9efb274eaa71387b4e3dbf68c5"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=bdb5a0aa7b8bb62300cdb6272e7102fa98f388af#bdb5a0aa7b8bb62300cdb6272e7102fa98f388af"
 dependencies = [
  "byteorder",
  "zcash_primitives 0.24.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
@@ -9958,7 +9958,7 @@ dependencies = [
 [[package]]
 name = "zingo-testvectors"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=78e4c979cd793c9efb274eaa71387b4e3dbf68c5#78e4c979cd793c9efb274eaa71387b4e3dbf68c5"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=bdb5a0aa7b8bb62300cdb6272e7102fa98f388af#bdb5a0aa7b8bb62300cdb6272e7102fa98f388af"
 dependencies = [
  "bip0039",
 ]
@@ -9993,7 +9993,7 @@ dependencies = [
 [[package]]
 name = "zingolib"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=78e4c979cd793c9efb274eaa71387b4e3dbf68c5#78e4c979cd793c9efb274eaa71387b4e3dbf68c5"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=bdb5a0aa7b8bb62300cdb6272e7102fa98f388af#bdb5a0aa7b8bb62300cdb6272e7102fa98f388af"
 dependencies = [
  "append-only-vec",
  "bech32",
