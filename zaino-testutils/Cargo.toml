@@ -61,4 +61,4 @@ lazy_static = { workspace = true }
 zip32 = "0.2.1"
 
 [dev-dependencies]
-zingo-netutils = { workspace = true }
+zingo_netutils = { workspace = true }
