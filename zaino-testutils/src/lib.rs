@@ -400,14 +400,14 @@ impl TestManager {
             ValidatorKind::Zcashd => {
                 let mut cfg = ZcashdConfig::default_test();
                 cfg.rpc_listen_port = Some(rpc_listen_port);
-                cfg.chain_cache = chain_cache;
+                cfg.chain_cache = chain_cache.clone();
                 ValidatorConfig::ZcashdConfig(cfg)
             }
             ValidatorKind::Zebrad => {
                 let mut cfg = ZebradConfig::default_test();
                 cfg.rpc_listen_port = Some(rpc_listen_port);
                 cfg.indexer_listen_port = Some(grpc_listen_port);
-                cfg.chain_cache = chain_cache;
+                cfg.chain_cache = chain_cache.clone();
                 cfg.network = network_kind;
                 ValidatorConfig::ZebradConfig(cfg)
             }
