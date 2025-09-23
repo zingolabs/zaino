@@ -30,6 +30,7 @@ use zaino_testutils::services;
 use zaino_testutils::test_vectors::transactions::get_test_vectors;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
+use zebra_chain::parameters::NetworkKind;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlockTransaction};
@@ -52,7 +53,7 @@ async fn create_test_manager_and_services(
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-    network: Option<services::network::Network>,
+    network: Option<NetworkKind>,
 ) -> (TestManager, StateService, StateServiceSubscriber) {
     let test_manager = TestManager::launch(
         validator,
@@ -70,12 +71,12 @@ async fn create_test_manager_and_services(
     .unwrap();
 
     let (network_type, zaino_sync_bool) = match network {
-        Some(services::network::Network::Mainnet) => {
+        Some(NetworkKind::Mainnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             (zaino_common::Network::Mainnet, false)
         }
-        Some(services::network::Network::Testnet) => {
+        Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             (zaino_common::Network::Testnet, false)
