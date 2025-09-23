@@ -30,6 +30,7 @@ mod mockchain_tests {
             tests::vectors::{
                 build_active_mockchain_source, build_mockchain_source, load_test_vectors,
             },
+            testutils,
             types::{BestChainLocation, TransactionHash},
             ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
         },
@@ -82,19 +83,8 @@ mod mockchain_tests {
             },
             db_version: 1,
 
-            network: parameters::Network::new_regtest(testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1u32),
-                overwinter: Some(1u32),
-                sapling: Some(1u32),
-                blossom: Some(1u32),
-                heartwood: Some(1u32),
-                canopy: Some(1u32),
-                nu5: Some(1u32),
-                nu6: Some(1u32),
-                nu6_1: Some(1u32),
-                nu7: None,
-            }),
-
+            testutils::default_regtest_heights(),
+            
             no_sync: false,
             no_db: false,
         };
