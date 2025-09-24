@@ -66,7 +66,7 @@ where
         "mainnet" => Ok(zaino_state::chain_index::ZebraNetwork::Mainnet),
         "testnet" => Ok(zaino_state::chain_index::ZebraNetwork::new_default_testnet()),
         #[cfg(any(test, feature = "testutils"))]
-        "regtest" => Ok(activation_heights::active_nus_regtest_network()),
+        "regtest" => Ok(activation_heights::for_test::active_nus_regtest_network()),
         _ => Err(de::Error::custom(format!(
             "Invalid network type '{s}', valid options are 'mainnet', 'testnet', or 'regtest' (regtest requires testutils feature)"
         ))),

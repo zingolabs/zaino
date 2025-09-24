@@ -135,7 +135,7 @@ derive_more = "2.0.1"
 lazy_static = "1.5.0"
 zcash_client_backend = "0.19.1"
 zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
-zingo_common_components = { path = "../../infras/dev/zingo_common_components" }
+zingo_common_components = { git = "https://github.com/zingolabs/infrastructure", rev = "350aaef5e782362829d1c4eeb8e9f24bd9be5354" }
 zip32 = "0.2.1"
 
 [profile.test]

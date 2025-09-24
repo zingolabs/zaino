@@ -8424,7 +8424,7 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
- "zingo_common_components 0.1.0",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure?rev=350aaef5e782362829d1c4eeb8e9f24bd9be5354)",
 ]
 
 [[package]]
@@ -8446,7 +8446,7 @@ dependencies = [
  "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zebra-chain",
  "zingo-infra-services 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=317978667919734f197248a4b3fb87baa0016f4b)",
- "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=541b5489fef9e62d417abb723bc29060afc81bb5)",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure?rev=350aaef5e782362829d1c4eeb8e9f24bd9be5354)",
  "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=2fc99e30032b4ccfd314d21772036054ed11f800)",
  "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=317978667919734f197248a4b3fb87baa0016f4b)",
  "zingolib",
@@ -8480,7 +8480,7 @@ dependencies = [
  "zainod",
  "zebra-chain",
  "zebra-state",
- "zingo_common_components 0.1.0",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure?rev=350aaef5e782362829d1c4eeb8e9f24bd9be5354)",
 ]
 
 [[package]]
@@ -9505,6 +9505,7 @@ dependencies = [
 [[package]]
 name = "zingo_common_components"
 version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure?rev=350aaef5e782362829d1c4eeb8e9f24bd9be5354#350aaef5e782362829d1c4eeb8e9f24bd9be5354"
 dependencies = [
  "thiserror 1.0.69",
  "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
