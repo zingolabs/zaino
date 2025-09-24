@@ -14,7 +14,6 @@ use std::{
     path::PathBuf,
 };
 use tempfile::TempDir;
-use testvectors::seeds;
 use tracing_subscriber::EnvFilter;
 use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
@@ -24,6 +23,7 @@ use zingo_common_components::protocol::activation_heights;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
 use zingo_infra_services::validator::{ZcashdConfig, ZebradConfig};
+use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
 pub use zingolib::testutils::lightclient::from_inputs;
