@@ -8527,7 +8527,6 @@ dependencies = [
  "tempfile",
  "testvectors",
  "tokio",
- "tonic 0.12.3",
  "tracing-subscriber",
  "zaino-common",
  "zaino-state",
