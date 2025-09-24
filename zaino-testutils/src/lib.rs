@@ -251,13 +251,13 @@ impl zingo_infra_services::validator::Validator for LocalNet {
             zingo_infra_services::validator::Zcashd::load_chain(
                 chain_cache,
                 validator_data_dir,
-                validator_network.into(),
+                validator_network,
             )
         } else if chain_cache.to_string_lossy().contains("zebrad") {
             zingo_infra_services::validator::Zebrad::load_chain(
                 chain_cache,
                 validator_data_dir,
-                validator_network.into(),
+                validator_network,
             )
         } else {
             panic!(
@@ -1147,7 +1147,7 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let mut grpc_client = build_client(services::network::localhost_uri(
+                build_client(services::network::localhost_uri(
                     test_manager
                         .zaino_grpc_listen_address
                         .expect("Zaino listen port not available but zaino is active.")
@@ -1225,10 +1225,10 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0
+                    get_confirmed_balance!(clients.faucet, "orchard") > 0
                         || get_confirmed_balance!(clients.faucet, "transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
+                    get_confirmed_balance!(clients.faucet, "orchard"),
                     get_confirmed_balance!(clients.faucet, "transparent")
             );
 
