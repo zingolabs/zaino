@@ -117,7 +117,11 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
-    let recipient_balance = clients.recipient.do_balance().await;
+    let recipient_balance = clients
+        .recipient
+        .account_balance(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     let fetch_service_balance = fetch_service_subscriber
         .z_get_address_balance(AddressStrings::new(vec![recipient_address]))
@@ -132,7 +136,7 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
         250_000,
     );
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        re.into_u64()cipient_balance.confirmed_transparent_balance.unwrap(),
         fetch_service_balance.balance(),
     );
 
@@ -992,7 +996,11 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
-    let balance = clients.recipient.do_balance().await;
+    let balance = clients
+        .recipient
+        .account_balance(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     let address_list = AddressList {
         addresses: vec![recipient_taddr],
@@ -1006,7 +1014,7 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
     dbg!(&fetch_service_balance);
     assert_eq!(
         fetch_service_balance.value_zat as u64,
-        balance.confirmed_transparent_balance.unwrap()
+        balance.confirmed_transparent_balance.unwrap().into_u64()
     );
 
     test_manager.close().await;

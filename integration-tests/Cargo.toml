@@ -33,4 +33,5 @@ tempfile.workspace = true
 tokio = { workspace = true }
 
 [dev-dependencies]
+zingo-common-components = { workspace = true }
 anyhow = { workspace = true }
