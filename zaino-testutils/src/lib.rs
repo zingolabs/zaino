@@ -948,7 +948,7 @@ mod launch_testmanager {
                 assert!(
                     clients
                         .faucet
-                        .do_balance()
+                        .account_balance(zip32::AccountId::ZERO)
                         .await
                         .confirmed_transparent_balance
                         .unwrap()
@@ -956,7 +956,7 @@ mod launch_testmanager {
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
                     clients
                         .faucet
-                        .do_balance()
+                        .account_balance(zip32::AccountId::ZERO)
                         .await
                         .confirmed_transparent_balance
                         .unwrap()
@@ -1000,7 +1000,7 @@ mod launch_testmanager {
                 assert_eq!(
                     clients
                         .recipient
-                        .do_balance()
+                        .account_balance(zip32::AccountId::ZERO)
                         .await
                         .verified_sapling_balance
                         .unwrap(),
@@ -1256,7 +1256,7 @@ mod launch_testmanager {
                 assert!(
                     clients
                         .faucet
-                        .do_balance()
+                        .account_balance(zip32::AccountId::ZERO)
                         .await
                         .confirmed_transparent_balance
                         .unwrap()
@@ -1264,7 +1264,7 @@ mod launch_testmanager {
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
                     clients
                         .faucet
-                        .do_balance()
+                        .account_balance(zip32::AccountId::ZERO)
                         .await
                         .confirmed_transparent_balance
                         .unwrap()
@@ -1281,10 +1281,10 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0,
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64() > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64(),
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64()
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -1306,10 +1306,12 @@ mod launch_testmanager {
                 assert_eq!(
                     clients
                         .recipient
-                        .do_balance()
+                        .account_balance(zip32::AccountId::ZERO)
                         .await
-                        .verified_sapling_balance
-                        .unwrap(),
+                        .unwrap()
+                        .confirmed_sapling_balance
+                        .unwrap()
+                        .into_u64(),
                     250_000
                 );
 
