@@ -9,15 +9,17 @@ use zaino_testutils::from_inputs;
 use zaino_testutils::services;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
+use zebra_chain::parameters::NetworkKind;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
+use zip32::AccountId;
 
 async fn create_test_manager_and_services(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-    network: Option<services::network::Network>,
+    network: Option<NetworkKind>,
 ) -> (
     TestManager,
     FetchService,
@@ -41,12 +43,12 @@ async fn create_test_manager_and_services(
     .unwrap();
 
     let (network_type, zaino_sync_bool) = match network {
-        Some(services::network::Network::Mainnet) => {
+        Some(NetworkKind::Mainnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             (zaino_common::Network::Mainnet, false)
         }
-        Some(services::network::Network::Testnet) => {
+        Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             (zaino_common::Network::Testnet, false)
@@ -142,7 +144,7 @@ async fn create_test_manager_and_services(
 async fn state_service_check_info(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: services::network::Network,
+    network: NetworkKind,
 ) {
     let (
         mut test_manager,
@@ -288,7 +290,7 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -345,7 +347,7 @@ async fn state_service_get_address_balance_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(NetworkKind::Testnet),
     )
     .await;
 
@@ -375,7 +377,7 @@ async fn state_service_get_address_balance_testnet() {
 async fn state_service_get_block_raw(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: services::network::Network,
+    network: NetworkKind,
 ) {
     let (
         mut test_manager,
@@ -386,7 +388,7 @@ async fn state_service_get_block_raw(
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
     let height = match network {
-        services::network::Network::Regtest => "1".to_string(),
+        NetworkKind::Regtest => "1".to_string(),
         _ => "1000000".to_string(),
     };
 
@@ -408,7 +410,7 @@ async fn state_service_get_block_raw(
 async fn state_service_get_block_object(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
-    network: services::network::Network,
+    network: NetworkKind,
 ) {
     let (
         mut test_manager,
@@ -419,7 +421,7 @@ async fn state_service_get_block_object(
     ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
 
     let height = match network {
-        services::network::Network::Regtest => "1".to_string(),
+        NetworkKind::Regtest => "1".to_string(),
         _ => "1000000".to_string(),
     };
 
@@ -470,11 +472,11 @@ async fn state_service_get_raw_mempool(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -517,7 +519,7 @@ async fn state_service_get_raw_mempool_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(NetworkKind::Testnet),
     )
     .await;
 
@@ -554,7 +556,7 @@ async fn state_service_z_get_treestate(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -595,7 +597,7 @@ async fn state_service_z_get_treestate_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(NetworkKind::Testnet),
     )
     .await;
 
@@ -637,7 +639,7 @@ async fn state_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -678,7 +680,7 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(NetworkKind::Testnet),
     )
     .await;
 
@@ -742,7 +744,7 @@ async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -785,7 +787,7 @@ async fn state_service_get_raw_transaction_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(NetworkKind::Testnet),
     )
     .await;
 
@@ -830,7 +832,7 @@ async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -893,7 +895,7 @@ async fn state_service_get_address_tx_ids_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(NetworkKind::Testnet),
     )
     .await;
 
@@ -941,7 +943,7 @@ async fn state_service_get_address_utxos(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -996,7 +998,7 @@ async fn state_service_get_address_utxos_testnet() {
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
         false,
-        Some(services::network::Network::Testnet),
+        Some(NetworkKind::Testnet),
     )
     .await;
 
@@ -1034,12 +1036,7 @@ mod zebrad {
 
         #[tokio::test]
         async fn regtest_no_cache() {
-            state_service_check_info(
-                &ValidatorKind::Zebrad,
-                None,
-                services::network::Network::Regtest,
-            )
-            .await;
+            state_service_check_info(&ValidatorKind::Zebrad, None, NetworkKind::Regtest).await;
         }
 
         #[tokio::test]
@@ -1055,7 +1052,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             let mut chaintip_subscriber = state_service_subscriber.chaintip_update_subscriber();
@@ -1081,7 +1078,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_CHAIN_CACHE_DIR.clone(),
-                services::network::Network::Regtest,
+                NetworkKind::Regtest,
             )
             .await;
         }
@@ -1092,7 +1089,7 @@ mod zebrad {
             state_service_check_info(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                services::network::Network::Testnet,
+                NetworkKind::Testnet,
             )
             .await;
         }
@@ -1148,7 +1145,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1174,7 +1171,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1202,7 +1199,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
 
@@ -1284,7 +1281,7 @@ mod zebrad {
             test_manager.local_net.generate_blocks(100).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.sync_and_await().await.unwrap();
-            clients.faucet.quick_shield().await.unwrap();
+            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
             test_manager.local_net.generate_blocks(1).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             clients.faucet.sync_and_await().await.unwrap();
@@ -1344,12 +1341,8 @@ mod zebrad {
 
         #[tokio::test]
         async fn block_object_regtest() {
-            state_service_get_block_object(
-                &ValidatorKind::Zebrad,
-                None,
-                services::network::Network::Regtest,
-            )
-            .await;
+            state_service_get_block_object(&ValidatorKind::Zebrad, None, NetworkKind::Regtest)
+                .await;
         }
 
         #[ignore = "requires fully synced testnet."]
@@ -1358,19 +1351,14 @@ mod zebrad {
             state_service_get_block_object(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                services::network::Network::Testnet,
+                NetworkKind::Testnet,
             )
             .await;
         }
 
         #[tokio::test]
         async fn block_raw_regtest() {
-            state_service_get_block_raw(
-                &ValidatorKind::Zebrad,
-                None,
-                services::network::Network::Regtest,
-            )
-            .await;
+            state_service_get_block_raw(&ValidatorKind::Zebrad, None, NetworkKind::Regtest).await;
         }
 
         #[ignore = "requires fully synced testnet."]
@@ -1379,7 +1367,7 @@ mod zebrad {
             state_service_get_block_raw(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
-                services::network::Network::Testnet,
+                NetworkKind::Testnet,
             )
             .await;
         }
@@ -1417,7 +1405,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(1).await.unwrap();
@@ -1443,7 +1431,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1489,7 +1477,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1525,7 +1513,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(5).await.unwrap();
@@ -1568,7 +1556,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(2).await.unwrap();
@@ -1597,7 +1585,7 @@ mod zebrad {
                 None,
                 false,
                 false,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(6).await.unwrap();
@@ -1668,7 +1656,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
             test_manager.local_net.generate_blocks(100).await.unwrap();
@@ -1679,7 +1667,7 @@ mod zebrad {
                 .take()
                 .expect("Clients are not initialized");
             clients.faucet.sync_and_await().await.unwrap();
-            clients.faucet.quick_shield().await.unwrap();
+            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
 
             test_manager.local_net.generate_blocks(2).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1723,7 +1711,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
 
@@ -1762,7 +1750,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
 
@@ -1801,7 +1789,7 @@ mod zebrad {
                 fetch_service_address_utxos_streamed.first().unwrap().txid,
                 clients
                     .faucet
-                    .transaction_summaries()
+                    .transaction_summaries(false)
                     .await
                     .unwrap()
                     .txids()[1]
@@ -1821,7 +1809,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
 
@@ -1855,7 +1843,7 @@ mod zebrad {
                     .txid,
                 clients
                     .faucet
-                    .transaction_summaries()
+                    .transaction_summaries(false)
                     .await
                     .unwrap()
                     .txids()[1]
@@ -1875,7 +1863,7 @@ mod zebrad {
                 None,
                 true,
                 true,
-                Some(services::network::Network::Regtest),
+                Some(NetworkKind::Regtest),
             )
             .await;
 

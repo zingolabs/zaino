@@ -42,6 +42,8 @@ zebra-chain = "2.0"
 zebra-state = "2.0"
 zebra-rpc = "2.0"
 
+zingo_netutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cc2af1ac80cb6b7a7f0a0b8f331f7b0873d667bf" }
+
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
 tokio-stream = "0.1"
@@ -134,6 +136,7 @@ lazy_static = "1.5.0"
 zcash_client_backend = "0.19.1"
 zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
 zingo_common_components = { path = "../../infras/dev/zingo_common_components" }
+zip32 = "0.2.1"
 
 [profile.test]
 opt-level = 3

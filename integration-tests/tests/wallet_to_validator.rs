@@ -7,6 +7,7 @@ use zaino_state::BackendType;
 use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
 use zaino_testutils::ValidatorKind;
+use zip32::AccountId;
 
 async fn connect_to_node_get_info_for_validator(validator: &ValidatorKind, backend: &BackendType) {
     let mut test_manager = TestManager::launch(
@@ -41,7 +42,7 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -82,7 +83,7 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -123,7 +124,7 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -227,13 +228,13 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -310,7 +311,7 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -342,7 +343,11 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
         250_000
     );
 
-    clients.recipient.quick_shield().await.unwrap();
+    clients
+        .recipient
+        .quick_shield(AccountId::ZERO)
+        .await
+        .unwrap();
     test_manager.generate_blocks_with_delay(1).await;
     clients.recipient.sync_and_await().await.unwrap();
 
@@ -379,10 +384,10 @@ async fn monitor_unverified_mempool_for_validator(
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -409,7 +414,7 @@ async fn monitor_unverified_mempool_for_validator(
     .unwrap();
 
     println!("\n\nStarting Mempool!\n");
-    clients.recipient.wallet.lock().await.clear_all();
+    clients.recipient.wallet.write().await.clear_all();
     clients.recipient.sync_and_await().await.unwrap();
 
     // test_manager.local_net.print_stdout();

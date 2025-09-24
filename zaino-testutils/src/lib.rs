@@ -657,12 +657,6 @@ mod launch_testmanager {
             ))
             .await
             .unwrap();
-            dbg!(grpc_client
-                .get_lightd_info(tonic::Request::new(
-                    zcash_client_backend::proto::service::Empty {},
-                ))
-                .await
-                .unwrap());
             test_manager.close().await;
         }
 
@@ -839,12 +833,6 @@ mod launch_testmanager {
                 ))
                 .await
                 .unwrap();
-                dbg!(grpc_client
-                    .get_lightd_info(tonic::Request::new(
-                        zcash_client_backend::proto::service::Empty {},
-                    ))
-                    .await
-                    .unwrap());
                 test_manager.close().await;
             }
 
@@ -1004,7 +992,7 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch(
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
-                    Some(zebra_chain::parameters::NetworkKind::Testnet),
+                    Some(NetworkKind::Testnet),
                     ZEBRAD_TESTNET_CACHE_DIR.clone(),
                     true,
                     false,
@@ -1130,12 +1118,6 @@ mod launch_testmanager {
                 ))
                 .await
                 .unwrap();
-                dbg!(grpc_client
-                    .get_lightd_info(tonic::Request::new(
-                        zcash_client_backend::proto::service::Empty {},
-                    ))
-                    .await
-                    .unwrap());
                 test_manager.close().await;
             }
 
@@ -1296,7 +1278,7 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    Some(services::network::Network::Testnet),
+                    Some(NetworkKind::Testnet),
                     ZEBRAD_TESTNET_CACHE_DIR.clone(),
                     true,
                     false,

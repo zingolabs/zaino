@@ -20,6 +20,7 @@ zaino-state = { workspace = true, features = ["bench"] }
 zebra-chain.workspace = true
 zebra-state.workspace = true
 zebra-rpc.workspace = true
+zip32 = {workspace = true}
 
 core2 = { workspace = true }
 prost = { workspace = true }

@@ -15,6 +15,7 @@ use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlock, GetBlockHash};
+use zip32::AccountId;
 
 async fn create_test_manager_and_fetch_service(
     validator: &ValidatorKind,
@@ -100,7 +101,7 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -194,11 +195,11 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -252,12 +253,12 @@ pub async fn test_get_mempool_info(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
 
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
 
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -331,7 +332,7 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -370,7 +371,7 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -409,7 +410,7 @@ async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -450,7 +451,7 @@ async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -504,7 +505,7 @@ async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -812,7 +813,7 @@ async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -858,7 +859,7 @@ async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -906,7 +907,7 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -975,7 +976,7 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -1027,11 +1028,11 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -1120,11 +1121,11 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -1242,7 +1243,7 @@ async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
@@ -1289,7 +1290,7 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
