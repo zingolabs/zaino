@@ -8644,7 +8644,6 @@ name = "zaino-testutils"
 version = "0.1.2"
 dependencies = [
  "http",
- "lazy_static",
  "once_cell",
  "portpicker",
  "proptest",
