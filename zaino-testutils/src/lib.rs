@@ -15,12 +15,11 @@ use std::{
 };
 use tempfile::TempDir;
 use tracing_subscriber::EnvFilter;
-use zaino_common::{
-    network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
-};
+use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
 use zebra_chain::parameters::NetworkKind;
+use zingo_common_components::protocol::activation_heights;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
 use zingo_infra_services::validator::{ZcashdConfig, ZebradConfig};
@@ -328,7 +327,7 @@ async fn build_lightclients(
     indexer_port: portpicker::Port,
 ) -> (LightClient, LightClient) {
     let activation_heights =
-        zingo_common_components::protocol::activation_heights::test::block_one();
+        zingo_common_components::protocol::activation_heights::for_test::block_one();
     let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
     let faucet = client_builder.build_faucet(true, activation_heights);
     let recipient = client_builder.build_client(
@@ -354,7 +353,7 @@ impl TestManager {
     pub async fn launch(
         validator: &ValidatorKind,
         backend: &BackendType,
-        network: Option<NetworkKind>,
+        _network: Option<NetworkKind>,
         chain_cache: Option<PathBuf>,
         enable_zaino: bool,
         enable_zaino_jsonrpc_server: bool,
@@ -376,10 +375,10 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let activation_heights = ActivationHeights::default();
-        let network_kind = network.unwrap_or(NetworkKind::Regtest);
-        let zaino_network_kind =
-            Network::from_network_kind_and_activation_heights(&network_kind, &activation_heights);
+        let nu0_reg_net = activation_heights::active_nus_regtest_network();
+        //let network_kind = network.unwrap_or(NetworkKind::Regtest);
+        //let zaino_network_kind =
+        //    Network::from_network_kind_and_activation_heights(&network_kind, &nu0_reg_net);
 
         if enable_clients && !enable_zaino {
             return Err(std::io::Error::other(
@@ -407,7 +406,7 @@ impl TestManager {
                 cfg.rpc_listen_port = Some(rpc_listen_port);
                 cfg.indexer_listen_port = Some(grpc_listen_port);
                 cfg.chain_cache = chain_cache.clone();
-                cfg.network = network_kind;
+                cfg.network = nu0_reg_net.clone().kind();
                 ValidatorConfig::ZebradConfig(cfg)
             }
         };
@@ -462,7 +461,7 @@ impl TestManager {
                     },
                 },
                 zebra_db_path,
-                network: zaino_network_kind,
+                network: nu0_reg_net.clone(),
                 no_sync: zaino_no_sync,
                 no_db: zaino_no_db,
                 slow_sync: false,
@@ -504,7 +503,7 @@ impl TestManager {
         Ok(Self {
             local_net,
             data_dir,
-            network: network_kind,
+            network: nu0_reg_net.clone().kind(),
             zebrad_rpc_listen_address,
             zebrad_grpc_listen_address,
             zaino_handle,
@@ -539,7 +538,6 @@ impl Drop for TestManager {
         };
     }
 }
-
 #[cfg(test)]
 mod launch_testmanager {
 
@@ -555,6 +553,36 @@ mod launch_testmanager {
         GrpcConnector::new(uri).get_client().await
     }
 
+    /// Simple helper to DRY WET test code
+    macro_rules! get_confirmed_balance {
+        ($client:expr, "orchard") => {
+            $client
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap()
+                .confirmed_orchard_balance
+                .unwrap()
+                .into_u64()
+        };
+        ($client:expr, "sapling") => {
+            $client
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap()
+                .confirmed_sapling_balance
+                .unwrap()
+                .into_u64()
+        };
+        ($client:expr, "transparent") => {
+            $client
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap()
+                .confirmed_transparent_balance
+                .unwrap()
+                .into_u64()
+        };
+    }
     mod zcashd {
 
         use super::*;
@@ -650,7 +678,7 @@ mod launch_testmanager {
             )
             .await
             .unwrap();
-            let grpc_client = build_client(services::network::localhost_uri(
+            build_client(services::network::localhost_uri(
                 test_manager
                     .zaino_grpc_listen_address
                     .expect("Zaino listen port is not available but zaino is active.")
@@ -711,15 +739,19 @@ mod launch_testmanager {
                 .expect("Clients are not initialized");
 
             clients.faucet.sync_and_await().await.unwrap();
-            dbg!(clients.faucet.do_balance().await);
+            dbg!(clients
+                .faucet
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap());
 
             assert!(
-                    clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
-                    "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
-                );
+                get_confirmed_balance!(clients.faucet, "orchard") > 0
+                    || get_confirmed_balance!(clients.faucet, "transparent") > 0,
+                "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
+                get_confirmed_balance!(clients.faucet, "orchard"),
+                get_confirmed_balance!(clients.faucet, "transparent")
+            );
 
             test_manager.close().await;
         }
@@ -826,7 +858,7 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let grpc_client = build_client(services::network::localhost_uri(
+                build_client(services::network::localhost_uri(
                     test_manager
                         .zaino_grpc_listen_address
                         .expect("Zaino listen port not available but zaino is active.")
@@ -887,18 +919,26 @@ mod launch_testmanager {
                     .expect("Clients are not initialized");
 
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 test_manager.local_net.generate_blocks(100).await.unwrap();
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                    clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
+                    get_confirmed_balance!(clients.faucet, "orchard") > 0
+                        || get_confirmed_balance!(clients.faucet, "transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                    get_confirmed_balance!(clients.faucet, "orchard"),
+                    get_confirmed_balance!(clients.faucet, "transparent")
             );
 
                 test_manager.close().await;
@@ -928,23 +968,16 @@ mod launch_testmanager {
                 test_manager.local_net.generate_blocks(100).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                    clients
-                        .faucet
-                        .do_balance()
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
-                        > 0,
+                    get_confirmed_balance!(clients.faucet, "transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
-                    clients
-                        .faucet
-                        .do_balance()
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
+                    get_confirmed_balance!(clients.faucet, "transparent")
                 );
 
                 // *Send all transparent funds to own orchard address.
@@ -952,13 +985,17 @@ mod launch_testmanager {
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                clients.faucet.do_balance().await.orchard_balance.unwrap() > 0,
-                "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                    get_confirmed_balance!(clients.faucet, "orchard") > 0,
+                    "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
+                    get_confirmed_balance!(clients.faucet, "orchard"),
+                    get_confirmed_balance!(clients.faucet, "transparent")
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -972,15 +1009,14 @@ mod launch_testmanager {
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.recipient.sync_and_await().await.unwrap();
-                dbg!(clients.recipient.do_balance().await);
+                dbg!(clients
+                    .recipient
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert_eq!(
-                    clients
-                        .recipient
-                        .do_balance()
-                        .await
-                        .verified_sapling_balance
-                        .unwrap(),
+                    get_confirmed_balance!(clients.recipient, "sapling"),
                     250_000
                 );
 
@@ -1111,7 +1147,7 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let grpc_client = build_client(services::network::localhost_uri(
+                build_client(services::network::localhost_uri(
                     test_manager
                         .zaino_grpc_listen_address
                         .expect("Zaino listen port not available but zaino is active.")
@@ -1174,18 +1210,26 @@ mod launch_testmanager {
                     .expect("Clients are not initialized");
 
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 test_manager.generate_blocks_with_delay(100).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                    clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
+                    get_confirmed_balance!(clients.faucet, "orchard") > 0
+                        || get_confirmed_balance!(clients.faucet, "transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                    get_confirmed_balance!(clients.faucet, "orchard"),
+                    get_confirmed_balance!(clients.faucet, "transparent")
             );
 
                 test_manager.close().await;
@@ -1216,36 +1260,33 @@ mod launch_testmanager {
 
                 test_manager.generate_blocks_with_delay(100).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                    clients
-                        .faucet
-                        .do_balance()
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
-                        > 0,
+                    get_confirmed_balance!(clients.faucet, "transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
-                    clients
-                        .faucet
-                        .do_balance()
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
+                    get_confirmed_balance!(clients.faucet, "transparent")
                 );
 
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
                 test_manager.generate_blocks_with_delay(1).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                clients.faucet.do_balance().await.orchard_balance.unwrap() > 0,
+                get_confirmed_balance!(clients.faucet, "orchard") > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                get_confirmed_balance!(clients.faucet, "orchard"),
+                get_confirmed_balance!(clients.faucet, "transparent")
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -1258,15 +1299,14 @@ mod launch_testmanager {
 
                 test_manager.generate_blocks_with_delay(1).await;
                 clients.recipient.sync_and_await().await.unwrap();
-                dbg!(clients.recipient.do_balance().await);
+                dbg!(clients
+                    .recipient
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert_eq!(
-                    clients
-                        .recipient
-                        .do_balance()
-                        .await
-                        .verified_sapling_balance
-                        .unwrap(),
+                    get_confirmed_balance!(clients.recipient, "sapling"),
                     250_000
                 );
 

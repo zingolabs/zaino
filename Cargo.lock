@@ -4129,7 +4129,7 @@ dependencies = [
  "zcash_transparent 0.4.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zingo-memo",
  "zingo-status",
- "zingo_netutils",
+ "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=cc2af1ac80cb6b7a7f0a0b8f331f7b0873d667bf)",
  "zip32",
 ]
 
@@ -8449,7 +8449,7 @@ dependencies = [
  "zebra-chain",
  "zingo-infra-services 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=317978667919734f197248a4b3fb87baa0016f4b)",
  "zingo_common_components",
- "zingo_netutils",
+ "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=2fc99e30032b4ccfd314d21772036054ed11f800)",
  "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=317978667919734f197248a4b3fb87baa0016f4b)",
  "zingolib",
  "zip32",
@@ -9530,10 +9530,32 @@ dependencies = [
 [[package]]
 name = "zingo_common_components"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=317978667919734f197248a4b3fb87baa0016f4b#317978667919734f197248a4b3fb87baa0016f4b"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=541b5489fef9e62d417abb723bc29060afc81bb5#541b5489fef9e62d417abb723bc29060afc81bb5"
 dependencies = [
  "thiserror 1.0.69",
  "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
+]
+
+[[package]]
+name = "zingo_netutils"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=2fc99e30032b4ccfd314d21772036054ed11f800#2fc99e30032b4ccfd314d21772036054ed11f800"
+dependencies = [
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "prost",
+ "thiserror 1.0.69",
+ "time",
+ "time-core",
+ "tokio-rustls",
+ "tonic 0.13.1",
+ "tower 0.5.2",
+ "webpki-roots 0.25.4",
+ "zcash_client_backend 0.19.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -9635,7 +9657,7 @@ dependencies = [
  "zingo-memo",
  "zingo-price",
  "zingo-status",
- "zingo_netutils",
+ "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=cc2af1ac80cb6b7a7f0a0b8f331f7b0873d667bf)",
  "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=89e0b665967a0dd1950855ad37ce18d9c5a14709)",
  "zip32",
 ]
