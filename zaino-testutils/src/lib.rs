@@ -749,12 +749,12 @@ mod launch_testmanager {
                 .unwrap());
 
             assert!(
-                    get_confirmed_balance!("orchard") > 0
-                        || get_confirmed_balance!("transparent") > 0,
-                    "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
-                    get_confirmed_balance!("transparent")
-                );
+                get_confirmed_balance!("orchard") > 0
+                    || get_confirmed_balance!("transparent") > 0,
+                "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
+                get_confirmed_balance!("orchard"),
+                get_confirmed_balance!("transparent")
+            );
 
             test_manager.close().await;
         }
@@ -861,7 +861,7 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let mut grpc_client = build_client(services::network::localhost_uri(
+                build_client(services::network::localhost_uri(
                     test_manager
                         .zaino_grpc_listen_address
                         .expect("Zaino listen port not available but zaino is active.")
