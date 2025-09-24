@@ -375,7 +375,7 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let nu0_reg_net = activation_heights::active_nus_regtest_network();
+        let nu0_reg_net = activation_heights::for_test::active_nus_regtest_network();
         //let network_kind = network.unwrap_or(NetworkKind::Regtest);
         //let zaino_network_kind =
         //    Network::from_network_kind_and_activation_heights(&network_kind, &nu0_reg_net);
