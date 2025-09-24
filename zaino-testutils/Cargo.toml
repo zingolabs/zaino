@@ -40,7 +40,6 @@ tracing-subscriber = { workspace = true, features = [
 
 # Miscellaneous
 tokio = { workspace = true }
-tonic = { workspace = true }
 http = { workspace = true }
 tempfile = { workspace = true }
 portpicker = { workspace = true }
