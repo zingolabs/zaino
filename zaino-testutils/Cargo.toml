@@ -29,7 +29,7 @@ zingo_common_components = { git = "https://github.com/zingolabs/infrastructure.g
 zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "317978667919734f197248a4b3fb87baa0016f4b" }
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "2bd457bc1708fbd3871dd69a6099746d2e41403a", features = [
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "52403e45821b94dff0f74cc8785a380028398e81", features = [
     "testutils",
 ] }
 tracing-subscriber = { workspace = true, features = [
