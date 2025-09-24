@@ -9702,31 +9702,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zingo-infra-services"
-version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=6c8ad003491371c2e387c5f9d3ba35c45286257b#6c8ad003491371c2e387c5f9d3ba35c45286257b"
-dependencies = [
- "getset",
- "hex",
- "http",
- "json",
- "portpicker",
- "reqwest",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zcash_primitives 0.24.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
- "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
- "zebra-chain",
- "zebra-node-services",
- "zebra-rpc",
-]
-
-[[package]]
 name = "zingo-memo"
 version = "0.0.1"
 source = "git+https://github.com/zingolabs/zingolib.git?rev=52403e45821b94dff0f74cc8785a380028398e81#52403e45821b94dff0f74cc8785a380028398e81"
@@ -9808,6 +9783,15 @@ version = "0.0.1"
 source = "git+https://github.com/zingolabs/zingolib.git?rev=4d43663c35c1f9ca2c03bee0dca27fef3bcd6a1f#4d43663c35c1f9ca2c03bee0dca27fef3bcd6a1f"
 dependencies = [
  "bip0039",
+]
+
+[[package]]
+name = "zingo_common_components"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
+ "zebra-chain",
 ]
 
 [[package]]
