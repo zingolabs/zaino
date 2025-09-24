@@ -7,17 +7,17 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
-CRATE_NAME="$1"
+PACKAGE_NAME="$1"
 
 # Run all cargo commands for the specified crate
 set -e  # Exit on first error
 
-echo "Running checks for crate: $CRATE_NAME"
+echo "Running checks for crate: $PACKAGE_NAME"
 
-cargo check -p "$CRATE_NAME" && \
-cargo check --all-features -p "$CRATE_NAME" && \
-cargo check --tests -p "$CRATE_NAME" && \
-cargo check --tests --all-features -p "$CRATE_NAME" && \
-cargo fmt -p "$CRATE_NAME" && \
-cargo clippy -p "$CRATE_NAME" && \
-cargo nextest run -p "$CRATE_NAME"
+cargo check --package "$PACKAGE_NAME" && \
+cargo check --all-features --package "$PACKAGE_NAME" && \
+cargo check --tests --package "$PACKAGE_NAME" && \
+cargo check --tests --all-features --package "$PACKAGE_NAME" && \
+cargo fmt --package "$PACKAGE_NAME" && \
+cargo clippy --package "$PACKAGE_NAME" && \
+cargo nextest run --package "$PACKAGE_NAME"
