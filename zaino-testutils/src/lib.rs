@@ -710,14 +710,18 @@ mod launch_testmanager {
                 .expect("Clients are not initialized");
 
             clients.faucet.sync_and_await().await.unwrap();
-            dbg!(clients.faucet.do_balance().await);
+            dbg!(clients
+                .faucet
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap());
 
             assert!(
-                    clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0
+                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap() > 0,
                     "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
                 );
 
             test_manager.close().await;
@@ -886,18 +890,26 @@ mod launch_testmanager {
                     .expect("Clients are not initialized");
 
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 test_manager.local_net.generate_blocks(100).await.unwrap();
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                    clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64() > 0
+                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64() > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64(),
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64()
             );
 
                 test_manager.close().await;
@@ -927,7 +939,11 @@ mod launch_testmanager {
                 test_manager.local_net.generate_blocks(100).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
                     clients
@@ -951,13 +967,17 @@ mod launch_testmanager {
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                clients.faucet.do_balance().await.orchard_balance.unwrap() > 0,
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -971,7 +991,11 @@ mod launch_testmanager {
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.recipient.sync_and_await().await.unwrap();
-                dbg!(clients.recipient.do_balance().await);
+                dbg!(clients
+                    .recipient
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert_eq!(
                     clients
@@ -1173,18 +1197,26 @@ mod launch_testmanager {
                     .expect("Clients are not initialized");
 
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 test_manager.generate_blocks_with_delay(100).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                    clients.faucet.do_balance().await.orchard_balance.unwrap() > 0
-                        || clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap() > 0,
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0
+                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap() > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                    clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
             );
 
                 test_manager.close().await;
@@ -1215,7 +1247,11 @@ mod launch_testmanager {
 
                 test_manager.generate_blocks_with_delay(100).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
                     clients
@@ -1238,13 +1274,17 @@ mod launch_testmanager {
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
                 test_manager.generate_blocks_with_delay(1).await;
                 clients.faucet.sync_and_await().await.unwrap();
-                dbg!(clients.faucet.do_balance().await);
+                dbg!(clients
+                    .faucet
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert!(
-                clients.faucet.do_balance().await.orchard_balance.unwrap() > 0,
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                clients.faucet.do_balance().await.orchard_balance.unwrap(),
-                clients.faucet.do_balance().await.confirmed_transparent_balance.unwrap()
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
+                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -1257,7 +1297,11 @@ mod launch_testmanager {
 
                 test_manager.generate_blocks_with_delay(1).await;
                 clients.recipient.sync_and_await().await.unwrap();
-                dbg!(clients.recipient.do_balance().await);
+                dbg!(clients
+                    .recipient
+                    .account_balance(zip32::AccountId::ZERO)
+                    .await
+                    .unwrap());
 
                 assert_eq!(
                     clients
