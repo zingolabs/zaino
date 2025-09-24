@@ -934,11 +934,11 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                    get_confirmed_balance!("orchard") > 0
-                        || get_confirmed_balance!("transparent") > 0,
+                    get_confirmed_balance!(clients.faucet, "orchard") > 0
+                        || get_confirmed_balance!(clients.faucet, "transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    get_confirmed_balance!("orchard"),
-                    get_confirmed_balance!("transparent").into_u64()
+                    get_confirmed_balance!(clients.faucet, "orchard"),
+                    get_confirmed_balance!(clients.faucet, "transparent")
             );
 
                 test_manager.close().await;
