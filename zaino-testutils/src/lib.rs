@@ -539,6 +539,39 @@ impl Drop for TestManager {
     }
 }
 
+/// Simple helper to DRY WET test code
+macro_rules! get_confirmed_balance {
+    ("orchard") => {
+        clients
+            .faucet
+            .account_balance(zip32::AccountId::ZERO)
+            .await
+            .unwrap()
+            .confirmed_orchard_balance
+            .unwrap()
+            .into_u64()
+    };
+    ("sapling") => {
+        clients
+            .faucet
+            .account_balance(zip32::AccountId::ZERO)
+            .await
+            .unwrap()
+            .confirmed_sapling_balance
+            .unwrap()
+            .into_u64()
+    };
+    ("transparent") => {
+        clients
+            .faucet
+            .account_balance(zip32::AccountId::ZERO)
+            .await
+            .unwrap()
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64()
+    };
+}
 #[cfg(test)]
 mod launch_testmanager {
 
@@ -553,7 +586,6 @@ mod launch_testmanager {
     ) -> Result<CompactTxStreamerClient<UnderlyingService>, GetClientError> {
         GrpcConnector::new(uri).get_client().await
     }
-
     mod zcashd {
 
         use super::*;
@@ -649,7 +681,7 @@ mod launch_testmanager {
             )
             .await
             .unwrap();
-            let mut grpc_client = build_client(services::network::localhost_uri(
+            build_client(services::network::localhost_uri(
                 test_manager
                     .zaino_grpc_listen_address
                     .expect("Zaino listen port is not available but zaino is active.")
@@ -717,8 +749,8 @@ mod launch_testmanager {
                 .unwrap());
 
             assert!(
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0
-                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap() > 0,
+                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64() > 0
+                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64() > 0,
                     "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                     clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
                     clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
