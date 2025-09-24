@@ -749,11 +749,11 @@ mod launch_testmanager {
                 .unwrap());
 
             assert!(
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64() > 0
-                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64() > 0,
+                    get_confirmed_balance!("orchard") > 0
+                        || get_confirmed_balance!("transparent") > 0,
                     "No mining reward received from Zcashd. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                     clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
+                    get_confirmed_balance!("transparent")
                 );
 
             test_manager.close().await;
@@ -937,11 +937,11 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64() > 0
-                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64() > 0,
+                    get_confirmed_balance!("orchard") > 0
+                        || get_confirmed_balance!("transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64(),
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64()
+                    get_confirmed_balance!("orchard"),
+                    get_confirmed_balance!("transparent").into_u64()
             );
 
                 test_manager.close().await;
@@ -978,20 +978,9 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                    clients
-                        .faucet
-                        .account_balance(zip32::AccountId::ZERO)
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
-                        > 0,
+                    get_confirmed_balance!("transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
-                    clients
-                        .faucet
-                        .account_balance(zip32::AccountId::ZERO)
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
+                    get_confirmed_balance!("transparent")
                 );
 
                 // *Send all transparent funds to own orchard address.
@@ -1009,7 +998,7 @@ mod launch_testmanager {
                 clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                 clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
+                get_confirmed_balance!("transparent")
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -1245,10 +1234,10 @@ mod launch_testmanager {
 
                 assert!(
                     clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0
-                        || clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap() > 0,
+                        || get_confirmed_balance!("transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
                     clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
-                    clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap()
+                    get_confirmed_balance!("transparent")
             );
 
                 test_manager.close().await;
@@ -1286,20 +1275,9 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                    clients
-                        .faucet
-                        .account_balance(zip32::AccountId::ZERO)
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
-                        > 0,
+                    get_confirmed_balance!("transparent") > 0,
                     "No mining reward received from Zebrad. Faucet Transparent Balance: {:}.",
-                    clients
-                        .faucet
-                        .account_balance(zip32::AccountId::ZERO)
-                        .await
-                        .confirmed_transparent_balance
-                        .unwrap()
+                    get_confirmed_balance!("transparent")
                 );
 
                 // *Send all transparent funds to own orchard address.
@@ -1313,10 +1291,10 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64() > 0,
+                get_confirmed_balance!("orchard") > 0,
                 "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_orchard_balance.unwrap().into_u64(),
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().confirmed_transparent_balance.unwrap().into_u64()
+                get_confirmed_balance!("orchard"),
+                get_confirmed_balance!("transparent")
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
