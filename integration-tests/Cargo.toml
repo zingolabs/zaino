@@ -21,6 +21,7 @@ zebra-chain.workspace = true
 zebra-state.workspace = true
 zebra-rpc.workspace = true
 zip32 = {workspace = true}
+zingo_common_components = { workspace = true }
 
 core2 = { workspace = true }
 prost = { workspace = true }

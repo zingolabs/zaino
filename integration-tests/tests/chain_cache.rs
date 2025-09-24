@@ -48,9 +48,7 @@ mod chain_query_interface {
 
     use futures::TryStreamExt as _;
     use tempfile::TempDir;
-    use zaino_common::{
-        network::ActivationHeights, CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig,
-    };
+    use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
     use zaino_state::{
         bench::{
             chain_index::{self, ChainIndex},
