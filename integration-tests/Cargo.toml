@@ -34,4 +34,5 @@ tower = { workspace = true, features = ["buffer", "util"] }
 tokio = { workspace = true }
 
 [dev-dependencies]
+zingo-common-components = { workspace = true }
 anyhow = { workspace = true }

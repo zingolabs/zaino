@@ -1,6 +1,7 @@
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::BackendType;
 use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
+use zingo_common_components::protocol;
 
 async fn create_test_manager_and_connector(
     validator: &ValidatorKind,
@@ -93,7 +94,7 @@ mod chain_query_interface {
             None => test_manager.data_dir.clone(),
         };
         let network = match test_manager.network.to_string().as_str() {
-            "Regtest" => zaino_state::chain_index::testutils::default_regtest_heights(),
+            "Regtest" => activation_heights::default_regtest_heights(),
             "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
             "Mainnet" => zebra_chain::parameters::Network::Mainnet,
             _ => panic!("Incorrect newtork type found."),
