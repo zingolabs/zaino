@@ -327,7 +327,7 @@ async fn build_lightclients(
     indexer_port: portpicker::Port,
 ) -> (LightClient, LightClient) {
     let activation_heights =
-        zingo_common_components::protocol::activation_heights::test::block_one();
+        zingo_common_components::protocol::activation_heights::for_test::block_one();
     let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
     let faucet = client_builder.build_faucet(true, activation_heights);
     let recipient = client_builder.build_client(

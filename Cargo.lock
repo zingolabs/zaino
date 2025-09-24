@@ -9813,7 +9813,7 @@ dependencies = [
 [[package]]
 name = "zingo_common_components"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=317978667919734f197248a4b3fb87baa0016f4b#317978667919734f197248a4b3fb87baa0016f4b"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=541b5489fef9e62d417abb723bc29060afc81bb5#541b5489fef9e62d417abb723bc29060afc81bb5"
 dependencies = [
  "thiserror 1.0.69",
  "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
