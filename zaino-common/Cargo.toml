@@ -9,8 +9,5 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
-# Zebra
-zebra-chain = { workspace = true }
-
 # Serialization
 serde = { workspace = true, features = ["derive"] }
