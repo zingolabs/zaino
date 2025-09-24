@@ -28,7 +28,7 @@ zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git"
 zingo_common_components = { workspace = true, features = [ "test" ]}
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "045bbeee4bda7b3450daf4b8a5c1960a13be0ef3", features = [
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "4d43663c35c1f9ca2c03bee0dca27fef3bcd6a1f", features = [
     "testutils",
 ] }
 testvectors = { workspace = true }
