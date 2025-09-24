@@ -21,7 +21,7 @@ zebra-chain.workspace = true
 zebra-state.workspace = true
 zebra-rpc.workspace = true
 zip32 = {workspace = true}
-zingo_common_components = { workspace = true }
+zingo_common_components = { git = "https://github.com/zingolabs/infrastructure.git", rev = "541b5489fef9e62d417abb723bc29060afc81bb5", features = ["for_test"] }
 
 core2 = { workspace = true }
 prost = { workspace = true }
@@ -33,5 +33,5 @@ tempfile.workspace = true
 tokio = { workspace = true }
 
 [dev-dependencies]
-zingo-common-components = { workspace = true }
+zingo_common_components = { git = "https://github.com/zingolabs/infrastructure.git", rev = "541b5489fef9e62d417abb723bc29060afc81bb5", features = ["for_test"] }
 anyhow = { workspace = true }

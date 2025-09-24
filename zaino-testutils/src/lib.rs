@@ -14,7 +14,6 @@ use std::{
     path::PathBuf,
 };
 use tempfile::TempDir;
-use testvectors::seeds;
 use tracing_subscriber::EnvFilter;
 use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
@@ -24,6 +23,7 @@ use zingo_common_components::protocol::activation_heights;
 pub use zingo_infra_services as services;
 pub use zingo_infra_services::validator::Validator;
 use zingo_infra_services::validator::{ZcashdConfig, ZebradConfig};
+use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
 pub use zingolib::testutils::lightclient::from_inputs;
@@ -327,7 +327,7 @@ async fn build_lightclients(
     indexer_port: portpicker::Port,
 ) -> (LightClient, LightClient) {
     let activation_heights =
-        zingo_common_components::protocol::activation_heights::test::block_one();
+        zingo_common_components::protocol::activation_heights::for_test::block_one();
     let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
     let faucet = client_builder.build_faucet(true, activation_heights);
     let recipient = client_builder.build_client(

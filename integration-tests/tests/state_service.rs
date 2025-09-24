@@ -6,7 +6,6 @@ use zaino_state::{
     StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::from_inputs;
-use zaino_testutils::services;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
 use zebra_chain::parameters::NetworkKind;
