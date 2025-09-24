@@ -28,8 +28,8 @@ zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git"
 zingo_common_components = { workspace = true, features = [ "test" ]}
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "bdb5a0aa7b8bb62300cdb6272e7102fa98f388af", features = [
-    "test-elevation",
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "045bbeee4bda7b3450daf4b8a5c1960a13be0ef3", features = [
+    "testutils",
 ] }
 testvectors = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
