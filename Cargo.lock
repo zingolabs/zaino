@@ -2974,6 +2974,7 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
+ "zingo_common_components",
  "zip32",
 ]
 
