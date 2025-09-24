@@ -538,37 +538,6 @@ impl Drop for TestManager {
         };
     }
 }
-
-/// Simple helper to DRY WET test code
-macro_rules! get_confirmed_balance {
-    ($client:expr, "orchard") => {
-        $client
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .confirmed_orchard_balance
-            .unwrap()
-            .into_u64()
-    };
-    ($client:expr, "sapling") => {
-        $client
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .confirmed_sapling_balance
-            .unwrap()
-            .into_u64()
-    };
-    ($client:expr, "transparent") => {
-        $client
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .confirmed_transparent_balance
-            .unwrap()
-            .into_u64()
-    };
-}
 #[cfg(test)]
 mod launch_testmanager {
 
@@ -582,6 +551,37 @@ mod launch_testmanager {
         uri: http::Uri,
     ) -> Result<CompactTxStreamerClient<UnderlyingService>, GetClientError> {
         GrpcConnector::new(uri).get_client().await
+    }
+
+    /// Simple helper to DRY WET test code
+    macro_rules! get_confirmed_balance {
+        ($client:expr, "orchard") => {
+            $client
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap()
+                .confirmed_orchard_balance
+                .unwrap()
+                .into_u64()
+        };
+        ($client:expr, "sapling") => {
+            $client
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap()
+                .confirmed_sapling_balance
+                .unwrap()
+                .into_u64()
+        };
+        ($client:expr, "transparent") => {
+            $client
+                .account_balance(zip32::AccountId::ZERO)
+                .await
+                .unwrap()
+                .confirmed_transparent_balance
+                .unwrap()
+                .into_u64()
+        };
     }
     mod zcashd {
 
@@ -992,10 +992,10 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert!(
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap() > 0,
-                "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
-                clients.faucet.account_balance(zip32::AccountId::ZERO).await.unwrap().orchard_balance.unwrap(),
-                get_confirmed_balance!(clients.faucet, "transparent")
+                    get_confirmed_balance!(clients.faucet, "orchard") > 0,
+                    "No funds received from shield. Faucet Orchard Balance: {:}. Faucet Transparent Balance: {:}.",
+                    get_confirmed_balance!(clients.faucet, "orchard"),
+                    get_confirmed_balance!(clients.faucet, "transparent")
             );
 
                 let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -1016,12 +1016,7 @@ mod launch_testmanager {
                     .unwrap());
 
                 assert_eq!(
-                    clients
-                        .recipient
-                        .account_balance(zip32::AccountId::ZERO)
-                        .await
-                        .verified_sapling_balance
-                        .unwrap(),
+                    get_confirmed_balance!(clients.recipient, "sapling"),
                     250_000
                 );
 
