@@ -213,7 +213,7 @@ impl BlockchainSource for ValidatorConnector {
                         )
                     })?
                     .as_deref()
-                    .map(read_commitment_tree::<zebra_chain::sapling::tree::Node, _, 32>)
+                    .map(read_commitment_tree::<zebra_chain::sapling::tree::legacy::Node, _, 32>)
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let orchard_frontier = orchard

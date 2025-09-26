@@ -32,10 +32,10 @@ zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git"
 
 # Librustzcash
 zcash_address = "0.9"
-zcash_keys = "0.10"
+zcash_keys = "0.11"
 zcash_protocol = "0.6"
-zcash_primitives = "0.24"
-zcash_transparent = "0.4"
+zcash_primitives = "0.25"
+zcash_transparent = "0.5"
 
 # Zebra
 # Can be updated to 2.4.0 once lands. Should be updated to crates.io releases once available.
@@ -132,7 +132,7 @@ arc-swap = "1.7.1"
 cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"
-zcash_client_backend = "0.18.0"
+zcash_client_backend = "0.20"
 zingo-netutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
 
 [profile.test]
@@ -141,3 +141,10 @@ debug = true
 
 #[workspace.dev-dependencies]
 # zingolib is imported in zaino-testutils!!
+
+[patch.crates-io]
+# Waiting on the following PRs to be included in crate releases:
+# - https://github.com/ZcashFoundation/zebra/pull/9927
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "5a2466e4b9fb2f2b04f1d49327f3244b18640f9e" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "5a2466e4b9fb2f2b04f1d49327f3244b18640f9e" }
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "5a2466e4b9fb2f2b04f1d49327f3244b18640f9e" }

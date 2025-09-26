@@ -1009,16 +1009,13 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
-        let sapling_bytes = value.sapling.commitments().final_state();
-
-        let orchard_bytes = value.orchard.commitments().final_state();
-
-        Ok(zebra_rpc::client::GetTreestateResponse::from_parts(
+        Ok(zebra_rpc::client::GetTreestateResponse::new(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
             value.time,
-            sapling_bytes.clone(),
-            orchard_bytes.clone(),
+            None,
+            value.sapling,
+            value.orchard,
         ))
     }
 }
@@ -1157,6 +1154,7 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                     shielded_spends.unwrap_or_default(),
                     shielded_outputs.unwrap_or_default(),
                     // TODO: sprout joinsplits
+                    vec![],
                     None,
                     None,
                     None,
@@ -1214,6 +1212,7 @@ impl From<GetTransactionResponse> for zebra_rpc::methods::GetRawTransaction {
                     obj.shielded_spends().clone(),
                     obj.shielded_outputs().clone(),
                     //TODO: sprout joinspits
+                    vec![],
                     None,
                     None,
                     None,
