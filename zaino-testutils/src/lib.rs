@@ -24,6 +24,7 @@ pub use zcash_local_net as services;
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::{ZcashdConfig, ZebradConfig};
 use zebra_chain::parameters::{testnet::ConfiguredActivationHeights, NetworkKind};
+use zingo_common_components::protocol::activation_heights;
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
@@ -329,9 +330,8 @@ fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
 async fn build_lightclients(
     lightclient_dir: PathBuf,
     indexer_port: portpicker::Port,
+    activation_heights: ConfiguredActivationHeights,
 ) -> (LightClient, LightClient) {
-    let activation_heights =
-        zingo_common_components::protocol::activation_heights::test::block_one();
     let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
     let faucet = client_builder.build_faucet(true, activation_heights);
     let recipient = client_builder.build_client(
@@ -495,6 +495,7 @@ impl TestManager {
                 zaino_grpc_listen_address
                     .expect("Error launching zingo lightclients. `enable_zaino` is None.")
                     .port(),
+                activation_heights.into(),
             )
             .await;
             Some(Clients {
