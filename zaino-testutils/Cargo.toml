@@ -24,12 +24,12 @@ zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
 zebra-chain = { workspace = true }
 
 # Zingo-infra
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "c53ae95cd4bcdc17121a4cb2566c07dba5a7b9a5" }
-zingo_common_components = { git = "https://github.com/zingolabs/infrastructure.git", rev = "317978667919734f197248a4b3fb87baa0016f4b", features = [ "test" ]}
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "317978667919734f197248a4b3fb87baa0016f4b" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "3d6eb8f76529c11680055d89e9edf81f38c7b905" }
+zingo_common_components = { git = "https://github.com/zingolabs/infrastructure.git", rev = "3d6eb8f76529c11680055d89e9edf81f38c7b905", features = [ "for_test" ]}
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "3d6eb8f76529c11680055d89e9edf81f38c7b905" }
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "e076b7553f9ea385fd16854b7058436d8515dea9", features = [
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "9f19a68dfabde943809104b79b0d5557f744e8e8", features = [
     "testutils",
 ] }
 tracing-subscriber = { workspace = true, features = [
@@ -62,3 +62,6 @@ zip32 = {workspace = true}
 
 [dev-dependencies]
 zingo_netutils = { workspace = true }
+
+[patch.crates-io]
+zebra-chain = { git = "https://github.com/zingolabs/zebra.git", rev = "1168a2f391a17f3ccab65a095d9219b7455d0fea" }

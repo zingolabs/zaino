@@ -137,5 +137,5 @@ zip32 = "0.2.1"
 opt-level = 3
 debug = true
 
-#[workspace.dev-dependencies]
-# zingolib is imported in zaino-testutils!!
+[patch.crates-io]
+zebra-chain = { git = "https://github.com/zingolabs/zebra.git", rev = "1168a2f391a17f3ccab65a095d9219b7455d0fea" }
