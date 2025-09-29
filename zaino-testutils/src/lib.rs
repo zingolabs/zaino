@@ -24,7 +24,6 @@ pub use zcash_local_net as services;
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::{ZcashdConfig, ZebradConfig};
 use zebra_chain::parameters::{testnet::ConfiguredActivationHeights, NetworkKind};
-use zingo_common_components::protocol::activation_heights;
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;

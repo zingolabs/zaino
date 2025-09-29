@@ -9160,7 +9160,8 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "2.0.0"
-source = "git+https://github.com/zingolabs/zebra.git?rev=1168a2f391a17f3ccab65a095d9219b7455d0fea#1168a2f391a17f3ccab65a095d9219b7455d0fea"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17a86ec712da2f25d3edc7e5cf0b1d15ef41ab35305e253f0f7cd9cecc0f1939"
 dependencies = [
  "bech32",
  "bitflags 2.9.4",
