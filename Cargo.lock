@@ -4100,7 +4100,7 @@ dependencies = [
 [[package]]
 name = "pepper-sync"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=9f19a68dfabde943809104b79b0d5557f744e8e8#9f19a68dfabde943809104b79b0d5557f744e8e8"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=c4b9a3ccde6f7f642745d30b063082feed1d9758#c4b9a3ccde6f7f642745d30b063082feed1d9758"
 dependencies = [
  "bip32",
  "byteorder",
@@ -4129,7 +4129,7 @@ dependencies = [
  "zcash_transparent 0.4.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zingo-memo",
  "zingo-status",
- "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=3d6eb8f76529c11680055d89e9edf81f38c7b905)",
+ "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509)",
  "zip32",
 ]
 
@@ -8450,7 +8450,7 @@ dependencies = [
  "zebra-chain",
  "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=3d6eb8f76529c11680055d89e9edf81f38c7b905)",
  "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=cc2af1ac80cb6b7a7f0a0b8f331f7b0873d667bf)",
- "zingo_test_vectors",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=3d6eb8f76529c11680055d89e9edf81f38c7b905)",
  "zingolib",
  "zip32",
 ]
@@ -8813,6 +8813,32 @@ dependencies = [
  "zebra-node-services",
  "zebra-rpc",
  "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=c53ae95cd4bcdc17121a4cb2566c07dba5a7b9a5)",
+]
+
+[[package]]
+name = "zcash_local_net"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509#c6a6f91c544e0bc48f951ab34c8af89e9279d509"
+dependencies = [
+ "getset",
+ "hex",
+ "http",
+ "json",
+ "portpicker",
+ "reqwest",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zcash_primitives 0.24.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
+ "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
+ "zebra-chain",
+ "zebra-node-services",
+ "zebra-rpc",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509)",
 ]
 
 [[package]]
@@ -9469,7 +9495,7 @@ dependencies = [
 [[package]]
 name = "zingo-memo"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=9f19a68dfabde943809104b79b0d5557f744e8e8#9f19a68dfabde943809104b79b0d5557f744e8e8"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=c4b9a3ccde6f7f642745d30b063082feed1d9758#c4b9a3ccde6f7f642745d30b063082feed1d9758"
 dependencies = [
  "zcash_address 0.9.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_client_backend 0.19.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
@@ -9481,7 +9507,7 @@ dependencies = [
 [[package]]
 name = "zingo-price"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=9f19a68dfabde943809104b79b0d5557f744e8e8#9f19a68dfabde943809104b79b0d5557f744e8e8"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=c4b9a3ccde6f7f642745d30b063082feed1d9758#c4b9a3ccde6f7f642745d30b063082feed1d9758"
 dependencies = [
  "byteorder",
  "reqwest",
@@ -9497,7 +9523,7 @@ dependencies = [
 [[package]]
 name = "zingo-status"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=9f19a68dfabde943809104b79b0d5557f744e8e8#9f19a68dfabde943809104b79b0d5557f744e8e8"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=c4b9a3ccde6f7f642745d30b063082feed1d9758#c4b9a3ccde6f7f642745d30b063082feed1d9758"
 dependencies = [
  "byteorder",
  "zcash_primitives 0.24.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
@@ -9520,9 +9546,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zingo_common_components"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509#c6a6f91c544e0bc48f951ab34c8af89e9279d509"
+dependencies = [
+ "zebra-chain",
+]
+
+[[package]]
 name = "zingo_netutils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=3d6eb8f76529c11680055d89e9edf81f38c7b905#3d6eb8f76529c11680055d89e9edf81f38c7b905"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509#c6a6f91c544e0bc48f951ab34c8af89e9279d509"
 dependencies = [
  "http",
  "http-body",
@@ -9572,9 +9606,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zingo_test_vectors"
+version = "0.0.1"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509#c6a6f91c544e0bc48f951ab34c8af89e9279d509"
+dependencies = [
+ "bip0039",
+]
+
+[[package]]
 name = "zingolib"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=9f19a68dfabde943809104b79b0d5557f744e8e8#9f19a68dfabde943809104b79b0d5557f744e8e8"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=c4b9a3ccde6f7f642745d30b063082feed1d9758#c4b9a3ccde6f7f642745d30b063082feed1d9758"
 dependencies = [
  "append-only-vec",
  "bech32",
@@ -9623,7 +9665,7 @@ dependencies = [
  "zcash_client_backend 0.19.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_encoding 0.3.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_keys 0.10.0",
- "zcash_local_net 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=3d6eb8f76529c11680055d89e9edf81f38c7b905)",
+ "zcash_local_net 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509)",
  "zcash_primitives 0.24.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_proofs 0.24.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
@@ -9632,9 +9674,9 @@ dependencies = [
  "zingo-memo",
  "zingo-price",
  "zingo-status",
- "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=3d6eb8f76529c11680055d89e9edf81f38c7b905)",
- "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=3d6eb8f76529c11680055d89e9edf81f38c7b905)",
- "zingo_test_vectors",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509)",
+ "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509)",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=c6a6f91c544e0bc48f951ab34c8af89e9279d509)",
  "zip32",
 ]
 
