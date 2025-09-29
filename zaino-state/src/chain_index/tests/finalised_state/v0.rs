@@ -195,7 +195,7 @@ async fn delete_blocks_from_db() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn load_db_from_file() {
+async fn save_db_to_file_and_reload() {
     init_tracing();
 
     let (blocks, _faucet, _recipient) = load_test_vectors().unwrap();

@@ -8,6 +8,8 @@ use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_rpc::methods::GetAddressUtxos;
 
+use crate::chain_index::finalised_state::capability::IndexedBlockExt;
+use crate::chain_index::finalised_state::db::DbBackend;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::test::MockchainSource;
@@ -198,7 +200,7 @@ async fn delete_blocks_from_db() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn load_db_from_file() {
+async fn save_db_to_file_and_reload() {
     init_tracing();
 
     let (blocks, _faucet, _recipient) = load_test_vectors().unwrap();
@@ -305,6 +307,53 @@ async fn load_db_from_file() {
     })
     .join()
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn load_db_backend_from_file() {
+    init_tracing();
+
+    let db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("chain_index")
+        .join("tests")
+        .join("vectors")
+        .join("v1_test_db");
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: db_path.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+
+        no_sync: false,
+        no_db: false,
+    };
+    let finalized_state_backend = DbBackend::spawn_v1(&config).await.unwrap();
+
+    let mut prev_hash = None;
+    for height in 0..=100 {
+        let block = finalized_state_backend
+            .get_chain_block(Height(height))
+            .await
+            .unwrap()
+            .unwrap();
+        if let Some(prev_hash) = prev_hash {
+            assert_eq!(prev_hash, block.index().parent_hash);
+        }
+        prev_hash = Some(block.index().hash);
+        assert_eq!(block.index.height, Some(Height(height)));
+    }
+    assert!(finalized_state_backend
+        .get_chain_block(Height(101))
+        .await
+        .unwrap()
+        .is_none());
+    std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

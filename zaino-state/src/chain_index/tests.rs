@@ -66,6 +66,11 @@ mod mockchain_tests {
             build_mockchain_source(blocks.clone())
         };
 
+        // TODO: the temp_dir is deleted when it goes out of scope
+        // at the end of this function.
+        // Somehow, this isn't breaking the database, but I'm confused
+        // as to how the database works when the directory containing
+        // it is deleted
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = temp_dir.path().to_path_buf();
 
