@@ -23,8 +23,8 @@ zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
 # Zebra
 zebra-chain = { workspace = true }
 
-# Zingo-infra
-zingo_infra_services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "5e2625200bd399920d713ddfd26f2f6452bde220" }
+# zcash_local
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "c53ae95cd4bcdc17121a4cb2566c07dba5a7b9a5" }
 zingo_common_components = { workspace = true, features = [ "for_test" ]}
 zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "317978667919734f197248a4b3fb87baa0016f4b" }
 
