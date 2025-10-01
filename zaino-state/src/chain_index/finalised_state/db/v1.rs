@@ -843,9 +843,7 @@ impl DbV1 {
         self.status.store(StatusType::Syncing);
         let block_hash = *block.index().hash();
         let block_hash_bytes = block_hash.to_bytes()?;
-        let block_height = block.index().height().ok_or(FinalisedStateError::Custom(
-            "finalised state received non finalised block".to_string(),
-        ))?;
+        let block_height = block.index().height();
         let block_height_bytes = block_height.to_bytes()?;
 
         // check this is the *next* block in the chain.
@@ -883,12 +881,7 @@ impl DbV1 {
         })?;
 
         // Build DBHeight
-        let height_entry = StoredEntryFixed::new(
-            &block_hash_bytes,
-            block.index().height().ok_or(FinalisedStateError::Custom(
-                "finalised state received non finalised block".to_string(),
-            ))?,
-        );
+        let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.index().height());
 
         // Build header
         let header_entry = StoredEntryVar::new(
@@ -1014,7 +1007,7 @@ impl DbV1 {
                     );
                 } else {
                     return Err(FinalisedStateError::InvalidBlock {
-                        height: block.height().expect("already  checked height is some").0,
+                        height: block.height().0,
                         hash: *block.hash(),
                         reason: "Invalid block data: invalid transparent input.".to_string(),
                     });
@@ -1206,10 +1199,7 @@ impl DbV1 {
                 info!(
                     "Successfully committed block {} at height {} to ZainoDB.",
                     &block.index().hash(),
-                    &block
-                        .index()
-                        .height()
-                        .expect("height always some in the finalised state")
+                    &block.index().height()
                 );
 
                 Ok(())
@@ -1308,19 +1298,12 @@ impl DbV1 {
         block: &IndexedBlock,
     ) -> Result<(), FinalisedStateError> {
         // Check block height and hash
-        let block_height = block
-            .index()
-            .height()
-            .ok_or(FinalisedStateError::InvalidBlock {
-                height: 0,
-                hash: *block.hash(),
-                reason: "Invalid block data: Block does not contain finalised height".to_string(),
-            })?;
+        let block_height = block.index().height();
         let block_height_bytes =
             block_height
                 .to_bytes()
                 .map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block.height().expect("already  checked height is some").0,
+                    height: block.height().0,
                     hash: *block.hash(),
                     reason: "Corrupt block data: failed to serialise hash".to_string(),
                 })?;
@@ -1330,7 +1313,7 @@ impl DbV1 {
             block_hash
                 .to_bytes()
                 .map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block.height().expect("already  checked height is some").0,
+                    height: block.height().0,
                     hash: *block.hash(),
                     reason: "Corrupt block data: failed to serialise hash".to_string(),
                 })?;
@@ -1416,12 +1399,12 @@ impl DbV1 {
                                 *prev_outpoint.prev_txid(),
                             ))
                             .map_err(|e| FinalisedStateError::InvalidBlock {
-                                height: block.height().expect("already  checked height is some").0,
+                                height: block.height().0,
                                 hash: *block.hash(),
                                 reason: e.to_string(),
                             })?
                             .ok_or_else(|| FinalisedStateError::InvalidBlock {
-                                height: block.height().expect("already  checked height is some").0,
+                                height: block.height().0,
                                 hash: *block.hash(),
                                 reason: "Invalid block data: invalid txid data.".to_string(),
                             })?;
@@ -1439,7 +1422,7 @@ impl DbV1 {
                     );
                 } else {
                     return Err(FinalisedStateError::InvalidBlock {
-                        height: block.height().expect("already  checked height is some").0,
+                        height: block.height().0,
                         hash: *block.hash(),
                         reason: "Invalid block data: invalid transparent input.".to_string(),
                     });
@@ -3117,11 +3100,7 @@ impl DbV1 {
             // Construct CompactBlock
             Ok(zaino_proto::proto::compact_formats::CompactBlock {
                 proto_version: 4,
-                height: header
-                    .index()
-                    .height()
-                    .expect("height always present in finalised state.")
-                    .0 as u64,
+                height: header.index().height().0 as u64,
                 hash: header.index().hash().0.to_vec(),
                 prev_hash: header.index().parent_hash().0.to_vec(),
                 // Is this safe?

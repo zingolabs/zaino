@@ -634,7 +634,19 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         hash: types::BlockHash,
     ) -> Result<Option<types::Height>, Self::Error> {
         match nonfinalized_snapshot.blocks.get(&hash).cloned() {
-            Some(block) => Ok(block.index().height()),
+            Some(block) => {
+                // check to see if the hash is on the best chain
+                if *nonfinalized_snapshot
+                    .heights_to_hashes
+                    .get(&block.index().height())
+                    .ok_or(ChainIndexError::database_hole(hash))?
+                    == hash
+                {
+                    Ok(Some(block.height()))
+                } else {
+                    Ok(None)
+                }
+            }
             None => match self.finalized_state.get_block_height(hash).await {
                 Ok(height) => Ok(height),
                 Err(_e) => Err(ChainIndexError::database_hole(hash)),
