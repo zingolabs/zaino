@@ -10,7 +10,9 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
-[dependencies]
+[dev-dependencies]
+anyhow = { workspace = true }
+
 # Test utility
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
@@ -31,6 +33,3 @@ tower = { workspace = true, features = ["buffer", "util"] }
 
 # Runtime
 tokio = { workspace = true }
-
-[dev-dependencies]
-anyhow = { workspace = true }
