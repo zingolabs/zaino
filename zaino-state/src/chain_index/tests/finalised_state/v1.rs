@@ -341,7 +341,7 @@ async fn load_db_backend_from_file() {
             assert_eq!(prev_hash, block.index().parent_hash);
         }
         prev_hash = Some(block.index().hash);
-        assert_eq!(block.index.height, Some(Height(height)));
+        assert_eq!(block.index.height, Height(height));
     }
     assert!(finalized_state_backend
         .get_chain_block(Height(101))
@@ -382,7 +382,7 @@ async fn try_write_invalid_block() {
     ))
     .unwrap();
 
-    chain_block.index.height = Some(crate::Height(height + 1));
+    chain_block.index.height = crate::Height(height + 1);
     dbg!(chain_block.index.height);
 
     let db_err = dbg!(zaino_db.write_block(chain_block).await);
@@ -977,7 +977,7 @@ async fn check_faucet_spent_map() {
                             .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
-                                chain_block.index().height() == Some(Height(block_height))
+                                chain_block.index().height() == Height(block_height)
                                     && tx.index() == tx_idx as u64
                             })
                             .cloned()
@@ -1134,7 +1134,7 @@ async fn check_recipient_spent_map() {
                             .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
-                                chain_block.index().height() == Some(Height(block_height))
+                                chain_block.index().height() == Height(block_height)
                                     && tx.index() == tx_idx as u64
                             })
                             .cloned()

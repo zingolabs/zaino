@@ -590,16 +590,19 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 .map(|(hash, block)| (*hash, block.clone())),
         );
 
-        let finalized_height = finalized_db
-            .to_reader()
-            .db_height()
-            .await
-            .map_err(|_e| UpdateError::FinalizedStateCorruption)?
-            .unwrap_or(Height(0));
+        let truncate_below_height = std::cmp::min(
+            finalized_db
+                .to_reader()
+                .db_height()
+                .await
+                .map_err(|_e| UpdateError::FinalizedStateCorruption)?
+                .unwrap_or(Height(0)),
+            snapshot.best_tip.height,
+        );
 
         let (_finalized_blocks, blocks): (HashMap<_, _>, HashMap<BlockHash, _>) = new
             .into_iter()
-            .partition(|(_hash, block)| block.index().height() < finalized_height);
+            .partition(|(_hash, block)| block.index().height() < truncate_below_height);
 
         let mut best_difficulty = snapshot
             .blocks
@@ -623,12 +626,20 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
         let mut heights_to_hashes = HashMap::new();
         let mut next_hash = best_tip.blockhash;
-        while next_hash != snapshot.best_tip.blockhash {
+        loop {
             let next_block = blocks
                 .get(&next_hash)
                 .ok_or(UpdateError::DisconnectedChaintip)?;
             heights_to_hashes.insert(next_block.height(), *next_block.hash());
-            next_hash = *next_block.index().parent_hash()
+            if next_hash
+                == *snapshot
+                    .heights_to_hashes
+                    .get(&truncate_below_height)
+                    .ok_or(UpdateError::DisconnectedChaintip)?
+            {
+                break;
+            }
+            next_hash = *next_block.index().parent_hash();
         }
 
         // Need to get best hash at some point in this process
@@ -721,6 +732,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
 /// Errors that occur during a snapshot update
 #[derive(Debug, thiserror::Error)]
+// The error messages are the documentation
+#[allow(missing_docs)]
 pub enum UpdateError {
     #[error("The block reciever disconnected. This should only happen during shutdown.")]
     ReceiverDisconnected,
