@@ -232,7 +232,8 @@ async fn load_db_from_file() {
                     orchard_root,
                     orchard_root_size as u32,
                     &parent_chain_work,
-                    &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+                    &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(
+                    ),
                 ))
                 .unwrap();
 
