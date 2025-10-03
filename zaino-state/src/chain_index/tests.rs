@@ -80,7 +80,8 @@ mod mockchain_tests {
             },
             db_version: 1,
 
-            network: activation_heights::for_test::active_nus_regtest_network(),
+            network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(
+            ),
 
             no_sync: false,
             no_db: false,

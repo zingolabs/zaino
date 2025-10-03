@@ -31,7 +31,7 @@ async fn v0_to_v1_full() {
         },
         db_version: 0,
 
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
 
         no_sync: false,
         no_db: false,
@@ -46,7 +46,7 @@ async fn v0_to_v1_full() {
         },
         db_version: 1,
 
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         no_sync: false,
         no_db: false,
     };
@@ -93,7 +93,7 @@ async fn v0_to_v1_interrupted() {
         },
         db_version: 0,
 
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         no_sync: false,
         no_db: false,
     };
@@ -107,7 +107,7 @@ async fn v0_to_v1_interrupted() {
         },
         db_version: 1,
 
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         no_sync: false,
         no_db: false,
     };
@@ -148,7 +148,7 @@ async fn v0_to_v1_interrupted() {
             orchard_root,
             orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::active_nus_regtest_network(),
+            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -188,7 +188,7 @@ async fn v0_to_v1_partial() {
         },
         db_version: 0,
 
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         no_sync: false,
         no_db: false,
     };
@@ -202,7 +202,7 @@ async fn v0_to_v1_partial() {
         },
         db_version: 1,
 
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         no_sync: false,
         no_db: false,
     };
@@ -241,7 +241,7 @@ async fn v0_to_v1_partial() {
             orchard_root,
             orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::active_nus_regtest_network(),
+            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 

@@ -31,7 +31,7 @@ pub(crate) async fn spawn_v0_zaino_db(
             ..Default::default()
         },
         db_version: 0,
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
 
         no_sync: false,
         no_db: false,
@@ -83,7 +83,7 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v0_zaino_db() -> (
             orchard_root,
             orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::active_nus_regtest_network(),
+            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -197,7 +197,7 @@ async fn load_db_from_file() {
             ..Default::default()
         },
         db_version: 0,
-        network: activation_heights::for_test::active_nus_regtest_network(),
+        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
 
         no_sync: false,
         no_db: false,
@@ -230,7 +230,7 @@ async fn load_db_from_file() {
                     orchard_root,
                     orchard_root_size as u32,
                     &parent_chain_work,
-                    &activation_heights::for_test::active_nus_regtest_network(),
+                    &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
                 ))
                 .unwrap();
 
@@ -315,7 +315,7 @@ async fn get_compact_blocks() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::active_nus_regtest_network(),
+            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
         let compact_block = chain_block.to_compact_block();
