@@ -18,11 +18,11 @@ use tracing_subscriber::EnvFilter;
 use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
-use zebra_chain::parameters::NetworkKind;
-use zingo_common_components::protocol::activation_heights;
 pub use zcash_local_net as services;
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::{ZcashdConfig, ZebradConfig};
+use zebra_chain::parameters::NetworkKind;
+use zingo_common_components::protocol::activation_heights;
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
@@ -120,12 +120,14 @@ impl zcash_local_net::validator::Validator for LocalNet {
         todo!()
     }
 
-    fn activation_heights(&self) -> zcash_protocol::local_consensus::LocalNetwork {
+    fn get_activation_heights(
+        &self,
+    ) -> zebra_chain::parameters::testnet::ConfiguredActivationHeights {
         // Return the activation heights for the network
         // This depends on which validator is running (zcashd or zebrad)
         match self {
-            LocalNet::Zcashd(net) => net.validator().activation_heights(),
-            LocalNet::Zebrad(net) => net.validator().activation_heights(),
+            LocalNet::Zcashd(net) => net.validator().get_activation_heights(),
+            LocalNet::Zebrad(net) => net.validator().get_activation_heights(),
         }
     }
 
@@ -327,7 +329,7 @@ async fn build_lightclients(
     indexer_port: portpicker::Port,
 ) -> (LightClient, LightClient) {
     let activation_heights =
-        zingo_common_components::protocol::activation_heights::for_test::block_one();
+        zingo_common_components::protocol::activation_heights::for_test::all_height_one_nus();
     let mut client_builder = ClientBuilder::new(make_uri(indexer_port), lightclient_dir);
     let faucet = client_builder.build_faucet(true, activation_heights);
     let recipient = client_builder.build_client(
@@ -375,7 +377,8 @@ impl TestManager {
             .with_target(true)
             .try_init();
 
-        let nu0_reg_net = activation_heights::for_test::current_nus_configured_in_block_one_regtest_net();
+        let nu0_reg_net =
+            activation_heights::for_test::current_nus_configured_in_block_one_regtest_net();
         //let network_kind = network.unwrap_or(NetworkKind::Regtest);
         //let zaino_network_kind =
         //    Network::from_network_kind_and_activation_heights(&network_kind, &nu0_reg_net);

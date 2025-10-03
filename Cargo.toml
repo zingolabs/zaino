@@ -133,7 +133,7 @@ arc-swap = "1.7.1"
 cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"
-zcash_client_backend = "0.19.1"
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b" }
 zingo_common_components = { git = "https://github.com/zingolabs/infrastructure", rev = "51162c0c603d324a3c36f1cead17bf4680aa1dca" }
 zip32 = "0.2.1"
 
