@@ -27,7 +27,7 @@ version = "0.1.2"
 [workspace.dependencies]
 # Zingolabs
 
-testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
+testvectors = { git = "https://github.com/zingolabs/zingolib.git", rev = "b6fbc47db1c995b6f62f86250f50956ea6a7c76d" }
 
 # Librustzcash
 zcash_address = "0.9"
