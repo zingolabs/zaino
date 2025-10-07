@@ -45,12 +45,15 @@ async fn create_test_manager_and_services(
         Some(NetworkKind::Mainnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zebra_chain::parameters::Network::Mainnet {}, false)
+            (zebra_chain::parameters::Network::Mainnet, false)
         }
         Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zebra_chain::parameters::Network::Testnet, false)
+            (
+                zebra_chain::parameters::Network::new_default_testnet(),
+                false,
+            )
         }
         _ => (
             for_test::current_nus_configured_in_block_one_regtest_net(),
