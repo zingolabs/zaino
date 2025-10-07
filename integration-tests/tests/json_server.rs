@@ -91,7 +91,7 @@ async fn create_test_manager_and_fetch_services(
             },
             ..Default::default()
         },
-        zaino_common::Network::Regtest(ActivationHeights::default()),
+        for_test::current_nus_configured_in_block_one_regtest_net(),
         true,
         true,
     ))
