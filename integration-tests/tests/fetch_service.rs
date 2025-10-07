@@ -1,6 +1,5 @@
 use futures::StreamExt as _;
-use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
+use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
@@ -15,6 +14,7 @@ use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlock, GetBlockHash};
+use zingo_common_components::protocol::activation_heights::for_test;
 use zip32::AccountId;
 
 async fn create_test_manager_and_fetch_service(
@@ -59,7 +59,7 @@ async fn create_test_manager_and_fetch_service(
             },
             ..Default::default()
         },
-        Network::Regtest(ActivationHeights::default()),
+        for_test::current_nus_configured_in_block_one_regtest_net(),
         true,
         true,
     ))
@@ -132,11 +132,17 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
     dbg!(fetch_service_balance);
 
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         250_000,
     );
     assert_eq!(
-        re.into_u64()cipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         fetch_service_balance.balance(),
     );
 
