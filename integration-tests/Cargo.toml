@@ -10,7 +10,7 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
-[dependencies]
+[dev-dependencies]
 # Test utility
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
@@ -31,7 +31,4 @@ tempfile.workspace = true
 
 # Runtime
 tokio = { workspace = true }
-
-[dev-dependencies]
-zingo_common_components = { git = "https://github.com/zingolabs/infrastructure.git", rev = "51162c0c603d324a3c36f1cead17bf4680aa1dca", features = ["for_test"] }
 anyhow = { workspace = true }
