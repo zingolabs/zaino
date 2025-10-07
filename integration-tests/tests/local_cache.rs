@@ -9,6 +9,7 @@ use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::block::Height;
 use zebra_state::HashOrHeight;
+use zingo_common_components::protocol::activation_heights::for_test;
 
 async fn create_test_manager_and_block_cache(
     validator: &ValidatorKind,
@@ -54,7 +55,7 @@ async fn create_test_manager_and_block_cache(
     .unwrap();
 
     let network = match test_manager.network.to_string().as_str() {
-        "Regtest" => zaino_state::chain_index::testutils::default_regtest_heights(),
+        "Regtest" => for_test::current_nus_configured_in_block_one_regtest_net(),
         "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
         "Mainnet" => zebra_chain::parameters::Network::Mainnet,
         _ => panic!("Incorrect newtork type found."),

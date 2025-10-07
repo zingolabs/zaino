@@ -59,8 +59,10 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .orchard_balance
-            .unwrap(),
+            .unwrap()
+            .confirmed_orchard_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
 
@@ -100,8 +102,10 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .sapling_balance
-            .unwrap(),
+            .unwrap()
+            .confirmed_sapling_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
 
@@ -199,8 +203,10 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
+            .unwrap()
             .confirmed_transparent_balance
-            .unwrap(),
+            .unwrap()
+            .into_u64(),
         250_000
     );
 
@@ -269,8 +275,10 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .orchard_balance
-            .unwrap(),
+            .unwrap()
+            .confirmed_orchard_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
     assert_eq!(
@@ -278,8 +286,10 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .sapling_balance
-            .unwrap(),
+            .unwrap()
+            .confirmed_sapling_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
     assert_eq!(
@@ -287,8 +297,10 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
+            .unwrap()
             .confirmed_transparent_balance
-            .unwrap(),
+            .unwrap()
+            .into_u64(),
         250_000
     );
 
@@ -358,8 +370,10 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .orchard_balance
-            .unwrap(),
+            .unwrap()
+            .confirmed_orchard_balance
+            .unwrap()
+            .into_u64(),
         235_000
     );
 

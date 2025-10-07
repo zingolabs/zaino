@@ -1,4 +1,3 @@
-use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::BackendType;
 use zaino_state::{
@@ -11,6 +10,7 @@ use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
 use zebra_chain::parameters::NetworkKind;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
+use zingo_common_components::protocol::activation_heights::for_test;
 use zip32::AccountId;
 
 async fn create_test_manager_and_services(
@@ -45,15 +45,15 @@ async fn create_test_manager_and_services(
         Some(NetworkKind::Mainnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zaino_common::Network::Mainnet, false)
+            (zebra_chain::parameters::Network::Mainnet {}, false)
         }
         Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zaino_common::Network::Testnet, false)
+            (zebra_chain::parameters::Network::Testnet, false)
         }
         _ => (
-            zaino_common::Network::Regtest(ActivationHeights::default()),
+            for_test::current_nus_configured_in_block_one_regtest_net(),
             true,
         ),
     };
@@ -305,7 +305,11 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
-    let recipient_balance = clients.recipient.account_balance(zip32::AccountId::ZERO).await.unwrap();
+    let recipient_balance = clients
+        .recipient
+        .account_balance(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     let fetch_service_balance = fetch_service_subscriber
         .z_get_address_balance(AddressStrings::new(vec![recipient_taddr.clone()]))
@@ -322,11 +326,17 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     dbg!(&state_service_balance);
 
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         250_000,
     );
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         fetch_service_balance.balance(),
     );
     assert_eq!(fetch_service_balance, state_service_balance);

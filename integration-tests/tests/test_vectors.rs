@@ -8,7 +8,6 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
-use zaino_common::network::ActivationHeights;
 use zaino_common::DatabaseConfig;
 use zaino_common::ServiceConfig;
 use zaino_common::StorageConfig;
