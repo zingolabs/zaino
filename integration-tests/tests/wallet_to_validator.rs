@@ -475,8 +475,10 @@ async fn monitor_unverified_mempool_for_validator(
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .unverified_orchard_balance
-            .unwrap(),
+            .unwrap()
+            .unconfirmed_orchard_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
     assert_eq!(
@@ -484,8 +486,10 @@ async fn monitor_unverified_mempool_for_validator(
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .unverified_sapling_balance
-            .unwrap(),
+            .unwrap()
+            .unconfirmed_sapling_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
 
@@ -512,8 +516,10 @@ async fn monitor_unverified_mempool_for_validator(
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .verified_orchard_balance
-            .unwrap(),
+            .unwrap()
+            .confirmed_orchard_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
     assert_eq!(
@@ -521,8 +527,10 @@ async fn monitor_unverified_mempool_for_validator(
             .recipient
             .account_balance(zip32::AccountId::ZERO)
             .await
-            .verified_sapling_balance
-            .unwrap(),
+            .unwrap()
+            .confirmed_sapling_balance
+            .unwrap()
+            .into_u64(),
         250_000
     );
 
