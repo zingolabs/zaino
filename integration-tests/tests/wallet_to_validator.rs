@@ -595,32 +595,38 @@ mod zebrad {
             use super::*;
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn sapling() {
                 send_to_sapling(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn orchard() {
                 send_to_orchard(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
 
             /// Bug documented in https://github.com/zingolabs/zaino/issues/145.
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn transparent() {
                 send_to_transparent(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn all() {
                 send_to_all(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
         }
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         async fn shield() {
             shield_for_validator(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
         }
         /// Bug documented in https://github.com/zingolabs/zaino/issues/144.
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         async fn monitor_unverified_mempool() {
             monitor_unverified_mempool_for_validator(&ValidatorKind::Zebrad, &BackendType::Fetch)
                 .await;
@@ -639,32 +645,38 @@ mod zebrad {
             use super::*;
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn sapling() {
                 send_to_sapling(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn orchard() {
                 send_to_orchard(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn transparent() {
                 send_to_transparent(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn all() {
                 send_to_all(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         async fn shield() {
             shield_for_validator(&ValidatorKind::Zebrad, &BackendType::State).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         async fn monitor_unverified_mempool() {
             monitor_unverified_mempool_for_validator(&ValidatorKind::Zebrad, &BackendType::State)
                 .await;

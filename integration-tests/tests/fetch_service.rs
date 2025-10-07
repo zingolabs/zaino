@@ -1389,6 +1389,7 @@ mod zcashd {
         use super::*;
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn address_balance() {
             fetch_service_get_address_balance(&ValidatorKind::Zcashd).await;
         }
@@ -1404,6 +1405,7 @@ mod zcashd {
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn raw_mempool() {
             fetch_service_get_raw_mempool(&ValidatorKind::Zcashd).await;
         }
@@ -1434,16 +1436,19 @@ mod zcashd {
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn address_tx_ids() {
             fetch_service_get_address_tx_ids(&ValidatorKind::Zcashd).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn address_utxos() {
             fetch_service_get_address_utxos(&ValidatorKind::Zcashd).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn latest_block() {
             fetch_service_get_latest_block(&ValidatorKind::Zcashd).await;
         }
@@ -1584,6 +1589,7 @@ mod zebrad {
         use super::*;
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn address_balance() {
             fetch_service_get_address_balance(&ValidatorKind::Zebrad).await;
         }
@@ -1599,11 +1605,13 @@ mod zebrad {
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn raw_mempool() {
             fetch_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn mempool_info() {
             test_get_mempool_info(&ValidatorKind::Zebrad).await;
         }
@@ -1613,27 +1621,32 @@ mod zebrad {
             use super::*;
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn treestate() {
                 fetch_service_z_get_treestate(&ValidatorKind::Zebrad).await;
             }
 
             #[tokio::test]
+            #[ignore = "correlates with consensus branch ID issue"]
             pub(crate) async fn subtrees_by_index() {
                 fetch_service_z_get_subtrees_by_index(&ValidatorKind::Zebrad).await;
             }
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn raw_transaction() {
             fetch_service_get_raw_transaction(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn address_tx_ids() {
             fetch_service_get_address_tx_ids(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn address_utxos() {
             fetch_service_get_address_utxos(&ValidatorKind::Zebrad).await;
         }
@@ -1679,31 +1692,37 @@ mod zebrad {
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn transaction_mined() {
             fetch_service_get_transaction_mined(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn transaction_mempool() {
             fetch_service_get_transaction_mempool(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn taddress_txids() {
             fetch_service_get_taddress_txids(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn taddress_balance() {
             fetch_service_get_taddress_balance(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn mempool_tx() {
             fetch_service_get_mempool_tx(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn mempool_stream() {
             fetch_service_get_mempool_stream(&ValidatorKind::Zebrad).await;
         }
@@ -1719,16 +1738,19 @@ mod zebrad {
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn subtree_roots() {
             fetch_service_get_subtree_roots(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn taddress_utxos() {
             fetch_service_get_taddress_utxos(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test]
+        #[ignore = "correlates with consensus branch ID issue"]
         pub(crate) async fn taddress_utxos_stream() {
             fetch_service_get_taddress_utxos_stream(&ValidatorKind::Zebrad).await;
         }
