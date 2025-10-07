@@ -154,6 +154,7 @@ mod chain_query_interface {
             ValidatorConnector::State(chain_index::source::State {
                 read_state_service: state_service.read_state_service().clone(),
                 mempool_fetcher: json_service,
+                network: config.network,
             }),
             config,
         )

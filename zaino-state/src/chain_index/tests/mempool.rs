@@ -29,7 +29,7 @@ async fn spawn_mempool_and_mockchain() -> (
 
     let block_data = blocks
         .iter()
-        .map(|(_height, _chain_block, _compact_block, zebra_block, _roots)| zebra_block.clone())
+        .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
         .collect();
 
     (mempool, subscriber, mockchain, block_data)
@@ -47,7 +47,13 @@ async fn get_mempool() {
         let mempool_index = (active_chain_height as usize) + 1;
         let mempool_transactions = block_data
             .get(mempool_index)
-            .map(|b| b.transactions.clone())
+            .map(|b| {
+                b.transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
 
         let subscriber_tx = subscriber.get_mempool().await;
@@ -170,12 +176,22 @@ async fn get_mempool_transaction() {
     sleep(Duration::from_millis(2000)).await;
 
     let mempool_index = (active_chain_height as usize) + 1;
-    let mempool_transactions = block_data
+
+    let mempool_transactions: Vec<_> = block_data
         .get(mempool_index)
-        .map(|b| b.transactions.clone())
+        .map(|b| {
+            b.transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
 
-    let target_hash = mempool_transactions[0].hash();
+    let target_transaction = mempool_transactions
+        .first()
+        .expect("expected at least one non-coinbase mempool transaction");
+    let target_hash = target_transaction.hash();
 
     let subscriber_tx = subscriber
         .get_transaction(&MempoolKey {
@@ -204,9 +220,21 @@ async fn get_mempool_info() {
     sleep(Duration::from_millis(2000)).await;
 
     let mempool_index = (active_chain_height as usize) + 1;
-    let mempool_transactions = block_data
+
+    // 1) Take the “next block” as a mempool proxy, but:
+    //    - exclude coinbase
+    //    - dedupe by txid (mempool is keyed by txid)
+    let mut seen = std::collections::HashSet::new();
+    let mempool_transactions: Vec<_> = block_data
         .get(mempool_index)
-        .map(|b| b.transactions.clone())
+        .map(|b| {
+            b.transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .filter(|tx| seen.insert(tx.hash())) // returns true only on first insert
+                .cloned()
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
 
     let subscriber_mempool_info = subscriber.get_mempool_info().await.unwrap();
@@ -254,9 +282,16 @@ async fn get_mempool_stream() {
     sleep(Duration::from_millis(2000)).await;
 
     let mempool_index = (active_chain_height as usize) + 1;
-    let mempool_transactions = block_data
+
+    let mempool_transactions: Vec<_> = block_data
         .get(mempool_index)
-        .map(|b| b.transactions.clone())
+        .map(|b| {
+            b.transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
 
     let (mut rx, handle) = subscriber.get_mempool_stream(None).await.unwrap();

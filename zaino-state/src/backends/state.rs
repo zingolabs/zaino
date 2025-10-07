@@ -251,6 +251,7 @@ impl ZcashService for StateService {
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
             read_state_service: read_state_service.clone(),
             mempool_fetcher: rpc_client.clone(),
+            network: config.network.clone(),
         });
 
         let mempool = Mempool::spawn(mempool_source, None).await?;
@@ -847,6 +848,11 @@ impl StateServiceSubscriber {
                 format!("invalid verbosity of {more_than_two}"),
             ))),
         }
+    }
+
+    /// Returns the network type running.
+    pub fn network(&self) -> zebra_chain::parameters::Network {
+        self.config.network.clone()
     }
 }
 

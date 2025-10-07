@@ -175,6 +175,15 @@ pub trait ChainIndex {
     /// it existed at the moment the snapshot was taken.
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot;
 
+    /// Returns Some(Height) for the given block hash *if* it is currently in the best chain.
+    ///
+    /// Returns None if the specified block is not in the best chain or is not found.
+    fn get_block_height(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        hash: types::BlockHash,
+    ) -> impl std::future::Future<Output = Result<Option<types::Height>, Self::Error>>;
+
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights.
     /// Returns None if the specified end height
@@ -194,6 +203,17 @@ pub trait ChainIndex {
         snapshot: &Self::Snapshot,
         block_hash: &types::BlockHash,
     ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error>;
+
+    /// Returns the block commitment tree data by hash
+    #[allow(clippy::type_complexity)]
+    fn get_treestate(
+        &self,
+        // snapshot: &Self::Snapshot,
+        // currently not implemented internally, fetches data from validator.
+        //
+        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
+        hash: &types::BlockHash,
+    ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
 
     /// given a transaction id, returns the transaction, along with
     /// its consensus branch ID if available
@@ -361,6 +381,7 @@ pub trait ChainIndex {
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
 pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
+    blockchain_source: std::sync::Arc<Source>,
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
@@ -392,8 +413,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         };
 
         let non_finalized_state =
-            crate::NonFinalizedState::initialize(source, config.network, top_of_finalized).await?;
+            crate::NonFinalizedState::initialize(source.clone(), config.network, top_of_finalized)
+                .await?;
         let mut chain_index = Self {
+            blockchain_source: Arc::new(source),
             mempool: std::sync::Arc::new(mempool_state),
             non_finalized_state: std::sync::Arc::new(non_finalized_state),
             finalized_db,
@@ -401,6 +424,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             status: AtomicStatus::new(StatusType::Spawning),
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
+
         Ok(chain_index)
     }
 
@@ -408,6 +432,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
     pub async fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
         NodeBackedChainIndexSubscriber {
+            blockchain_source: self.blockchain_source.as_ref().clone(),
             mempool: self.mempool.subscriber(),
             non_finalized_state: self.non_finalized_state.clone(),
             finalized_state: self.finalized_db.to_reader(),
@@ -505,6 +530,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 #[derive(Clone)]
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
+    blockchain_source: Source,
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
     finalized_state: finalised_state::reader::DbReader,
@@ -593,6 +619,25 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         self.non_finalized_state.get_snapshot()
     }
 
+    /// Returns Some(Height) for the given block hash *if* it is currently in the best chain.
+    ///
+    /// Returns None if the specified block is not in the best chain or is not found.
+    ///
+    /// Used for hash based block lookup (random access).
+    async fn get_block_height(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        hash: types::BlockHash,
+    ) -> Result<Option<types::Height>, Self::Error> {
+        match nonfinalized_snapshot.blocks.get(&hash).cloned() {
+            Some(block) => Ok(block.index().height()),
+            None => match self.finalized_state.get_block_height(hash).await {
+                Ok(height) => Ok(height),
+                Err(_e) => Err(ChainIndexError::database_hole(hash)),
+            },
+        }
+    }
+
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights.
     /// Returns None if the specified end height
@@ -665,6 +710,26 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
+    /// Returns the block commitment tree data by hash
+    async fn get_treestate(
+        &self,
+        // snapshot: &Self::Snapshot,
+        // currently not implemented internally, fetches data from validator.
+        //
+        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
+        hash: &types::BlockHash,
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+        match self.blockchain_source.get_treestate(*hash).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => Err(ChainIndexError {
+                kind: ChainIndexErrorKind::InternalServerError,
+                message: "failed to fetch treestate from validator".to_string(),
+                source: Some(Box::new(e)),
+            }),
+        }
+    }
+
+    /// given a transaction id, returns the transaction
     async fn get_raw_transaction(
         &self,
         snapshot: &Self::Snapshot,

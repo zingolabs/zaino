@@ -11,6 +11,7 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
 # Test utility
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
@@ -28,7 +29,7 @@ prost = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 futures.workspace = true
 tempfile.workspace = true
+tower = { workspace = true, features = ["buffer", "util"] }
 
 # Runtime
 tokio = { workspace = true }
-anyhow = { workspace = true }

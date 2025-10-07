@@ -1,5 +1,16 @@
 //! Type definitions for the chain index.
 //!
+//! MODULE RULES: These rules must **always** be followed with no exeptions.
+//! - structs in this module must never use external types as fields directly,
+//!   instead fundamental data should be saved into the struct, and from / into
+//!   (or appropriate getters / setters) should be implemented.
+//!
+//! - structs in this module must implement ZainoVersionedSerialize and abide by
+//!   the stringent version rules outlined in that trait.
+//!
+//! - structs in this module must never be changed without implementing a new version
+//!   and implementing the necessary ZainoDB updates and migrations.
+//!
 //! This module is currently in transition from a large monolithic file to well-organized
 //! submodules. The organized types have been moved to focused modules:
 //!

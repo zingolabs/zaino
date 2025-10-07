@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use zaino_common::{DatabaseConfig, StorageConfig};
-use zaino_proto::proto::compact_formats::CompactBlock;
 use zebra_rpc::methods::GetAddressUtxos;
 
+use crate::chain_index::finalised_state::capability::IndexedBlockExt;
+use crate::chain_index::finalised_state::db::DbBackend;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::test::MockchainSource;
@@ -15,7 +16,7 @@ use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vecto
 use crate::chain_index::types::TransactionHash;
 use crate::error::FinalisedStateError;
 use crate::{AddrScript, BlockCacheConfig, ChainWork, Height, IndexedBlock, Outpoint};
-use zingo_common_components::protocol::activation_heights;
+use zingo_common_components::protocol::activation_heights::for_test;
 
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockchainSource,
@@ -32,7 +33,7 @@ pub(crate) async fn spawn_v1_zaino_db(
             ..Default::default()
         },
         db_version: 1,
-        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+        network: for_test::current_nus_configured_in_block_one_regtest_net(),
         no_sync: false,
         no_db: false,
     };
@@ -45,8 +46,6 @@ pub(crate) async fn spawn_v1_zaino_db(
 pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
     Vec<(
         u32,
-        IndexedBlock,
-        CompactBlock,
         zebra_chain::block::Block,
         (
             zebra_chain::sapling::tree::Root,
@@ -54,6 +53,7 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
             zebra_chain::orchard::tree::Root,
             u64,
         ),
+        (Vec<u8>, Vec<u8>),
     )>,
     (Vec<String>, Vec<GetAddressUtxos>, u64),
     (Vec<String>, Vec<GetAddressUtxos>, u64),
@@ -72,10 +72,9 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
 
     for (
         _h,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.clone()
     {
         let chain_block = IndexedBlock::try_from((
@@ -85,7 +84,7 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
             orchard_root,
             orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+            &for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -99,8 +98,6 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db() -> (
 pub(crate) async fn load_vectors_v1db_and_reader() -> (
     Vec<(
         u32,
-        IndexedBlock,
-        CompactBlock,
         zebra_chain::block::Block,
         (
             zebra_chain::sapling::tree::Root,
@@ -108,6 +105,7 @@ pub(crate) async fn load_vectors_v1db_and_reader() -> (
             zebra_chain::orchard::tree::Root,
             u64,
         ),
+        (Vec<u8>, Vec<u8>),
     )>,
     (Vec<String>, Vec<GetAddressUtxos>, u64),
     (Vec<String>, Vec<GetAddressUtxos>, u64),
@@ -183,7 +181,7 @@ async fn delete_blocks_from_db() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn load_db_from_file() {
+async fn save_db_to_file_and_reload() {
     init_tracing();
 
     let (blocks, _faucet, _recipient) = load_test_vectors().unwrap();
@@ -199,7 +197,7 @@ async fn load_db_from_file() {
             ..Default::default()
         },
         db_version: 1,
-        network: activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+        network: for_test::current_nus_configured_in_block_one_regtest_net(),
 
         no_sync: false,
         no_db: false,
@@ -219,10 +217,9 @@ async fn load_db_from_file() {
 
             for (
                 _h,
-                _chain_block,
-                _compact_block,
                 zebra_block,
                 (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+                (_sapling_treestate, _orchard_treestate),
             ) in blocks_clone
             {
                 let chain_block = IndexedBlock::try_from((
@@ -232,8 +229,7 @@ async fn load_db_from_file() {
                     orchard_root,
                     orchard_root_size as u32,
                     &parent_chain_work,
-                    &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(
-                    ),
+                    &for_test::current_nus_configured_in_block_one_regtest_net(),
                 ))
                 .unwrap();
 
@@ -280,6 +276,53 @@ async fn load_db_from_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn load_db_backend_from_file() {
+    init_tracing();
+
+    let db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("chain_index")
+        .join("tests")
+        .join("vectors")
+        .join("v1_test_db");
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: db_path.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: for_test::current_nus_configured_in_block_one_regtest_net(),
+
+        no_sync: false,
+        no_db: false,
+    };
+    let finalized_state_backend = DbBackend::spawn_v1(&config).await.unwrap();
+
+    let mut prev_hash = None;
+    for height in 0..=100 {
+        let block = finalized_state_backend
+            .get_chain_block(Height(height))
+            .await
+            .unwrap()
+            .unwrap();
+        if let Some(prev_hash) = prev_hash {
+            assert_eq!(prev_hash, block.index().parent_hash);
+        }
+        prev_hash = Some(block.index().hash);
+        assert_eq!(block.index.height, Some(Height(height)));
+    }
+    assert!(finalized_state_backend
+        .get_chain_block(Height(101))
+        .await
+        .unwrap()
+        .is_none());
+    std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn try_write_invalid_block() {
     init_tracing();
 
@@ -290,8 +333,25 @@ async fn try_write_invalid_block() {
     dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
 
-    let (height, mut chain_block, _compact_block, _zebra_block, _block_roots) =
-        blocks.last().unwrap().clone();
+    let (
+        height,
+        zebra_block,
+        (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        _roots,
+    ) = blocks.last().unwrap().clone();
+
+    // NOTE: Currently using default here.
+    let parent_chain_work = ChainWork::from_u256(0.into());
+    let mut chain_block = IndexedBlock::try_from((
+        &zebra_block,
+        sapling_root,
+        sapling_root_size as u32,
+        orchard_root,
+        orchard_root_size as u32,
+        &parent_chain_work,
+        &for_test::current_nus_configured_in_block_one_regtest_net(),
+    ))
+    .unwrap();
 
     chain_block.index.height = Some(crate::Height(height + 1));
     dbg!(chain_block.index.height);
@@ -315,8 +375,7 @@ async fn try_delete_block_with_invalid_height() {
     dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
 
-    let (height, _chain_block, _compact_block, _zebra_block, _block_roots) =
-        blocks.last().unwrap().clone();
+    let (height, _zebra_block, _block_roots, _treestates) = blocks.last().unwrap().clone();
 
     let delete_height = height - 1;
 
@@ -337,7 +396,7 @@ async fn create_db_reader() {
     let (blocks, _faucet, _recipient, _db_dir, zaino_db, db_reader) =
         load_vectors_v1db_and_reader().await;
 
-    let (data_height, _, _, _, _) = blocks.last().unwrap();
+    let (data_height, _blocks, _roots, _treestates) = blocks.last().unwrap();
     let db_height = dbg!(zaino_db.db_height().await.unwrap()).unwrap();
     let db_reader_height = dbg!(db_reader.db_height().await.unwrap()).unwrap();
 
@@ -358,10 +417,9 @@ async fn get_chain_blocks() {
 
     for (
         height,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.iter()
     {
         let chain_block = IndexedBlock::try_from((
@@ -371,7 +429,7 @@ async fn get_chain_blocks() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+            &for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -394,10 +452,9 @@ async fn get_compact_blocks() {
 
     for (
         height,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.iter()
     {
         let chain_block = IndexedBlock::try_from((
@@ -407,7 +464,7 @@ async fn get_compact_blocks() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+            &for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
         let compact_block = chain_block.to_compact_block();
@@ -441,10 +498,9 @@ async fn get_faucet_txids() {
 
     for (
         height,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.iter()
     {
         let chain_block = IndexedBlock::try_from((
@@ -454,7 +510,7 @@ async fn get_faucet_txids() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+            &for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -525,10 +581,9 @@ async fn get_recipient_txids() {
 
     for (
         height,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.iter()
     {
         let chain_block = IndexedBlock::try_from((
@@ -538,7 +593,7 @@ async fn get_recipient_txids() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+            &for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -737,10 +792,9 @@ async fn check_faucet_spent_map() {
 
     for (
         _height,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.iter()
     {
         let chain_block = IndexedBlock::try_from((
@@ -750,7 +804,7 @@ async fn check_faucet_spent_map() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+            &for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -797,17 +851,38 @@ async fn check_faucet_spent_map() {
         );
         match spender_option {
             Some(spender_index) => {
-                let spender_tx =
-                    blocks
-                        .iter()
-                        .find_map(|(_h, chain_block, _cb, _zebra_block, _block_roots)| {
-                            chain_block.transactions().iter().find(|tx| {
+                let spender_tx = blocks.iter().find_map(
+                    |(
+                        _h,
+                        zebra_block,
+                        (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+                        _treestates,
+                    )| {
+                        // NOTE: Currently using default here.
+                        let parent_chain_work = ChainWork::from_u256(0.into());
+                        let chain_block = IndexedBlock::try_from((
+                            zebra_block,
+                            *sapling_root,
+                            *sapling_root_size as u32,
+                            *orchard_root,
+                            *orchard_root_size as u32,
+                            &parent_chain_work,
+                            &for_test::current_nus_configured_in_block_one_regtest_net(),
+                        ))
+                        .unwrap();
+
+                        chain_block
+                            .transactions()
+                            .iter()
+                            .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
                                 chain_block.index().height() == Some(Height(block_height))
                                     && tx.index() == tx_idx as u64
                             })
-                        });
+                            .cloned()
+                    },
+                );
                 assert!(
                     spender_tx.is_some(),
                     "Spender transaction not found in blocks!"
@@ -859,10 +934,9 @@ async fn check_recipient_spent_map() {
 
     for (
         _height,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.iter()
     {
         let chain_block = IndexedBlock::try_from((
@@ -872,7 +946,7 @@ async fn check_recipient_spent_map() {
             *orchard_root,
             *orchard_root_size as u32,
             &parent_chain_work,
-            &activation_heights::for_test::current_nus_configured_in_block_one_regtest_net(),
+            &for_test::current_nus_configured_in_block_one_regtest_net(),
         ))
         .unwrap();
 
@@ -919,17 +993,38 @@ async fn check_recipient_spent_map() {
         );
         match spender_option {
             Some(spender_index) => {
-                let spender_tx =
-                    blocks
-                        .iter()
-                        .find_map(|(_h, chain_block, _cb, _zebra_block, _block_roots)| {
-                            chain_block.transactions().iter().find(|tx| {
+                let spender_tx = blocks.iter().find_map(
+                    |(
+                        _h,
+                        zebra_block,
+                        (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+                        _treestates,
+                    )| {
+                        // NOTE: Currently using default here.
+                        let parent_chain_work = ChainWork::from_u256(0.into());
+                        let chain_block = IndexedBlock::try_from((
+                            zebra_block,
+                            *sapling_root,
+                            *sapling_root_size as u32,
+                            *orchard_root,
+                            *orchard_root_size as u32,
+                            &parent_chain_work,
+                            &for_test::current_nus_configured_in_block_one_regtest_net(),
+                        ))
+                        .unwrap();
+
+                        chain_block
+                            .transactions()
+                            .iter()
+                            .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
                                 chain_block.index().height() == Some(Height(block_height))
                                     && tx.index() == tx_idx as u64
                             })
-                        });
+                            .cloned()
+                    },
+                );
                 assert!(
                     spender_tx.is_some(),
                     "Spender transaction not found in blocks!"
