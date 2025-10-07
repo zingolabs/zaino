@@ -1,4 +1,3 @@
-use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::{
     BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, ZcashIndexer,
@@ -8,6 +7,7 @@ use zaino_testutils::{from_inputs, Validator as _};
 use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
+use zingo_common_components::protocol::activation_heights::for_test;
 
 async fn create_test_manager_and_fetch_services(
     enable_cookie_auth: bool,
@@ -57,7 +57,7 @@ async fn create_test_manager_and_fetch_services(
             },
             ..Default::default()
         },
-        zaino_common::Network::Regtest(ActivationHeights::default()),
+        for_test::current_nus_configured_in_block_one_regtest_net(),
         true,
         true,
     ))
@@ -302,7 +302,11 @@ async fn z_get_address_balance_inner() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
-    let recipient_balance = clients.recipient.account_balance(zip32::AccountId::ZERO).await.unwrap();
+    let recipient_balance = clients
+        .recipient
+        .account_balance(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     let zcashd_service_balance = zcashd_subscriber
         .z_get_address_balance(AddressStrings::new(vec![recipient_taddr.clone()]))
@@ -319,11 +323,17 @@ async fn z_get_address_balance_inner() {
     dbg!(&zaino_service_balance);
 
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         250_000,
     );
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         zcashd_service_balance.balance(),
     );
     assert_eq!(zcashd_service_balance, zaino_service_balance);
