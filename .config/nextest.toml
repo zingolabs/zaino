@@ -1,4 +1,5 @@
 [profile.default]
+test-threads = 6
 fail-fast = false
 # retries = 1
 

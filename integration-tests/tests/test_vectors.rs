@@ -32,6 +32,7 @@ use zebra_chain::parameters::NetworkKind;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlockTransaction};
+use zingo_common_components::protocol::activation_heights::for_test;
 use zip32::AccountId;
 
 async fn create_test_manager_and_services(
@@ -60,15 +61,18 @@ async fn create_test_manager_and_services(
         Some(NetworkKind::Mainnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zaino_common::Network::Mainnet, false)
+            (zebra_chain::parameters::Network::Mainnet, false)
         }
         Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zaino_common::Network::Testnet, false)
+            (
+                zebra_chain::parameters::Network::new_default_testnet(),
+                false,
+            )
         }
         _ => (
-            zaino_common::Network::Regtest(ActivationHeights::default()),
+            for_test::current_nus_configured_in_block_one_regtest_net(),
             true,
         ),
     };
@@ -107,7 +111,7 @@ async fn create_test_manager_and_services(
             },
             ..Default::default()
         },
-        network_type,
+        network_type.clone(),
         zaino_sync_bool,
         true,
     ))
