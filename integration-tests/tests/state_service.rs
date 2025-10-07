@@ -305,7 +305,7 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
-    let recipient_balance = clients.recipient.do_balance().await;
+    let recipient_balance = clients.recipient.account_balance(zip32::AccountId::ZERO).await.unwrap();
 
     let fetch_service_balance = fetch_service_subscriber
         .z_get_address_balance(AddressStrings::new(vec![recipient_taddr.clone()]))
