@@ -1,4 +1,7 @@
+//! Common types used across jsonrpsee responses
+
 pub mod amount;
+pub mod block;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,7 +36,6 @@ impl Serialize for MaybeHeight {
 impl<'de> Deserialize<'de> for MaybeHeight {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         // Accept either a number or null.
-        // Negative → None; non-negative → Some(height).
         let opt = Option::<i64>::deserialize(de)?;
         match opt {
             None => Ok(MaybeHeight(None)),

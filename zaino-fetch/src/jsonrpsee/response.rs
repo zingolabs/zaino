@@ -4,8 +4,9 @@
 //! to prevent locking consumers into a zebra_rpc version
 
 pub mod block_subsidy;
-mod common;
+pub mod common;
 pub mod peer_info;
+pub mod txout_set_info;
 
 use std::{convert::Infallible, num::ParseIntError};
 
