@@ -10,6 +10,7 @@ pub mod block_subsidy;
 pub mod common;
 pub mod mining_info;
 pub mod peer_info;
+pub mod txout_set_info;
 
 use std::{convert::Infallible, num::ParseIntError};
 
