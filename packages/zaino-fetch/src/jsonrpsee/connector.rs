@@ -32,6 +32,7 @@ use crate::jsonrpsee::{
         block_subsidy::GetBlockSubsidy,
         mining_info::GetMiningInfoWire,
         peer_info::GetPeerInfo,
+        txout_set_info::GetTxOutSetInfo,
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
         GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
@@ -765,6 +766,11 @@ impl JsonRpSeeConnector {
         });
 
         self.send_request("getaddresstxids", vec![params]).await
+    }
+
+    pub async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetTxOutSetInfo>("gettxoutsetinfo", ())
+            .await
     }
 
     /// Returns all unspent outputs for a list of addresses.

@@ -34,6 +34,7 @@ use zaino_fetch::{
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
+            txout_set_info::GetTxOutSetInfo,
             GetMempoolInfoResponse, GetNetworkSolPsResponse,
         },
     },
@@ -645,6 +646,11 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .get_address_txids(addresses, start, end)
             .await?
             .transactions)
+    }
+
+    /// Note: This method has only been implemented in `zcashd`. Zebra has no intention of supporting it.
+    async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, Self::Error> {
+        Ok(self.fetcher.get_txout_set_info().await?)
     }
 
     /// Returns all unspent outputs for a list of addresses.

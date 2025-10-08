@@ -31,8 +31,10 @@ use zaino_fetch::{
             block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
+            common::{amount::ZecAmount, block::BlockHash, BlockHeight},
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
+            txout_set_info::{GetTxOutSetInfo, TxOutSetInfo},
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
     },
@@ -58,6 +60,7 @@ use zebra_chain::{
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
     serialization::{BytesInDisplayOrder as _, ZcashSerialize},
     subtree::NoteCommitmentSubtreeIndex,
+    transaction, transparent,
 };
 use zebra_rpc::{
     client::{
@@ -84,7 +87,7 @@ use chrono::{DateTime, Utc};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashSet, error::Error, fmt, str::FromStr, sync::Arc};
+use std::{collections::{HashMap, HashSet}, error::Error, fmt, str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -960,6 +963,68 @@ impl StateServiceSubscriber {
                 format!("Block not found at height {}", height.0),
             ))),
         }
+    }
+
+    pub(crate) async fn get_txout_set(
+        state: &ReadStateService,
+    ) -> Result<HashMap<transparent::OutPoint, transparent::Output>, StateServiceError> {
+        let mut utxos: HashMap<transparent::OutPoint, transparent::Output> = HashMap::new();
+
+        let mut state = state.clone();
+
+        let zebra_state::ReadResponse::Tip { 0: tip } = state
+            .ready()
+            .and_then(|service| service.call(zebra_state::ReadRequest::Tip))
+            .await
+            .map_err(|_| {
+                StateServiceError::RpcError(RpcError {
+                    // TODO: wrong error
+                    code: LegacyCode::InvalidParameter as i64,
+                    message: "block height not in best chain".to_string(),
+                    data: None,
+                })
+            })?
+        else {
+            return Err(StateServiceError::Custom(
+                "Unexpected response to BlockHeader request".to_string(),
+            ));
+        };
+
+        let (tip_h, _) = match tip {
+            Some(tip) => tip,
+            _ => return Ok(utxos),
+        };
+
+        for h in 0..=tip_h.0 {
+            let blk = state
+                .call(ReadRequest::Block(HashOrHeight::Height(Height(h))))
+                .await
+                .unwrap();
+            let block = match blk {
+                ReadResponse::Block(Some(b)) => b,
+                _ => continue,
+            };
+
+            for tx in block.transactions.clone() {
+                let txid = tx.hash();
+                // Add outputs
+                for (i, output) in tx.outputs().iter().enumerate() {
+                    let op = transparent::OutPoint {
+                        hash: txid,
+                        index: i as u32,
+                    };
+                    utxos.insert(op, output.clone());
+                }
+                // Remove spends
+                for input in tx.inputs() {
+                    if let Some(prev) = input.outpoint() {
+                        utxos.remove(&prev);
+                    }
+                }
+            }
+        }
+
+        Ok(utxos)
     }
 
     /// Returns the network type running.
@@ -1852,6 +1917,43 @@ impl ZcashIndexer for StateServiceSubscriber {
                 tx_id.to_string()
             })
             .collect())
+    }
+
+    async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, Self::Error> {
+        let txouts = Self::get_txout_set(&self.read_state_service).await.unwrap();
+
+        let best_block_hash = self.get_best_blockhash().await.unwrap().hash();
+        let best_block_height = match self
+            .z_get_block(best_block_hash.to_string(), None)
+            .await
+            .unwrap()
+        {
+            GetBlock::Raw(_) => todo!(),
+            GetBlock::Object(block_object) => block_object.height().expect("expected height"),
+        };
+
+        let mut unique_txs = HashSet::<transaction::Hash>::with_capacity(txouts.len());
+        for op in txouts.keys() {
+            let _ = unique_txs.insert(op.hash.clone());
+        }
+
+        let total_amt: Result<
+            zebra_chain::amount::Amount<NonNegative>,
+            zebra_chain::amount::Error,
+        > = txouts.values().map(|txout| txout.value).sum();
+
+        let total_zats: u64 =
+            u64::try_from(total_amt.unwrap()).expect("non-negative amount should fit in u64");
+
+        Ok(GetTxOutSetInfo::Known(TxOutSetInfo {
+            height: BlockHeight(best_block_height.0),
+            best_block: BlockHash(best_block_hash.0),
+            transactions: unique_txs.len() as u64,
+            tx_outs: txouts.len() as u64,
+            bytes_serialized: todo!(),
+            hash_serialized: todo!(), // A SHA256d over that serialized UTXO set, useful to detect changes in the set.
+            total_amount: ZecAmount::from_zats(total_zats),
+        }))
     }
 
     async fn z_get_address_utxos(

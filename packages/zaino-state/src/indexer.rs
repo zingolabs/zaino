@@ -11,6 +11,7 @@ use zaino_fetch::jsonrpsee::response::{
     block_subsidy::GetBlockSubsidy,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
+    txout_set_info::GetTxOutSetInfo,
     GetMempoolInfoResponse, GetNetworkSolPsResponse,
 };
 use zaino_proto::proto::{
@@ -466,6 +467,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<String>, Self::Error>;
+
+    async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, Self::Error>;
 
     /// Returns all unspent outputs for a list of addresses.
     ///

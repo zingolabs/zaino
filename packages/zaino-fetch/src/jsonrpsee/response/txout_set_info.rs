@@ -3,10 +3,15 @@
 //! Although the current threat model assumes that `zaino` connects to a trusted validator,
 //! the `gettxoutsetinfo` RPC performs some light validation.
 
+use std::convert::Infallible;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::jsonrpsee::response::common::{amount::ZecAmount, block::BlockHash, BlockHeight};
+use crate::jsonrpsee::{
+    connector::ResponseToError,
+    response::common::{amount::ZecAmount, block::BlockHash, BlockHeight},
+};
 
 /// Response to a `gettxoutsetinfo` RPC request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,4 +49,8 @@ pub struct TxOutSetInfo {
 
     /// The total amount
     pub total_amount: ZecAmount,
+}
+
+impl ResponseToError for GetTxOutSetInfo {
+    type RpcError = Infallible;
 }
