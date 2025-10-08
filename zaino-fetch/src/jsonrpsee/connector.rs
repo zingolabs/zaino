@@ -25,12 +25,12 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetBalanceError,
-        GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
-        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
-        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
-        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
-        TxidsResponse,
+        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, txout_set_info::GetTxOutSetInfo,
+        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
+        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
+        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
+        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
+        SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
@@ -704,6 +704,11 @@ impl JsonRpSeeConnector {
         });
 
         self.send_request("getaddresstxids", vec![params]).await
+    }
+
+    pub async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetTxOutSetInfo>("gettxoutsetinfo", ())
+            .await
     }
 
     /// Returns all unspent outputs for a list of addresses.

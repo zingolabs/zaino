@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_fetch::jsonrpsee::response::{
-    block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetMempoolInfoResponse,
+    block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, txout_set_info::GetTxOutSetInfo,
+    GetMempoolInfoResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -409,6 +410,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<String>, Self::Error>;
+
+    async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, Self::Error>;
 
     /// Returns all unspent outputs for a list of addresses.
     ///
