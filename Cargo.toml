@@ -132,7 +132,6 @@ derive_more = "2.0.1"
 lazy_static = "1.5.0"
 zingo_common_components = { git = "https://github.com/zingolabs/infrastructure", rev = "51162c0c603d324a3c36f1cead17bf4680aa1dca" }
 zcash_client_backend = "0.19.1"
-zip32 = "0.2.1"
 
 [profile.test]
 opt-level = 3

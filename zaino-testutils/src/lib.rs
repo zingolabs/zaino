@@ -21,7 +21,7 @@ use zainodlib::config::default_ephemeral_cookie_path;
 pub use zcash_local_net as services;
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::{ZcashdConfig, ZebradConfig};
-use zebra_chain::parameters::NetworkKind;
+use zebra_chain::parameters::{testnet::ConfiguredActivationHeights, NetworkKind};
 use zingo_common_components::protocol::activation_heights;
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
@@ -31,18 +31,19 @@ use zingolib::testutils::scenarios::ClientBuilder;
 
 // TODO: update zebra to allow full nu6.1 test support
 /// Temporary default zebrad activation height until zaino is updated to next zebra release (or latest main).
-pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
-    overwinter: Some(1),
-    before_overwinter: Some(1),
-    sapling: Some(1),
-    blossom: Some(1),
-    heartwood: Some(1),
-    canopy: Some(1),
-    nu5: Some(1),
-    nu6: Some(1),
-    nu6_1: Some(1000),
-    nu7: None,
-};
+pub const REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000: ConfiguredActivationHeights =
+    ConfiguredActivationHeights {
+        overwinter: Some(1),
+        before_overwinter: Some(1),
+        sapling: Some(1),
+        blossom: Some(1),
+        heartwood: Some(1),
+        canopy: Some(1),
+        nu5: Some(1),
+        nu6: Some(1),
+        nu6_1: Some(1000),
+        nu7: None,
+    };
 
 /// Helper to get the test binary path from the TEST_BINARIES_DIR env var.
 fn binary_path(binary_name: &str) -> Option<PathBuf> {
@@ -576,7 +577,7 @@ impl TestManager {
         enable_clients: bool,
     ) -> Result<Self, std::io::Error> {
         let activation_heights = match validator {
-            ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
+            ValidatorKind::Zebrad => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000,
             ValidatorKind::Zcashd => ActivationHeights::default(),
         };
 

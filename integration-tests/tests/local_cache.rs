@@ -6,7 +6,7 @@ use zaino_state::{
     BackendType,
 };
 use zaino_testutils::{TestManager, ValidatorKind};
-use zaino_testutils::{Validator as _, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
+use zaino_testutils::{Validator as _, REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000};
 use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
 use zingo_common_components::protocol::activation_heights::for_test;
@@ -25,7 +25,7 @@ async fn create_test_manager_and_block_cache(
     BlockCacheSubscriber,
 ) {
     let activation_heights = match validator {
-        ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
+        ValidatorKind::Zebrad => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000,
         ValidatorKind::Zcashd => ActivationHeights::default(),
     };
 
