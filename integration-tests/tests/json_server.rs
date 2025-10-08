@@ -20,7 +20,7 @@ async fn create_test_manager_and_fetch_services(
     FetchServiceSubscriber,
 ) {
     println!("Launching test manager..");
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::launch_with_default_activation_heights(
         &ValidatorKind::Zcashd,
         &BackendType::Fetch,
         None,

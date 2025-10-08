@@ -25,7 +25,7 @@ async fn create_test_manager_and_fetch_service(
     zaino_no_db: bool,
     enable_clients: bool,
 ) -> (TestManager, FetchService, FetchServiceSubscriber) {
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
         None,
