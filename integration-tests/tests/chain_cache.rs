@@ -88,9 +88,33 @@ mod chain_query_interface {
         NodeBackedChainIndex,
         NodeBackedChainIndexSubscriber,
     ) {
+        // until zaino is switched over to using chain index we will keep these activation heights separate.
+        // TODO: unify acitvation heights after switchover to chain index
         let activation_heights = match validator {
-            ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
-            ValidatorKind::Zcashd => ActivationHeights::default(),
+            ValidatorKind::Zebrad => ActivationHeights {
+                overwinter: Some(1),
+                before_overwinter: Some(1),
+                sapling: Some(1),
+                blossom: Some(1),
+                heartwood: Some(1),
+                canopy: Some(1),
+                nu5: Some(2),
+                nu6: Some(2),
+                nu6_1: Some(1000),
+                nu7: None,
+            },
+            ValidatorKind::Zcashd => ActivationHeights {
+                overwinter: Some(1),
+                before_overwinter: Some(1),
+                sapling: Some(1),
+                blossom: Some(1),
+                heartwood: Some(1),
+                canopy: Some(1),
+                nu5: Some(2),
+                nu6: Some(2),
+                nu6_1: Some(2),
+                nu7: None,
+            },
         };
 
         let (test_manager, json_service) = create_test_manager_and_connector(
@@ -221,9 +245,14 @@ mod chain_query_interface {
         get_block_range(&ValidatorKind::Zebrad).await
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_block_range_zcashd() {
+        get_block_range(&ValidatorKind::Zcashd).await
+    }
+
     async fn get_block_range(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, true, false, false, true).await;
+            create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
@@ -258,9 +287,14 @@ mod chain_query_interface {
         find_fork_point(&ValidatorKind::Zebrad).await
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_fork_point_zcashd() {
+        find_fork_point(&ValidatorKind::Zcashd).await
+    }
+
     async fn find_fork_point(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, true, false, false, true).await;
+            create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
@@ -285,9 +319,14 @@ mod chain_query_interface {
         get_raw_transaction(&ValidatorKind::Zebrad).await
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_raw_transaction_zcashd() {
+        get_raw_transaction(&ValidatorKind::Zcashd).await
+    }
+
     async fn get_raw_transaction(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, true, false, false, true).await;
+            create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
@@ -312,6 +351,10 @@ mod chain_query_interface {
                 branch_id,
                 if height == Some(chain_index::types::GENESIS_HEIGHT) {
                     None
+                } else if height == Some(Height::try_from(1).unwrap()) {
+                    zebra_chain::parameters::NetworkUpgrade::Canopy
+                        .branch_id()
+                        .map(u32::from)
                 } else {
                     zebra_chain::parameters::NetworkUpgrade::Nu6
                         .branch_id()
@@ -330,9 +373,14 @@ mod chain_query_interface {
         get_transaction_status(&ValidatorKind::Zebrad).await
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_transaction_status_zcashd() {
+        get_transaction_status(&ValidatorKind::Zcashd).await
+    }
+
     async fn get_transaction_status(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, true, false, false, true).await;
+            create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         // I don't know where this second block is generated. Somewhere in the
         // guts of create_test_manager_and_chain_index
@@ -365,9 +413,14 @@ mod chain_query_interface {
         sync_large_chain(&ValidatorKind::Zebrad).await
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_large_chain_zcashd() {
+        sync_large_chain(&ValidatorKind::Zcashd).await
+    }
+
     async fn sync_large_chain(validator: &ValidatorKind) {
         let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, true, false, false, true).await;
+            create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
