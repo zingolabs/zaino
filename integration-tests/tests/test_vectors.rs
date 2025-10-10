@@ -35,7 +35,6 @@ use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlockTransac
 use zebra_state::HashOrHeight;
 use zebra_state::{ReadRequest, ReadResponse};
 use zingo_common_components::protocol::activation_heights::for_test;
-use zip32::AccountId;
 
 macro_rules! expected_read_response {
     ($response:ident, $expected_variant:ident) => {
@@ -58,7 +57,6 @@ async fn create_test_manager_and_services(
     let test_manager = TestManager::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
-        network,
         chain_cache.clone(),
         enable_zaino,
         false,

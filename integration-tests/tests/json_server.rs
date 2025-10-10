@@ -24,7 +24,6 @@ async fn create_test_manager_and_fetch_services(
         &ValidatorKind::Zcashd,
         &BackendType::Fetch,
         None,
-        None,
         true,
         true,
         enable_cookie_auth,

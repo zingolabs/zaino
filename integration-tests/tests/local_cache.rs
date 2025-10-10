@@ -1,4 +1,3 @@
-use core::panic;
 use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::{
@@ -9,7 +8,6 @@ use zaino_testutils::{TestManager, ValidatorKind};
 use zaino_testutils::{Validator as _, REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000};
 use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
-use zingo_common_components::protocol::activation_heights::for_test;
 
 async fn create_test_manager_and_block_cache(
     validator: &ValidatorKind,
@@ -26,13 +24,12 @@ async fn create_test_manager_and_block_cache(
 ) {
     let activation_heights = match validator {
         ValidatorKind::Zebrad => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000,
-        ValidatorKind::Zcashd => ActivationHeights::default(),
+        ValidatorKind::Zcashd => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000,
     };
 
     let test_manager = TestManager::launch(
         validator,
         &BackendType::Fetch,
-        None,
         Some(activation_heights),
         chain_cache,
         enable_zaino,

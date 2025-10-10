@@ -58,39 +58,6 @@ fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
         .unwrap()
 }
 
-// temporary until activation heights are unified to zebra-chain type.
-// from/into impls not added in zaino-common to avoid unecessary addition of zcash-protocol dep to non-test code
-fn local_network_from_activation_heights(
-    activation_heights: ActivationHeights,
-) -> zcash_protocol::local_consensus::LocalNetwork {
-    zcash_protocol::local_consensus::LocalNetwork {
-        overwinter: activation_heights
-            .overwinter
-            .map(zcash_protocol::consensus::BlockHeight::from),
-        sapling: activation_heights
-            .sapling
-            .map(zcash_protocol::consensus::BlockHeight::from),
-        blossom: activation_heights
-            .blossom
-            .map(zcash_protocol::consensus::BlockHeight::from),
-        heartwood: activation_heights
-            .heartwood
-            .map(zcash_protocol::consensus::BlockHeight::from),
-        canopy: activation_heights
-            .canopy
-            .map(zcash_protocol::consensus::BlockHeight::from),
-        nu5: activation_heights
-            .nu5
-            .map(zcash_protocol::consensus::BlockHeight::from),
-        nu6: activation_heights
-            .nu6
-            .map(zcash_protocol::consensus::BlockHeight::from),
-        nu6_1: activation_heights
-            .nu6_1
-            .map(zcash_protocol::consensus::BlockHeight::from),
-    }
-}
-
 /// Path for zcashd binary.
 pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcashd"));
 
@@ -238,9 +205,7 @@ impl zcash_local_net::validator::Validator for LocalNet {
     }
 
     #[allow(clippy::manual_async_fn)]
-    fn get_chain_height(
-        &self,
-    ) -> impl std::future::Future<Output = zcash_protocol::consensus::BlockHeight> + Send {
+    fn get_chain_height(&self) -> impl std::future::Future<Output = u32> + Send {
         async move {
             match self {
                 LocalNet::Zcashd(net) => net.validator().get_chain_height().await,
@@ -252,7 +217,7 @@ impl zcash_local_net::validator::Validator for LocalNet {
     #[allow(clippy::manual_async_fn)]
     fn poll_chain_height(
         &self,
-        target_height: zcash_protocol::consensus::BlockHeight,
+        target_height: u32,
     ) -> impl std::future::Future<Output = ()> + Send {
         async move {
             match self {
@@ -386,8 +351,7 @@ impl TestManager {
     pub async fn launch(
         validator: &ValidatorKind,
         backend: &BackendType,
-        network: Option<NetworkKind>,
-        activation_heights: Option<ActivationHeights>,
+        activation_heights: Option<ConfiguredActivationHeights>,
         chain_cache: Option<PathBuf>,
         enable_zaino: bool,
         enable_zaino_jsonrpc_server: bool,
@@ -433,7 +397,7 @@ impl TestManager {
             ValidatorKind::Zcashd => {
                 let mut cfg = ZcashdConfig::default_test();
                 cfg.rpc_listen_port = Some(rpc_listen_port);
-                cfg.configured_activation_heights = activation_heights.into();
+                cfg.configured_activation_heights = activation_heights.unwrap();
                 cfg.chain_cache = chain_cache.clone();
                 ValidatorConfig::ZcashdConfig(cfg)
             }
@@ -441,7 +405,7 @@ impl TestManager {
                 let mut cfg = ZebradConfig::default_test();
                 cfg.rpc_listen_port = Some(rpc_listen_port);
                 cfg.indexer_listen_port = Some(grpc_listen_port);
-                cfg.configured_activation_heights = activation_heights.into();
+                cfg.configured_activation_heights = activation_heights.unwrap();
                 cfg.chain_cache = chain_cache.clone();
                 cfg.network = nu0_reg_net.clone().kind();
                 ValidatorConfig::ZebradConfig(cfg)
@@ -529,15 +493,12 @@ impl TestManager {
                 ),
                 tempfile::tempdir().unwrap(),
             );
-            let faucet = client_builder.build_faucet(
-                true,
-                local_network_from_activation_heights(activation_heights),
-            );
+            let faucet = client_builder.build_faucet(true, activation_heights.unwrap());
             let recipient = client_builder.build_client(
                 seeds::HOSPITAL_MUSEUM_SEED.to_string(),
                 1,
                 true,
-                local_network_from_activation_heights(activation_heights),
+                activation_heights.unwrap(),
             );
             Some(Clients {
                 client_builder,
@@ -567,7 +528,6 @@ impl TestManager {
     pub async fn launch_with_default_activation_heights(
         validator: &ValidatorKind,
         backend: &BackendType,
-        network: Option<NetworkKind>,
         chain_cache: Option<PathBuf>,
         enable_zaino: bool,
         enable_zaino_jsonrpc_server: bool,
@@ -578,13 +538,12 @@ impl TestManager {
     ) -> Result<Self, std::io::Error> {
         let activation_heights = match validator {
             ValidatorKind::Zebrad => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000,
-            ValidatorKind::Zcashd => ActivationHeights::default(),
+            ValidatorKind::Zcashd => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_NONE,
         };
 
         Self::launch(
             validator,
             backend,
-            network,
             Some(activation_heights),
             chain_cache,
             enable_zaino,
@@ -676,7 +635,6 @@ mod launch_testmanager {
                 &ValidatorKind::Zcashd,
                 &BackendType::Fetch,
                 None,
-                None,
                 false,
                 false,
                 false,
@@ -698,7 +656,6 @@ mod launch_testmanager {
             let mut test_manager = TestManager::launch_with_default_activation_heights(
                 &ValidatorKind::Zcashd,
                 &BackendType::Fetch,
-                None,
                 None,
                 false,
                 false,
@@ -727,7 +684,6 @@ mod launch_testmanager {
             let mut test_manager = TestManager::launch_with_default_activation_heights(
                 &ValidatorKind::Zcashd,
                 &BackendType::Fetch,
-                None,
                 ZCASHD_CHAIN_CACHE_DIR.clone(),
                 false,
                 false,
@@ -750,7 +706,6 @@ mod launch_testmanager {
             let mut test_manager = TestManager::launch_with_default_activation_heights(
                 &ValidatorKind::Zcashd,
                 &BackendType::Fetch,
-                None,
                 None,
                 true,
                 false,
@@ -778,7 +733,6 @@ mod launch_testmanager {
                 &ValidatorKind::Zcashd,
                 &BackendType::Fetch,
                 None,
-                None,
                 true,
                 false,
                 false,
@@ -805,7 +759,6 @@ mod launch_testmanager {
             let mut test_manager = TestManager::launch_with_default_activation_heights(
                 &ValidatorKind::Zcashd,
                 &BackendType::Fetch,
-                None,
                 None,
                 true,
                 false,
@@ -856,7 +809,6 @@ mod launch_testmanager {
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
                     None,
-                    None,
                     false,
                     false,
                     false,
@@ -878,7 +830,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
-                    None,
                     None,
                     false,
                     false,
@@ -907,7 +858,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
-                    None,
                     ZEBRAD_CHAIN_CACHE_DIR.clone(),
                     false,
                     false,
@@ -930,7 +880,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
-                    None,
                     None,
                     true,
                     false,
@@ -958,7 +907,6 @@ mod launch_testmanager {
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
                     None,
-                    None,
                     true,
                     false,
                     false,
@@ -985,7 +933,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
-                    None,
                     None,
                     true,
                     false,
@@ -1034,7 +981,6 @@ mod launch_testmanager {
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
                     None,
-                    None,
                     true,
                     false,
                     false,
@@ -1135,7 +1081,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::Fetch,
-                    Some(NetworkKind::Testnet),
                     ZEBRAD_TESTNET_CACHE_DIR.clone(),
                     true,
                     false,
@@ -1168,7 +1113,6 @@ mod launch_testmanager {
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
                     None,
-                    None,
                     false,
                     false,
                     false,
@@ -1190,7 +1134,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    None,
                     None,
                     false,
                     false,
@@ -1219,7 +1162,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    None,
                     ZEBRAD_CHAIN_CACHE_DIR.clone(),
                     false,
                     false,
@@ -1242,7 +1184,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    None,
                     None,
                     true,
                     false,
@@ -1269,7 +1210,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    None,
                     None,
                     true,
                     false,
@@ -1298,7 +1238,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    None,
                     None,
                     true,
                     false,
@@ -1347,7 +1286,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    None,
                     None,
                     true,
                     false,
@@ -1447,7 +1385,6 @@ mod launch_testmanager {
                 let mut test_manager = TestManager::launch_with_default_activation_heights(
                     &ValidatorKind::Zebrad,
                     &BackendType::State,
-                    Some(NetworkKind::Testnet),
                     ZEBRAD_TESTNET_CACHE_DIR.clone(),
                     true,
                     false,

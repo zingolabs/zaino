@@ -28,7 +28,6 @@ async fn create_test_manager_and_fetch_service(
     let test_manager = TestManager::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
-        None,
         chain_cache,
         enable_zaino,
         false,
