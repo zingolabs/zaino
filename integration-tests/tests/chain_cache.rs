@@ -1,11 +1,12 @@
-use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::BackendType;
 use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
+use zebra_chain::parameters::Network;
 
 async fn create_test_manager_and_connector(
     validator: &ValidatorKind,
-    activation_heights: Option<ActivationHeights>,
+    activation_heights: Option<ConfiguredActivationHeights>,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     zaino_no_sync: bool,
@@ -15,7 +16,6 @@ async fn create_test_manager_and_connector(
     let test_manager = TestManager::launch(
         validator,
         &BackendType::Fetch,
-        None,
         activation_heights,
         chain_cache,
         enable_zaino,
@@ -64,7 +64,6 @@ mod chain_query_interface {
         },
         Height, StateService, StateServiceConfig, ZcashService as _,
     };
-    use zaino_testutils::REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000;
     use zebra_chain::{
         parameters::NetworkKind,
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
@@ -89,7 +88,7 @@ mod chain_query_interface {
         // until zaino is switched over to using chain index we will keep these activation heights separate.
         // TODO: unify acitvation heights after switchover to chain index
         let activation_heights = match validator {
-            ValidatorKind::Zebrad => ActivationHeights {
+            ValidatorKind::Zebrad => ConfiguredActivationHeights {
                 overwinter: Some(1),
                 before_overwinter: Some(1),
                 sapling: Some(1),
@@ -101,7 +100,7 @@ mod chain_query_interface {
                 nu6_1: Some(1000),
                 nu7: None,
             },
-            ValidatorKind::Zcashd => ActivationHeights {
+            ValidatorKind::Zcashd => ConfiguredActivationHeights {
                 overwinter: Some(1),
                 before_overwinter: Some(1),
                 sapling: Some(1),
@@ -183,7 +182,7 @@ mod chain_query_interface {
                         ..Default::default()
                     },
                     db_version: 1,
-                    network: zaino_common::Network::Regtest(activation_heights),
+                    network: Network::new_regtest(activation_heights),
                     no_sync: false,
                     no_db: false,
                 };
@@ -191,7 +190,7 @@ mod chain_query_interface {
                     ValidatorConnector::State(chain_index::source::State {
                         read_state_service: state_service.read_state_service().clone(),
                         mempool_fetcher: json_service.clone(),
-                        network: config.network,
+                        network: config.network.clone(),
                     }),
                     config,
                 )
@@ -220,7 +219,7 @@ mod chain_query_interface {
                         ..Default::default()
                     },
                     db_version: 1,
-                    network: zaino_common::Network::Regtest(activation_heights),
+                    network: Network::new_regtest(activation_heights),
                     no_sync: false,
                     no_db: false,
                 };
