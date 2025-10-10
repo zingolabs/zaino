@@ -58,9 +58,7 @@ async fn create_test_manager_and_block_cache(
     .unwrap();
 
     let network = match test_manager.network {
-        NetworkKind::Regtest => {
-            zebra_chain::parameters::Network::new_regtest(activation_heights)
-        }
+        NetworkKind::Regtest => zebra_chain::parameters::Network::new_regtest(activation_heights),
         NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
         NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
     };
