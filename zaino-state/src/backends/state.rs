@@ -145,7 +145,7 @@ impl StateService {
         .await
     }
 
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "workbench")]
     /// Helper for tests
     pub fn read_state_service(&self) -> &ReadStateService {
         &self.read_state_service
