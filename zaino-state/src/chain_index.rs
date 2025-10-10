@@ -455,7 +455,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     }
 
     /// Displays the status of the `chain_index`
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_db.status();
         let mempool_status = self.mempool.status();
         let combined_status = self
@@ -843,8 +844,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         source: None,
                     });
                 }
-                best_chain_block =
-                    Some(BestChainLocation::Mempool(snapshot.best_tip.height + 1));
+                best_chain_block = Some(BestChainLocation::Mempool(snapshot.best_tip.height + 1));
             } else {
                 let target_height = self
                     .non_finalized_state

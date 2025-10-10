@@ -3662,6 +3662,7 @@ lazy_static! {
 
 /// Returns reference to transaction test vectors
 #[allow(missing_docs)]
-#[must_use] pub fn get_test_vectors() -> &'static Vec<TestVector> {
+#[must_use]
+pub fn get_test_vectors() -> &'static Vec<TestVector> {
     &TEST_VECTORS
 }

@@ -232,32 +232,36 @@ impl JsonRpSeeConnector {
         validator_rpc_password: String,
         validator_cookie_path: Option<String>,
     ) -> Result<Self, TransportError> {
-        if validator_cookie_auth { JsonRpSeeConnector::new_with_cookie_auth(
-            test_node_and_return_url(
-                validator_rpc_address,
-                validator_cookie_auth,
-                validator_cookie_path.clone(),
-                None,
-                None,
+        if validator_cookie_auth {
+            JsonRpSeeConnector::new_with_cookie_auth(
+                test_node_and_return_url(
+                    validator_rpc_address,
+                    validator_cookie_auth,
+                    validator_cookie_path.clone(),
+                    None,
+                    None,
+                )
+                .await?,
+                Path::new(
+                    &validator_cookie_path
+                        .clone()
+                        .expect("validator cookie authentication path missing"),
+                ),
             )
-            .await?,
-            Path::new(
-                &validator_cookie_path
-                    .clone()
-                    .expect("validator cookie authentication path missing"),
-            ),
-        ) } else { JsonRpSeeConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                validator_rpc_address,
-                false,
-                None,
-                Some(validator_rpc_user.clone()),
-                Some(validator_rpc_password.clone()),
+        } else {
+            JsonRpSeeConnector::new_with_basic_auth(
+                test_node_and_return_url(
+                    validator_rpc_address,
+                    false,
+                    None,
+                    Some(validator_rpc_user.clone()),
+                    Some(validator_rpc_password.clone()),
+                )
+                .await?,
+                validator_rpc_user.clone(),
+                validator_rpc_password.clone(),
             )
-            .await?,
-            validator_rpc_user.clone(),
-            validator_rpc_password.clone(),
-        ) }
+        }
     }
 
     /// Returns the `http::uri` the `JsonRpSeeConnector` is configured to send requests to.
@@ -266,7 +270,8 @@ impl JsonRpSeeConnector {
     }
 
     /// Returns the `reqwest::url` the `JsonRpSeeConnector` is configured to send requests to.
-    #[must_use] pub fn url(&self) -> Url {
+    #[must_use]
+    pub fn url(&self) -> Url {
         self.url.clone()
     }
 
@@ -777,10 +782,12 @@ pub async fn test_node_and_return_url(
         AuthMethod::Cookie {
             cookie: cookie_password,
         }
-    } else { AuthMethod::Basic {
-        username: user.unwrap_or_else(|| "xxxxxx".to_string()),
-        password: password.unwrap_or_else(|| "xxxxxx".to_string()),
-    } };
+    } else {
+        AuthMethod::Basic {
+            username: user.unwrap_or_else(|| "xxxxxx".to_string()),
+            password: password.unwrap_or_else(|| "xxxxxx".to_string()),
+        }
+    };
 
     let host = match addr {
         SocketAddr::V4(_) => addr.ip().to_string(),

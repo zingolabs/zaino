@@ -252,7 +252,8 @@ impl CompactSize {
     }
 
     /// Returns the number of bytes needed to encode the given size in compact form.
-    #[must_use] pub fn serialized_size(size: usize) -> usize {
+    #[must_use]
+    pub fn serialized_size(size: usize) -> usize {
         match size {
             s if s < 253 => 1,
             s if s <= 0xFFFF => 3,

@@ -148,7 +148,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         info!("Initialising non-finalised state.");
         let (staging_sender, staging_receiver) = mpsc::channel(100);
         let staged = Mutex::new(staging_receiver);
-        let chainblock = if let Some(block) = start_block { block } else {
+        let chainblock = if let Some(block) = start_block {
+            block
+        } else {
             let genesis_block = source
                 .get_block(HashOrHeight::Height(zebra_chain::block::Height(0)))
                 .await
@@ -185,9 +187,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     ) => chain_history_mmr_root_hash.bytes_in_serialized_order(),
                     zebra_chain::block::Commitment::ChainHistoryBlockTxAuthCommitment(
                         chain_history_block_tx_auth_commitment_hash,
-                    ) => {
-                        chain_history_block_tx_auth_commitment_hash.bytes_in_serialized_order()
-                    }
+                    ) => chain_history_block_tx_auth_commitment_hash.bytes_in_serialized_order(),
                 },
 
                 nonce: *genesis_block.header.nonce,
@@ -201,9 +201,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         .inputs()
                         .iter()
                         .filter_map(|input| {
-                            input.outpoint().map(|outpoint| {
-                                TxInCompact::new(outpoint.hash.0, outpoint.index)
-                            })
+                            input
+                                .outpoint()
+                                .map(|outpoint| TxInCompact::new(outpoint.hash.0, outpoint.index))
                         })
                         .collect(),
                     trnsctn

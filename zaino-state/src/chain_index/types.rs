@@ -69,14 +69,16 @@ pub struct BlockHash(pub [u8; 32]);
 
 impl BlockHash {
     /// Return the hash bytes in big-endian byte-order suitable for printing out byte by byte.
-    #[must_use] pub fn bytes_in_display_order(&self) -> [u8; 32] {
+    #[must_use]
+    pub fn bytes_in_display_order(&self) -> [u8; 32] {
         let mut reversed_bytes = self.0;
         reversed_bytes.reverse();
         reversed_bytes
     }
 
     /// Convert bytes in big-endian byte-order into a [`self::BlockHash`].
-    #[must_use] pub fn from_bytes_in_display_order(bytes_in_display_order: &[u8; 32]) -> BlockHash {
+    #[must_use]
+    pub fn from_bytes_in_display_order(bytes_in_display_order: &[u8; 32]) -> BlockHash {
         let mut internal_byte_order = *bytes_in_display_order;
         internal_byte_order.reverse();
 
@@ -235,14 +237,16 @@ pub struct TransactionHash(pub [u8; 32]);
 
 impl TransactionHash {
     /// Return the hash bytes in big-endian byte-order suitable for printing out byte by byte.
-    #[must_use] pub fn bytes_in_display_order(&self) -> [u8; 32] {
+    #[must_use]
+    pub fn bytes_in_display_order(&self) -> [u8; 32] {
         let mut reversed_bytes = self.0;
         reversed_bytes.reverse();
         reversed_bytes
     }
 
     /// Convert bytes in big-endian byte-order into a [`self::TransactionHash`].
-    #[must_use] pub fn from_bytes_in_display_order(bytes_in_display_order: &[u8; 32]) -> TransactionHash {
+    #[must_use]
+    pub fn from_bytes_in_display_order(bytes_in_display_order: &[u8; 32]) -> TransactionHash {
         let mut internal_byte_order = *bytes_in_display_order;
         internal_byte_order.reverse();
 
@@ -500,22 +504,26 @@ pub struct AddrScript {
 
 impl AddrScript {
     /// Create from raw 20-byte hash + type byte.
-    #[must_use] pub fn new(hash: [u8; 20], script_type: u8) -> Self {
+    #[must_use]
+    pub fn new(hash: [u8; 20], script_type: u8) -> Self {
         Self { hash, script_type }
     }
 
     /// Borrow the 20-byte hash.
-    #[must_use] pub fn hash(&self) -> &[u8; 20] {
+    #[must_use]
+    pub fn hash(&self) -> &[u8; 20] {
         &self.hash
     }
 
     /// The raw type byte (0x00 = P2PKH, 0x01 = P2SH, 0xFF = `NonStandard`).
-    #[must_use] pub fn script_type(&self) -> u8 {
+    #[must_use]
+    pub fn script_type(&self) -> u8 {
         self.script_type
     }
 
     /// Serialize into exactly 21 bytes: [hash‖type].
-    #[must_use] pub fn to_raw_bytes(&self) -> [u8; 21] {
+    #[must_use]
+    pub fn to_raw_bytes(&self) -> [u8; 21] {
         let mut b = [0u8; 21];
         b[..20].copy_from_slice(&self.hash);
         b[20] = self.script_type;
@@ -523,7 +531,8 @@ impl AddrScript {
     }
 
     /// Parse from exactly 21 raw bytes.
-    #[must_use] pub fn from_raw_bytes(b: &[u8; 21]) -> Self {
+    #[must_use]
+    pub fn from_raw_bytes(b: &[u8; 21]) -> Self {
         let mut hash = [0u8; 20];
         hash.copy_from_slice(&b[..20]);
         let script_type = b[20];
@@ -531,12 +540,14 @@ impl AddrScript {
     }
 
     /// Try to extract an `AddrScript` (20-byte hash + type) from a full locking script.
-    #[must_use] pub fn from_script(script: &[u8]) -> Option<Self> {
+    #[must_use]
+    pub fn from_script(script: &[u8]) -> Option<Self> {
         parse_standard_script(script).map(|(hash, stype)| AddrScript::new(hash, stype as u8))
     }
 
     /// Rebuild the canonical P2PKH or P2SH scriptPubKey bytes for this `AddrScript`.
-    #[must_use] pub fn to_script_pubkey(&self) -> Option<Vec<u8>> {
+    #[must_use]
+    pub fn to_script_pubkey(&self) -> Option<Vec<u8>> {
         let stype = ScriptType::try_from(self.script_type).ok()?;
         build_standard_script(self.hash, stype)
     }
@@ -627,7 +638,8 @@ pub struct Outpoint {
 
 impl Outpoint {
     /// Construct a new outpoint.
-    #[must_use] pub fn new(prev_txid: [u8; 32], prev_index: u32) -> Self {
+    #[must_use]
+    pub fn new(prev_txid: [u8; 32], prev_index: u32) -> Self {
         Self {
             prev_txid,
             prev_index,
@@ -635,18 +647,21 @@ impl Outpoint {
     }
 
     /// Build from a *display-order* txid.
-    #[must_use] pub fn new_from_be(txid_be: &[u8; 32], index: u32) -> Self {
+    #[must_use]
+    pub fn new_from_be(txid_be: &[u8; 32], index: u32) -> Self {
         let le = TransactionHash::from_bytes_in_display_order(txid_be).0;
         Self::new(le, index)
     }
 
     /// Returns the txid of the transaction being spent.
-    #[must_use] pub fn prev_txid(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn prev_txid(&self) -> &[u8; 32] {
         &self.prev_txid
     }
 
     /// Returns the outpoint index withing the transaction.
-    #[must_use] pub fn prev_index(&self) -> u32 {
+    #[must_use]
+    pub fn prev_index(&self) -> u32 {
         self.prev_index
     }
 }
@@ -696,7 +711,8 @@ pub struct BlockIndex {
 
 impl BlockIndex {
     /// Constructs a new `BlockIndex`.
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         hash: BlockHash,
         parent_hash: BlockHash,
         chainwork: ChainWork,
@@ -711,22 +727,26 @@ impl BlockIndex {
     }
 
     /// Returns the hash of this block.
-    #[must_use] pub fn hash(&self) -> &BlockHash {
+    #[must_use]
+    pub fn hash(&self) -> &BlockHash {
         &self.hash
     }
 
     /// Returns the hash of the parent block.
-    #[must_use] pub fn parent_hash(&self) -> &BlockHash {
+    #[must_use]
+    pub fn parent_hash(&self) -> &BlockHash {
         &self.parent_hash
     }
 
     /// Returns the cumulative chainwork up to this block.
-    #[must_use] pub fn chainwork(&self) -> &ChainWork {
+    #[must_use]
+    pub fn chainwork(&self) -> &ChainWork {
         &self.chainwork
     }
 
     /// Returns the height of this block if it’s part of the best chain.
-    #[must_use] pub fn height(&self) -> Option<Height> {
+    #[must_use]
+    pub fn height(&self) -> Option<Height> {
         self.height
     }
 }
@@ -767,28 +787,33 @@ pub struct ChainWork([u8; 32]);
 
 impl ChainWork {
     ///Returns `ChainWork` as a U256.
-    #[must_use] pub fn to_u256(&self) -> U256 {
+    #[must_use]
+    pub fn to_u256(&self) -> U256 {
         U256::from_big_endian(&self.0)
     }
 
     /// Builds a `ChainWork` from a U256.
-    #[must_use] pub fn from_u256(value: U256) -> Self {
+    #[must_use]
+    pub fn from_u256(value: U256) -> Self {
         let buf: [u8; 32] = value.to_big_endian();
         ChainWork(buf)
     }
 
     /// Adds 2 `ChainWorks`.
-    #[must_use] pub fn add(&self, other: &Self) -> Self {
+    #[must_use]
+    pub fn add(&self, other: &Self) -> Self {
         Self::from_u256(self.to_u256() + other.to_u256())
     }
 
     /// Subtract one `ChainWork` from another.
-    #[must_use] pub fn sub(&self, other: &Self) -> Self {
+    #[must_use]
+    pub fn sub(&self, other: &Self) -> Self {
         Self::from_u256(self.to_u256() - other.to_u256())
     }
 
     /// Returns `ChainWork` bytes.
-    #[must_use] pub fn as_bytes(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 }
@@ -863,7 +888,8 @@ pub struct BlockData {
 impl BlockData {
     /// Creates a new  `BlockData` instance.
     #[allow(clippy::too_many_arguments)]
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         version: u32,
         time: i64,
         merkle_root: [u8; 32],
@@ -884,37 +910,44 @@ impl BlockData {
     }
 
     /// Returns block Version.
-    #[must_use] pub fn version(&self) -> u32 {
+    #[must_use]
+    pub fn version(&self) -> u32 {
         self.version
     }
 
     /// Returns block time.
-    #[must_use] pub fn time(&self) -> i64 {
+    #[must_use]
+    pub fn time(&self) -> i64 {
         self.time
     }
 
     /// Returns block merkle root.
-    #[must_use] pub fn merkle_root(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn merkle_root(&self) -> &[u8; 32] {
         &self.merkle_root
     }
 
     /// Returns block finalSaplingRoot or authDataRoot depending on version.
-    #[must_use] pub fn block_commitments(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn block_commitments(&self) -> &[u8; 32] {
         &self.block_commitments
     }
 
     /// Returns nbits.
-    #[must_use] pub fn bits(&self) -> u32 {
+    #[must_use]
+    pub fn bits(&self) -> u32 {
         self.bits
     }
 
     /// Converts compact bits field into the full target as a 256-bit integer.
-    #[must_use] pub fn target(&self) -> U256 {
+    #[must_use]
+    pub fn target(&self) -> U256 {
         Self::compact_to_target_u256(self.bits)
     }
 
     /// Returns the block work as 2^256 / (target + 1)
-    #[must_use] pub fn work(&self) -> U256 {
+    #[must_use]
+    pub fn work(&self) -> U256 {
         let target = self.target();
         if target.is_zero() {
             U256::zero()
@@ -924,7 +957,8 @@ impl BlockData {
     }
 
     /// Returns difficulty as ratio of the genesis target to this block's target.
-    #[must_use] pub fn difficulty(&self) -> f64 {
+    #[must_use]
+    pub fn difficulty(&self) -> f64 {
         let max_target = Self::compact_to_target_u256(0x1d00ffff); // Zcash genesis
         let target = self.target();
         Self::u256_to_f64(max_target) / Self::u256_to_f64(target)
@@ -952,12 +986,14 @@ impl BlockData {
     }
 
     /// Returns Equihash Nonse.
-    #[must_use] pub fn nonse(&self) -> [u8; 32] {
+    #[must_use]
+    pub fn nonse(&self) -> [u8; 32] {
         self.nonce
     }
 
     /// Returns Equihash Nonse.
-    #[must_use] pub fn solution(&self) -> EquihashSolution {
+    #[must_use]
+    pub fn solution(&self) -> EquihashSolution {
         self.solution
     }
 }
@@ -1035,7 +1071,8 @@ impl From<zebra_chain::work::equihash::Solution> for EquihashSolution {
 
 impl EquihashSolution {
     /// Return a slice view (convenience).
-    #[must_use] pub fn as_bytes(&self) -> &[u8] {
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
         match self {
             Self::Standard(b) => b,
             Self::Regtest(b) => b,
@@ -1133,7 +1170,8 @@ pub struct IndexedBlock {
 
 impl IndexedBlock {
     /// Creates a new `IndexedBlock`.
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         index: BlockIndex,
         data: BlockData,
         tx: Vec<CompactTxData>,
@@ -1148,47 +1186,56 @@ impl IndexedBlock {
     }
 
     /// Returns a reference to the block index metadata.
-    #[must_use] pub fn index(&self) -> &BlockIndex {
+    #[must_use]
+    pub fn index(&self) -> &BlockIndex {
         &self.index
     }
 
     /// Returns a reference to the header and auxiliary block data.
-    #[must_use] pub fn data(&self) -> &BlockData {
+    #[must_use]
+    pub fn data(&self) -> &BlockData {
         &self.data
     }
 
     /// Returns a reference to the compact transactions in this block.
-    #[must_use] pub fn transactions(&self) -> &[CompactTxData] {
+    #[must_use]
+    pub fn transactions(&self) -> &[CompactTxData] {
         &self.transactions
     }
 
     /// Returns the commitment tree data for this block.
-    #[must_use] pub fn commitment_tree_data(&self) -> &CommitmentTreeData {
+    #[must_use]
+    pub fn commitment_tree_data(&self) -> &CommitmentTreeData {
         &self.commitment_tree_data
     }
 
     /// Returns the block hash.
-    #[must_use] pub fn hash(&self) -> &BlockHash {
+    #[must_use]
+    pub fn hash(&self) -> &BlockHash {
         self.index.hash()
     }
 
     /// Returns the block height if available.
-    #[must_use] pub fn height(&self) -> Option<Height> {
+    #[must_use]
+    pub fn height(&self) -> Option<Height> {
         self.index.height()
     }
 
     /// Returns the cumulative chainwork.
-    #[must_use] pub fn chainwork(&self) -> &ChainWork {
+    #[must_use]
+    pub fn chainwork(&self) -> &ChainWork {
         self.index.chainwork()
     }
 
     /// Returns the raw work value (targeted work contribution).
-    #[must_use] pub fn work(&self) -> U256 {
+    #[must_use]
+    pub fn work(&self) -> U256 {
         self.data.work()
     }
 
     /// Converts this `IndexedBlock` into a `CompactBlock` protobuf message using proto v4 format.
-    #[must_use] pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
+    #[must_use]
+    pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
         // NOTE: Returns u64::MAX if the block is not in the best chain.
         let height: u64 = self.height().map_or(u64::MAX, |h| h.0.into());
 
@@ -1610,7 +1657,8 @@ pub struct CompactTxData {
 
 impl CompactTxData {
     /// Creates a new `TxData` instance.
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         index: u64,
         txid: TransactionHash,
         transparent: TransparentCompactTx,
@@ -1627,37 +1675,44 @@ impl CompactTxData {
     }
 
     /// Returns transactions index within block.
-    #[must_use] pub fn index(&self) -> u64 {
+    #[must_use]
+    pub fn index(&self) -> u64 {
         self.index
     }
 
     /// Returns transaction ID.
-    #[must_use] pub fn txid(&self) -> &TransactionHash {
+    #[must_use]
+    pub fn txid(&self) -> &TransactionHash {
         &self.txid
     }
 
     /// Returns sapling and orchard value balances.
-    #[must_use] pub fn balances(&self) -> (Option<i64>, Option<i64>) {
+    #[must_use]
+    pub fn balances(&self) -> (Option<i64>, Option<i64>) {
         (self.sapling.value, self.orchard.value)
     }
 
     /// Returns compact transparent tx data.
-    #[must_use] pub fn transparent(&self) -> &TransparentCompactTx {
+    #[must_use]
+    pub fn transparent(&self) -> &TransparentCompactTx {
         &self.transparent
     }
 
     /// Returns compact sapling tx data.
-    #[must_use] pub fn sapling(&self) -> &SaplingCompactTx {
+    #[must_use]
+    pub fn sapling(&self) -> &SaplingCompactTx {
         &self.sapling
     }
 
     /// Returns compact orchard tx data.
-    #[must_use] pub fn orchard(&self) -> &OrchardCompactTx {
+    #[must_use]
+    pub fn orchard(&self) -> &OrchardCompactTx {
         &self.orchard
     }
 
     /// Converts this `TxData` into a `CompactTx` protobuf message with an optional fee.
-    #[must_use] pub fn to_compact_tx(
+    #[must_use]
+    pub fn to_compact_tx(
         &self,
         fee: Option<u32>,
     ) -> zaino_proto::proto::compact_formats::CompactTx {
@@ -1897,17 +1952,20 @@ impl ZainoVersionedSerialise for TransparentCompactTx {
 
 impl TransparentCompactTx {
     /// Creates a new `TransparentCompactTx` instance.
-    #[must_use] pub fn new(vin: Vec<TxInCompact>, vout: Vec<TxOutCompact>) -> Self {
+    #[must_use]
+    pub fn new(vin: Vec<TxInCompact>, vout: Vec<TxOutCompact>) -> Self {
         Self { vin, vout }
     }
 
     /// Returns transparent inputs.
-    #[must_use] pub fn inputs(&self) -> &[TxInCompact] {
+    #[must_use]
+    pub fn inputs(&self) -> &[TxInCompact] {
         &self.vin
     }
 
     /// Returns transparent outputs.
-    #[must_use] pub fn outputs(&self) -> &[TxOutCompact] {
+    #[must_use]
+    pub fn outputs(&self) -> &[TxOutCompact] {
         &self.vout
     }
 }
@@ -1924,7 +1982,8 @@ pub struct TxInCompact {
 
 impl TxInCompact {
     /// Creates a new `TxInCompact` instance.
-    #[must_use] pub fn new(prevout_txid: [u8; 32], prevout_index: u32) -> Self {
+    #[must_use]
+    pub fn new(prevout_txid: [u8; 32], prevout_index: u32) -> Self {
         Self {
             prevout_txid,
             prevout_index,
@@ -1932,7 +1991,8 @@ impl TxInCompact {
     }
 
     /// Constructs a canonical "null prevout" (coinbase marker).
-    #[must_use] pub fn null_prevout() -> Self {
+    #[must_use]
+    pub fn null_prevout() -> Self {
         Self {
             prevout_txid: [0u8; 32],
             prevout_index: u32::MAX,
@@ -1940,18 +2000,21 @@ impl TxInCompact {
     }
 
     /// Returns txid of the transaction that holds the output being sent.
-    #[must_use] pub fn prevout_txid(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn prevout_txid(&self) -> &[u8; 32] {
         &self.prevout_txid
     }
 
     /// Returns the index of the output being sent within the transaction.
-    #[must_use] pub fn prevout_index(&self) -> u32 {
+    #[must_use]
+    pub fn prevout_index(&self) -> u32 {
         self.prevout_index
     }
 
     /// `true` iff this input is the special “null” out-point used by a
     /// coinbase transaction (all-zero txid, index `0xffff_ffff`).
-    #[must_use] pub fn is_null_prevout(&self) -> bool {
+    #[must_use]
+    pub fn is_null_prevout(&self) -> bool {
         self.prevout_txid == [0u8; 32] && self.prevout_index == u32::MAX
     }
 }
@@ -2010,7 +2073,8 @@ impl TryFrom<u8> for ScriptType {
 
 impl ScriptType {
     /// Returns `ScriptType` as a String.
-    #[must_use] pub fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
         match self {
             ScriptType::P2PKH => "P2PKH",
             ScriptType::P2SH => "P2SH",
@@ -2114,7 +2178,8 @@ pub struct TxOutCompact {
 
 impl TxOutCompact {
     /// Creates a new `TxOutCompact` instance.
-    #[must_use] pub fn new(value: u64, script_hash: [u8; 20], script_type: u8) -> Option<Self> {
+    #[must_use]
+    pub fn new(value: u64, script_hash: [u8; 20], script_type: u8) -> Option<Self> {
         if ScriptType::try_from(script_type).is_ok() {
             Some(Self {
                 value,
@@ -2127,22 +2192,26 @@ impl TxOutCompact {
     }
 
     /// Returns the valuse in zatoshi sent in this output.
-    #[must_use] pub fn value(&self) -> u64 {
+    #[must_use]
+    pub fn value(&self) -> u64 {
         self.value
     }
 
     /// Returns script hash.
-    #[must_use] pub fn script_hash(&self) -> &[u8; 20] {
+    #[must_use]
+    pub fn script_hash(&self) -> &[u8; 20] {
         &self.script_hash
     }
 
     /// Returns script type u8.
-    #[must_use] pub fn script_type(&self) -> u8 {
+    #[must_use]
+    pub fn script_type(&self) -> u8 {
         self.script_type
     }
 
     /// Returns script type Enum.
-    #[must_use] pub fn script_type_enum(&self) -> Option<ScriptType> {
+    #[must_use]
+    pub fn script_type_enum(&self) -> Option<ScriptType> {
         ScriptType::try_from(self.script_type).ok()
     }
 }
@@ -2216,7 +2285,8 @@ pub struct SaplingCompactTx {
 
 impl SaplingCompactTx {
     /// Creates a new `SaplingCompactTx` instance.
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         value: Option<i64>,
         spends: Vec<CompactSaplingSpend>,
         outputs: Vec<CompactSaplingOutput>,
@@ -2229,17 +2299,20 @@ impl SaplingCompactTx {
     }
 
     /// Returns the net sapling value balance (before fees); `None` if no sapling component.
-    #[must_use] pub fn value(&self) -> Option<i64> {
+    #[must_use]
+    pub fn value(&self) -> Option<i64> {
         self.value
     }
 
     /// Returns sapling spends.
-    #[must_use] pub fn spends(&self) -> &[CompactSaplingSpend] {
+    #[must_use]
+    pub fn spends(&self) -> &[CompactSaplingSpend] {
         &self.spends
     }
 
     /// Returns sapling outputs
-    #[must_use] pub fn outputs(&self) -> &[CompactSaplingOutput] {
+    #[must_use]
+    pub fn outputs(&self) -> &[CompactSaplingOutput] {
         &self.outputs
     }
 }
@@ -2280,17 +2353,20 @@ pub struct CompactSaplingSpend {
 
 impl CompactSaplingSpend {
     /// Creates a new `CompactSaplingSpend` instance.
-    #[must_use] pub fn new(nf: [u8; 32]) -> Self {
+    #[must_use]
+    pub fn new(nf: [u8; 32]) -> Self {
         Self { nf }
     }
 
     /// Returns sapling nullifier.
-    #[must_use] pub fn nullifier(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn nullifier(&self) -> &[u8; 32] {
         &self.nf
     }
 
     /// Creates a Proto `CompactSaplingSpend` from this record.
-    #[must_use] pub fn into_compact(&self) -> zaino_proto::proto::compact_formats::CompactSaplingSpend {
+    #[must_use]
+    pub fn into_compact(&self) -> zaino_proto::proto::compact_formats::CompactSaplingSpend {
         zaino_proto::proto::compact_formats::CompactSaplingSpend {
             nf: self.nf.to_vec(),
         }
@@ -2334,7 +2410,8 @@ pub struct CompactSaplingOutput {
 
 impl CompactSaplingOutput {
     /// Creates a new `CompactSaplingOutput` instance.
-    #[must_use] pub fn new(cmu: [u8; 32], ephemeral_key: [u8; 32], ciphertext: [u8; 52]) -> Self {
+    #[must_use]
+    pub fn new(cmu: [u8; 32], ephemeral_key: [u8; 32], ciphertext: [u8; 52]) -> Self {
         Self {
             cmu,
             ephemeral_key,
@@ -2343,22 +2420,26 @@ impl CompactSaplingOutput {
     }
 
     /// Returns cmu.
-    #[must_use] pub fn cmu(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn cmu(&self) -> &[u8; 32] {
         &self.cmu
     }
 
     /// Returns ephemeral key.
-    #[must_use] pub fn ephemeral_key(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn ephemeral_key(&self) -> &[u8; 32] {
         &self.ephemeral_key
     }
 
     /// Returns ciphertext.
-    #[must_use] pub fn ciphertext(&self) -> &[u8; 52] {
+    #[must_use]
+    pub fn ciphertext(&self) -> &[u8; 52] {
         &self.ciphertext
     }
 
     /// Creates a Proto `CompactSaplingOutput` from this record.
-    #[must_use] pub fn into_compact(&self) -> zaino_proto::proto::compact_formats::CompactSaplingOutput {
+    #[must_use]
+    pub fn into_compact(&self) -> zaino_proto::proto::compact_formats::CompactSaplingOutput {
         zaino_proto::proto::compact_formats::CompactSaplingOutput {
             cmu: self.cmu.to_vec(),
             ephemeral_key: self.ephemeral_key.to_vec(),
@@ -2408,17 +2489,20 @@ pub struct OrchardCompactTx {
 
 impl OrchardCompactTx {
     /// Creates a new `CompactOrchardTx` instance.
-    #[must_use] pub fn new(value: Option<i64>, actions: Vec<CompactOrchardAction>) -> Self {
+    #[must_use]
+    pub fn new(value: Option<i64>, actions: Vec<CompactOrchardAction>) -> Self {
         Self { value, actions }
     }
 
     /// Returns the net orchard value balance (before fees); `None` if no Orchard component.
-    #[must_use] pub fn value(&self) -> Option<i64> {
+    #[must_use]
+    pub fn value(&self) -> Option<i64> {
         self.value
     }
 
     /// Returns the orchard actions in this transaction.
-    #[must_use] pub fn actions(&self) -> &[CompactOrchardAction] {
+    #[must_use]
+    pub fn actions(&self) -> &[CompactOrchardAction] {
         &self.actions
     }
 }
@@ -2464,7 +2548,8 @@ pub struct CompactOrchardAction {
 
 impl CompactOrchardAction {
     /// Creates a new `CompactOrchardAction` instance.
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         nullifier: [u8; 32],
         cmx: [u8; 32],
         ephemeral_key: [u8; 32],
@@ -2479,27 +2564,32 @@ impl CompactOrchardAction {
     }
 
     /// Returns orchard nullifier.
-    #[must_use] pub fn nullifier(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn nullifier(&self) -> &[u8; 32] {
         &self.nullifier
     }
 
     /// Returns cmx.
-    #[must_use] pub fn cmx(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn cmx(&self) -> &[u8; 32] {
         &self.cmx
     }
 
     /// Returns ephemeral key.
-    #[must_use] pub fn ephemeral_key(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn ephemeral_key(&self) -> &[u8; 32] {
         &self.ephemeral_key
     }
 
     /// Returns ciphertext.
-    #[must_use] pub fn ciphertext(&self) -> &[u8; 52] {
+    #[must_use]
+    pub fn ciphertext(&self) -> &[u8; 52] {
         &self.ciphertext
     }
 
     /// Creates a Proto `CompactOrchardAction` from this record.
-    #[must_use] pub fn into_compact(&self) -> zaino_proto::proto::compact_formats::CompactOrchardAction {
+    #[must_use]
+    pub fn into_compact(&self) -> zaino_proto::proto::compact_formats::CompactOrchardAction {
         zaino_proto::proto::compact_formats::CompactOrchardAction {
             nullifier: self.nullifier.to_vec(),
             cmx: self.cmx.to_vec(),
@@ -2552,7 +2642,8 @@ pub struct TxLocation {
 
 impl TxLocation {
     /// Creates a new `TxLocation` instance.
-    #[must_use] pub fn new(block_height: u32, tx_index: u16) -> Self {
+    #[must_use]
+    pub fn new(block_height: u32, tx_index: u16) -> Self {
         Self {
             block_height,
             tx_index,
@@ -2560,12 +2651,14 @@ impl TxLocation {
     }
 
     /// Returns the block height held in the `TxLocation`.
-    #[must_use] pub fn block_height(&self) -> u32 {
+    #[must_use]
+    pub fn block_height(&self) -> u32 {
         self.block_height
     }
 
     /// Returns the transaction index held in the `TxLocation`.
-    #[must_use] pub fn tx_index(&self) -> u16 {
+    #[must_use]
+    pub fn tx_index(&self) -> u16 {
         self.tx_index
     }
 }
@@ -2619,7 +2712,8 @@ impl AddrHistRecord {
     pub const FLAG_IS_INPUT: u8 = 0b00000100;
 
     /// Creatues a new `AddrHistRecord` instance.
-    #[must_use] pub fn new(tx_location: TxLocation, out_index: u16, value: u64, flags: u8) -> Self {
+    #[must_use]
+    pub fn new(tx_location: TxLocation, out_index: u16, value: u64, flags: u8) -> Self {
         Self {
             tx_location,
             out_index,
@@ -2629,37 +2723,44 @@ impl AddrHistRecord {
     }
 
     /// Returns the `TxLocation` in this record.
-    #[must_use] pub fn tx_location(&self) -> TxLocation {
+    #[must_use]
+    pub fn tx_location(&self) -> TxLocation {
         self.tx_location
     }
 
     /// Returns the out index of this record.
-    #[must_use] pub fn out_index(&self) -> u16 {
+    #[must_use]
+    pub fn out_index(&self) -> u16 {
         self.out_index
     }
 
     /// Returns the value of this record.
-    #[must_use] pub fn value(&self) -> u64 {
+    #[must_use]
+    pub fn value(&self) -> u64 {
         self.value
     }
 
     /// Returns the flag byte of this record.
-    #[must_use] pub fn flags(&self) -> u8 {
+    #[must_use]
+    pub fn flags(&self) -> u8 {
         self.flags
     }
 
     /// Returns true if this record is from a mined block.
-    #[must_use] pub fn is_mined(&self) -> bool {
+    #[must_use]
+    pub fn is_mined(&self) -> bool {
         self.flags & Self::FLAG_MINED != 0
     }
 
     /// Returns true if this record is a spend.
-    #[must_use] pub fn is_spent(&self) -> bool {
+    #[must_use]
+    pub fn is_spent(&self) -> bool {
         self.flags & Self::FLAG_SPENT != 0
     }
 
     /// Returns true if this record is an input.
-    #[must_use] pub fn is_input(&self) -> bool {
+    #[must_use]
+    pub fn is_input(&self) -> bool {
         self.flags & Self::FLAG_IS_INPUT != 0
     }
 }
@@ -2811,7 +2912,8 @@ pub struct ShardRoot {
 
 impl ShardRoot {
     /// Creates a new `ShardRoot` instance.
-    #[must_use] pub fn new(hash: [u8; 32], final_block_hash: [u8; 32], final_block_height: u32) -> Self {
+    #[must_use]
+    pub fn new(hash: [u8; 32], final_block_hash: [u8; 32], final_block_height: u32) -> Self {
         Self {
             hash,
             final_block_hash,
@@ -2820,17 +2922,20 @@ impl ShardRoot {
     }
 
     /// Returns commitment tree root.
-    #[must_use] pub fn hash(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn hash(&self) -> &[u8; 32] {
         &self.hash
     }
 
     /// Returns the hash of the final block in this shard.
-    #[must_use] pub fn final_block_hash(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn final_block_hash(&self) -> &[u8; 32] {
         &self.final_block_hash
     }
 
     /// Returns the Height of the final block in this shard.
-    #[must_use] pub fn final_block_height(&self) -> u32 {
+    #[must_use]
+    pub fn final_block_height(&self) -> u32 {
         self.final_block_height
     }
 }
@@ -2879,17 +2984,20 @@ pub struct BlockHeaderData {
 
 impl BlockHeaderData {
     /// Constructs a new `BlockHeaderData`.
-    #[must_use] pub fn new(index: BlockIndex, data: BlockData) -> Self {
+    #[must_use]
+    pub fn new(index: BlockIndex, data: BlockData) -> Self {
         Self { index, data }
     }
 
     /// Returns the stored [`BlockIndex`].
-    #[must_use] pub fn index(&self) -> &BlockIndex {
+    #[must_use]
+    pub fn index(&self) -> &BlockIndex {
         &self.index
     }
 
     /// Returns the stored [`BlockData`].
-    #[must_use] pub fn data(&self) -> &BlockData {
+    #[must_use]
+    pub fn data(&self) -> &BlockData {
         &self.data
     }
 }
@@ -2923,12 +3031,14 @@ pub struct TxidList {
 
 impl TxidList {
     /// Creates a new `TxidList`.
-    #[must_use] pub fn new(tx: Vec<TransactionHash>) -> Self {
+    #[must_use]
+    pub fn new(tx: Vec<TransactionHash>) -> Self {
         Self { txids: tx }
     }
 
     /// Returns a slice of the contained txids.
-    #[must_use] pub fn txids(&self) -> &[TransactionHash] {
+    #[must_use]
+    pub fn txids(&self) -> &[TransactionHash] {
         &self.txids
     }
 }
@@ -2994,12 +3104,14 @@ pub struct TransparentTxList {
 
 impl TransparentTxList {
     /// Creates a new `TransparentTxList`.
-    #[must_use] pub fn new(tx: Vec<Option<TransparentCompactTx>>) -> Self {
+    #[must_use]
+    pub fn new(tx: Vec<Option<TransparentCompactTx>>) -> Self {
         Self { tx }
     }
 
     /// Returns the slice of optional transparent tx fragments.
-    #[must_use] pub fn tx(&self) -> &[Option<TransparentCompactTx>] {
+    #[must_use]
+    pub fn tx(&self) -> &[Option<TransparentCompactTx>] {
         &self.tx
     }
 }
@@ -3073,12 +3185,14 @@ pub struct SaplingTxList {
 
 impl SaplingTxList {
     /// Creates a new [`SaplingTxList`]
-    #[must_use] pub fn new(tx: Vec<Option<SaplingCompactTx>>) -> Self {
+    #[must_use]
+    pub fn new(tx: Vec<Option<SaplingCompactTx>>) -> Self {
         Self { tx }
     }
 
     /// Returns transactions in this item.
-    #[must_use] pub fn tx(&self) -> &[Option<SaplingCompactTx>] {
+    #[must_use]
+    pub fn tx(&self) -> &[Option<SaplingCompactTx>] {
         &self.tx
     }
 }
@@ -3144,12 +3258,14 @@ pub struct OrchardTxList {
 
 impl OrchardTxList {
     /// Creates a new [`OrchardTxList`]
-    #[must_use] pub fn new(tx: Vec<Option<OrchardCompactTx>>) -> Self {
+    #[must_use]
+    pub fn new(tx: Vec<Option<OrchardCompactTx>>) -> Self {
         Self { tx }
     }
 
     /// Returns transactions in this item.
-    #[must_use] pub fn tx(&self) -> &[Option<OrchardCompactTx>] {
+    #[must_use]
+    pub fn tx(&self) -> &[Option<OrchardCompactTx>] {
         &self.tx
     }
 }

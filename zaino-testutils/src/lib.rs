@@ -91,39 +91,47 @@ fn local_network_from_activation_heights(
 }
 
 /// Path for zcashd binary.
-pub static ZCASHD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zcashd"));
+pub static ZCASHD_BIN: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| binary_path("zcashd"));
 
 /// Path for zcash-cli binary.
-pub static ZCASH_CLI_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zcash-cli"));
+pub static ZCASH_CLI_BIN: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| binary_path("zcash-cli"));
 
 /// Path for zebrad binary.
-pub static ZEBRAD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zebrad"));
+pub static ZEBRAD_BIN: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| binary_path("zebrad"));
 
 /// Path for lightwalletd binary.
-pub static LIGHTWALLETD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("lightwalletd"));
+pub static LIGHTWALLETD_BIN: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| binary_path("lightwalletd"));
 
 /// Path for zainod binary.
-pub static ZAINOD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zainod"));
+pub static ZAINOD_BIN: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| binary_path("zainod"));
 
 /// Path for zcashd chain cache.
-pub static ZCASHD_CHAIN_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests"))
-});
+pub static ZCASHD_CHAIN_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| {
+        let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        workspace_root_path.pop();
+        Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests"))
+    });
 
 /// Path for zebrad chain cache.
-pub static ZEBRAD_CHAIN_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests_large"))
-});
+pub static ZEBRAD_CHAIN_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| {
+        let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        workspace_root_path.pop();
+        Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests_large"))
+    });
 
 /// Path for the Zebra chain cache in the user's home directory.
-pub static ZEBRAD_TESTNET_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
-    let home_path = PathBuf::from(std::env::var("HOME").unwrap());
-    Some(home_path.join(".cache/zebra"))
-});
+pub static ZEBRAD_TESTNET_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> =
+    std::sync::LazyLock::new(|| {
+        let home_path = PathBuf::from(std::env::var("HOME").unwrap());
+        Some(home_path.join(".cache/zebra"))
+    });
 
 #[derive(PartialEq, Clone, Copy)]
 /// Represents the type of validator to launch.

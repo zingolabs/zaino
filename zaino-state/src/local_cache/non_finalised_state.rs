@@ -378,8 +378,9 @@ impl NonFinalisedState {
                 let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {
                     NonFinalisedStateError::Custom(format!("Failed to fetch blockchain info: {e}"))
                 })?;
-                if (i64::from(blockchain_info.blocks.0) - i64::from(blockchain_info.estimated_height.0))
-                    .abs()
+                if (i64::from(blockchain_info.blocks.0)
+                    - i64::from(blockchain_info.estimated_height.0))
+                .abs()
                     <= 10
                 {
                     break;
@@ -398,7 +399,8 @@ impl NonFinalisedState {
     }
 
     /// Returns a [`NonFinalisedStateSubscriber`].
-    #[must_use] pub fn subscriber(&self) -> NonFinalisedStateSubscriber {
+    #[must_use]
+    pub fn subscriber(&self) -> NonFinalisedStateSubscriber {
         NonFinalisedStateSubscriber {
             heights_to_hashes: self.heights_to_hashes.subscriber(),
             hashes_to_blocks: self.hashes_to_blocks.subscriber(),
@@ -407,7 +409,8 @@ impl NonFinalisedState {
     }
 
     /// Returns the status of the non-finalised state.
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
@@ -493,7 +496,8 @@ impl NonFinalisedStateSubscriber {
     }
 
     /// Returns the status of the `NonFinalisedState`.
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         self.status.load()
     }
 }

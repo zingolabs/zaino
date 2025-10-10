@@ -91,12 +91,17 @@ impl BlockCache {
     }
 
     /// Returns the status of the block cache.
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = if self.config.no_db { StatusType::Ready } else { match &self.finalised_state {
-            Some(finalised_state) => finalised_state.status(),
-            None => return StatusType::Offline,
-        } };
+        let finalised_state_status = if self.config.no_db {
+            StatusType::Ready
+        } else {
+            match &self.finalised_state {
+                Some(finalised_state) => finalised_state.status(),
+                None => return StatusType::Offline,
+            }
+        };
 
         non_finalised_state_status.combine(finalised_state_status)
     }
@@ -189,12 +194,17 @@ impl BlockCacheSubscriber {
     }
 
     /// Returns the status of the [`BlockCache`]..
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = if self.config.no_db { StatusType::Ready } else { match &self.finalised_state {
-            Some(finalised_state) => finalised_state.status(),
-            None => return StatusType::Offline,
-        } };
+        let finalised_state_status = if self.config.no_db {
+            StatusType::Ready
+        } else {
+            match &self.finalised_state {
+                Some(finalised_state) => finalised_state.status(),
+                None => return StatusType::Offline,
+            }
+        };
 
         non_finalised_state_status.combine(finalised_state_status)
     }

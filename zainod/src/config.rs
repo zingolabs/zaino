@@ -268,7 +268,8 @@ impl Default for IndexerConfig {
 }
 
 /// Returns the default path for Zaino's ephemeral authentication cookie.
-#[must_use] pub fn default_ephemeral_cookie_path() -> PathBuf {
+#[must_use]
+pub fn default_ephemeral_cookie_path() -> PathBuf {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         PathBuf::from(runtime_dir).join("zaino").join(".cookie")
     } else {
@@ -277,7 +278,8 @@ impl Default for IndexerConfig {
 }
 
 /// Loads the default file path for zaino's local db.
-#[must_use] pub fn default_zaino_db_path() -> PathBuf {
+#[must_use]
+pub fn default_zaino_db_path() -> PathBuf {
     match std::env::var("HOME") {
         Ok(home) => PathBuf::from(home).join(".cache").join("zaino"),
         Err(_) => PathBuf::from("/tmp").join("zaino").join(".cache"),

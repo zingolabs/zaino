@@ -13,7 +13,8 @@ pub struct RawTransactionStream {
 
 impl RawTransactionStream {
     /// Returns new instance of `RawTransactionStream`.
-    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<RawTransaction, tonic::Status>>) -> Self {
+    #[must_use]
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<RawTransaction, tonic::Status>>) -> Self {
         RawTransactionStream {
             inner: ReceiverStream::new(rx),
         }
@@ -44,7 +45,8 @@ pub struct CompactTransactionStream {
 
 impl CompactTransactionStream {
     /// Returns new instance of `RawTransactionStream`.
-    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactTx, tonic::Status>>) -> Self {
+    #[must_use]
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactTx, tonic::Status>>) -> Self {
         CompactTransactionStream {
             inner: ReceiverStream::new(rx),
         }
@@ -75,7 +77,8 @@ pub struct CompactBlockStream {
 
 impl CompactBlockStream {
     /// Returns new instance of `CompactBlockStream`.
-    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactBlock, tonic::Status>>) -> Self {
+    #[must_use]
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactBlock, tonic::Status>>) -> Self {
         CompactBlockStream {
             inner: ReceiverStream::new(rx),
         }
@@ -106,7 +109,8 @@ pub struct UtxoReplyStream {
 
 impl UtxoReplyStream {
     /// Returns new instance of `CompactBlockStream`.
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         rx: tokio::sync::mpsc::Receiver<Result<GetAddressUtxosReply, tonic::Status>>,
     ) -> Self {
         UtxoReplyStream {
@@ -139,7 +143,8 @@ pub struct SubtreeRootReplyStream {
 
 impl SubtreeRootReplyStream {
     /// Returns new instance of `CompactBlockStream`.
-    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<SubtreeRoot, tonic::Status>>) -> Self {
+    #[must_use]
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<SubtreeRoot, tonic::Status>>) -> Self {
         SubtreeRootReplyStream {
             inner: ReceiverStream::new(rx),
         }
@@ -170,7 +175,8 @@ pub struct AddressStream {
 
 impl AddressStream {
     /// Creates a new `AddressStream` instance.
-    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<Address, tonic::Status>>) -> Self {
+    #[must_use]
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<Address, tonic::Status>>) -> Self {
         AddressStream {
             inner: ReceiverStream::new(rx),
         }

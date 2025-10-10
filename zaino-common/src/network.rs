@@ -152,17 +152,20 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
 
 impl Network {
     /// Convert to Zebra's network type using default configurations.
-    #[must_use] pub fn to_zebra_default(&self) -> zebra_chain::parameters::Network {
+    #[must_use]
+    pub fn to_zebra_default(&self) -> zebra_chain::parameters::Network {
         self.into()
     }
 
     /// Convert to Zebra's network type for internal use (alias for `to_zebra_default`).
-    #[must_use] pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
+    #[must_use]
+    pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
         self.to_zebra_default()
     }
 
     /// Get the standard regtest activation heights used by Zaino.
-    #[must_use] pub fn zaino_regtest_heights() -> ConfiguredActivationHeights {
+    #[must_use]
+    pub fn zaino_regtest_heights() -> ConfiguredActivationHeights {
         ConfiguredActivationHeights {
             before_overwinter: Some(1),
             overwinter: Some(1),
@@ -181,14 +184,16 @@ impl Network {
     ///
     /// - Mainnet/Testnet: Skip sync (false) because we don't want to sync real chains in tests
     /// - Regtest: Enable sync (true) because regtest is local and fast to sync
-    #[must_use] pub fn wait_on_server_sync(&self) -> bool {
+    #[must_use]
+    pub fn wait_on_server_sync(&self) -> bool {
         match self {
             Network::Mainnet | Network::Testnet => false, // Real networks - don't try to sync the whole chain
             Network::Regtest(_) => true,                  // Local network - safe and fast to sync
         }
     }
 
-    #[must_use] pub fn from_network_kind_and_activation_heights(
+    #[must_use]
+    pub fn from_network_kind_and_activation_heights(
         network: &zebra_chain::parameters::NetworkKind,
         activation_heights: &ActivationHeights,
     ) -> Self {

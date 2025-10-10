@@ -663,7 +663,9 @@ impl DbV1 {
                     }
                     // try to validate the next consecutive block.
                     let next_h = zaino_db.validated_tip.load(Ordering::Acquire) + 1;
-                    let next_height = if let Ok(h) = Height::try_from(next_h) { h } else {
+                    let next_height = if let Ok(h) = Height::try_from(next_h) {
+                        h
+                    } else {
                         warn!("height overflow – validated_tip too large");
                         zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
                         continue;
@@ -3114,11 +3116,13 @@ impl DbV1 {
             // Construct CompactBlock
             Ok(zaino_proto::proto::compact_formats::CompactBlock {
                 proto_version: 4,
-                height: u64::from(header
-                    .index()
-                    .height()
-                    .expect("height always present in finalised state.")
-                    .0),
+                height: u64::from(
+                    header
+                        .index()
+                        .height()
+                        .expect("height always present in finalised state.")
+                        .0,
+                ),
                 hash: header.index().hash().0.to_vec(),
                 prev_hash: header.index().parent_hash().0.to_vec(),
                 // Is this safe?

@@ -583,12 +583,14 @@ pub struct GetBlockTrees {
 
 impl GetBlockTrees {
     /// Returns sapling data held by ['`GetBlockTrees`'].
-    #[must_use] pub fn sapling(&self) -> u64 {
+    #[must_use]
+    pub fn sapling(&self) -> u64 {
         self.sapling.map_or(0, |s| s.size)
     }
 
     /// Returns orchard data held by ['`GetBlockTrees`'].
-    #[must_use] pub fn orchard(&self) -> u64 {
+    #[must_use]
+    pub fn orchard(&self) -> u64 {
         self.orchard.map_or(0, |o| o.size)
     }
 }

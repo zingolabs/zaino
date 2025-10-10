@@ -259,14 +259,16 @@ impl ShieldedProtocol {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the `ProtoBuf` definition does not change) and safe for programmatic use.
-    #[must_use] pub fn as_str_name(&self) -> &'static str {
+    #[must_use]
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             ShieldedProtocol::Sapling => "sapling",
             ShieldedProtocol::Orchard => "orchard",
         }
     }
     /// Creates an enum from field names used in the `ProtoBuf` definition.
-    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use]
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "sapling" => Some(Self::Sapling),
             "orchard" => Some(Self::Orchard),
@@ -278,7 +280,9 @@ impl ShieldedProtocol {
 pub mod compact_tx_streamer_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::http::Uri;
-    use tonic::codegen::{StdError, Body, Bytes, http, InterceptedService, CompressionEncoding, GrpcMethod};
+    use tonic::codegen::{
+        http, Body, Bytes, CompressionEncoding, GrpcMethod, InterceptedService, StdError,
+    };
     #[derive(Debug, Clone)]
     pub struct CompactTxStreamerClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -817,7 +821,10 @@ pub mod compact_tx_streamer_client {
 /// Generated server implementations.
 pub mod compact_tx_streamer_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::{async_trait, EnabledCompressionEncodings, Arc, InterceptedService, CompressionEncoding, http, Body, StdError, BoxFuture, Context, Poll, empty_body};
+    use tonic::codegen::{
+        async_trait, empty_body, http, Arc, Body, BoxFuture, CompressionEncoding, Context,
+        EnabledCompressionEncodings, InterceptedService, Poll, StdError,
+    };
     /// Generated trait containing gRPC methods that should be implemented for use with `CompactTxStreamerServer`.
     #[async_trait]
     pub trait CompactTxStreamer: Send + Sync + 'static {

@@ -10,7 +10,7 @@ pub(crate) mod migrations;
 pub(crate) mod reader;
 pub(crate) mod router;
 
-use capability::{DbVersion, DbRead, DbCore, CapabilityRequest, BlockCoreExt, DbWrite, DbMetadata};
+use capability::{BlockCoreExt, CapabilityRequest, DbCore, DbMetadata, DbRead, DbVersion, DbWrite};
 use db::{DbBackend, VERSION_DIRS};
 use migrations::MigrationManager;
 use reader::DbReader;

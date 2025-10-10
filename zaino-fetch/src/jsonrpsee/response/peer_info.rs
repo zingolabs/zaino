@@ -152,12 +152,14 @@ pub struct ServiceFlags(pub u64);
 
 impl ServiceFlags {
     /// Returns the underlying bits
-    #[must_use] pub fn bits(self) -> u64 {
+    #[must_use]
+    pub fn bits(self) -> u64 {
         self.0
     }
 
     /// Returns true if the given bit is set
-    #[must_use] pub fn has(self, mask: u64) -> bool {
+    #[must_use]
+    pub fn has(self, mask: u64) -> bool {
         (self.0 & mask) != 0
     }
 
@@ -168,17 +170,20 @@ impl ServiceFlags {
     pub const NODE_BLOOM: u64 = 1 << 2;
 
     /// Returns true if the `NODE_NETWORK` bit is set
-    #[must_use] pub fn has_node_network(self) -> bool {
+    #[must_use]
+    pub fn has_node_network(self) -> bool {
         self.has(Self::NODE_NETWORK)
     }
 
     /// Returns true if the `NODE_BLOOM` bit is set
-    #[must_use] pub fn has_node_bloom(self) -> bool {
+    #[must_use]
+    pub fn has_node_bloom(self) -> bool {
         self.has(Self::NODE_BLOOM)
     }
 
     /// Bits not recognized by this crate.
-    #[must_use] pub fn unknown_bits(self) -> u64 {
+    #[must_use]
+    pub fn unknown_bits(self) -> u64 {
         let known = Self::NODE_NETWORK | Self::NODE_BLOOM;
         self.bits() & !known
     }

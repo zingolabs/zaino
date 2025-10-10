@@ -298,8 +298,8 @@ impl ParseFromSlice for JoinSplit {
         }
         let proof_size = match tx_version {
             Some(2 | 3) => 296, // BCTV14 proof for v2/v3 transactions
-            Some(4) => 192,           // Groth16 proof for v4 transactions
-            None => 192,              // Default to Groth16 for unknown versions
+            Some(4) => 192,     // Groth16 proof for v4 transactions
+            None => 192,        // Default to Groth16 for unknown versions
             _ => {
                 return Err(ParseError::InvalidData(format!(
                     "Unsupported tx_version {tx_version:?} for JoinSplit::parse_from_slice"
@@ -1024,27 +1024,32 @@ impl ParseFromSlice for FullTransaction {
 
 impl FullTransaction {
     /// Returns overwintered bool
-    #[must_use] pub fn f_overwintered(&self) -> bool {
+    #[must_use]
+    pub fn f_overwintered(&self) -> bool {
         self.raw_transaction.f_overwintered
     }
 
     /// Returns the transaction version.
-    #[must_use] pub fn version(&self) -> u32 {
+    #[must_use]
+    pub fn version(&self) -> u32 {
         self.raw_transaction.version
     }
 
     /// Returns the transaction version group id.
-    #[must_use] pub fn n_version_group_id(&self) -> Option<u32> {
+    #[must_use]
+    pub fn n_version_group_id(&self) -> Option<u32> {
         self.raw_transaction.n_version_group_id
     }
 
     /// returns the consensus branch id of the transaction.
-    #[must_use] pub fn consensus_branch_id(&self) -> u32 {
+    #[must_use]
+    pub fn consensus_branch_id(&self) -> u32 {
         self.raw_transaction.consensus_branch_id
     }
 
     /// Returns a vec of transparent inputs: (`prev_txid`, `prev_index`, `script_sig`).
-    #[must_use] pub fn transparent_inputs(&self) -> Vec<(Vec<u8>, u32, Vec<u8>)> {
+    #[must_use]
+    pub fn transparent_inputs(&self) -> Vec<(Vec<u8>, u32, Vec<u8>)> {
         self.raw_transaction
             .transparent_inputs
             .iter()
@@ -1053,7 +1058,8 @@ impl FullTransaction {
     }
 
     /// Returns a vec of transparent outputs: (value, `script_hash`).
-    #[must_use] pub fn transparent_outputs(&self) -> Vec<(u64, Vec<u8>)> {
+    #[must_use]
+    pub fn transparent_outputs(&self) -> Vec<(u64, Vec<u8>)> {
         self.raw_transaction
             .transparent_outputs
             .iter()
@@ -1064,7 +1070,8 @@ impl FullTransaction {
     /// Returns sapling and orchard value balances for the transaction.
     ///
     /// Returned as (Option\<valueBalanceSapling\>, Option\<valueBalanceOrchard\>).
-    #[must_use] pub fn value_balances(&self) -> (Option<i64>, Option<i64>) {
+    #[must_use]
+    pub fn value_balances(&self) -> (Option<i64>, Option<i64>) {
         (
             self.raw_transaction.value_balance_sapling,
             self.raw_transaction.value_balance_orchard,
@@ -1072,7 +1079,8 @@ impl FullTransaction {
     }
 
     /// Returns a vec of sapling nullifiers for the transaction.
-    #[must_use] pub fn shielded_spends(&self) -> Vec<Vec<u8>> {
+    #[must_use]
+    pub fn shielded_spends(&self) -> Vec<Vec<u8>> {
         self.raw_transaction
             .shielded_spends
             .iter()
@@ -1081,7 +1089,8 @@ impl FullTransaction {
     }
 
     /// Returns a vec of sapling outputs (cmu, `ephemeral_key`, `enc_ciphertext`) for the transaction.
-    #[must_use] pub fn shielded_outputs(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    #[must_use]
+    pub fn shielded_outputs(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         self.raw_transaction
             .shielded_outputs
             .iter()
@@ -1090,13 +1099,15 @@ impl FullTransaction {
     }
 
     /// Returns None as joinsplits are not supported in Zaino.
-    #[must_use] pub fn join_splits(&self) -> Option<()> {
+    #[must_use]
+    pub fn join_splits(&self) -> Option<()> {
         None
     }
 
     /// Returns a vec of orchard actions (nullifier, cmx, `ephemeral_key`, `enc_ciphertext`) for the transaction.
     #[allow(clippy::complexity)]
-    #[must_use] pub fn orchard_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    #[must_use]
+    pub fn orchard_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
         self.raw_transaction
             .orchard_actions
             .iter()
@@ -1107,17 +1118,20 @@ impl FullTransaction {
     /// Returns the orchard anchor of the transaction.
     ///
     /// If this is the Coinbase transaction then this returns the `AuthDataRoot` of the block.
-    #[must_use] pub fn anchor_orchard(&self) -> Option<Vec<u8>> {
+    #[must_use]
+    pub fn anchor_orchard(&self) -> Option<Vec<u8>> {
         self.raw_transaction.anchor_orchard.clone()
     }
 
     /// Returns the transaction as raw bytes.
-    #[must_use] pub fn raw_bytes(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn raw_bytes(&self) -> Vec<u8> {
         self.raw_bytes.clone()
     }
 
     /// returns the `TxId` of the transaction.
-    #[must_use] pub fn tx_id(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn tx_id(&self) -> Vec<u8> {
         self.tx_id.clone()
     }
 

@@ -93,18 +93,22 @@ where
         // ))
         // .await?;
 
-        let json_server = if indexer_config.enable_json_server { Some(
-            JsonRpcServer::spawn(
-                service.inner_ref().get_subscriber(),
-                JsonRpcConfig {
-                    json_rpc_listen_address: indexer_config.json_rpc_listen_address,
-                    enable_cookie_auth: indexer_config.enable_cookie_auth,
-                    cookie_dir: indexer_config.cookie_dir,
-                },
+        let json_server = if indexer_config.enable_json_server {
+            Some(
+                JsonRpcServer::spawn(
+                    service.inner_ref().get_subscriber(),
+                    JsonRpcConfig {
+                        json_rpc_listen_address: indexer_config.json_rpc_listen_address,
+                        enable_cookie_auth: indexer_config.enable_cookie_auth,
+                        cookie_dir: indexer_config.cookie_dir,
+                    },
+                )
+                .await
+                .unwrap(),
             )
-            .await
-            .unwrap(),
-        ) } else { None };
+        } else {
+            None
+        };
 
         let grpc_server = TonicServer::spawn(
             service.inner_ref().get_subscriber(),

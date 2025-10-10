@@ -26,14 +26,16 @@ pub struct AtomicStatus {
 
 impl AtomicStatus {
     /// Creates a new `AtomicStatus`
-    #[must_use] pub fn new(status: StatusType) -> Self {
+    #[must_use]
+    pub fn new(status: StatusType) -> Self {
         Self {
             inner: Arc::new(AtomicUsize::new(status.into())),
         }
     }
 
     /// Loads the value held in the `AtomicStatus`
-    #[must_use] pub fn load(&self) -> StatusType {
+    #[must_use]
+    pub fn load(&self) -> StatusType {
         StatusType::from(self.inner.load(Ordering::SeqCst))
     }
 
@@ -107,7 +109,8 @@ impl fmt::Display for StatusType {
 
 impl StatusType {
     /// Returns the corresponding status symbol for the `StatusType`
-    #[must_use] pub fn get_status_symbol(&self) -> String {
+    #[must_use]
+    pub fn get_status_symbol(&self) -> String {
         let (symbol, color_code) = match self {
             // Yellow Statuses
             StatusType::Syncing => ("\u{1F7E1}", "\x1b[33m"),
@@ -126,13 +129,14 @@ impl StatusType {
 
     /// Look at two statuses, and return the more
     /// 'severe' of the two statuses
-    #[must_use] pub fn combine(self, other: StatusType) -> StatusType {
+    #[must_use]
+    pub fn combine(self, other: StatusType) -> StatusType {
         match (self, other) {
             // If either is Closing, return Closing.
             (StatusType::Closing, _) | (_, StatusType::Closing) => StatusType::Closing,
             // If either is Offline or CriticalError, return CriticalError.
-            (StatusType::Offline | StatusType::CriticalError, _) |
-(_, StatusType::Offline | StatusType::CriticalError) => StatusType::CriticalError,
+            (StatusType::Offline | StatusType::CriticalError, _)
+            | (_, StatusType::Offline | StatusType::CriticalError) => StatusType::CriticalError,
             // If either is RecoverableError, return RecoverableError.
             (StatusType::RecoverableError, _) | (_, StatusType::RecoverableError) => {
                 StatusType::RecoverableError

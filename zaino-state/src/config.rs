@@ -56,7 +56,8 @@ impl StateServiceConfig {
     /// Returns a new instance of [`StateServiceConfig`].
     #[allow(clippy::too_many_arguments)]
     // TODO: replace with struct-literal init only?
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         validator_config: zebra_state::Config,
         validator_rpc_address: std::net::SocketAddr,
         validator_indexer_rpc_address: std::net::SocketAddr,
@@ -118,7 +119,8 @@ impl FetchServiceConfig {
     /// Returns a new instance of [`FetchServiceConfig`].
     #[allow(clippy::too_many_arguments)]
     // TODO: replace with struct-literal init only?
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         validator_rpc_address: std::net::SocketAddr,
         validator_cookie_auth: bool,
         validator_cookie_path: Option<String>,
@@ -166,7 +168,8 @@ pub struct BlockCacheConfig {
 impl BlockCacheConfig {
     /// Returns a new instance of [`BlockCacheConfig`].
     #[allow(dead_code)]
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         storage: StorageConfig,
         db_version: u32,
         network: Network,

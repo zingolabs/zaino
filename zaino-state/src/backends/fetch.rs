@@ -182,7 +182,8 @@ pub struct FetchServiceSubscriber {
 
 impl FetchServiceSubscriber {
     /// Fetches the current status
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         let mempool_status = self.mempool.status();
         let block_cache_status = self.block_cache.status();
 
@@ -190,7 +191,8 @@ impl FetchServiceSubscriber {
     }
 
     /// Returns the network type running.
-    #[must_use] pub fn network(&self) -> zaino_common::Network {
+    #[must_use]
+    pub fn network(&self) -> zaino_common::Network {
         self.config.network
     }
 }
@@ -1428,7 +1430,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         if request.max_entries > 0 && entries > request.max_entries {
                             break;
                         }
-                        let checked_index = if let Ok(index) = i32::try_from(output_index.index()) { index } else {
+                        let checked_index = if let Ok(index) = i32::try_from(output_index.index()) {
+                            index
+                        } else {
                             let _ = channel_tx
                                 .send(Err(tonic::Status::unknown(
                                     "Error: Index out of range. Failed to convert to i32.",
@@ -1436,7 +1440,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                 .await;
                             return;
                         };
-                        let checked_satoshis = if let Ok(satoshis) = i64::try_from(satoshis) { satoshis } else {
+                        let checked_satoshis = if let Ok(satoshis) = i64::try_from(satoshis) {
+                            satoshis
+                        } else {
                             let _ = channel_tx
                                 .send(Err(tonic::Status::unknown(
                                     "Error: Satoshis out of range. Failed to convert to i64.",

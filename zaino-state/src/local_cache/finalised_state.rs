@@ -230,10 +230,7 @@ impl FinalisedState {
                                     }
                                     continue;
                                 }
-                                info!(
-                                    "Block at height {} already exists, skipping.",
-                                    height.0
-                                );
+                                info!("Block at height {} already exists, skipping.", height.0);
                                 break;
                             }
                             finalised_state.status.store(StatusType::CriticalError);
@@ -321,7 +318,9 @@ impl FinalisedState {
                 response_channel,
             }) = request_receiver.recv().await
             {
-                let response = if let Ok(block) = finalised_state.get_block(hash_or_height) { Ok(block) } else {
+                let response = if let Ok(block) = finalised_state.get_block(hash_or_height) {
+                    Ok(block)
+                } else {
                     warn!("Failed to fetch block from DB, re-fetching from validator.");
                     match fetch_block_from_node(
                         finalised_state.state.as_ref(),
@@ -336,7 +335,9 @@ impl FinalisedState {
                                 Height(block.height as u32),
                                 hash,
                                 block.clone(),
-                            )) { Ok(block) } else {
+                            )) {
+                                Ok(block)
+                            } else {
                                 warn!("Failed to insert missing block into DB, serving from validator.");
                                 Ok(block)
                             }
@@ -500,8 +501,9 @@ impl FinalisedState {
                     }
                 }
                 sync_height = server_height - 99;
-                if (i64::from(blockchain_info.blocks.0) - i64::from(blockchain_info.estimated_height.0))
-                    .abs()
+                if (i64::from(blockchain_info.blocks.0)
+                    - i64::from(blockchain_info.estimated_height.0))
+                .abs()
                     <= 10
                 {
                     break;
@@ -624,7 +626,8 @@ impl FinalisedState {
     }
 
     /// Returns a [`FinalisedStateSubscriber`].
-    #[must_use] pub fn subscriber(&self) -> FinalisedStateSubscriber {
+    #[must_use]
+    pub fn subscriber(&self) -> FinalisedStateSubscriber {
         FinalisedStateSubscriber {
             request_sender: self.request_sender.clone(),
             status: self.status.clone(),
@@ -632,7 +635,8 @@ impl FinalisedState {
     }
 
     /// Returns the status of the finalised state.
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
@@ -706,7 +710,8 @@ impl FinalisedStateSubscriber {
     }
 
     /// Returns the status of the `FinalisedState`..
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         self.status.load()
     }
 }

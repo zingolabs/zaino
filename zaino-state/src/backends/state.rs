@@ -362,7 +362,8 @@ impl ChainTipSubscriber {
 /// needed, there are currently no plans to do so.
 impl StateServiceSubscriber {
     /// Gets a Subscriber to any updates to the latest chain tip
-    #[must_use] pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
+    #[must_use]
+    pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
         ChainTipSubscriber {
             monitor: self.chain_tip_change.clone(),
         }
@@ -462,8 +463,9 @@ impl StateServiceSubscriber {
 
             // Confirmations are one more than the depth.
             // Depth is limited by height, so it will never overflow an i64.
-            let confirmations = depth
-                .map_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS, |depth| i64::from(depth) + 1);
+            let confirmations = depth.map_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS, |depth| {
+                i64::from(depth) + 1
+            });
 
             let mut nonce = *header.nonce;
             nonce.reverse();
@@ -852,7 +854,8 @@ impl StateServiceSubscriber {
     }
 
     /// Returns the network type running.
-    #[must_use] pub fn network(&self) -> zaino_common::Network {
+    #[must_use]
+    pub fn network(&self) -> zaino_common::Network {
         self.config.network
     }
 }
@@ -1326,7 +1329,8 @@ impl ZcashIndexer for StateServiceSubscriber {
             .contains_txid(&MempoolKey {
                 txid: txid.to_string(),
             })
-            .await {
+            .await
+        {
             match self
                 .mempool
                 .get_transaction(&MempoolKey {
@@ -1341,10 +1345,10 @@ impl ZcashIndexer for StateServiceSubscriber {
                         // Return an object view, matching the chain path semantics.
                         Some(_verbosity) => {
                             let parsed_tx: zebra_chain::transaction::Transaction =
-                        zebra_chain::serialization::ZcashDeserialize::zcash_deserialize(
-                            serialized.as_ref(),
-                        )
-                        .map_err(|_| not_found_error())?;
+                                zebra_chain::serialization::ZcashDeserialize::zcash_deserialize(
+                                    serialized.as_ref(),
+                                )
+                                .map_err(|_| not_found_error())?;
 
                             Ok(GetRawTransaction::Object(Box::new(
                                 TransactionObject::from_transaction(
@@ -1378,25 +1382,21 @@ impl ZcashIndexer for StateServiceSubscriber {
                         // This should be None for sidechain transactions,
                         // which currently aren't returned by ReadResponse::Transaction
                         let best_chain_height = Some(tx.height);
-                        GetRawTransaction::Object(Box::new(
-                            TransactionObject::from_transaction(
-                                tx.tx.clone(),
-                                best_chain_height,
-                                Some(tx.confirmations),
-                                &self.config.network.into(),
-                                Some(tx.block_time),
-                                Some(zebra_chain::block::Hash::from_bytes(
-                                    self.block_cache
-                                        .get_compact_block(
-                                            HashOrHeight::Height(tx.height).to_string(),
-                                        )
-                                        .await?
-                                        .hash,
-                                )),
-                                Some(best_chain_height.is_some()),
-                                tx.tx.hash(),
-                            ),
-                        ))
+                        GetRawTransaction::Object(Box::new(TransactionObject::from_transaction(
+                            tx.tx.clone(),
+                            best_chain_height,
+                            Some(tx.confirmations),
+                            &self.config.network.into(),
+                            Some(tx.block_time),
+                            Some(zebra_chain::block::Hash::from_bytes(
+                                self.block_cache
+                                    .get_compact_block(HashOrHeight::Height(tx.height).to_string())
+                                    .await?
+                                    .hash,
+                            )),
+                            Some(best_chain_height.is_some()),
+                            tx.tx.hash(),
+                        )))
                     }
                     None => GetRawTransaction::Raw(tx.tx.into()),
                 }),

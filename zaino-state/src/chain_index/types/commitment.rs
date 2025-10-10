@@ -24,17 +24,20 @@ pub struct CommitmentTreeData {
 
 impl CommitmentTreeData {
     /// Returns a new `CommitmentTreeData` instance.
-    #[must_use] pub fn new(roots: CommitmentTreeRoots, sizes: CommitmentTreeSizes) -> Self {
+    #[must_use]
+    pub fn new(roots: CommitmentTreeRoots, sizes: CommitmentTreeSizes) -> Self {
         Self { roots, sizes }
     }
 
     /// Returns the commitment tree roots for the block.
-    #[must_use] pub fn roots(&self) -> &CommitmentTreeRoots {
+    #[must_use]
+    pub fn roots(&self) -> &CommitmentTreeRoots {
         &self.roots
     }
 
     /// Returns the commitment tree sizes for the block.
-    #[must_use] pub fn sizes(&self) -> &CommitmentTreeSizes {
+    #[must_use]
+    pub fn sizes(&self) -> &CommitmentTreeSizes {
         &self.sizes
     }
 }
@@ -80,17 +83,20 @@ pub struct CommitmentTreeRoots {
 
 impl CommitmentTreeRoots {
     /// Reutns a new `CommitmentTreeRoots` instance.
-    #[must_use] pub fn new(sapling: [u8; 32], orchard: [u8; 32]) -> Self {
+    #[must_use]
+    pub fn new(sapling: [u8; 32], orchard: [u8; 32]) -> Self {
         Self { sapling, orchard }
     }
 
     /// Returns sapling commitment tree root.
-    #[must_use] pub fn sapling(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn sapling(&self) -> &[u8; 32] {
         &self.sapling
     }
 
     /// returns orchard commitment tree root.
-    #[must_use] pub fn orchard(&self) -> &[u8; 32] {
+    #[must_use]
+    pub fn orchard(&self) -> &[u8; 32] {
         &self.orchard
     }
 }
@@ -134,17 +140,20 @@ pub struct CommitmentTreeSizes {
 
 impl CommitmentTreeSizes {
     /// Creates a new `CompactSaplingSizes` instance.
-    #[must_use] pub fn new(sapling: u32, orchard: u32) -> Self {
+    #[must_use]
+    pub fn new(sapling: u32, orchard: u32) -> Self {
         Self { sapling, orchard }
     }
 
     /// Returns sapling commitment tree size
-    #[must_use] pub fn sapling(&self) -> u32 {
+    #[must_use]
+    pub fn sapling(&self) -> u32 {
         self.sapling
     }
 
     /// Returns orchard commitment tree size
-    #[must_use] pub fn orchard(&self) -> u32 {
+    #[must_use]
+    pub fn orchard(&self) -> u32 {
         self.orchard
     }
 }

@@ -66,7 +66,8 @@ impl TransportError {
     ///
     /// TODO: This impl should be changed to return the correct status [per this issue](https://github.com/zcash/lightwalletd/issues/497) before release,
     ///       however propagating the server error is useful during development.
-    #[must_use] pub fn to_grpc_status(&self) -> tonic::Status {
+    #[must_use]
+    pub fn to_grpc_status(&self) -> tonic::Status {
         // TODO: Hide server error from clients before release. Currently useful for dev purposes.
         tonic::Status::internal(format!("Error: JsonRpSee Client Error: {self}"))
     }

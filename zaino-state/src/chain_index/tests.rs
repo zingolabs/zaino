@@ -93,7 +93,11 @@ mod mockchain_tests {
         let index_reader = indexer.subscriber().await;
 
         loop {
-            let check_height: u32 = if active_mockchain_source { source.active_height() - 100 } else { 100 };
+            let check_height: u32 = if active_mockchain_source {
+                source.active_height() - 100
+            } else {
+                100
+            };
             if index_reader.finalized_state.db_height().await.unwrap()
                 == Some(crate::Height(check_height))
             {

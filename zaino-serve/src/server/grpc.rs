@@ -82,7 +82,8 @@ impl TonicServer {
     }
 
     /// Returns the servers current status.
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         self.status.load()
     }
 }

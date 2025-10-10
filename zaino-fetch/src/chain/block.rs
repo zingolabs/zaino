@@ -202,47 +202,56 @@ pub struct FullBlockHeader {
 
 impl FullBlockHeader {
     /// Returns the Zcash block version.
-    #[must_use] pub fn version(&self) -> i32 {
+    #[must_use]
+    pub fn version(&self) -> i32 {
         self.raw_block_header.version
     }
 
     /// Returns The hash of the previous block.
-    #[must_use] pub fn hash_prev_block(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn hash_prev_block(&self) -> Vec<u8> {
         self.raw_block_header.hash_prev_block.clone()
     }
 
     /// Returns the root of the Bitcoin-inherited transaction Merkle tree.
-    #[must_use] pub fn hash_merkle_root(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn hash_merkle_root(&self) -> Vec<u8> {
         self.raw_block_header.hash_merkle_root.clone()
     }
 
     /// Returns the final sapling root of the block.
-    #[must_use] pub fn final_sapling_root(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn final_sapling_root(&self) -> Vec<u8> {
         self.raw_block_header.hash_final_sapling_root.clone()
     }
 
     /// Returns the time when the miner started hashing the header (according to the miner).
-    #[must_use] pub fn time(&self) -> u32 {
+    #[must_use]
+    pub fn time(&self) -> u32 {
         self.raw_block_header.time
     }
 
     /// Returns an encoded version of the target threshold.
-    #[must_use] pub fn n_bits_bytes(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn n_bits_bytes(&self) -> Vec<u8> {
         self.raw_block_header.n_bits_bytes.clone()
     }
 
     /// Returns the block's nonce.
-    #[must_use] pub fn nonce(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn nonce(&self) -> Vec<u8> {
         self.raw_block_header.nonce.clone()
     }
 
     /// Returns the block's Equihash solution.
-    #[must_use] pub fn solution(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn solution(&self) -> Vec<u8> {
         self.raw_block_header.solution.clone()
     }
 
     /// Returns the Hash of the current block.
-    #[must_use] pub fn cached_hash(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn cached_hash(&self) -> Vec<u8> {
         self.cached_hash.clone()
     }
 }
@@ -331,17 +340,20 @@ const GENESIS_TARGET_DIFFICULTY: u32 = 520617983;
 
 impl FullBlock {
     /// Returns the full block header.
-    #[must_use] pub fn header(&self) -> FullBlockHeader {
+    #[must_use]
+    pub fn header(&self) -> FullBlockHeader {
         self.hdr.clone()
     }
 
     /// Returns the transactions held in  the block.
-    #[must_use] pub fn transactions(&self) -> Vec<super::transaction::FullTransaction> {
+    #[must_use]
+    pub fn transactions(&self) -> Vec<super::transaction::FullTransaction> {
         self.vtx.clone()
     }
 
     /// Returns the block height.
-    #[must_use] pub fn height(&self) -> i32 {
+    #[must_use]
+    pub fn height(&self) -> i32 {
         self.height
     }
 
@@ -351,8 +363,11 @@ impl FullBlock {
     /// after applying all Orchard actions in the block.
     ///
     /// Returns `Some(Vec<u8>)` if present, else `None`.
-    #[must_use] pub fn auth_data_root(&self) -> Option<Vec<u8>> {
-        self.vtx.first().and_then(super::transaction::FullTransaction::anchor_orchard)
+    #[must_use]
+    pub fn auth_data_root(&self) -> Option<Vec<u8>> {
+        self.vtx
+            .first()
+            .and_then(super::transaction::FullTransaction::anchor_orchard)
     }
 
     /// Decodes a hex encoded zcash full block into a `FullBlock` struct.

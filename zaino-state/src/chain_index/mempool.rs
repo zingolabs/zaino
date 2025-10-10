@@ -139,17 +139,19 @@ impl<T: BlockchainSource> Mempool<T> {
             // Initialise tip.
             loop {
                 match mempool.fetcher.get_best_block_hash().await {
-                    Ok(block_hash_opt) => if let Some(hash) = block_hash_opt {
-                        mempool.mempool_chain_tip.send_replace(hash.into());
-                        best_block_hash = hash;
-                        break;
-                    } else {
-                        mempool.status.store(StatusType::RecoverableError);
-                        state.notify(status.load());
-                        warn!("error fetching best_block_hash from validator");
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
-                    },
+                    Ok(block_hash_opt) => {
+                        if let Some(hash) = block_hash_opt {
+                            mempool.mempool_chain_tip.send_replace(hash.into());
+                            best_block_hash = hash;
+                            break;
+                        } else {
+                            mempool.status.store(StatusType::RecoverableError);
+                            state.notify(status.load());
+                            warn!("error fetching best_block_hash from validator");
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            continue;
+                        }
+                    }
                     Err(e) => {
                         mempool.status.store(StatusType::RecoverableError);
                         state.notify(status.load());
@@ -164,15 +166,17 @@ impl<T: BlockchainSource> Mempool<T> {
             loop {
                 // Check chain tip.
                 match mempool.fetcher.get_best_block_hash().await {
-                    Ok(block_hash_opt) => if let Some(hash) = block_hash_opt {
-                        check_block_hash = hash;
-                    } else {
-                        mempool.status.store(StatusType::RecoverableError);
-                        state.notify(status.load());
-                        warn!("error fetching best_block_hash from validator");
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
-                    },
+                    Ok(block_hash_opt) => {
+                        if let Some(hash) = block_hash_opt {
+                            check_block_hash = hash;
+                        } else {
+                            mempool.status.store(StatusType::RecoverableError);
+                            state.notify(status.load());
+                            warn!("error fetching best_block_hash from validator");
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            continue;
+                        }
+                    }
                     Err(e) => {
                         state.notify(status.load());
                         warn!("{e}");
@@ -536,7 +540,8 @@ impl MempoolSubscriber {
 
     // TODO noted here too
     /// Returns the status of the mempool.
-    #[must_use] pub fn status(&self) -> StatusType {
+    #[must_use]
+    pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
@@ -593,7 +598,8 @@ impl MempoolSubscriber {
     }
 
     /// Get the chain tip that the mempool is atop
-    #[must_use] pub fn mempool_chain_tip(&self) -> BlockHash {
+    #[must_use]
+    pub fn mempool_chain_tip(&self) -> BlockHash {
         *self.mempool_chain_tip.borrow()
     }
 }

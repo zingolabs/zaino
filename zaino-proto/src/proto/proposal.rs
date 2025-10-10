@@ -174,7 +174,8 @@ impl ValuePool {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the `ProtoBuf` definition does not change) and safe for programmatic use.
-    #[must_use] pub fn as_str_name(&self) -> &'static str {
+    #[must_use]
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             ValuePool::PoolNotSpecified => "PoolNotSpecified",
             ValuePool::Transparent => "Transparent",
@@ -183,7 +184,8 @@ impl ValuePool {
         }
     }
     /// Creates an enum from field names used in the `ProtoBuf` definition.
-    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use]
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "PoolNotSpecified" => Some(Self::PoolNotSpecified),
             "Transparent" => Some(Self::Transparent),
@@ -214,7 +216,8 @@ impl FeeRule {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the `ProtoBuf` definition does not change) and safe for programmatic use.
-    #[must_use] pub fn as_str_name(&self) -> &'static str {
+    #[must_use]
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             FeeRule::NotSpecified => "FeeRuleNotSpecified",
             FeeRule::PreZip313 => "PreZip313",
@@ -223,7 +226,8 @@ impl FeeRule {
         }
     }
     /// Creates an enum from field names used in the `ProtoBuf` definition.
-    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use]
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "FeeRuleNotSpecified" => Some(Self::NotSpecified),
             "PreZip313" => Some(Self::PreZip313),
