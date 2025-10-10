@@ -20,7 +20,7 @@ use tracing::warn;
 use tracing::{error, info};
 use zaino_common::{CacheConfig, DatabaseConfig, DatabaseSize, ServiceConfig, StorageConfig};
 use zaino_state::{BackendConfig, FetchServiceConfig, StateServiceConfig};
-#[cfg(any(test, feature = "testutils"))]
+#[cfg(any(test, feature = "workbench"))]
 use zingo_common_components::protocol::activation_heights;
 
 use crate::error::IndexerError;
@@ -65,10 +65,10 @@ where
     match s.to_lowercase().as_str() {
         "mainnet" => Ok(zaino_state::chain_index::ZebraNetwork::Mainnet),
         "testnet" => Ok(zaino_state::chain_index::ZebraNetwork::new_default_testnet()),
-        #[cfg(any(test, feature = "testutils"))]
+        #[cfg(any(test, feature = "workbench"))]
         "regtest" => Ok(activation_heights::for_test::current_nus_configured_in_block_one_regtest_net()),
         _ => Err(de::Error::custom(format!(
-            "Invalid network type '{s}', valid options are 'mainnet', 'testnet', or 'regtest' (regtest requires testutils feature)"
+            "Invalid network type '{s}', valid options are 'mainnet', 'testnet', or 'regtest' (regtest requires workbench feature)"
         ))),
     }
 }
