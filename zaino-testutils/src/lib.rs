@@ -538,7 +538,7 @@ impl TestManager {
     ) -> Result<Self, std::io::Error> {
         let activation_heights = match validator {
             ValidatorKind::Zebrad => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000,
-            ValidatorKind::Zcashd => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_NONE,
+            ValidatorKind::Zcashd => REGTEST_ACTIVATION_HEIGHTS_6_1_AT_1000,
         };
 
         Self::launch(
@@ -595,36 +595,6 @@ mod launch_testmanager {
         GrpcConnector::new(uri).get_client().await
     }
 
-    /// Simple helper to DRY WET test code
-    macro_rules! get_confirmed_balance {
-        ($client:expr, "orchard") => {
-            $client
-                .account_balance(zip32::AccountId::ZERO)
-                .await
-                .unwrap()
-                .confirmed_orchard_balance
-                .unwrap()
-                .into_u64()
-        };
-        ($client:expr, "sapling") => {
-            $client
-                .account_balance(zip32::AccountId::ZERO)
-                .await
-                .unwrap()
-                .confirmed_sapling_balance
-                .unwrap()
-                .into_u64()
-        };
-        ($client:expr, "transparent") => {
-            $client
-                .account_balance(zip32::AccountId::ZERO)
-                .await
-                .unwrap()
-                .confirmed_transparent_balance
-                .unwrap()
-                .into_u64()
-        };
-    }
     mod zcashd {
 
         use super::*;
