@@ -64,7 +64,7 @@ zingo_common_components = { workspace = true, optional = true }
 
 
 [dev-dependencies]
-zaino-state = { path = ".", features = ["testutils"] } 
+zaino-state = { path = ".", features = ["testutils"] }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }
