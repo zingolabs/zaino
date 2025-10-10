@@ -1,5 +1,7 @@
 //! Zcash RPC implementations.
 
+use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
+use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
 use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -85,6 +87,27 @@ pub trait ZcashIndexerRpc {
     /// tags: blockchain
     #[method(name = "getdifficulty")]
     async fn get_difficulty(&self) -> Result<f64, ErrorObjectOwned>;
+
+    /// Returns data about each connected network node as a json array of objects.
+    ///
+    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// tags: network
+    ///
+    /// Current `zebrad` does not include the same fields as `zcashd`.
+    #[method(name = "getpeerinfo")]
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, ErrorObjectOwned>;
+
+    /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
+    ///
+    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
+    #[method(name = "getblocksubsidy")]
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, ErrorObjectOwned>;
 
     /// Returns the current block count in the best valid block chain.
     ///
@@ -377,6 +400,34 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_difficulty()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_peer_info()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_block_subsidy(height)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

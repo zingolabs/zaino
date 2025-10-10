@@ -26,7 +26,10 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
-        response::{GetMempoolInfoResponse, GetSubtreesResponse},
+        response::{
+            block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetMempoolInfoResponse,
+            GetSubtreesResponse,
+        },
     },
 };
 use zaino_proto::proto::{
@@ -885,6 +888,13 @@ impl ZcashIndexer for StateServiceSubscriber {
         })
     }
 
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+        self.rpc_client
+            .get_block_subsidy(height)
+            .await
+            .map_err(|e| StateServiceError::Custom(e.to_string()))
+    }
+
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
         let mut state = self.read_state_service.clone();
 
@@ -1032,6 +1042,10 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// the [optional `fullyNotified` field](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1549>), is only utilized for zcashd regtests, is deprecated, and is not included.
     async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error> {
         Ok(self.mempool.get_mempool_info().await?)
+    }
+
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+        Ok(self.rpc_client.get_peer_info().await?)
     }
 
     async fn z_get_address_balance(

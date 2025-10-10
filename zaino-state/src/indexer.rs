@@ -4,7 +4,9 @@
 use async_trait::async_trait;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
-use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
+use zaino_fetch::jsonrpsee::response::{
+    block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetMempoolInfoResponse,
+};
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
@@ -172,6 +174,17 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: blockchain
     async fn get_difficulty(&self) -> Result<f64, Self::Error>;
 
+    /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
+    ///
+    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error>;
+
     /// Returns details on the active state of the TX memory pool.
     ///
     /// zcashd reference: [`getmempoolinfo`](https://zcash.github.io/rpc/getmempoolinfo.html)
@@ -180,6 +193,14 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Original implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error>;
+
+    /// Returns data about each connected network node as a json array of objects.
+    ///
+    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// tags: network
+    ///
+    /// Current `zebrad` does not include the same fields as `zcashd`.
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///

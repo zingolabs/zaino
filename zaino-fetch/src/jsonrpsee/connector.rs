@@ -25,11 +25,12 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetBalanceError,
+        GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
+        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
+        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
+        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
+        TxidsResponse,
     },
 };
 
@@ -435,6 +436,17 @@ impl JsonRpSeeConnector {
             .await
     }
 
+    /// Returns data about each connected network node as a json array of objects.
+    ///
+    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// tags: network
+    ///
+    /// Current `zebrad` does not include the same fields as `zcashd`.
+    pub async fn get_peer_info(&self) -> Result<GetPeerInfo, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetPeerInfo>("getpeerinfo", ())
+            .await
+    }
+
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
     /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
@@ -445,6 +457,23 @@ impl JsonRpSeeConnector {
     ) -> Result<GetDifficultyResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetDifficultyResponse>("getdifficulty", ())
             .await
+    }
+
+    /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
+    ///
+    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
+    pub async fn get_block_subsidy(
+        &self,
+        height: u32,
+    ) -> Result<GetBlockSubsidy, RpcRequestError<Infallible>> {
+        let params = vec![serde_json::to_value(height).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getblocksubsidy", params).await
     }
 
     /// Returns the total balance of a provided `addresses` in an [`crate::jsonrpsee::response::GetBalanceResponse`] instance.
