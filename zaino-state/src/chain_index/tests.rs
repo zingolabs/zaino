@@ -1,4 +1,4 @@
-//! Zaino-State ChainIndex unit tests.
+//! Zaino-State `ChainIndex` unit tests.
 
 pub(crate) mod finalised_state;
 pub(crate) mod mempool;
@@ -93,10 +93,7 @@ mod mockchain_tests {
         let index_reader = indexer.subscriber().await;
 
         loop {
-            let check_height: u32 = match active_mockchain_source {
-                true => source.active_height() - 100,
-                false => 100,
-            };
+            let check_height: u32 = if active_mockchain_source { source.active_height() - 100 } else { 100 };
             if index_reader.finalized_state.db_height().await.unwrap()
                 == Some(crate::Height(check_height))
             {
@@ -261,7 +258,7 @@ mod mockchain_tests {
             .unwrap_or_default();
 
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-        for expected_transaction in mempool_transactions.into_iter() {
+        for expected_transaction in mempool_transactions {
             let (transaction, branch_id) = index_reader
                 .get_raw_transaction(
                     &nonfinalized_snapshot,
@@ -308,7 +305,7 @@ mod mockchain_tests {
             .unwrap_or_default();
 
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-        for expected_transaction in mempool_transactions.into_iter() {
+        for expected_transaction in mempool_transactions {
             let expected_txid = expected_transaction.hash();
 
             let (transaction_status_best_chain, transaction_status_nonbest_chain) = index_reader
@@ -364,7 +361,7 @@ mod mockchain_tests {
                         .unwrap()
                 })
                 .collect();
-        found_mempool_transactions.sort_by_key(|a| a.hash());
+        found_mempool_transactions.sort_by_key(zebra_chain::transaction::Transaction::hash);
         assert_eq!(
             mempool_transactions
                 .iter()
@@ -427,7 +424,7 @@ mod mockchain_tests {
                         .unwrap()
                 })
                 .collect();
-        found_mempool_transactions.sort_by_key(|a| a.hash());
+        found_mempool_transactions.sort_by_key(zebra_chain::transaction::Transaction::hash);
         assert_eq!(mempool_transactions.len(), found_mempool_transactions.len());
         assert_eq!(
             mempool_transactions
@@ -479,7 +476,7 @@ mod mockchain_tests {
                 indexer_mempool_transactions.push(tx);
             }
 
-            indexer_mempool_transactions.sort_by_key(|tx| tx.hash());
+            indexer_mempool_transactions.sort_by_key(zebra_chain::transaction::Transaction::hash);
             indexer_mempool_transactions
         });
 
@@ -522,7 +519,7 @@ mod mockchain_tests {
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
 
         // Positive cases: every known best-chain block returns its height
-        for (expected_height, zebra_block, _roots, _treestates) in blocks.iter() {
+        for (expected_height, zebra_block, _roots, _treestates) in &blocks {
             let got = index_reader
                 .get_block_height(
                     &nonfinalized_snapshot,
@@ -548,7 +545,7 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(false).await;
 
         for (_height, zebra_block, _roots, (expected_sapling_bytes, expected_orchard_bytes)) in
-            blocks.into_iter()
+            blocks
         {
             let (sapling_bytes_opt, orchard_bytes_opt) = index_reader
                 .get_treestate(&crate::BlockHash(zebra_block.hash().0))

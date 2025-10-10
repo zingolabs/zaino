@@ -8,7 +8,6 @@ pub mod test_vectors {
     pub use zaino_testvectors::*;
 }
 
-use once_cell::sync::Lazy;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,

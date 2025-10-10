@@ -241,12 +241,12 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_block_range_zebrad() {
-        get_block_range(&ValidatorKind::Zebrad).await
+        get_block_range(&ValidatorKind::Zebrad).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_block_range_zcashd() {
-        get_block_range(&ValidatorKind::Zcashd).await
+        get_block_range(&ValidatorKind::Zcashd).await;
     }
 
     async fn get_block_range(validator: &ValidatorKind) {
@@ -283,12 +283,12 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_fork_point_zebrad() {
-        find_fork_point(&ValidatorKind::Zebrad).await
+        find_fork_point(&ValidatorKind::Zebrad).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_fork_point_zcashd() {
-        find_fork_point(&ValidatorKind::Zcashd).await
+        find_fork_point(&ValidatorKind::Zcashd).await;
     }
 
     async fn find_fork_point(validator: &ValidatorKind) {
@@ -309,18 +309,18 @@ mod chain_query_interface {
                     .unwrap()
                     .unwrap()
                     .0
-            )
+            );
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_raw_transaction_zebrad() {
-        get_raw_transaction(&ValidatorKind::Zebrad).await
+        get_raw_transaction(&ValidatorKind::Zebrad).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_raw_transaction_zcashd() {
-        get_raw_transaction(&ValidatorKind::Zcashd).await
+        get_raw_transaction(&ValidatorKind::Zcashd).await;
     }
 
     async fn get_raw_transaction(validator: &ValidatorKind) {
@@ -369,12 +369,12 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_transaction_status_zebrad() {
-        get_transaction_status(&ValidatorKind::Zebrad).await
+        get_transaction_status(&ValidatorKind::Zebrad).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_transaction_status_zcashd() {
-        get_transaction_status(&ValidatorKind::Zcashd).await
+        get_transaction_status(&ValidatorKind::Zcashd).await;
     }
 
     async fn get_transaction_status(validator: &ValidatorKind) {
@@ -409,12 +409,12 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_large_chain_zebrad() {
-        sync_large_chain(&ValidatorKind::Zebrad).await
+        sync_large_chain(&ValidatorKind::Zebrad).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_large_chain_zcashd() {
-        sync_large_chain(&ValidatorKind::Zcashd).await
+        sync_large_chain(&ValidatorKind::Zcashd).await;
     }
 
     async fn sync_large_chain(validator: &ValidatorKind) {

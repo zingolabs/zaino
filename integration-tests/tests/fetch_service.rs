@@ -107,7 +107,7 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
@@ -215,7 +215,7 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
@@ -348,7 +348,7 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     zaino_testutils::from_inputs::quick_send(
@@ -387,7 +387,7 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     zaino_testutils::from_inputs::quick_send(
@@ -426,7 +426,7 @@ async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let tx = zaino_testutils::from_inputs::quick_send(
@@ -467,7 +467,7 @@ async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let tx = zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
@@ -521,7 +521,7 @@ async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let txid_1 = zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
@@ -574,7 +574,7 @@ async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
     let json_service_blockchain_info = json_service.get_blockchain_info().await.unwrap();
 
     let json_service_get_latest_block = dbg!(BlockId {
-        height: json_service_blockchain_info.blocks.0 as u64,
+        height: u64::from(json_service_blockchain_info.blocks.0),
         hash: json_service_blockchain_info.best_block_hash.0.to_vec(),
     });
 
@@ -744,7 +744,7 @@ async fn fetch_service_get_block_count(validator: &ValidatorKind) {
     let fetch_service_get_block_count =
         dbg!(fetch_service_subscriber.get_block_count().await.unwrap());
 
-    assert_eq!(fetch_service_get_block_count.0 as u64, block_id.height);
+    assert_eq!(u64::from(fetch_service_get_block_count.0), block_id.height);
 
     test_manager.close().await;
 }
@@ -830,7 +830,7 @@ async fn fetch_service_get_block_range(validator: &ValidatorKind) {
 
     let fetch_blocks: Vec<_> = fetch_service_compact_blocks
         .into_iter()
-        .filter_map(|result| result.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     dbg!(fetch_blocks);
@@ -863,7 +863,7 @@ async fn fetch_service_get_block_range_nullifiers(validator: &ValidatorKind) {
 
     let fetch_nullifiers: Vec<_> = fetch_service_compact_blocks
         .into_iter()
-        .filter_map(|result| result.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     dbg!(fetch_nullifiers);
@@ -889,7 +889,7 @@ async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let tx = zaino_testutils::from_inputs::quick_send(
@@ -935,7 +935,7 @@ async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let tx = zaino_testutils::from_inputs::quick_send(
@@ -983,7 +983,7 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let tx = zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
@@ -1006,11 +1006,11 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
         address: recipient_taddr,
         range: Some(BlockRange {
             start: Some(BlockId {
-                height: (chain_height - 2) as u64,
+                height: u64::from(chain_height - 2),
                 hash: Vec::new(),
             }),
             end: Some(BlockId {
-                height: chain_height as u64,
+                height: u64::from(chain_height),
                 hash: Vec::new(),
             }),
         }),
@@ -1024,7 +1024,7 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
 
     let fetch_tx: Vec<_> = fetch_service_tx
         .into_iter()
-        .filter_map(|result| result.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     dbg!(tx);
@@ -1052,7 +1052,7 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
@@ -1112,7 +1112,7 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
@@ -1141,7 +1141,7 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
 
     let fetch_mempool_tx: Vec<_> = fetch_service_mempool_tx
         .into_iter()
-        .filter_map(|result| result.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     let mut sorted_fetch_mempool_tx = fetch_mempool_tx.clone();
@@ -1170,7 +1170,7 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
 
     let exclude_fetch_mempool_tx: Vec<_> = exclude_fetch_service_mempool_tx
         .into_iter()
-        .filter_map(|result| result.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     let mut sorted_exclude_fetch_mempool_tx = exclude_fetch_mempool_tx.clone();
@@ -1205,14 +1205,14 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let fetch_service_handle = tokio::spawn(async move {
         let fetch_service_stream = fetch_service_subscriber.get_mempool_stream().await.unwrap();
         let fetch_service_mempool_tx: Vec<_> = fetch_service_stream.collect().await;
         fetch_service_mempool_tx
             .into_iter()
-            .filter_map(|result| result.ok())
+            .filter_map(std::result::Result::ok)
             .collect::<Vec<_>>()
     });
 
@@ -1296,7 +1296,7 @@ async fn fetch_service_get_subtree_roots(validator: &ValidatorKind) {
 
     let fetch_roots: Vec<_> = fetch_service_roots
         .into_iter()
-        .filter_map(|result| result.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     dbg!(fetch_roots);
@@ -1323,7 +1323,7 @@ async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let tx = zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
@@ -1370,7 +1370,7 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     zaino_testutils::from_inputs::quick_send(
         &mut clients.faucet,
@@ -1395,7 +1395,7 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
 
     let fetch_utxos: Vec<_> = fetch_service_utxos
         .into_iter()
-        .filter_map(|result| result.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     dbg!(fetch_utxos);

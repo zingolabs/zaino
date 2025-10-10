@@ -348,7 +348,7 @@ async fn load_db_backend_from_file() {
         .await
         .unwrap()
         .is_none());
-    std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap()
+    std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -449,7 +449,7 @@ async fn get_chain_blocks() {
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
         (_sapling_treestate, _orchard_treestate),
-    ) in blocks.iter()
+    ) in &blocks
     {
         let chain_block = IndexedBlock::try_from((
             zebra_block,
@@ -498,7 +498,7 @@ async fn get_compact_blocks() {
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
         (_sapling_treestate, _orchard_treestate),
-    ) in blocks.iter()
+    ) in &blocks
     {
         let chain_block = IndexedBlock::try_from((
             zebra_block,
@@ -558,7 +558,7 @@ async fn get_faucet_txids() {
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
         (_sapling_treestate, _orchard_treestate),
-    ) in blocks.iter()
+    ) in &blocks
     {
         let chain_block = IndexedBlock::try_from((
             zebra_block,
@@ -655,7 +655,7 @@ async fn get_recipient_txids() {
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
         (_sapling_treestate, _orchard_treestate),
-    ) in blocks.iter()
+    ) in &blocks
     {
         let chain_block = IndexedBlock::try_from((
             zebra_block,
@@ -752,7 +752,7 @@ async fn get_faucet_utxos() {
         .expect("faucet script must be standard P2PKH or P2SH");
 
     let mut cleaned_utxos = Vec::new();
-    for utxo in faucet_utxos.iter() {
+    for utxo in &faucet_utxos {
         let (_faucet_address, txid, output_index, _faucet_script, satoshis, _height) =
             utxo.into_parts();
         cleaned_utxos.push((txid.to_string(), output_index.index(), satoshis));
@@ -768,7 +768,7 @@ async fn get_faucet_utxos() {
 
     for (tx_location, vout, value) in reader_faucet_utxo_indexes {
         let txid = db_reader.get_txid(tx_location).await.unwrap().to_string();
-        reader_faucet_utxos.push((txid, vout as u32, value));
+        reader_faucet_utxos.push((txid, u32::from(vout), value));
     }
 
     assert_eq!(cleaned_utxos.len(), reader_faucet_utxos.len());
@@ -792,7 +792,7 @@ async fn get_recipient_utxos() {
         .expect("faucet script must be standard P2PKH or P2SH");
 
     let mut cleaned_utxos = Vec::new();
-    for utxo in recipient_utxos.iter() {
+    for utxo in &recipient_utxos {
         let (_recipient_address, txid, output_index, _recipient_script, satoshis, _height) =
             utxo.into_parts();
         cleaned_utxos.push((txid.to_string(), output_index.index(), satoshis));
@@ -808,7 +808,7 @@ async fn get_recipient_utxos() {
 
     for (tx_location, vout, value) in reader_recipient_utxo_indexes {
         let txid = db_reader.get_txid(tx_location).await.unwrap().to_string();
-        reader_recipient_utxos.push((txid, vout as u32, value));
+        reader_recipient_utxos.push((txid, u32::from(vout), value));
     }
 
     assert_eq!(cleaned_utxos.len(), reader_recipient_utxos.len());
@@ -880,7 +880,7 @@ async fn check_faucet_spent_map() {
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
         (_sapling_treestate, _orchard_treestate),
-    ) in blocks.iter()
+    ) in &blocks
     {
         let chain_block = IndexedBlock::try_from((
             zebra_block,
@@ -927,7 +927,7 @@ async fn check_faucet_spent_map() {
 
     // collect faucet txids holding utxos
     let mut faucet_utxo_indexes = Vec::new();
-    for utxo in faucet_utxos.iter() {
+    for utxo in &faucet_utxos {
         let (_faucet_address, txid, output_index, _faucet_script, _satoshis, _height) =
             utxo.into_parts();
         faucet_utxo_indexes.push((txid.to_string(), output_index.index()));
@@ -978,7 +978,7 @@ async fn check_faucet_spent_map() {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
                                 chain_block.index().height() == Some(Height(block_height))
-                                    && tx.index() == tx_idx as u64
+                                    && tx.index() == u64::from(tx_idx)
                             })
                             .cloned()
                     },
@@ -1037,7 +1037,7 @@ async fn check_recipient_spent_map() {
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
         (_sapling_treestate, _orchard_treestate),
-    ) in blocks.iter()
+    ) in &blocks
     {
         let chain_block = IndexedBlock::try_from((
             zebra_block,
@@ -1084,7 +1084,7 @@ async fn check_recipient_spent_map() {
 
     // collect faucet txids holding utxos
     let mut recipient_utxo_indexes = Vec::new();
-    for utxo in recipient_utxos.iter() {
+    for utxo in &recipient_utxos {
         let (_recipient_address, txid, output_index, _recipient_script, _satoshis, _height) =
             utxo.into_parts();
         recipient_utxo_indexes.push((txid.to_string(), output_index.index()));
@@ -1135,7 +1135,7 @@ async fn check_recipient_spent_map() {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
                                 chain_block.index().height() == Some(Height(block_height))
-                                    && tx.index() == tx_idx as u64
+                                    && tx.index() == u64::from(tx_idx)
                             })
                             .cloned()
                     },

@@ -328,7 +328,7 @@ async fn get_compact_blocks() {
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
         (_sapling_treestate, _orchard_treestate),
-    ) in blocks.iter()
+    ) in &blocks
     {
         let chain_block = IndexedBlock::try_from((
             zebra_block,

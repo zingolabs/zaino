@@ -283,7 +283,7 @@ mod tests {
                     vec![BlockHeight::from(2000000), BlockHeight::from(2000001),]
                 );
             }
-            other => panic!("expected Zcashd, got: {:?}", other),
+            other => panic!("expected Zcashd, got: {other:?}"),
         }
     }
 
@@ -306,7 +306,7 @@ mod tests {
                 assert_eq!(items[1].addr, "5.6.7.8:8233");
                 assert!(!items[1].inbound);
             }
-            other => panic!("expected Zebrad variant, got: {:?}", other),
+            other => panic!("expected Zebrad variant, got: {other:?}"),
         }
     }
 
@@ -345,7 +345,7 @@ mod tests {
                 assert_eq!(items.len(), 1);
             }
             other => {
-                panic!("expected Unknown variant, got: {:?}", other);
+                panic!("expected Unknown variant, got: {other:?}");
             }
         }
     }
@@ -366,7 +366,7 @@ mod tests {
                 assert_eq!(items.len(), 2);
                 assert!(items[0].get("foo").is_some());
             }
-            other => panic!("expected Unknown variant, got: {:?}", other),
+            other => panic!("expected Unknown variant, got: {other:?}"),
         }
     }
 

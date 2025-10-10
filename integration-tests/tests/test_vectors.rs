@@ -544,9 +544,9 @@ async fn create_200_block_regtest_chain_vectors() {
 
                 let block_roots = (
                     sapling_root.0,
-                    chain_block.commitment_tree_data().sizes().sapling() as u64,
+                    u64::from(chain_block.commitment_tree_data().sizes().sapling()),
                     orchard_root.0,
-                    chain_block.commitment_tree_data().sizes().orchard() as u64,
+                    u64::from(chain_block.commitment_tree_data().sizes().orchard()),
                 );
 
                 let block_treestate = (sapling_treestate, orchard_treestate);

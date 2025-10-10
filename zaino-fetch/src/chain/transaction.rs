@@ -1184,7 +1184,7 @@ mod tests {
     use zaino_testvectors::transactions::get_test_vectors;
 
     /// Test parsing v1 transactions using test vectors.
-    /// Validates that FullTransaction::parse_from_slice correctly handles v1 transaction format.
+    /// Validates that `FullTransaction::parse_from_slice` correctly handles v1 transaction format.
     #[test]
     fn test_v1_transaction_parsing_with_test_vectors() {
         let test_vectors = get_test_vectors();
@@ -1235,7 +1235,7 @@ mod tests {
     }
 
     /// Test parsing v2 transactions using test vectors.
-    /// Validates that FullTransaction::parse_from_slice correctly handles v2 transaction format.
+    /// Validates that `FullTransaction::parse_from_slice` correctly handles v2 transaction format.
     #[test]
     fn test_v2_transaction_parsing_with_test_vectors() {
         let test_vectors = get_test_vectors();
@@ -1287,7 +1287,7 @@ mod tests {
     }
 
     /// Test parsing v3 transactions using test vectors.
-    /// Validates that FullTransaction::parse_from_slice correctly handles v3 transaction format.
+    /// Validates that `FullTransaction::parse_from_slice` correctly handles v3 transaction format.
     #[test]
     fn test_v3_transaction_parsing_with_test_vectors() {
         let test_vectors = get_test_vectors();
@@ -1339,7 +1339,7 @@ mod tests {
     }
 
     /// Test parsing v4 transactions using test vectors.
-    /// Validates that FullTransaction::parse_from_slice correctly handles v4 transaction format.
+    /// Validates that `FullTransaction::parse_from_slice` correctly handles v4 transaction format.
     /// This also serves as a regression test for current v4 functionality.
     #[test]
     fn test_v4_transaction_parsing_with_test_vectors() {

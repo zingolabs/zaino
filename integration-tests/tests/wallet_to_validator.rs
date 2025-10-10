@@ -45,7 +45,7 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
@@ -88,7 +88,7 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_zaddr = clients.get_recipient_address("sapling").await;
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
@@ -131,7 +131,7 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
@@ -243,7 +243,7 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -326,7 +326,7 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
@@ -406,7 +406,7 @@ async fn monitor_unverified_mempool_for_validator(
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.generate_blocks_with_delay(1).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let txid_1 = from_inputs::quick_send(
         &mut clients.faucet,
@@ -604,7 +604,7 @@ mod zebrad {
                 send_to_orchard(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
 
-            /// Bug documented in https://github.com/zingolabs/zaino/issues/145.
+            /// Bug documented in <https://github.com/zingolabs/zaino/issues/145>.
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn transparent() {
                 send_to_transparent(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
@@ -619,7 +619,7 @@ mod zebrad {
         async fn shield() {
             shield_for_validator(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
         }
-        /// Bug documented in https://github.com/zingolabs/zaino/issues/144.
+        /// Bug documented in <https://github.com/zingolabs/zaino/issues/144>.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn monitor_unverified_mempool() {
             monitor_unverified_mempool_for_validator(&ValidatorKind::Zebrad, &BackendType::Fetch)

@@ -1,4 +1,4 @@
-//! Zaino-State ChainIndex Mempool unit tests.
+//! Zaino-State `ChainIndex` Mempool unit tests.
 
 use std::{collections::HashMap, io::Cursor, str::FromStr as _};
 use tokio::time::{sleep, timeout, Duration};
@@ -58,7 +58,7 @@ async fn get_mempool() {
 
         let subscriber_tx = subscriber.get_mempool().await;
 
-        for transaction in mempool_transactions.into_iter() {
+        for transaction in mempool_transactions {
             let transaction_hash = dbg!(transaction.hash());
 
             let (subscriber_tx_hash, subscriber_tx) = subscriber_tx
@@ -124,7 +124,7 @@ async fn get_filtered_mempool() {
 
     println!("Checking transactions..");
 
-    for transaction in mempool_transactions.into_iter() {
+    for transaction in mempool_transactions {
         let transaction_hash = dbg!(transaction.hash());
         if transaction_hash == exclude_hash {
             // check tx is *not* in mempool transactions
@@ -325,7 +325,7 @@ async fn get_mempool_stream() {
         .collect();
 
     assert_eq!(received.len(), expected.len(), "entry count mismatch");
-    for (k, bytes) in expected.iter() {
+    for (k, bytes) in &expected {
         let got = received
             .get(k)
             .unwrap_or_else(|| panic!("missing tx {k} in stream"));

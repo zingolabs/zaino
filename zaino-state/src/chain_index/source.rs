@@ -597,7 +597,7 @@ pub(crate) mod test {
     use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
     use zebra_state::HashOrHeight;
 
-    /// A test-only mock implementation of BlockchainReader using ordered lists by height.
+    /// A test-only mock implementation of `BlockchainReader` using ordered lists by height.
     #[derive(Clone)]
     #[allow(clippy::type_complexity)]
     pub(crate) struct MockchainSource {
@@ -609,7 +609,7 @@ pub(crate) mod test {
     }
 
     impl MockchainSource {
-        /// Creates a new MockchainSource.
+        /// Creates a new `MockchainSource`.
         /// All inputs must be the same length, and ordered by ascending height starting from 0.
         #[allow(clippy::type_complexity)]
         pub(crate) fn new(
@@ -636,7 +636,7 @@ pub(crate) mod test {
             }
         }
 
-        /// Creates a new MockchainSource, *with* an active chain height.
+        /// Creates a new `MockchainSource`, *with* an active chain height.
         ///
         /// Block will only be served up to the active chain height, with mempool data coming from
         /// the *next block in the chain.

@@ -293,7 +293,7 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     from_inputs::quick_send(
         &mut clients.faucet,
@@ -489,7 +489,7 @@ async fn state_service_get_raw_mempool(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
@@ -569,7 +569,7 @@ async fn state_service_z_get_treestate(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
@@ -652,7 +652,7 @@ async fn state_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
@@ -757,7 +757,7 @@ async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let tx = from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
@@ -845,7 +845,7 @@ async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let tx = from_inputs::quick_send(
         &mut clients.faucet,
@@ -956,7 +956,7 @@ async fn state_service_get_address_utxos(validator: &ValidatorKind) {
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
-    };
+    }
 
     let txid_1 = from_inputs::quick_send(
         &mut clients.faucet,
@@ -1077,7 +1077,7 @@ mod zebrad {
                             .hash
                     )
                     .unwrap()
-                )
+                );
             }
         }
 
@@ -1529,7 +1529,7 @@ mod zebrad {
                 .await
                 .unwrap());
             assert_eq!(fetch_service_block_by_hash, state_service_block_by_hash);
-            assert_eq!(state_service_block_by_hash, state_service_block_by_height)
+            assert_eq!(state_service_block_by_hash, state_service_block_by_height);
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
