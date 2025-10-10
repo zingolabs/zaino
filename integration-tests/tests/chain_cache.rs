@@ -133,7 +133,7 @@ mod chain_query_interface {
                 };
                 let network = match test_manager.network {
                     NetworkKind::Regtest => {
-                        zebra_chain::parameters::Network::new_regtest(activation_heights.into())
+                        zebra_chain::parameters::Network::new_regtest(activation_heights)
                     }
                     NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
                     NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
@@ -165,7 +165,7 @@ mod chain_query_interface {
                             ..Default::default()
                         },
                     },
-                    network.into(),
+                    network,
                     true,
                     true,
                 ))
