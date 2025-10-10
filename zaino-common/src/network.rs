@@ -83,9 +83,9 @@ impl Default for ActivationHeights {
             blossom: Some(1),
             heartwood: Some(1),
             canopy: Some(1),
-            nu5: Some(1),
-            nu6: Some(1),
-            nu6_1: Some(1),
+            nu5: Some(2),
+            nu6: Some(2),
+            nu6_1: Some(1000),
             nu7: None,
         }
     }

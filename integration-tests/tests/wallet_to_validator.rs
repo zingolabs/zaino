@@ -540,7 +540,7 @@ async fn monitor_unverified_mempool_for_validator(
 mod zcashd {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn connect_to_node_get_info() {
         connect_to_node_get_info_for_validator(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
     }
@@ -548,33 +548,33 @@ mod zcashd {
     mod sent_to {
         use super::*;
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn orchard() {
             send_to_orchard(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn sapling() {
             send_to_sapling(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn transparent() {
             send_to_transparent(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn all() {
             send_to_all(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shield() {
         shield_for_validator(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn monitor_unverified_mempool() {
         monitor_unverified_mempool_for_validator(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
     }
@@ -586,7 +586,7 @@ mod zebrad {
     mod fetch_service {
         use super::*;
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn connect_to_node_get_info() {
             connect_to_node_get_info_for_validator(&ValidatorKind::Zebrad, &BackendType::Fetch)
                 .await;
@@ -594,33 +594,33 @@ mod zebrad {
         mod send_to {
             use super::*;
 
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn sapling() {
                 send_to_sapling(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
 
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn orchard() {
                 send_to_orchard(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
 
             /// Bug documented in https://github.com/zingolabs/zaino/issues/145.
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn transparent() {
                 send_to_transparent(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
 
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn all() {
                 send_to_all(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
             }
         }
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn shield() {
             shield_for_validator(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
         }
         /// Bug documented in https://github.com/zingolabs/zaino/issues/144.
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn monitor_unverified_mempool() {
             monitor_unverified_mempool_for_validator(&ValidatorKind::Zebrad, &BackendType::Fetch)
                 .await;
@@ -630,7 +630,7 @@ mod zebrad {
     mod state_service {
         use super::*;
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn connect_to_node_get_info() {
             connect_to_node_get_info_for_validator(&ValidatorKind::Zebrad, &BackendType::State)
                 .await;
@@ -638,33 +638,33 @@ mod zebrad {
         mod send_to {
             use super::*;
 
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn sapling() {
                 send_to_sapling(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
 
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn orchard() {
                 send_to_orchard(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
 
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn transparent() {
                 send_to_transparent(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
 
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn all() {
                 send_to_all(&ValidatorKind::Zebrad, &BackendType::State).await;
             }
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn shield() {
             shield_for_validator(&ValidatorKind::Zebrad, &BackendType::State).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn monitor_unverified_mempool() {
             monitor_unverified_mempool_for_validator(&ValidatorKind::Zebrad, &BackendType::State)
                 .await;

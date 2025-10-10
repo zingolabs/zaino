@@ -256,7 +256,7 @@ mod chain_query_interface {
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 7);
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
         let range = indexer
             .get_block_range(&snapshot, Height::try_from(0).unwrap(), None)
             .unwrap()
@@ -298,7 +298,7 @@ mod chain_query_interface {
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 7);
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for block_hash in snapshot.heights_to_hashes.values() {
             // As all blocks are currently on the main chain,
             // this should be the block provided
@@ -330,7 +330,7 @@ mod chain_query_interface {
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 7);
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height) in snapshot.blocks.values().flat_map(|block| {
             block
                 .transactions()
@@ -383,12 +383,12 @@ mod chain_query_interface {
         let snapshot = indexer.snapshot_nonfinalized_state();
         // I don't know where this second block is generated. Somewhere in the
         // guts of create_test_manager_and_chain_index
-        assert_eq!(snapshot.as_ref().blocks.len(), 2);
+        assert_eq!(snapshot.as_ref().blocks.len(), 3);
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 7);
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height, block_hash) in snapshot.blocks.values().flat_map(|block| {
             block
                 .transactions()

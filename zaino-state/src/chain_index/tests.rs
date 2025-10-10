@@ -161,6 +161,10 @@ mod mockchain_tests {
                 branch_id,
                 if height == 0 {
                     None
+                } else if height == 1 {
+                    zebra_chain::parameters::NetworkUpgrade::Canopy
+                        .branch_id()
+                        .map(u32::from)
                 } else {
                     zebra_chain::parameters::NetworkUpgrade::Nu6
                         .branch_id()
