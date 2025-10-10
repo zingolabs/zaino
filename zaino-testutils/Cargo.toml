@@ -17,9 +17,6 @@ zaino-common.workspace = true
 zainod = { workspace = true }
 
 # Librustzcash
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = [
-  "local-consensus",
-] }
 zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = ["lightwalletd-tonic"] }
 
 # Zebra
@@ -42,7 +39,6 @@ http = { workspace = true }
 once_cell = { workspace = true }
 portpicker = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
     "fmt",

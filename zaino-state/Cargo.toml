@@ -54,12 +54,10 @@ primitive-types = { workspace = true }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
 core2 = { workspace = true }
-bs58 = { workspace = true }
 nonempty = { workspace = true }
 arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
-derive_more = { workspace = true, features = ["from"] }
 zingo_common_components = { workspace = true, optional = true }
 
 
