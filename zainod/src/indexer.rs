@@ -18,7 +18,7 @@ use crate::{config::IndexerConfig, error::IndexerError};
 
 /// Zingo-Indexer.
 pub struct Indexer<Service: ZcashService + LightWalletService> {
-    /// JsonRPC server.
+    /// `JsonRPC` server.
     ///
     /// Disabled by default.
     json_server: Option<JsonRpcServer>,
@@ -30,7 +30,7 @@ pub struct Indexer<Service: ZcashService + LightWalletService> {
 
 /// Starts Indexer service.
 ///
-/// Currently only takes an IndexerConfig.
+/// Currently only takes an `IndexerConfig`.
 pub async fn start_indexer(
     config: IndexerConfig,
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
@@ -93,21 +93,18 @@ where
         // ))
         // .await?;
 
-        let json_server = match indexer_config.enable_json_server {
-            true => Some(
-                JsonRpcServer::spawn(
-                    service.inner_ref().get_subscriber(),
-                    JsonRpcConfig {
-                        json_rpc_listen_address: indexer_config.json_rpc_listen_address,
-                        enable_cookie_auth: indexer_config.enable_cookie_auth,
-                        cookie_dir: indexer_config.cookie_dir,
-                    },
-                )
-                .await
-                .unwrap(),
-            ),
-            false => None,
-        };
+        let json_server = if indexer_config.enable_json_server { Some(
+            JsonRpcServer::spawn(
+                service.inner_ref().get_subscriber(),
+                JsonRpcConfig {
+                    json_rpc_listen_address: indexer_config.json_rpc_listen_address,
+                    enable_cookie_auth: indexer_config.enable_cookie_auth,
+                    cookie_dir: indexer_config.cookie_dir,
+                },
+            )
+            .await
+            .unwrap(),
+        ) } else { None };
 
         let grpc_server = TonicServer::spawn(
             service.inner_ref().get_subscriber(),
@@ -200,7 +197,7 @@ where
         let json_server_status = self
             .json_server
             .as_ref()
-            .map(|json_server| json_server.status());
+            .map(zaino_serve::server::jsonrpc::JsonRpcServer::status);
 
         let mut server_status = match &self.server {
             Some(server) => server.status(),
@@ -214,7 +211,7 @@ where
         usize::from(StatusType::combine(service_status, server_status))
     }
 
-    /// Returns the current StatusType of the indexer.
+    /// Returns the current `StatusType` of the indexer.
     pub async fn status(&self) -> StatusType {
         StatusType::from(self.status_int().await)
     }
@@ -254,7 +251,7 @@ where
 
 /// Prints Zaino's startup message.
 fn startup_message() {
-    let welcome_message = r#"
+    let welcome_message = r"
        ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████▓░▒▒▒
        ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████▓▒▒▒▒
        ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒
@@ -284,6 +281,6 @@ fn startup_message() {
          #zingolabs:matrix.org which is a public, unencrypted channel.
 
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
-    "#;
+    ";
     println!("{welcome_message}");
 }

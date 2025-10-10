@@ -1,4 +1,4 @@
-//! Implements the ZainoDB Router, used to selectively route database capabilities during major migrations.
+//! Implements the `ZainoDB` Router, used to selectively route database capabilities during major migrations.
 //!
 //! The Router allows incremental database migrations by splitting read and write capability groups between primary and shadow databases.
 //! This design enables partial migrations without duplicating the entire chain database,

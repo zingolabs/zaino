@@ -1,7 +1,7 @@
 //! Response types for jsonRPSeeConnector.
 //!
-//! These types are redefined rather than imported from zebra_rpc
-//! to prevent locking consumers into a zebra_rpc version
+//! These types are redefined rather than imported from `zebra_rpc`
+//! to prevent locking consumers into a `zebra_rpc` version
 
 pub mod block_subsidy;
 mod common;
@@ -235,7 +235,7 @@ fn default_header() -> Height {
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
-/// A wrapper type to allow both kinds of ChainWork
+/// A wrapper type to allow both kinds of `ChainWork`
 pub enum ChainWork {
     /// Returned from zcashd, a chainwork is a String representing a
     /// base-16 integer
@@ -427,7 +427,7 @@ pub enum SendTransactionError {
     DeserializationError,
 
     /// Transaction rejected due to `expiryheight` being under `TX_EXPIRING_SOON_THRESHOLD`.
-    /// This is used for DoS mitigation.
+    /// This is used for `DoS` mitigation.
     #[error("Transaction expiring soon: {0}")]
     ExpiringSoon(u64),
 
@@ -556,7 +556,7 @@ impl<'de> serde::Deserialize<'de> for SerializedBlock {
 
 /// Sapling note commitment tree information.
 ///
-/// Wrapper struct for zebra's SaplingTrees
+/// Wrapper struct for zebra's `SaplingTrees`
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct SaplingTrees {
     size: u64,
@@ -564,7 +564,7 @@ pub struct SaplingTrees {
 
 /// Orchard note commitment tree information.
 ///
-/// Wrapper struct for zebra's OrchardTrees
+/// Wrapper struct for zebra's `OrchardTrees`
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct OrchardTrees {
     size: u64,
@@ -572,7 +572,7 @@ pub struct OrchardTrees {
 
 /// Information about the sapling and orchard note commitment trees if any.
 ///
-/// Wrapper struct for zebra's GetBlockTrees
+/// Wrapper struct for zebra's `GetBlockTrees`
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockTrees {
     #[serde(default)]
@@ -582,13 +582,13 @@ pub struct GetBlockTrees {
 }
 
 impl GetBlockTrees {
-    /// Returns sapling data held by ['GetBlockTrees'].
-    pub fn sapling(&self) -> u64 {
+    /// Returns sapling data held by ['`GetBlockTrees`'].
+    #[must_use] pub fn sapling(&self) -> u64 {
         self.sapling.map_or(0, |s| s.size)
     }
 
-    /// Returns orchard data held by ['GetBlockTrees'].
-    pub fn orchard(&self) -> u64 {
+    /// Returns orchard data held by ['`GetBlockTrees`'].
+    #[must_use] pub fn orchard(&self) -> u64 {
         self.orchard.map_or(0, |o| o.size)
     }
 }
@@ -601,7 +601,7 @@ impl From<GetBlockTrees> for zebra_rpc::methods::GetBlockTrees {
 
 /// Wrapper struct for a zebra `Solution`.
 ///
-/// *** NOTE / TODO: ToHex should be inmlemented in zebra to avoid the use of a wrapper struct. ***
+/// *** NOTE / TODO: `ToHex` should be inmlemented in zebra to avoid the use of a wrapper struct. ***
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Solution(pub zebra_chain::work::equihash::Solution);
 
@@ -1062,7 +1062,7 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 .map_err(DeserError::custom)?;
 
             // Convert `mempool tx height = -1` (Zcashd) to `None` (Zebrad).
-            let height = match tx_value.get("height").and_then(|v| v.as_i64()) {
+            let height = match tx_value.get("height").and_then(serde_json::Value::as_i64) {
                 Some(-1) | None => None,
                 Some(h) if h < -1 => {
                     return Err(DeserError::custom("invalid height returned in block"))
@@ -1083,7 +1083,7 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
 
             let confirmations = tx_value
                 .get("confirmations")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .map(|v| v as u32);
 
             // if let Some(vin_value) = tx_value.get("vin") {
@@ -1241,7 +1241,7 @@ impl From<GetTransactionResponse> for zebra_rpc::methods::GetRawTransaction {
     }
 }
 
-/// Wrapper struct for a zebra SubtreeRpcData.
+/// Wrapper struct for a zebra `SubtreeRpcData`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SubtreeRpcData(zebra_rpc::client::SubtreeRpcData);
 

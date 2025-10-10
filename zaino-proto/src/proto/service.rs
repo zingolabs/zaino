@@ -1,4 +1,4 @@
-/// A BlockID message contains identifiers to select a block: a height or a
+/// A `BlockID` message contains identifiers to select a block: a height or a
 /// hash. Specification by hash is not implemented, but may be in the future.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -8,8 +8,8 @@ pub struct BlockId {
     #[prost(bytes = "vec", tag = "2")]
     pub hash: ::prost::alloc::vec::Vec<u8>,
 }
-/// BlockRange specifies a series of blocks from start to end inclusive.
-/// Both BlockIDs must be heights; specification by hash is not yet supported.
+/// `BlockRange` specifies a series of blocks from start to end inclusive.
+/// Both `BlockIDs` must be heights; specification by hash is not yet supported.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BlockRange {
@@ -18,7 +18,7 @@ pub struct BlockRange {
     #[prost(message, optional, tag = "2")]
     pub end: ::core::option::Option<BlockId>,
 }
-/// A TxFilter contains the information needed to identify a particular
+/// A `TxFilter` contains the information needed to identify a particular
 /// transaction: either a block and an index, or a direct transaction hash.
 /// Currently, only specification by hash is supported.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -34,9 +34,9 @@ pub struct TxFilter {
     #[prost(bytes = "vec", tag = "3")]
     pub hash: ::prost::alloc::vec::Vec<u8>,
 }
-/// RawTransaction contains the complete transaction data. It also optionally includes
+/// `RawTransaction` contains the complete transaction data. It also optionally includes
 /// the block height in which the transaction was included, or, when returned
-/// by GetMempoolStream(), the latest block height.
+/// by `GetMempoolStream()`, the latest block height.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RawTransaction {
@@ -47,8 +47,8 @@ pub struct RawTransaction {
     #[prost(uint64, tag = "2")]
     pub height: u64,
 }
-/// A SendResponse encodes an error code and a string. It is currently used
-/// only by SendTransaction(). If error code is zero, the operation was
+/// A `SendResponse` encodes an error code and a string. It is currently used
+/// only by `SendTransaction()`. If error code is zero, the operation was
 /// successful; if non-zero, it and the message specify the failure.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -62,11 +62,11 @@ pub struct SendResponse {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChainSpec {}
-/// Empty is for gRPCs that take no arguments, currently only GetLightdInfo.
+/// Empty is for gRPCs that take no arguments, currently only `GetLightdInfo`.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Empty {}
-/// LightdInfo returns various information about this lightwalletd instance
+/// `LightdInfo` returns various information about this lightwalletd instance
 /// and the state of the blockchain.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -108,7 +108,7 @@ pub struct LightdInfo {
     #[prost(string, tag = "14")]
     pub zcashd_subversion: ::prost::alloc::string::String,
 }
-/// TransparentAddressBlockFilter restricts the results to the given address
+/// `TransparentAddressBlockFilter` restricts the results to the given address
 /// or block range.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -129,7 +129,7 @@ pub struct Duration {
     #[prost(int64, tag = "1")]
     pub interval_us: i64,
 }
-/// PingResponse is used to indicate concurrency, how many Ping rpcs
+/// `PingResponse` is used to indicate concurrency, how many Ping rpcs
 /// are executing upon entry and upon exit (after the delay).
 /// This rpc is used for testing only.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -164,7 +164,7 @@ pub struct Exclude {
     #[prost(bytes = "vec", repeated, tag = "1")]
     pub txid: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
-/// The TreeState is derived from the Zcash z_gettreestate rpc.
+/// The `TreeState` is derived from the Zcash `z_gettreestate` rpc.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TreeState {
@@ -255,18 +255,18 @@ pub enum ShieldedProtocol {
     Orchard = 1,
 }
 impl ShieldedProtocol {
-    /// String value of the enum field names used in the ProtoBuf definition.
+    /// String value of the enum field names used in the `ProtoBuf` definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    /// (if the `ProtoBuf` definition does not change) and safe for programmatic use.
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             ShieldedProtocol::Sapling => "sapling",
             ShieldedProtocol::Orchard => "orchard",
         }
     }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    /// Creates an enum from field names used in the `ProtoBuf` definition.
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "sapling" => Some(Self::Sapling),
             "orchard" => Some(Self::Orchard),
@@ -278,7 +278,7 @@ impl ShieldedProtocol {
 pub mod compact_tx_streamer_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::http::Uri;
-    use tonic::codegen::*;
+    use tonic::codegen::{StdError, Body, Bytes, http, InterceptedService, CompressionEncoding, GrpcMethod};
     #[derive(Debug, Clone)]
     pub struct CompactTxStreamerClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -405,7 +405,7 @@ pub mod compact_tx_streamer_client {
             ));
             self.inner.unary(req, path, codec).await
         }
-        /// Same as GetBlock except actions contain only nullifiers
+        /// Same as `GetBlock` except actions contain only nullifiers
         pub async fn get_block_nullifiers(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockId>,
@@ -455,7 +455,7 @@ pub mod compact_tx_streamer_client {
             ));
             self.inner.server_streaming(req, path, codec).await
         }
-        /// Same as GetBlockRange except actions contain only nullifiers
+        /// Same as `GetBlockRange` except actions contain only nullifiers
         pub async fn get_block_range_nullifiers(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockRange>,
@@ -650,9 +650,9 @@ pub mod compact_tx_streamer_client {
             ));
             self.inner.server_streaming(req, path, codec).await
         }
-        /// GetTreeState returns the note commitment tree state corresponding to the given block.
+        /// `GetTreeState` returns the note commitment tree state corresponding to the given block.
         /// See section 3.7 of the Zcash protocol specification. It returns several other useful
-        /// values also (even though they can be obtained using GetBlock).
+        /// values also (even though they can be obtained using `GetBlock`).
         /// The block can be specified by either height or hash.
         pub async fn get_tree_state(
             &mut self,
@@ -817,8 +817,8 @@ pub mod compact_tx_streamer_client {
 /// Generated server implementations.
 pub mod compact_tx_streamer_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with CompactTxStreamerServer.
+    use tonic::codegen::{async_trait, EnabledCompressionEncodings, Arc, InterceptedService, CompressionEncoding, http, Body, StdError, BoxFuture, Context, Poll, empty_body};
+    /// Generated trait containing gRPC methods that should be implemented for use with `CompactTxStreamerServer`.
     #[async_trait]
     pub trait CompactTxStreamer: Send + Sync + 'static {
         /// Return the height of the tip of the best chain
@@ -834,7 +834,7 @@ pub mod compact_tx_streamer_server {
             tonic::Response<crate::proto::compact_formats::CompactBlock>,
             tonic::Status,
         >;
-        /// Same as GetBlock except actions contain only nullifiers
+        /// Same as `GetBlock` except actions contain only nullifiers
         async fn get_block_nullifiers(
             &self,
             request: tonic::Request<super::BlockId>,
@@ -842,7 +842,7 @@ pub mod compact_tx_streamer_server {
             tonic::Response<crate::proto::compact_formats::CompactBlock>,
             tonic::Status,
         >;
-        /// Server streaming response type for the GetBlockRange method.
+        /// Server streaming response type for the `GetBlockRange` method.
         type GetBlockRangeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
                     crate::proto::compact_formats::CompactBlock,
@@ -855,7 +855,7 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::BlockRange>,
         ) -> std::result::Result<tonic::Response<Self::GetBlockRangeStream>, tonic::Status>;
-        /// Server streaming response type for the GetBlockRangeNullifiers method.
+        /// Server streaming response type for the `GetBlockRangeNullifiers` method.
         type GetBlockRangeNullifiersStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
                     crate::proto::compact_formats::CompactBlock,
@@ -863,7 +863,7 @@ pub mod compact_tx_streamer_server {
                 >,
             > + Send
             + 'static;
-        /// Same as GetBlockRange except actions contain only nullifiers
+        /// Same as `GetBlockRange` except actions contain only nullifiers
         async fn get_block_range_nullifiers(
             &self,
             request: tonic::Request<super::BlockRange>,
@@ -878,7 +878,7 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::RawTransaction>,
         ) -> std::result::Result<tonic::Response<super::SendResponse>, tonic::Status>;
-        /// Server streaming response type for the GetTaddressTxids method.
+        /// Server streaming response type for the `GetTaddressTxids` method.
         type GetTaddressTxidsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::RawTransaction, tonic::Status>,
             > + Send
@@ -896,7 +896,7 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<tonic::Streaming<super::Address>>,
         ) -> std::result::Result<tonic::Response<super::Balance>, tonic::Status>;
-        /// Server streaming response type for the GetMempoolTx method.
+        /// Server streaming response type for the `GetMempoolTx` method.
         type GetMempoolTxStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<crate::proto::compact_formats::CompactTx, tonic::Status>,
             > + Send
@@ -914,7 +914,7 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::Exclude>,
         ) -> std::result::Result<tonic::Response<Self::GetMempoolTxStream>, tonic::Status>;
-        /// Server streaming response type for the GetMempoolStream method.
+        /// Server streaming response type for the `GetMempoolStream` method.
         type GetMempoolStreamStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::RawTransaction, tonic::Status>,
             > + Send
@@ -925,9 +925,9 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<tonic::Response<Self::GetMempoolStreamStream>, tonic::Status>;
-        /// GetTreeState returns the note commitment tree state corresponding to the given block.
+        /// `GetTreeState` returns the note commitment tree state corresponding to the given block.
         /// See section 3.7 of the Zcash protocol specification. It returns several other useful
-        /// values also (even though they can be obtained using GetBlock).
+        /// values also (even though they can be obtained using `GetBlock`).
         /// The block can be specified by either height or hash.
         async fn get_tree_state(
             &self,
@@ -937,7 +937,7 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<tonic::Response<super::TreeState>, tonic::Status>;
-        /// Server streaming response type for the GetSubtreeRoots method.
+        /// Server streaming response type for the `GetSubtreeRoots` method.
         type GetSubtreeRootsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::SubtreeRoot, tonic::Status>,
             > + Send
@@ -952,7 +952,7 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::GetAddressUtxosArg>,
         ) -> std::result::Result<tonic::Response<super::GetAddressUtxosReplyList>, tonic::Status>;
-        /// Server streaming response type for the GetAddressUtxosStream method.
+        /// Server streaming response type for the `GetAddressUtxosStream` method.
         type GetAddressUtxosStreamStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::GetAddressUtxosReply, tonic::Status>,
             > + Send

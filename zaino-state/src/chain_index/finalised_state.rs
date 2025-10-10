@@ -10,10 +10,10 @@ pub(crate) mod migrations;
 pub(crate) mod reader;
 pub(crate) mod router;
 
-use capability::*;
+use capability::{DbVersion, DbRead, DbCore, CapabilityRequest, BlockCoreExt, DbWrite, DbMetadata};
 use db::{DbBackend, VERSION_DIRS};
 use migrations::MigrationManager;
-use reader::*;
+use reader::DbReader;
 use router::Router;
 use tracing::info;
 use zebra_chain::parameters::NetworkKind;
@@ -38,7 +38,7 @@ pub(crate) struct ZainoDB {
 impl ZainoDB {
     // ***** DB control *****
 
-    /// Spawns a ZainoDB, opens an existing database if a path is given in the config else creates a new db.
+    /// Spawns a `ZainoDB`, opens an existing database if a path is given in the config else creates a new db.
     ///
     /// Peeks at the db metadata store to load correct database version.
     pub(crate) async fn spawn<T>(
@@ -68,29 +68,26 @@ impl ZainoDB {
             }
         };
 
-        let backend = match version_opt {
-            Some(version) => {
-                info!("Opening ZainoDBv{} from file.", version);
-                match version {
-                    0 => DbBackend::spawn_v0(&cfg).await?,
-                    1 => DbBackend::spawn_v1(&cfg).await?,
-                    _ => {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "unsupported database version: DbV{version}"
-                        )))
-                    }
+        let backend = if let Some(version) = version_opt {
+            info!("Opening ZainoDBv{} from file.", version);
+            match version {
+                0 => DbBackend::spawn_v0(&cfg).await?,
+                1 => DbBackend::spawn_v1(&cfg).await?,
+                _ => {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "unsupported database version: DbV{version}"
+                    )))
                 }
             }
-            None => {
-                info!("Creating new ZainoDBv{}.", target_version);
-                match target_version.major() {
-                    0 => DbBackend::spawn_v0(&cfg).await?,
-                    1 => DbBackend::spawn_v1(&cfg).await?,
-                    _ => {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "unsupported database version: DbV{target_version}"
-                        )))
-                    }
+        } else {
+            info!("Creating new ZainoDBv{}.", target_version);
+            match target_version.major() {
+                0 => DbBackend::spawn_v0(&cfg).await?,
+                1 => DbBackend::spawn_v1(&cfg).await?,
+                _ => {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "unsupported database version: DbV{target_version}"
+                    )))
                 }
             }
         };
@@ -116,17 +113,17 @@ impl ZainoDB {
         Ok(Self { db: router, cfg })
     }
 
-    /// Gracefully shuts down the running ZainoDB, closing all child processes.
+    /// Gracefully shuts down the running `ZainoDB`, closing all child processes.
     pub(crate) async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.db.shutdown().await
     }
 
-    /// Returns the status of the running ZainoDB.
+    /// Returns the status of the running `ZainoDB`.
     pub(crate) fn status(&self) -> StatusType {
         self.db.status()
     }
 
-    /// Waits until the ZainoDB returns a Ready status.
+    /// Waits until the `ZainoDB` returns a Ready status.
     pub(crate) async fn wait_until_ready(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -138,9 +135,9 @@ impl ZainoDB {
         }
     }
 
-    /// Creates a read-only viewer onto the running ZainoDB.
+    /// Creates a read-only viewer onto the running `ZainoDB`.
     ///
-    /// NOTE: **ALL** chain fetch should use DbReader instead of directly using ZainoDB.
+    /// NOTE: **ALL** chain fetch should use `DbReader` instead of directly using `ZainoDB`.
     pub(crate) fn to_reader(self: &Arc<Self>) -> DbReader {
         DbReader {
             inner: Arc::clone(self),
@@ -187,7 +184,7 @@ impl ZainoDB {
 
     /// Returns the internal db backend for the given db capability.
     ///
-    /// Used by DbReader to route calls to the correct database during major migrations.
+    /// Used by `DbReader` to route calls to the correct database during major migrations.
     #[inline]
     pub(crate) fn backend_for_cap(
         &self,
@@ -198,7 +195,7 @@ impl ZainoDB {
 
     // ***** Db Core Write *****
 
-    /// Sync the database to the given height using the given BlockchainSource.
+    /// Sync the database to the given height using the given `BlockchainSource`.
     pub(crate) async fn sync_to_height<T>(
         &self,
         height: Height,
@@ -300,7 +297,7 @@ impl ZainoDB {
 
     /// Writes a block to the database.
     ///
-    /// This **MUST** be the *next* block in the chain (db_tip_height + 1).
+    /// This **MUST** be the *next* block in the chain (`db_tip_height` + 1).
     pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.db.write_block(b).await
     }
@@ -349,7 +346,7 @@ impl ZainoDB {
         self.db.get_block_hash(height).await
     }
 
-    /// Returns metadata for the running ZainoDB.
+    /// Returns metadata for the running `ZainoDB`.
     pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         self.db.get_metadata().await
     }

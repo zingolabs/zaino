@@ -1,8 +1,8 @@
 //! Holds a gRPC server capable of servicing clients over TCP.
 //!
-//! - server::ingestor has been built so that other ingestors may be added that use different transport protocols (Nym, TOR).
+//! - `server::ingestor` has been built so that other ingestors may be added that use different transport protocols (Nym, TOR).
 //!
-//! Also holds rust implementations of the LightWallet gRPC Service (CompactTxStreamerServer).
+//! Also holds rust implementations of the `LightWallet` gRPC Service (`CompactTxStreamerServer`).
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]

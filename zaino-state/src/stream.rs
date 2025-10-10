@@ -6,14 +6,14 @@ use zaino_proto::proto::{
     service::{Address, GetAddressUtxosReply, RawTransaction, SubtreeRoot},
 };
 
-/// Stream of RawTransactions, output type of get_taddress_txids.
+/// Stream of `RawTransactions`, output type of `get_taddress_txids`.
 pub struct RawTransactionStream {
     inner: ReceiverStream<Result<RawTransaction, tonic::Status>>,
 }
 
 impl RawTransactionStream {
-    /// Returns new instance of RawTransactionStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<RawTransaction, tonic::Status>>) -> Self {
+    /// Returns new instance of `RawTransactionStream`.
+    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<RawTransaction, tonic::Status>>) -> Self {
         RawTransactionStream {
             inner: ReceiverStream::new(rx),
         }
@@ -37,14 +37,14 @@ impl futures::Stream for RawTransactionStream {
     }
 }
 
-/// Stream of RawTransactions, output type of get_taddress_txids.
+/// Stream of `RawTransactions`, output type of `get_taddress_txids`.
 pub struct CompactTransactionStream {
     inner: ReceiverStream<Result<CompactTx, tonic::Status>>,
 }
 
 impl CompactTransactionStream {
-    /// Returns new instance of RawTransactionStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactTx, tonic::Status>>) -> Self {
+    /// Returns new instance of `RawTransactionStream`.
+    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactTx, tonic::Status>>) -> Self {
         CompactTransactionStream {
             inner: ReceiverStream::new(rx),
         }
@@ -68,14 +68,14 @@ impl futures::Stream for CompactTransactionStream {
     }
 }
 
-/// Stream of CompactBlocks, output type of get_block_range.
+/// Stream of `CompactBlocks`, output type of `get_block_range`.
 pub struct CompactBlockStream {
     inner: ReceiverStream<Result<CompactBlock, tonic::Status>>,
 }
 
 impl CompactBlockStream {
-    /// Returns new instance of CompactBlockStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactBlock, tonic::Status>>) -> Self {
+    /// Returns new instance of `CompactBlockStream`.
+    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactBlock, tonic::Status>>) -> Self {
         CompactBlockStream {
             inner: ReceiverStream::new(rx),
         }
@@ -99,14 +99,14 @@ impl futures::Stream for CompactBlockStream {
     }
 }
 
-/// Stream of CompactBlocks, output type of get_block_range.
+/// Stream of `CompactBlocks`, output type of `get_block_range`.
 pub struct UtxoReplyStream {
     inner: ReceiverStream<Result<GetAddressUtxosReply, tonic::Status>>,
 }
 
 impl UtxoReplyStream {
-    /// Returns new instance of CompactBlockStream.
-    pub fn new(
+    /// Returns new instance of `CompactBlockStream`.
+    #[must_use] pub fn new(
         rx: tokio::sync::mpsc::Receiver<Result<GetAddressUtxosReply, tonic::Status>>,
     ) -> Self {
         UtxoReplyStream {
@@ -132,14 +132,14 @@ impl futures::Stream for UtxoReplyStream {
     }
 }
 
-/// Stream of CompactBlocks, output type of get_block_range.
+/// Stream of `CompactBlocks`, output type of `get_block_range`.
 pub struct SubtreeRootReplyStream {
     inner: ReceiverStream<Result<SubtreeRoot, tonic::Status>>,
 }
 
 impl SubtreeRootReplyStream {
-    /// Returns new instance of CompactBlockStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<SubtreeRoot, tonic::Status>>) -> Self {
+    /// Returns new instance of `CompactBlockStream`.
+    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<SubtreeRoot, tonic::Status>>) -> Self {
         SubtreeRootReplyStream {
             inner: ReceiverStream::new(rx),
         }
@@ -170,7 +170,7 @@ pub struct AddressStream {
 
 impl AddressStream {
     /// Creates a new `AddressStream` instance.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<Address, tonic::Status>>) -> Self {
+    #[must_use] pub fn new(rx: tokio::sync::mpsc::Receiver<Result<Address, tonic::Status>>) -> Self {
         AddressStream {
             inner: ReceiverStream::new(rx),
         }

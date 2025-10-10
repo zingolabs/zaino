@@ -11,13 +11,13 @@ use blake2::{
 use core2::io::{self, Read, Write};
 
 /// A fixed length database entry.
-/// This is an important distinction for correct usage of DUP_SORT and DUP_FIXED
+/// This is an important distinction for correct usage of `DUP_SORT` and `DUP_FIXED`
 /// LMDB database flags.
 ///
 /// Encoded Format:
 ///
-/// ┌─────── byte 0 ───────┬───── byte 1 ─────┬───── T::raw_len() bytes ──────┬─── 32 bytes ────┐
-/// │ StoredEntry version  │  Record version  │             Body              │ B2B256 hash     │
+/// ┌─────── byte 0 ───────┬───── byte 1 ─────┬───── `T::raw_len()` bytes ──────┬─── 32 bytes ────┐
+/// │ `StoredEntry` version  │  Record version  │             Body              │ B2B256 hash     │
 /// └──────────────────────┴──────────────────┴───────────────────────────────┴─────────────────┘
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredEntryFixed<T: ZainoVersionedSerialise + FixedEncodedLen> {
@@ -98,7 +98,7 @@ impl<T: ZainoVersionedSerialise + FixedEncodedLen> FixedEncodedLen for StoredEnt
 /// Layout (little-endian unless noted):
 ///
 /// ┌────── byte 0 ───────┬─────── CompactSize(len) ─────┬──── 1 byte ────┬── len - 1 bytes ───┬─ 32 bytes ─┐
-/// │ StoredEntry version │ (length of item.serialize()) │ Record version │        Body        │    Hash    │
+/// │ `StoredEntry` version │ (length of `item.serialize()`) │ Record version │        Body        │    Hash    │
 /// └─────────────────────┴──────────────────────────────┴────────────────┴────────────────────┴────────────┘
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredEntryVar<T: ZainoVersionedSerialise> {

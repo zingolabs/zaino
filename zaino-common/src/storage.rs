@@ -2,21 +2,21 @@
 
 use std::path::PathBuf;
 
-/// Cache configuration for DashMaps.
+/// Cache configuration for `DashMaps`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct CacheConfig {
-    /// Capacity of the DashMaps used for caching
+    /// Capacity of the `DashMaps` used for caching
     pub capacity: usize,
     /// Power of 2 for number of shards (e.g., 4 means 16 shards)
     ///
-    /// The actual shard count will be 2^shard_power.
+    /// The actual shard count will be `2^shard_power`.
     /// Valid range is typically 0-8 (1 to 256 shards).
     pub shard_power: u8,
 }
 
 impl CacheConfig {
-    /// Get the actual number of shards (2^shard_power)
-    pub fn shard_count(&self) -> u32 {
+    /// Get the actual number of shards (`2^shard_power`)
+    #[must_use] pub fn shard_count(&self) -> u32 {
         // // 'a<<b' works by shifting the binary representation of a, b postions to the left
         // 1 << self.shard_power // 2^shard_power
         2u32.pow(self.shard_power.into())
@@ -57,7 +57,7 @@ impl PartialEq for DatabaseSize {
 
 impl DatabaseSize {
     /// Convert to bytes
-    pub fn to_byte_count(&self) -> usize {
+    #[must_use] pub fn to_byte_count(&self) -> usize {
         match self {
             DatabaseSize::Gb(gb) => gb * 1024 * 1024 * 1024,
         }

@@ -9,9 +9,9 @@ use crate::chain::error::ParseError;
 pub trait ParseFromSlice {
     /// Reads data from a bytestring, consuming data read, and returns an instance of self along with the remaining data in the bytestring given.
     ///
-    /// txid is giving as an input as this is taken from a get_block verbose=1 call.
+    /// txid is giving as an input as this is taken from a `get_block` verbose=1 call.
     ///
-    /// tx_version is used for deserializing sapling spends and outputs.
+    /// `tx_version` is used for deserializing sapling spends and outputs.
     fn parse_from_slice(
         data: &[u8],
         // TODO: Why is txid a vec of vecs?
@@ -94,7 +94,7 @@ pub(crate) fn read_bool(cursor: &mut Cursor<&[u8]>, error_msg: &str) -> Result<b
     }
 }
 
-/// read_zcash_script_int64 OP codes.
+/// `read_zcash_script_int64` OP codes.
 const OP_0: u8 = 0x00;
 const OP_1_NEGATE: u8 = 0x4f;
 const OP_1: u8 = 0x51;
@@ -120,7 +120,7 @@ pub(crate) fn read_zcash_script_i64(cursor: &mut Cursor<&[u8]>) -> Result<i64, P
     }
 }
 
-/// Zcash CompactSize implementation taken from LibRustZcash::zcash_encoding to simplify dependency tree.
+/// Zcash `CompactSize` implementation taken from `LibRustZcash::zcash_encoding` to simplify dependency tree.
 ///
 /// Namespace for functions for compact encoding of integers.
 ///
@@ -136,14 +136,14 @@ impl CompactSize {
     pub(crate) fn read<R: Read>(mut reader: R) -> io::Result<u64> {
         let flag = reader.read_u8()?;
         let result = if flag < 253 {
-            Ok(flag as u64)
+            Ok(u64::from(flag))
         } else if flag == 253 {
             match reader.read_u16::<LittleEndian>()? {
                 n if n < 253 => Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "non-canonical CompactSize",
                 )),
-                n => Ok(n as u64),
+                n => Ok(u64::from(n)),
             }
         } else if flag == 254 {
             match reader.read_u32::<LittleEndian>()? {
@@ -151,7 +151,7 @@ impl CompactSize {
                     io::ErrorKind::InvalidInput,
                     "non-canonical CompactSize",
                 )),
-                n => Ok(n as u64),
+                n => Ok(u64::from(n)),
             }
         } else {
             match reader.read_u64::<LittleEndian>()? {

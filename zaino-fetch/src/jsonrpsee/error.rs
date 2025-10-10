@@ -1,4 +1,4 @@
-//! Hold error types for the JsonRpSeeConnector and related functionality.
+//! Hold error types for the `JsonRpSeeConnector` and related functionality.
 
 use std::io;
 
@@ -15,7 +15,7 @@ pub struct JsonRpcError {
     pub data: Option<serde_json::Value>,
 }
 
-/// General error type for handling JsonRpSeeConnector errors.
+/// General error type for handling `JsonRpSeeConnector` errors.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     /// The cookie file used to authenticate with zebra could not be read
@@ -62,11 +62,11 @@ pub enum TransportError {
 }
 
 impl TransportError {
-    /// Converts TransportError to tonic::Status
+    /// Converts `TransportError` to `tonic::Status`
     ///
     /// TODO: This impl should be changed to return the correct status [per this issue](https://github.com/zcash/lightwalletd/issues/497) before release,
     ///       however propagating the server error is useful during development.
-    pub fn to_grpc_status(&self) -> tonic::Status {
+    #[must_use] pub fn to_grpc_status(&self) -> tonic::Status {
         // TODO: Hide server error from clients before release. Currently useful for dev purposes.
         tonic::Status::internal(format!("Error: JsonRpSee Client Error: {self}"))
     }

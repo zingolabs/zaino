@@ -33,9 +33,9 @@ use crate::{
     },
 };
 
-/// Wrapper Struct for a ZainoState chain-fetch service (StateService, FetchService)
+/// Wrapper Struct for a `ZainoState` chain-fetch service (`StateService`, `FetchService`)
 ///
-/// The future plan is to also add a TonicService and DarksideService to this to enable
+/// The future plan is to also add a `TonicService` and `DarksideService` to this to enable
 /// wallets to use a single unified chain fetch service.
 #[derive(Clone)]
 pub struct IndexerService<Service: ZcashService> {
@@ -88,13 +88,13 @@ pub trait ZcashService: Sized {
     /// Fetches the current status
     async fn status(&self) -> StatusType;
 
-    /// Shuts down the StateService.
+    /// Shuts down the `StateService`.
     fn close(&mut self);
 }
 
-/// Wrapper Struct for a ZainoState chain-fetch service subscriber (StateServiceSubscriber, FetchServiceSubscriber)
+/// Wrapper Struct for a `ZainoState` chain-fetch service subscriber (`StateServiceSubscriber`, `FetchServiceSubscriber`)
 ///
-/// The future plan is to also add a TonicServiceSubscriber and DarksideServiceSubscriber to this to enable wallets to use a single unified chain fetch service.
+/// The future plan is to also add a `TonicServiceSubscriber` and `DarksideServiceSubscriber` to this to enable wallets to use a single unified chain fetch service.
 #[derive(Clone)]
 pub struct IndexerSubscriber<Subscriber: Clone + ZcashIndexer + LightWalletIndexer + Send + Sync> {
     /// Underlying Service Subscriber.
@@ -491,7 +491,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     }
 }
 
-/// LightWallet RPC method signatures.
+/// `LightWallet` RPC method signatures.
 ///
 /// Doc comments taken from Zaino-Proto for consistency.
 #[async_trait]
@@ -502,14 +502,14 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Return the compact block corresponding to the given block identifier
     async fn get_block(&self, request: BlockId) -> Result<CompactBlock, Self::Error>;
 
-    /// Same as GetBlock except actions contain only nullifiers
+    /// Same as `GetBlock` except actions contain only nullifiers
     async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error>;
 
     /// Return a list of consecutive compact blocks
     async fn get_block_range(&self, request: BlockRange)
         -> Result<CompactBlockStream, Self::Error>;
 
-    /// Same as GetBlockRange except actions contain only nullifiers
+    /// Same as `GetBlockRange` except actions contain only nullifiers
     async fn get_block_range_nullifiers(
         &self,
         request: BlockRange,
@@ -556,13 +556,13 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error>;
 
-    /// GetTreeState returns the note commitment tree state corresponding to the given block.
+    /// `GetTreeState` returns the note commitment tree state corresponding to the given block.
     /// See section 3.7 of the Zcash protocol specification. It returns several other useful
-    /// values also (even though they can be obtained using GetBlock).
+    /// values also (even though they can be obtained using `GetBlock`).
     /// The block can be specified by either height or hash.
     async fn get_tree_state(&self, request: BlockId) -> Result<TreeState, Self::Error>;
 
-    /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
+    /// `GetLatestTreeState` returns the note commitment tree state corresponding to the chain tip.
     async fn get_latest_tree_state(&self) -> Result<TreeState, Self::Error>;
 
     /// Helper function to get timeout and channel size from config
@@ -616,7 +616,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         let (channel_tx, channel_rx) = mpsc::channel(service_channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
-                std::time::Duration::from_secs((service_timeout * 4) as u64),
+                std::time::Duration::from_secs(u64::from(service_timeout * 4)),
                 async {
                     for subtree in subtrees.subtrees() {
                         match service_clone
@@ -625,7 +625,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                         {
                             Ok(GetBlock::Object (block_object)) => {
                                 let checked_height = match block_object.height() {
-                                    Some(h) => h.0 as u64,
+                                    Some(h) => u64::from(h.0),
                                     None => {
                                         match channel_tx
                                             .send(Err(tonic::Status::unknown(
@@ -633,7 +633,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             )))
                                             .await
                                         {
-                                            Ok(_) => break,
+                                            Ok(()) => break,
                                             Err(e) => {
                                                 warn!(
                                                     "GetSubtreeRoots channel closed unexpectedly: {}",
@@ -653,7 +653,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             ))))
                                             .await
                                         {
-                                            Ok(_) => break,
+                                            Ok(()) => break,
                                             Err(e) => {
                                                 warn!(
                                                     "GetSubtreeRoots channel closed unexpectedly: {}",
@@ -709,7 +709,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             )
             .await;
             match timeout {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(_) => {
                     channel_tx
                         .send(Err(tonic::Status::deadline_exceeded(
@@ -725,7 +725,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
+    /// Ignores all utxos below block height [`GetAddressUtxosArg.start_height`].
     /// Returns max [GetAddressUtxosArg.max_entries] utxos, or unrestricted if [GetAddressUtxosArg.max_entries] = 0.
     /// Utxos are collected and returned as a single Vec.
     async fn get_address_utxos(
@@ -735,7 +735,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
+    /// Ignores all utxos below block height [`GetAddressUtxosArg.start_height`].
     /// Returns max [GetAddressUtxosArg.max_entries] utxos, or unrestricted if [GetAddressUtxosArg.max_entries] = 0.
     /// Utxos are returned in a stream.
     async fn get_address_utxos_stream(
@@ -765,7 +765,7 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
     match transaction {
         Ok(GetRawTransaction::Object(transaction_obj)) => {
             let height: u64 = match transaction_obj.height() {
-                Some(h) => h as u64,
+                Some(h) => u64::from(h),
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
                 None => chain_height,
             };

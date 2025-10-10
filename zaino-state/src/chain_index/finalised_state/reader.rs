@@ -1,4 +1,4 @@
-//! ZainoDbReader: Read only view onto a running ZainoDB
+//! `ZainoDbReader`: Read only view onto a running `ZainoDB`
 //!
 //! This should be used to fetch chain data in *all* cases.
 
@@ -29,7 +29,7 @@ use std::sync::Arc;
 /// Carries a plain reference with the same lifetime as the parent DB
 #[derive(Clone)]
 pub(crate) struct DbReader {
-    /// Immutable read-only view onto the running ZainoDB
+    /// Immutable read-only view onto the running `ZainoDB`
     pub(crate) inner: Arc<ZainoDB>,
 }
 
@@ -41,7 +41,7 @@ impl DbReader {
     }
     // ***** DB Core Read *****
 
-    /// Returns the status of the serving ZainoDB.
+    /// Returns the status of the serving `ZainoDB`.
     pub(crate) fn status(&self) -> StatusType {
         self.inner.status()
     }
@@ -59,7 +59,7 @@ impl DbReader {
 
     /// Awaits untile the DB returns a Ready status.
     pub(crate) async fn wait_until_ready(&self) {
-        self.inner.wait_until_ready().await
+        self.inner.wait_until_ready().await;
     }
 
     /// Fetch the block height in the main chain for a given block hash.
@@ -80,7 +80,7 @@ impl DbReader {
 
     // ***** Block Core Ext *****
 
-    /// Fetch the TxLocation for the given txid, transaction data is indexed by TxLocation internally.
+    /// Fetch the `TxLocation` for the given txid, transaction data is indexed by `TxLocation` internally.
     pub(crate) async fn get_tx_location(
         &self,
         txid: &TransactionHash,
@@ -111,7 +111,7 @@ impl DbReader {
             .await
     }
 
-    /// Fetch the txid bytes for a given TxLocation.
+    /// Fetch the txid bytes for a given `TxLocation`.
     pub(crate) async fn get_txid(
         &self,
         tx_location: TxLocation,
@@ -144,7 +144,7 @@ impl DbReader {
 
     // ***** Block Transparent Ext *****
 
-    /// Fetch the serialized TransparentCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `TransparentCompactTx` for the given `TxLocation`, if present.
     pub(crate) async fn get_transparent(
         &self,
         tx_location: TxLocation,
@@ -177,7 +177,7 @@ impl DbReader {
 
     // ***** Block shielded Ext *****
 
-    /// Fetch the serialized SaplingCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `SaplingCompactTx` for the given `TxLocation`, if present.
     pub(crate) async fn get_sapling(
         &self,
         tx_location: TxLocation,
@@ -208,7 +208,7 @@ impl DbReader {
             .await
     }
 
-    /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `OrchardCompactTx` for the given `TxLocation`, if present.
     pub(crate) async fn get_orchard(
         &self,
         tx_location: TxLocation,
@@ -277,7 +277,7 @@ impl DbReader {
             .await
     }
 
-    /// Fetch all address history records for a given address and TxLocation.
+    /// Fetch all address history records for a given address and `TxLocation`.
     ///
     /// Returns:
     /// - `Ok(Some(records))` if one or more matching records are found at that index,
@@ -382,7 +382,7 @@ impl DbReader {
 
     // ***** IndexedBlock Ext *****
 
-    /// Returns the IndexedBlock for the given Height.
+    /// Returns the `IndexedBlock` for the given Height.
     ///
     /// TODO: Add separate range fetch method!
     pub(crate) async fn get_chain_block(
@@ -396,7 +396,7 @@ impl DbReader {
 
     // ***** CompactBlock Ext *****
 
-    /// Returns the CompactBlock for the given Height.
+    /// Returns the `CompactBlock` for the given Height.
     ///
     /// TODO: Add separate range fetch method!
     pub(crate) async fn get_compact_block(

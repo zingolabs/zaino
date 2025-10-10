@@ -3,7 +3,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-/// Convenience reexport of zaino_testvectors
+/// Convenience reexport of `zaino_testvectors`
 pub mod test_vectors {
     pub use zaino_testvectors::*;
 }
@@ -45,7 +45,7 @@ pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeigh
     nu7: None,
 };
 
-/// Helper to get the test binary path from the TEST_BINARIES_DIR env var.
+/// Helper to get the test binary path from the `TEST_BINARIES_DIR` env var.
 fn binary_path(binary_name: &str) -> Option<PathBuf> {
     std::env::var("TEST_BINARIES_DIR")
         .ok()
@@ -92,36 +92,36 @@ fn local_network_from_activation_heights(
 }
 
 /// Path for zcashd binary.
-pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcashd"));
+pub static ZCASHD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zcashd"));
 
 /// Path for zcash-cli binary.
-pub static ZCASH_CLI_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcash-cli"));
+pub static ZCASH_CLI_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zcash-cli"));
 
 /// Path for zebrad binary.
-pub static ZEBRAD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zebrad"));
+pub static ZEBRAD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zebrad"));
 
 /// Path for lightwalletd binary.
-pub static LIGHTWALLETD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("lightwalletd"));
+pub static LIGHTWALLETD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("lightwalletd"));
 
 /// Path for zainod binary.
-pub static ZAINOD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zainod"));
+pub static ZAINOD_BIN: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| binary_path("zainod"));
 
 /// Path for zcashd chain cache.
-pub static ZCASHD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZCASHD_CHAIN_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
     let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     workspace_root_path.pop();
     Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests"))
 });
 
 /// Path for zebrad chain cache.
-pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZEBRAD_CHAIN_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
     let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     workspace_root_path.pop();
     Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests_large"))
 });
 
 /// Path for the Zebra chain cache in the user's home directory.
-pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZEBRAD_TESTNET_CACHE_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
     let home_path = PathBuf::from(std::env::var("HOME").unwrap());
     Some(home_path.join(".cache/zebra"))
 });
@@ -298,7 +298,7 @@ impl zcash_local_net::validator::Validator for LocalNet {
         }
     }
 
-    /// Chain_Cache PathBuf must contain validator bin name for this function to function.
+    /// `Chain_Cache` `PathBuf` must contain validator bin name for this function to function.
     fn load_chain(
         chain_cache: PathBuf,
         validator_data_dir: PathBuf,
@@ -357,17 +357,17 @@ pub struct TestManager {
     pub data_dir: PathBuf,
     /// Network (chain) type:
     pub network: NetworkKind,
-    /// Zebrad/Zcashd JsonRpc listen address.
+    /// Zebrad/Zcashd `JsonRpc` listen address.
     pub zebrad_rpc_listen_address: SocketAddr,
     /// Zebrad/Zcashd gRpc listen address.
     pub zebrad_grpc_listen_address: SocketAddr,
-    /// Zaino Indexer JoinHandle.
+    /// Zaino Indexer `JoinHandle`.
     pub zaino_handle: Option<tokio::task::JoinHandle<Result<(), zainodlib::error::IndexerError>>>,
-    /// Zingo-Indexer JsonRPC listen address.
+    /// Zingo-Indexer `JsonRPC` listen address.
     pub zaino_json_rpc_listen_address: Option<SocketAddr>,
     /// Zingo-Indexer gRPC listen address.
     pub zaino_grpc_listen_address: Option<SocketAddr>,
-    /// JsonRPC server cookie dir.
+    /// `JsonRPC` server cookie dir.
     pub json_server_cookie_dir: Option<PathBuf>,
     /// Zingolib lightclients.
     pub clients: Option<Clients>,
@@ -378,11 +378,11 @@ impl TestManager {
     ///
     /// Possible validators: Zcashd, Zebrad.
     ///
-    /// If chain_cache is given a path the chain will be loaded.
+    /// If `chain_cache` is given a path the chain will be loaded.
     ///
     /// If clients is set to active zingolib lightclients will be created for test use.
     ///
-    /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
+    /// TODO: Add `TestManagerConfig` struct and constructor methods of common test setups.
     #[allow(clippy::too_many_arguments)]
     pub async fn launch(
         validator: &ValidatorKind,
@@ -612,7 +612,7 @@ impl TestManager {
         }
     }
 
-    /// Closes the TestManager.
+    /// Closes the `TestManager`.
     pub async fn close(&mut self) {
         if let Some(handle) = self.zaino_handle.take() {
             handle.abort();
@@ -624,7 +624,7 @@ impl Drop for TestManager {
     fn drop(&mut self) {
         if let Some(handle) = &self.zaino_handle {
             handle.abort();
-        };
+        }
     }
 }
 

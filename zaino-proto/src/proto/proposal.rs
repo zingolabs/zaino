@@ -160,7 +160,7 @@ pub enum ValuePool {
     /// Protobuf requires that enums have a zero discriminant as the default
     /// value. However, we need to require that a known value pool is selected,
     /// and we do not want to fall back to any default, so sending the
-    /// PoolNotSpecified value will be treated as an error.
+    /// `PoolNotSpecified` value will be treated as an error.
     PoolNotSpecified = 0,
     /// The transparent value pool (P2SH is not distinguished from P2PKH)
     Transparent = 1,
@@ -170,11 +170,11 @@ pub enum ValuePool {
     Orchard = 3,
 }
 impl ValuePool {
-    /// String value of the enum field names used in the ProtoBuf definition.
+    /// String value of the enum field names used in the `ProtoBuf` definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    /// (if the `ProtoBuf` definition does not change) and safe for programmatic use.
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             ValuePool::PoolNotSpecified => "PoolNotSpecified",
             ValuePool::Transparent => "Transparent",
@@ -182,8 +182,8 @@ impl ValuePool {
             ValuePool::Orchard => "Orchard",
         }
     }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    /// Creates an enum from field names used in the `ProtoBuf` definition.
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "PoolNotSpecified" => Some(Self::PoolNotSpecified),
             "Transparent" => Some(Self::Transparent),
@@ -200,21 +200,21 @@ pub enum FeeRule {
     /// Protobuf requires that enums have a zero discriminant as the default
     /// value. However, we need to require that a known fee rule is selected,
     /// and we do not want to fall back to any default, so sending the
-    /// FeeRuleNotSpecified value will be treated as an error.
+    /// `FeeRuleNotSpecified` value will be treated as an error.
     NotSpecified = 0,
     /// 10000 ZAT
     PreZip313 = 1,
     /// 1000 ZAT
     Zip313 = 2,
-    /// MAX(10000, 5000 * logical_actions) ZAT
+    /// MAX(10000, 5000 * `logical_actions`) ZAT
     Zip317 = 3,
 }
 impl FeeRule {
-    /// String value of the enum field names used in the ProtoBuf definition.
+    /// String value of the enum field names used in the `ProtoBuf` definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    /// (if the `ProtoBuf` definition does not change) and safe for programmatic use.
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             FeeRule::NotSpecified => "FeeRuleNotSpecified",
             FeeRule::PreZip313 => "PreZip313",
@@ -222,8 +222,8 @@ impl FeeRule {
             FeeRule::Zip317 => "Zip317",
         }
     }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    /// Creates an enum from field names used in the `ProtoBuf` definition.
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "FeeRuleNotSpecified" => Some(Self::NotSpecified),
             "PreZip313" => Some(Self::PreZip313),

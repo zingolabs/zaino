@@ -40,7 +40,7 @@ impl From<NetworkDeserialize> for Network {
 ///
 /// We use our own type instead of the zebra type
 /// as the zebra type is missing a number of useful
-/// traits, notably Debug, PartialEq, and Eq
+/// traits, notably Debug, `PartialEq`, and Eq
 ///
 /// This also allows us to define our own set
 /// of defaults
@@ -152,17 +152,17 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
 
 impl Network {
     /// Convert to Zebra's network type using default configurations.
-    pub fn to_zebra_default(&self) -> zebra_chain::parameters::Network {
+    #[must_use] pub fn to_zebra_default(&self) -> zebra_chain::parameters::Network {
         self.into()
     }
 
-    /// Convert to Zebra's network type for internal use (alias for to_zebra_default).
-    pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
+    /// Convert to Zebra's network type for internal use (alias for `to_zebra_default`).
+    #[must_use] pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
         self.to_zebra_default()
     }
 
     /// Get the standard regtest activation heights used by Zaino.
-    pub fn zaino_regtest_heights() -> ConfiguredActivationHeights {
+    #[must_use] pub fn zaino_regtest_heights() -> ConfiguredActivationHeights {
         ConfiguredActivationHeights {
             before_overwinter: Some(1),
             overwinter: Some(1),
@@ -181,14 +181,14 @@ impl Network {
     ///
     /// - Mainnet/Testnet: Skip sync (false) because we don't want to sync real chains in tests
     /// - Regtest: Enable sync (true) because regtest is local and fast to sync
-    pub fn wait_on_server_sync(&self) -> bool {
+    #[must_use] pub fn wait_on_server_sync(&self) -> bool {
         match self {
             Network::Mainnet | Network::Testnet => false, // Real networks - don't try to sync the whole chain
             Network::Regtest(_) => true,                  // Local network - safe and fast to sync
         }
     }
 
-    pub fn from_network_kind_and_activation_heights(
+    #[must_use] pub fn from_network_kind_and_activation_heights(
         network: &zebra_chain::parameters::NetworkKind,
         activation_heights: &ActivationHeights,
     ) -> Self {
@@ -218,38 +218,38 @@ impl From<zebra_chain::parameters::Network> for Network {
                         nu6_1: None,
                         nu7: None,
                     };
-                    for (height, upgrade) in parameters.activation_heights().iter() {
+                    for (height, upgrade) in parameters.activation_heights() {
                         match upgrade {
                             zebra_chain::parameters::NetworkUpgrade::Genesis => (),
                             zebra_chain::parameters::NetworkUpgrade::BeforeOverwinter => {
-                                activation_heights.before_overwinter = Some(height.0)
+                                activation_heights.before_overwinter = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Overwinter => {
-                                activation_heights.overwinter = Some(height.0)
+                                activation_heights.overwinter = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Sapling => {
-                                activation_heights.sapling = Some(height.0)
+                                activation_heights.sapling = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Blossom => {
-                                activation_heights.blossom = Some(height.0)
+                                activation_heights.blossom = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Heartwood => {
-                                activation_heights.heartwood = Some(height.0)
+                                activation_heights.heartwood = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Canopy => {
-                                activation_heights.canopy = Some(height.0)
+                                activation_heights.canopy = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu5 => {
-                                activation_heights.nu5 = Some(height.0)
+                                activation_heights.nu5 = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu6 => {
-                                activation_heights.nu6 = Some(height.0)
+                                activation_heights.nu6 = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu6_1 => {
-                                activation_heights.nu6_1 = Some(height.0)
+                                activation_heights.nu6_1 = Some(height.0);
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu7 => {
-                                activation_heights.nu7 = Some(height.0)
+                                activation_heights.nu7 = Some(height.0);
                             }
                         }
                     }

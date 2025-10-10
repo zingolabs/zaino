@@ -19,12 +19,12 @@ use crate::{
 /// Non-finalised part of the chain (last 100 blocks), held in memory to ease the handling of reorgs.
 ///
 /// NOTE: We hold the last 102 blocks to ensure there are no gaps in the block cache.
-/// TODO: Use ReadStateService when available (implemented in FinalisedState).
+/// TODO: Use `ReadStateService` when available (implemented in `FinalisedState`).
 #[derive(Debug)]
 pub struct NonFinalisedState {
     /// Chain fetch service.
     fetcher: JsonRpSeeConnector,
-    /// Optional ReadStateService based chain fetch service.
+    /// Optional `ReadStateService` based chain fetch service.
     state: Option<ReadStateService>,
     /// Broadcast containing `<block_height, block_hash>`.
     heights_to_hashes: Broadcast<Height, Hash>,
@@ -36,7 +36,7 @@ pub struct NonFinalisedState {
     block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
     /// Non-finalised state status.
     status: AtomicStatus,
-    /// BlockCache config data.
+    /// `BlockCache` config data.
     config: BlockCacheConfig,
 }
 
@@ -176,7 +176,7 @@ impl NonFinalisedState {
                         .notify(non_finalised_state.status.load());
                     loop {
                         match non_finalised_state.fill_from_reorg().await {
-                            Ok(_) => break,
+                            Ok(()) => break,
                             Err(NonFinalisedStateError::Critical(e)) => {
                                 non_finalised_state
                                     .update_status_and_notify(StatusType::CriticalError);
@@ -202,7 +202,7 @@ impl NonFinalisedState {
 
     /// Looks back through the chain to find reorg height and repopulates block cache.
     ///
-    /// Newly mined blocks are treated as a reorg at chain_height[-0].
+    /// Newly mined blocks are treated as a reorg at `chain_height`[-0].
     async fn fill_from_reorg(&self) -> Result<(), NonFinalisedStateError> {
         let mut reorg_height = *self
             .heights_to_hashes
@@ -249,7 +249,7 @@ impl NonFinalisedState {
                     self.hashes_to_blocks.clear();
                     break;
                 }
-            };
+            }
 
             reorg_hash = self.heights_to_hashes.get(&reorg_height).ok_or_else(|| {
                 NonFinalisedStateError::MissingData(format!(
@@ -378,19 +378,18 @@ impl NonFinalisedState {
                 let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {
                     NonFinalisedStateError::Custom(format!("Failed to fetch blockchain info: {e}"))
                 })?;
-                if (blockchain_info.blocks.0 as i64 - blockchain_info.estimated_height.0 as i64)
+                if (i64::from(blockchain_info.blocks.0) - i64::from(blockchain_info.estimated_height.0))
                     .abs()
                     <= 10
                 {
                     break;
-                } else {
-                    info!(" - Validator syncing with network. Validator chain height: {}, Estimated Network chain height: {}",
-                        &blockchain_info.blocks.0,
-                        &blockchain_info.estimated_height.0
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    continue;
                 }
+                info!(" - Validator syncing with network. Validator chain height: {}, Estimated Network chain height: {}",
+                    &blockchain_info.blocks.0,
+                    &blockchain_info.estimated_height.0
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
             }
             Ok(())
         } else {
@@ -399,7 +398,7 @@ impl NonFinalisedState {
     }
 
     /// Returns a [`NonFinalisedStateSubscriber`].
-    pub fn subscriber(&self) -> NonFinalisedStateSubscriber {
+    #[must_use] pub fn subscriber(&self) -> NonFinalisedStateSubscriber {
         NonFinalisedStateSubscriber {
             heights_to_hashes: self.heights_to_hashes.subscriber(),
             hashes_to_blocks: self.hashes_to_blocks.subscriber(),
@@ -408,7 +407,7 @@ impl NonFinalisedState {
     }
 
     /// Returns the status of the non-finalised state.
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
@@ -493,8 +492,8 @@ impl NonFinalisedStateSubscriber {
         }
     }
 
-    /// Returns the status of the NonFinalisedState.
-    pub fn status(&self) -> StatusType {
+    /// Returns the status of the `NonFinalisedState`.
+    #[must_use] pub fn status(&self) -> StatusType {
         self.status.load()
     }
 }

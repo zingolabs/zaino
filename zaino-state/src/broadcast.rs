@@ -1,4 +1,4 @@
-//! Holds zaino-state::Broadcast, a thread safe broadcaster used by the mempool and non-finalised state.
+//! Holds `zaino-state::Broadcast`, a thread safe broadcaster used by the mempool and non-finalised state.
 
 use dashmap::DashMap;
 use std::{collections::HashSet, hash::Hash, sync::Arc};
@@ -177,7 +177,7 @@ pub(crate) struct BroadcastSubscriber<K, V> {
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> BroadcastSubscriber<K, V> {
-    /// Waits on notifier update and returns StatusType.
+    /// Waits on notifier update and returns `StatusType`.
     pub(crate) async fn wait_on_notifier(&mut self) -> Result<StatusType, watch::error::RecvError> {
         self.notifier.changed().await?;
         let status = *self.notifier.borrow();

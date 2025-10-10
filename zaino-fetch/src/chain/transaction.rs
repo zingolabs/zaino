@@ -18,7 +18,7 @@ pub struct TxIn {
     prev_index: u32,
     /// CompactSize-prefixed, could be a pubkey or a script
     ///
-    /// Size\[bytes\]: CompactSize
+    /// Size\[bytes\]: `CompactSize`
     script_sig: Vec<u8>,
     // SequenceNumber \[IGNORED\] - Size\[bytes\]: 4
 }
@@ -117,7 +117,7 @@ impl ParseFromSlice for TxOut {
 
         Ok((
             &data[cursor.position() as usize..],
-            TxOut { script_hash, value },
+            TxOut { value, script_hash },
         ))
     }
 }
@@ -266,7 +266,7 @@ impl ParseFromSlice for Output {
     }
 }
 
-/// joinSplit is a JoinSplit description as described in 7.2 of the Zcash
+/// joinSplit is a `JoinSplit` description as described in 7.2 of the Zcash
 /// protocol spec. Its exact contents differ by transaction version and network
 /// upgrade level. Only version 4 is supported, no need for proofPHGR13.
 ///
@@ -297,7 +297,7 @@ impl ParseFromSlice for JoinSplit {
             ));
         }
         let proof_size = match tx_version {
-            Some(2) | Some(3) => 296, // BCTV14 proof for v2/v3 transactions
+            Some(2 | 3) => 296, // BCTV14 proof for v2/v3 transactions
             Some(4) => 192,           // Groth16 proof for v4 transactions
             None => 192,              // Default to Groth16 for unknown versions
             _ => {
@@ -444,7 +444,7 @@ struct TransactionData {
     ///
     /// Size\[bytes\]: Vec<948>
     shielded_outputs: Vec<Output>,
-    /// List of JoinSplit descriptions in a transaction, no longer supported.
+    /// List of `JoinSplit` descriptions in a transaction, no longer supported.
     ///
     /// Size\[bytes\]: Vec<1602-1698>
     #[allow(dead_code)]
@@ -456,10 +456,10 @@ struct TransactionData {
     ///
     /// Size\[bytes\]: Vec<820>
     orchard_actions: Vec<Action>,
-    /// ValueBalanceOrchard - Size\[bytes\]: 8
+    /// `ValueBalanceOrchard` - Size\[bytes\]: 8
     /// Value balance for the Orchard pool (v5 only). None if not present.
     value_balance_orchard: Option<i64>,
-    /// AnchorOrchard - Size\[bytes\]: 32
+    /// `AnchorOrchard` - Size\[bytes\]: 32
     /// In non-coinbase transactions, this is the anchor (authDataRoot) of a prior block's Orchard note commitment tree.
     /// In the coinbase transaction, this commits to the final Orchard tree state for the current block — i.e., it *is* the block's authDataRoot.
     /// Present in v5 transactions only, if any Orchard actions exist in the block.
@@ -472,11 +472,11 @@ impl TransactionData {
     /// A v1 transaction contains the following fields:
     ///
     /// - header: u32
-    /// - tx_in_count: usize
-    /// - tx_in: tx_in
-    /// - tx_out_count: usize
-    /// - tx_out: tx_out
-    /// - lock_time: u32
+    /// - `tx_in_count`: usize
+    /// - `tx_in`: `tx_in`
+    /// - `tx_out_count`: usize
+    /// - `tx_out`: `tx_out`
+    /// - `lock_time`: u32
     pub(crate) fn parse_v1(data: &[u8], version: u32) -> Result<(&[u8], Self), ParseError> {
         let mut cursor = Cursor::new(data);
 
@@ -513,13 +513,13 @@ impl TransactionData {
     /// A v2 transaction contains the following fields:
     ///
     /// - header: u32
-    /// - tx_in_count: usize
-    /// - tx_in: tx_in
-    /// - tx_out_count: usize
-    /// - tx_out: tx_out
-    /// - lock_time: u32
+    /// - `tx_in_count`: usize
+    /// - `tx_in`: `tx_in`
+    /// - `tx_out_count`: usize
+    /// - `tx_out`: `tx_out`
+    /// - `lock_time`: u32
     /// - nJoinSplit: compactSize <- New
-    /// - vJoinSplit: JSDescriptionBCTV14\[nJoinSplit\] <- New
+    /// - vJoinSplit: `JSDescriptionBCTV14`\[nJoinSplit\] <- New
     /// - joinSplitPubKey: byte\[32\] <- New
     /// - joinSplitSig: byte\[64\] <- New
     pub(crate) fn parse_v2(data: &[u8], version: u32) -> Result<(&[u8], Self), ParseError> {
@@ -582,14 +582,14 @@ impl TransactionData {
     ///
     /// - header: u32
     /// - nVersionGroupId: u32 = 0x03C48270 <- New
-    /// - tx_in_count: usize
-    /// - tx_in: tx_in
-    /// - tx_out_count: usize
-    /// - tx_out: tx_out
-    /// - lock_time: u32
+    /// - `tx_in_count`: usize
+    /// - `tx_in`: `tx_in`
+    /// - `tx_out_count`: usize
+    /// - `tx_out`: `tx_out`
+    /// - `lock_time`: u32
     /// - nExpiryHeight: u32 <- New
     /// - nJoinSplit: compactSize
-    /// - vJoinSplit: JSDescriptionBCTV14\[nJoinSplit\]
+    /// - vJoinSplit: `JSDescriptionBCTV14`\[nJoinSplit\]
     /// - joinSplitPubKey: byte\[32\]
     /// - joinSplitSig: byte\[64\]
     pub(crate) fn parse_v3(
@@ -928,7 +928,7 @@ pub struct FullTransaction {
     /// Raw transaction bytes.
     raw_bytes: Vec<u8>,
 
-    /// Transaction Id, fetched using get_block JsonRPC with verbose = 1.
+    /// Transaction Id, fetched using `get_block` `JsonRPC` with verbose = 1.
     tx_id: Vec<u8>,
 }
 
@@ -1024,27 +1024,27 @@ impl ParseFromSlice for FullTransaction {
 
 impl FullTransaction {
     /// Returns overwintered bool
-    pub fn f_overwintered(&self) -> bool {
+    #[must_use] pub fn f_overwintered(&self) -> bool {
         self.raw_transaction.f_overwintered
     }
 
     /// Returns the transaction version.
-    pub fn version(&self) -> u32 {
+    #[must_use] pub fn version(&self) -> u32 {
         self.raw_transaction.version
     }
 
     /// Returns the transaction version group id.
-    pub fn n_version_group_id(&self) -> Option<u32> {
+    #[must_use] pub fn n_version_group_id(&self) -> Option<u32> {
         self.raw_transaction.n_version_group_id
     }
 
     /// returns the consensus branch id of the transaction.
-    pub fn consensus_branch_id(&self) -> u32 {
+    #[must_use] pub fn consensus_branch_id(&self) -> u32 {
         self.raw_transaction.consensus_branch_id
     }
 
-    /// Returns a vec of transparent inputs: (prev_txid, prev_index, script_sig).
-    pub fn transparent_inputs(&self) -> Vec<(Vec<u8>, u32, Vec<u8>)> {
+    /// Returns a vec of transparent inputs: (`prev_txid`, `prev_index`, `script_sig`).
+    #[must_use] pub fn transparent_inputs(&self) -> Vec<(Vec<u8>, u32, Vec<u8>)> {
         self.raw_transaction
             .transparent_inputs
             .iter()
@@ -1052,8 +1052,8 @@ impl FullTransaction {
             .collect()
     }
 
-    /// Returns a vec of transparent outputs: (value, script_hash).
-    pub fn transparent_outputs(&self) -> Vec<(u64, Vec<u8>)> {
+    /// Returns a vec of transparent outputs: (value, `script_hash`).
+    #[must_use] pub fn transparent_outputs(&self) -> Vec<(u64, Vec<u8>)> {
         self.raw_transaction
             .transparent_outputs
             .iter()
@@ -1064,7 +1064,7 @@ impl FullTransaction {
     /// Returns sapling and orchard value balances for the transaction.
     ///
     /// Returned as (Option\<valueBalanceSapling\>, Option\<valueBalanceOrchard\>).
-    pub fn value_balances(&self) -> (Option<i64>, Option<i64>) {
+    #[must_use] pub fn value_balances(&self) -> (Option<i64>, Option<i64>) {
         (
             self.raw_transaction.value_balance_sapling,
             self.raw_transaction.value_balance_orchard,
@@ -1072,7 +1072,7 @@ impl FullTransaction {
     }
 
     /// Returns a vec of sapling nullifiers for the transaction.
-    pub fn shielded_spends(&self) -> Vec<Vec<u8>> {
+    #[must_use] pub fn shielded_spends(&self) -> Vec<Vec<u8>> {
         self.raw_transaction
             .shielded_spends
             .iter()
@@ -1080,8 +1080,8 @@ impl FullTransaction {
             .collect()
     }
 
-    /// Returns a vec of sapling outputs (cmu, ephemeral_key, enc_ciphertext) for the transaction.
-    pub fn shielded_outputs(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    /// Returns a vec of sapling outputs (cmu, `ephemeral_key`, `enc_ciphertext`) for the transaction.
+    #[must_use] pub fn shielded_outputs(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         self.raw_transaction
             .shielded_outputs
             .iter()
@@ -1090,13 +1090,13 @@ impl FullTransaction {
     }
 
     /// Returns None as joinsplits are not supported in Zaino.
-    pub fn join_splits(&self) -> Option<()> {
+    #[must_use] pub fn join_splits(&self) -> Option<()> {
         None
     }
 
-    /// Returns a vec of orchard actions (nullifier, cmx, ephemeral_key, enc_ciphertext) for the transaction.
+    /// Returns a vec of orchard actions (nullifier, cmx, `ephemeral_key`, `enc_ciphertext`) for the transaction.
     #[allow(clippy::complexity)]
-    pub fn orchard_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    #[must_use] pub fn orchard_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
         self.raw_transaction
             .orchard_actions
             .iter()
@@ -1106,18 +1106,18 @@ impl FullTransaction {
 
     /// Returns the orchard anchor of the transaction.
     ///
-    /// If this is the Coinbase transaction then this returns the AuthDataRoot of the block.
-    pub fn anchor_orchard(&self) -> Option<Vec<u8>> {
+    /// If this is the Coinbase transaction then this returns the `AuthDataRoot` of the block.
+    #[must_use] pub fn anchor_orchard(&self) -> Option<Vec<u8>> {
         self.raw_transaction.anchor_orchard.clone()
     }
 
     /// Returns the transaction as raw bytes.
-    pub fn raw_bytes(&self) -> Vec<u8> {
+    #[must_use] pub fn raw_bytes(&self) -> Vec<u8> {
         self.raw_bytes.clone()
     }
 
-    /// returns the TxId of the transaction.
-    pub fn tx_id(&self) -> Vec<u8> {
+    /// returns the `TxId` of the transaction.
+    #[must_use] pub fn tx_id(&self) -> Vec<u8> {
         self.tx_id.clone()
     }
 

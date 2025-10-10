@@ -11,7 +11,7 @@ pub struct ChainMetadata {
 }
 /// A compact representation of the shielded data in a Zcash block.
 ///
-/// CompactBlock is a packaging of ONLY the data from a block that's needed to:
+/// `CompactBlock` is a packaging of ONLY the data from a block that's needed to:
 ///    1. Detect a payment to your shielded Sapling address
 ///    2. Detect a spend of your shielded Sapling notes
 ///    3. Update your witnesses to generate new Sapling spend proofs.
@@ -45,7 +45,7 @@ pub struct CompactBlock {
 }
 /// A compact representation of the shielded data in a Zcash transaction.
 ///
-/// CompactTx contains the minimum information for a wallet to know if this transaction
+/// `CompactTx` contains the minimum information for a wallet to know if this transaction
 /// is relevant to it (either pays to it or spends from it) via shielded elements
 /// only. This message will not encode a transparent-to-transparent transaction.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -77,7 +77,7 @@ pub struct CompactTx {
 }
 /// A compact representation of a [Sapling Spend](<https://zips.z.cash/protocol/protocol.pdf#spendencodingandconsensus>).
 ///
-/// CompactSaplingSpend is a Sapling Spend Description as described in 7.3 of the Zcash
+/// `CompactSaplingSpend` is a Sapling Spend Description as described in 7.3 of the Zcash
 /// protocol specification.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

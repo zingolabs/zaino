@@ -6,27 +6,27 @@ use zaino_common::{Network, ServiceConfig, StorageConfig};
 #[serde(rename_all = "lowercase")]
 /// Type of backend to be used.
 pub enum BackendType {
-    /// Uses ReadStateService (Zebrad)
+    /// Uses `ReadStateService` (Zebrad)
     State,
-    /// Uses JsonRPC client (Zcashd. Zainod)
+    /// Uses `JsonRPC` client (Zcashd. Zainod)
     Fetch,
 }
 
 #[derive(Debug, Clone)]
 /// Unified backend configuration enum.
 pub enum BackendConfig {
-    /// StateService config.
+    /// `StateService` config.
     State(StateServiceConfig),
     /// Fetchservice config.
     Fetch(FetchServiceConfig),
 }
 
-/// Holds config data for [crate::StateService].
+/// Holds config data for [`crate::StateService`].
 #[derive(Debug, Clone)]
 pub struct StateServiceConfig {
     /// Zebra [`zebra_state::ReadStateService`] config data
     pub validator_config: zebra_state::Config,
-    /// Validator JsonRPC address.
+    /// Validator `JsonRPC` address.
     pub validator_rpc_address: std::net::SocketAddr,
     /// Validator gRPC address.
     pub validator_indexer_rpc_address: std::net::SocketAddr,
@@ -34,9 +34,9 @@ pub struct StateServiceConfig {
     pub validator_cookie_auth: bool,
     /// Path to the validator cookie file.
     pub validator_cookie_path: Option<String>,
-    /// Validator JsonRPC user.
+    /// Validator `JsonRPC` user.
     pub validator_rpc_user: String,
-    /// Validator JsonRPC password.
+    /// Validator `JsonRPC` password.
     pub validator_rpc_password: String,
     /// Service-level configuration (timeout, channel size)
     pub service: ServiceConfig,
@@ -47,7 +47,7 @@ pub struct StateServiceConfig {
     /// Disables internal sync and stops zaino waiting on server sync.
     /// Used for testing.
     pub no_sync: bool,
-    /// Disables FinalisedState.
+    /// Disables `FinalisedState`.
     /// Used for testing.
     pub no_db: bool,
 }
@@ -56,7 +56,7 @@ impl StateServiceConfig {
     /// Returns a new instance of [`StateServiceConfig`].
     #[allow(clippy::too_many_arguments)]
     // TODO: replace with struct-literal init only?
-    pub fn new(
+    #[must_use] pub fn new(
         validator_config: zebra_state::Config,
         validator_rpc_address: std::net::SocketAddr,
         validator_indexer_rpc_address: std::net::SocketAddr,
@@ -87,18 +87,18 @@ impl StateServiceConfig {
     }
 }
 
-/// Holds config data for [crate::FetchService].
+/// Holds config data for [`crate::FetchService`].
 #[derive(Debug, Clone)]
 pub struct FetchServiceConfig {
-    /// Validator JsonRPC address.
+    /// Validator `JsonRPC` address.
     pub validator_rpc_address: std::net::SocketAddr,
     /// Enable validator rpc cookie authentification.
     pub validator_cookie_auth: bool,
     /// Path to the validator cookie file.
     pub validator_cookie_path: Option<String>,
-    /// Validator JsonRPC user.
+    /// Validator `JsonRPC` user.
     pub validator_rpc_user: String,
-    /// Validator JsonRPC password.
+    /// Validator `JsonRPC` password.
     pub validator_rpc_password: String,
     /// Service-level configuration (timeout, channel size)
     pub service: ServiceConfig,
@@ -109,7 +109,7 @@ pub struct FetchServiceConfig {
     /// Disables internal sync and stops zaino waiting on server sync.
     /// Used for testing.
     pub no_sync: bool,
-    /// Disables FinalisedState.
+    /// Disables `FinalisedState`.
     /// Used for testing.
     pub no_db: bool,
 }
@@ -118,7 +118,7 @@ impl FetchServiceConfig {
     /// Returns a new instance of [`FetchServiceConfig`].
     #[allow(clippy::too_many_arguments)]
     // TODO: replace with struct-literal init only?
-    pub fn new(
+    #[must_use] pub fn new(
         validator_rpc_address: std::net::SocketAddr,
         validator_cookie_auth: bool,
         validator_cookie_path: Option<String>,
@@ -146,7 +146,7 @@ impl FetchServiceConfig {
 }
 
 /// Holds config data for `[ZainoDb]`.
-/// TODO: Rename  to *ZainoDbConfig* when ChainIndex update is complete **and** remove legacy fields.
+/// TODO: Rename  to *`ZainoDbConfig`* when `ChainIndex` update is complete **and** remove legacy fields.
 #[derive(Debug, Clone)]
 pub struct BlockCacheConfig {
     /// Storage configuration (cache and database)
@@ -158,7 +158,7 @@ pub struct BlockCacheConfig {
     /// Stops zaino waiting on server sync.
     /// Used for testing.
     pub no_sync: bool,
-    /// Disables FinalisedState.
+    /// Disables `FinalisedState`.
     /// Used for testing.
     pub no_db: bool,
 }
@@ -166,7 +166,7 @@ pub struct BlockCacheConfig {
 impl BlockCacheConfig {
     /// Returns a new instance of [`BlockCacheConfig`].
     #[allow(dead_code)]
-    pub fn new(
+    #[must_use] pub fn new(
         storage: StorageConfig,
         db_version: u32,
         network: Network,

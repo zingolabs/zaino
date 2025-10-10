@@ -1,4 +1,4 @@
-//! ZainoDB V1 Implementation
+//! `ZainoDB` V1 Implementation
 
 use crate::{
     chain_index::{
@@ -443,20 +443,20 @@ pub(crate) struct DbV1 {
     /// Database handler task handle.
     db_handler: Option<tokio::task::JoinHandle<()>>,
 
-    /// ZainoDB status.
+    /// `ZainoDB` status.
     status: AtomicStatus,
 
-    /// BlockCache config data.
+    /// `BlockCache` config data.
     config: BlockCacheConfig,
 }
 
 impl DbV1 {
-    /// Spawns a new [`DbV1`] and syncs the FinalisedState to the servers finalised state.
+    /// Spawns a new [`DbV1`] and syncs the `FinalisedState` to the servers finalised state.
     ///
-    /// Uses ReadStateService to fetch chain data if given else uses JsonRPC client.
+    /// Uses `ReadStateService` to fetch chain data if given else uses `JsonRPC` client.
     ///
     /// Inputs:
-    /// - config: ChainIndexConfig.
+    /// - config: `ChainIndexConfig`.
     pub(crate) async fn spawn(config: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
         info!("Launching ZainoDB");
 
@@ -474,7 +474,7 @@ impl DbV1 {
 
         // Check system rescources to set max db reeaders, clamped between 512 and 4096.
         let cpu_cnt = std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(std::num::NonZero::get)
             .unwrap_or(4);
 
         // Sets LMDB max_readers based on CPU count (cpu * 32), clamped between 512 and 4096.
@@ -554,12 +554,12 @@ impl DbV1 {
             tokio::select! {
                 res = &mut handle => {
                     match res {
-                        Ok(_) => {}
+                        Ok(()) => {}
                         Err(e) if e.is_cancelled() => {}
                         Err(e) => warn!("background task ended with error: {e:?}"),
                     }
                 }
-                _ = &mut timeout => {
+                () = &mut timeout => {
                     warn!("background task didn’t exit in time – aborting");
                     handle.abort();
                 }
@@ -573,7 +573,7 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Returns the status of ZainoDB.
+    /// Returns the status of `ZainoDB`.
     pub(crate) fn status(&self) -> StatusType {
         self.status.load()
     }
@@ -663,13 +663,10 @@ impl DbV1 {
                     }
                     // try to validate the next consecutive block.
                     let next_h = zaino_db.validated_tip.load(Ordering::Acquire) + 1;
-                    let next_height = match Height::try_from(next_h) {
-                        Ok(h) => h,
-                        Err(_) => {
-                            warn!("height overflow – validated_tip too large");
-                            zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
-                            continue;
-                        }
+                    let next_height = if let Ok(h) = Height::try_from(next_h) { h } else {
+                        warn!("height overflow – validated_tip too large");
+                        zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
+                        continue;
                     };
 
                     // Fetch hash of `next_h` from Heights.
@@ -709,7 +706,7 @@ impl DbV1 {
     /// Helper method to wait for the next loop iteration or perform maintenance.
     async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+            () = tokio::time::sleep(Duration::from_secs(5)) => {},
             _ = maintenance.tick() => {
                 if let Err(e) = self.clean_trailing().await {
                     warn!("clean_trailing failed: {}", e);
@@ -804,7 +801,7 @@ impl DbV1 {
                     .map_err(|e| FinalisedStateError::Custom(format!("corrupt height entry: {e}")))?
                     .inner();
 
-                zaino_db.validate_block_blocking(height, hash)?
+                zaino_db.validate_block_blocking(height, hash)?;
             }
 
             Ok(())
@@ -838,7 +835,7 @@ impl DbV1 {
     // *** DB write / delete methods ***
     // These should only ever be used in a single DB control task.
 
-    /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
+    /// Writes a given (finalised) [`IndexedBlock`] to `ZainoDB`.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
         let block_hash = *block.index().hash();
@@ -1198,7 +1195,7 @@ impl DbV1 {
         .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))?;
 
         match post_result {
-            Ok(_) => {
+            Ok(()) => {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
@@ -1290,15 +1287,15 @@ impl DbV1 {
         Ok(())
     }
 
-    /// This is used as a backup when delete_block_at_height fails.
+    /// This is used as a backup when `delete_block_at_height` fails.
     ///
-    /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
+    /// Takes a `IndexedBlock` as input and ensures all data from this block is wiped from the database.
     ///
-    /// The IndexedBlock ir required to ensure that Outputs spent at this block height are re-marked as unspent.
+    /// The `IndexedBlock` ir required to ensure that Outputs spent at this block height are re-marked as unspent.
     ///
     /// WARNING: No checks are made that this block is at the top of the finalised state, and validated tip is not updated.
     /// This enables use for correcting corrupt data within the database but it is left to the user to ensure safe use.
-    /// Where possible delete_block_at_height should be used instead.
+    /// Where possible `delete_block_at_height` should be used instead.
     ///
     /// NOTE: LMDB database errors are propageted as these show serious database errors,
     /// all other errors are returned as `IncorrectBlock`, if this error is returned the block requested
@@ -1743,9 +1740,9 @@ impl DbV1 {
             .collect()
     }
 
-    /// Fetch the txid bytes for a given TxLocation.
+    /// Fetch the txid bytes for a given `TxLocation`.
     ///
-    /// This uses an optimized lookup without decoding the full TxidList.
+    /// This uses an optimized lookup without decoding the full `TxidList`.
     ///
     /// NOTE: This method currently ignores the txid version byte for efficiency.
     async fn get_txid(
@@ -1884,9 +1881,9 @@ impl DbV1 {
             .collect()
     }
 
-    /// Fetch the serialized TransparentCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `TransparentCompactTx` for the given `TxLocation`, if present.
     ///
-    /// This uses an optimized lookup without decoding the full TxidList.
+    /// This uses an optimized lookup without decoding the full `TxidList`.
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
@@ -2045,9 +2042,9 @@ impl DbV1 {
             .collect()
     }
 
-    /// Fetch the serialized SaplingCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `SaplingCompactTx` for the given `TxLocation`, if present.
     ///
-    /// This uses an optimized lookup without decoding the full TxidList.
+    /// This uses an optimized lookup without decoding the full `TxidList`.
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
@@ -2204,9 +2201,9 @@ impl DbV1 {
             .collect()
     }
 
-    /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `OrchardCompactTx` for the given `TxLocation`, if present.
     ///
-    /// This uses an optimized lookup without decoding the full TxidList.
+    /// This uses an optimized lookup without decoding the full `TxidList`.
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
@@ -2554,7 +2551,7 @@ impl DbV1 {
         })
     }
 
-    /// Fetch all address history records for a given address and TxLocation.
+    /// Fetch all address history records for a given address and `TxLocation`.
     ///
     /// Returns:
     /// - `Ok(Some(records))` if one or more matching records are found at that index,
@@ -2817,7 +2814,7 @@ impl DbV1 {
         })
     }
 
-    /// Returns the IndexedBlock for the given Height.
+    /// Returns the `IndexedBlock` for the given Height.
     ///
     /// TODO: Add separate range fetch method!
     async fn get_chain_block(
@@ -2964,7 +2961,7 @@ impl DbV1 {
         })
     }
 
-    /// Returns the CompactBlock for the given Height.
+    /// Returns the `CompactBlock` for the given Height.
     ///
     /// TODO: Add separate range fetch method!
     async fn get_compact_block(
@@ -3049,7 +3046,7 @@ impl DbV1 {
                         .map(|s| {
                             s.spends()
                                 .iter()
-                                .map(|sp| sp.into_compact())
+                                .map(crate::chain_index::types::CompactSaplingSpend::into_compact)
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
@@ -3060,7 +3057,7 @@ impl DbV1 {
                         .map(|s| {
                             s.outputs()
                                 .iter()
-                                .map(|o| o.into_compact())
+                                .map(crate::chain_index::types::CompactSaplingOutput::into_compact)
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
@@ -3071,7 +3068,7 @@ impl DbV1 {
                         .map(|o| {
                             o.actions()
                                 .iter()
-                                .map(|a| a.into_compact())
+                                .map(crate::chain_index::types::CompactOrchardAction::into_compact)
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
@@ -3083,7 +3080,7 @@ impl DbV1 {
 
                     Some(zaino_proto::proto::compact_formats::CompactTx {
                         index: i as u64,
-                        hash: txid.bytes_in_display_order().to_vec().to_vec(),
+                        hash: txid.bytes_in_display_order().to_vec().clone(),
                         fee: 0,
                         spends,
                         outputs,
@@ -3117,11 +3114,11 @@ impl DbV1 {
             // Construct CompactBlock
             Ok(zaino_proto::proto::compact_formats::CompactBlock {
                 proto_version: 4,
-                height: header
+                height: u64::from(header
                     .index()
                     .height()
                     .expect("height always present in finalised state.")
-                    .0 as u64,
+                    .0),
                 hash: header.index().hash().0.to_vec(),
                 prev_hash: header.index().parent_hash().0.to_vec(),
                 // Is this safe?
@@ -3158,7 +3155,7 @@ impl DbV1 {
 
     /// Return `true` if *height* is already known-good.
     ///
-    /// O(1) look-ups: we check the tip first (fast) and only hit the DashSet
+    /// O(1) look-ups: we check the tip first (fast) and only hit the `DashSet`
     /// when `h > tip`.
     fn is_validated(&self, h: u32) -> bool {
         let tip = self.validated_tip.load(Ordering::Acquire);
@@ -3167,7 +3164,7 @@ impl DbV1 {
 
     /// Mark *height* as validated and coalesce contiguous ranges.
     ///
-    /// 1. Insert it into the DashSet (if it was a “hole”).
+    /// 1. Insert it into the `DashSet` (if it was a “hole”).
     /// 2. While `validated_tip + 1` is now present, pop it and advance the tip.
     fn mark_validated(&self, h: u32) {
         let mut next = h;
@@ -3455,7 +3452,7 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Double‑SHA‑256 (SHA256d) as used by Bitcoin/Zcash headers and Merkle nodes.
+    /// Double‑SHA‑256 (`SHA256d`) as used by Bitcoin/Zcash headers and Merkle nodes.
     fn sha256d(data: &[u8]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         Digest::update(&mut hasher, data); // first pass
@@ -3573,7 +3570,7 @@ impl DbV1 {
     /// * On success the block hright is returned; on any failure you get a
     ///   `FinalisedStateError`
     ///
-    /// TODO: Remove HashOrHeight?
+    /// TODO: Remove `HashOrHeight`?
     async fn resolve_validated_hash_or_height(
         &self,
         hash_or_height: HashOrHeight,
@@ -3653,7 +3650,7 @@ impl DbV1 {
     /// * Height  ->  returned unchanged (zero cost).
     /// * Hash ->  lookup in `hashes` db.
     ///
-    /// TODO: Remove HashOrHeight?
+    /// TODO: Remove `HashOrHeight`?
     async fn resolve_hash_or_height(
         &self,
         hash_or_height: HashOrHeight,
@@ -3770,7 +3767,7 @@ impl DbV1 {
     ///
     /// Advances the cursor past either:
     /// - 1 byte (`0x00`) if `None`, or
-    /// - 1 + 1 + vin_size + vout_size if `Some(TransparentCompactTx)`
+    /// - 1 + 1 + `vin_size` + `vout_size` if `Some(TransparentCompactTx)`
     ///   (presence + version + variable vin/vout sections)
     ///
     /// This is faster than deserialising the whole struct as we only read the compact sizes.
@@ -3916,9 +3913,9 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Returns all raw AddrHist records for a given AddrScript and TxLocation.
+    /// Returns all raw `AddrHist` records for a given `AddrScript` and `TxLocation`.
     ///
-    /// Returns a Vec of serialized entries, for given addr_script and ix_index.
+    /// Returns a Vec of serialized entries, for given `addr_script` and `ix_index`.
     ///
     /// Efficiently filters by matching block + tx index bytes in-place.
     ///
@@ -4022,8 +4019,8 @@ impl DbV1 {
     ///   * belong to `block_height`, **and**
     ///   * match the requested record type(s).
     ///
-    /// * `delete_inputs`  – remove records whose flag-byte contains FLAG_IS_INPUT
-    /// * `delete_outputs` – remove records whose flag-byte contains FLAG_MINED
+    /// * `delete_inputs`  – remove records whose flag-byte contains `FLAG_IS_INPUT`
+    /// * `delete_outputs` – remove records whose flag-byte contains `FLAG_MINED`
     ///
     /// `expected` is the number of records to delete;
     ///
@@ -4113,8 +4110,8 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Mark a specific AddrHistRecord as spent in the addrhist DB.
-    /// Looks up a record by script and tx_location, sets FLAG_SPENT, and updates it in place.
+    /// Mark a specific `AddrHistRecord` as spent in the addrhist DB.
+    /// Looks up a record by script and `tx_location`, sets `FLAG_SPENT`, and updates it in place.
     ///
     /// Returns Ok(true) if a record was updated, Ok(false) if not found, or Err on DB error.
     ///
@@ -4196,8 +4193,8 @@ impl DbV1 {
         Ok(false)
     }
 
-    /// Mark a specific AddrHistRecord as unspent in the addrhist DB.
-    /// Looks up a record by script and tx_location, sets FLAG_SPENT, and updates it in place.
+    /// Mark a specific `AddrHistRecord` as unspent in the addrhist DB.
+    /// Looks up a record by script and `tx_location`, sets `FLAG_SPENT`, and updates it in place.
     ///
     /// Returns Ok(true) if a record was updated, Ok(false) if not found, or Err on DB error.
     ///
@@ -4310,7 +4307,7 @@ impl DbV1 {
             })
     }
 
-    /// Finds a TxLocation [block_height, tx_index] from a given txid.
+    /// Finds a `TxLocation` [`block_height`, `tx_index`] from a given txid.
     /// Used for Txid based lookup in transaction DBs.
     ///
     /// WARNING: This is a blocking function and **MUST** be called within a blocking thread / task.
@@ -4338,10 +4335,10 @@ impl DbV1 {
     /// of a given transaction ID without full deserialization.
     ///
     /// The format is:
-    /// - 1 byte: StoredEntryVar version
-    /// - CompactSize: length of the item
-    /// - 1 byte: TxidList version
-    /// - CompactSize: number of the item
+    /// - 1 byte: `StoredEntryVar` version
+    /// - `CompactSize`: length of the item
+    /// - 1 byte: `TxidList` version
+    /// - `CompactSize`: number of the item
     /// - N x (1 byte + 32 bytes): tagged Hash items
     /// - 32 bytes: checksum
     ///
@@ -4388,7 +4385,7 @@ impl DbV1 {
     }
 
     /// Efficiently scans a raw `StoredEntryVar<TransparentTxList>` buffer to locate the
-    /// specific output at [tx_idx, output_idx] without full deserialization.
+    /// specific output at [`tx_idx`, `output_idx`] without full deserialization.
     ///
     /// # Arguments
     /// - `stored`: the raw LMDB byte buffer

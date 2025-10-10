@@ -37,11 +37,11 @@ pub enum StateServiceError {
     #[error("Custom error: {0}")]
     Custom(String),
 
-    /// Error from a Tokio JoinHandle.
+    /// Error from a Tokio `JoinHandle`.
     #[error("Join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 
-    /// Error from JsonRpcConnector.
+    /// Error from `JsonRpcConnector`.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
@@ -69,7 +69,7 @@ pub enum StateServiceError {
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
 
-    /// std::io::Error
+    /// `std::io::Error`
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
@@ -168,7 +168,7 @@ pub enum FetchServiceError {
     #[error("Critical error: {0}")]
     Critical(String),
 
-    /// Error from JsonRpcConnector.
+    /// Error from `JsonRpcConnector`.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
@@ -216,7 +216,7 @@ impl From<FetchServiceError> for tonic::Status {
         }
     }
 }
-/// These aren't the best conversions, but the MempoolError should go away
+/// These aren't the best conversions, but the `MempoolError` should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for MempoolError {
     fn from(value: RpcRequestError<T>) -> Self {
@@ -263,11 +263,11 @@ pub enum MempoolError {
         current_chain_tip: BlockHash,
     },
 
-    /// Error from JsonRpcConnector.
+    /// Error from `JsonRpcConnector`.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
-    /// Errors originating from the BlockchainSource in use.
+    /// Errors originating from the `BlockchainSource` in use.
     #[error("blockchain source error: {0}")]
     BlockchainSourceError(#[from] crate::chain_index::source::BlockchainSourceError),
 
@@ -291,15 +291,15 @@ pub enum BlockCacheError {
     #[error("Critical error: {0}")]
     Critical(String),
 
-    /// Errors from the NonFinalisedState.
+    /// Errors from the `NonFinalisedState`.
     #[error("NonFinalisedState Error: {0}")]
     NonFinalisedStateError(#[from] NonFinalisedStateError),
 
-    /// Errors from the FinalisedState.
+    /// Errors from the `FinalisedState`.
     #[error("FinalisedState Error: {0}")]
     FinalisedStateError(#[from] FinalisedStateError),
 
-    /// Error from JsonRpcConnector.
+    /// Error from `JsonRpcConnector`.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
@@ -323,7 +323,7 @@ pub enum BlockCacheError {
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
 }
-/// These aren't the best conversions, but the NonFinalizedStateError should go away
+/// These aren't the best conversions, but the `NonFinalizedStateError` should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
     fn from(value: RpcRequestError<T>) -> Self {
@@ -371,7 +371,7 @@ pub enum NonFinalisedStateError {
     #[error("Critical error: {0}")]
     Critical(String),
 
-    /// Error from JsonRpcConnector.
+    /// Error from `JsonRpcConnector`.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
@@ -379,7 +379,7 @@ pub enum NonFinalisedStateError {
     #[error("Status error: {0:?}")]
     StatusError(StatusError),
 }
-/// These aren't the best conversions, but the FinalizedStateError should go away
+/// These aren't the best conversions, but the `FinalizedStateError` should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
     fn from(value: RpcRequestError<T>) -> Self {
@@ -446,7 +446,7 @@ pub enum FinalisedStateError {
     #[error("feature unavailable: {0}")]
     FeatureUnavailable(&'static str),
 
-    /// Errors originating from the BlockchainSource in use.
+    /// Errors originating from the `BlockchainSource` in use.
     #[error("blockchain source error: {0}")]
     BlockchainSourceError(#[from] crate::chain_index::source::BlockchainSourceError),
 
@@ -468,17 +468,17 @@ pub enum FinalisedStateError {
     #[error("Status error: {0:?}")]
     StatusError(StatusError),
 
-    /// Error from JsonRpcConnector.
+    /// Error from `JsonRpcConnector`.
     // TODO: Remove when ZainoDB replaces legacy finalised state.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
-    /// std::io::Error
+    /// `std::io::Error`
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
 
-/// A general error type to represent error StatusTypes.
+/// A general error type to represent error `StatusTypes`.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Unexpected status error: {server_status:?}")]
 pub struct StatusError {
@@ -488,7 +488,7 @@ pub struct StatusError {
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}: {message}")]
 /// The set of errors that can occur during the public API calls
-/// of a NodeBackedChainIndex
+/// of a `NodeBackedChainIndex`
 pub struct ChainIndexError {
     pub(crate) kind: ChainIndexErrorKind,
     pub(crate) message: String,

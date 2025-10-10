@@ -1,10 +1,10 @@
 //! Zaino's core mempool and chain-fetching Library.
 //!
 //! Built to use a configurable backend:
-//! - FetchService
-//!    - Built using the Zcash Json RPC Services for backwards compatibility with Zcashd and other JsonRPC based validators.
-//! - StateService
-//!    - Built using Zebra's ReadStateService for efficient chain access.
+//! - `FetchService`
+//!    - Built using the Zcash Json RPC Services for backwards compatibility with Zcashd and other `JsonRPC` based validators.
+//! - `StateService`
+//!    - Built using Zebra's `ReadStateService` for efficient chain access.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -57,7 +57,7 @@ pub use chain_index::mempool::{MempoolKey, MempoolValue};
 #[cfg(feature = "bench")]
 /// allow public access to additional APIs, for testing
 pub mod bench {
-    /// Testing export of chain_index
+    /// Testing export of `chain_index`
     pub mod chain_index {
         pub use crate::chain_index::*;
     }

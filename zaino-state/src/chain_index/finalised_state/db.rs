@@ -49,7 +49,7 @@ impl DbBackend {
         Ok(Self::V1(DbV1::spawn(cfg).await?))
     }
 
-    /// Waits until the ZainoDB returns a Ready status.
+    /// Waits until the `ZainoDB` returns a Ready status.
     pub(crate) async fn wait_until_ready(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);

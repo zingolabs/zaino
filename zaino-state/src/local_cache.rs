@@ -30,7 +30,7 @@ use zebra_state::{HashOrHeight, ReadStateService};
 
 /// Zaino's internal compact block cache.
 ///
-/// Used by the FetchService for efficiency.
+/// Used by the `FetchService` for efficiency.
 #[derive(Debug)]
 pub struct BlockCache {
     fetcher: JsonRpSeeConnector,
@@ -46,8 +46,8 @@ impl BlockCache {
     /// Spawns a new [`BlockCache`].
     ///
     /// Inputs:
-    /// - fetcher: JsonRPC client.
-    /// - state: Zebra ReadStateService.
+    /// - fetcher: `JsonRPC` client.
+    /// - state: Zebra `ReadStateService`.
     /// - config: Block cache configuration data.
     pub async fn spawn(
         fetcher: &JsonRpSeeConnector,
@@ -57,10 +57,10 @@ impl BlockCache {
         info!("Launching Local Block Cache..");
         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(100);
 
-        let finalised_state = if !config.no_db {
-            Some(FinalisedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
-        } else {
+        let finalised_state = if config.no_db {
             None
+        } else {
+            Some(FinalisedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
         };
 
         let non_finalised_state =
@@ -91,15 +91,12 @@ impl BlockCache {
     }
 
     /// Returns the status of the block cache.
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.no_db {
-            true => StatusType::Ready,
-            false => match &self.finalised_state {
-                Some(finalised_state) => finalised_state.status(),
-                None => return StatusType::Offline,
-            },
-        };
+        let finalised_state_status = if self.config.no_db { StatusType::Ready } else { match &self.finalised_state {
+            Some(finalised_state) => finalised_state.status(),
+            None => return StatusType::Offline,
+        } };
 
         non_finalised_state_status.combine(finalised_state_status)
     }
@@ -192,23 +189,20 @@ impl BlockCacheSubscriber {
     }
 
     /// Returns the status of the [`BlockCache`]..
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.no_db {
-            true => StatusType::Ready,
-            false => match &self.finalised_state {
-                Some(finalised_state) => finalised_state.status(),
-                None => return StatusType::Offline,
-            },
-        };
+        let finalised_state_status = if self.config.no_db { StatusType::Ready } else { match &self.finalised_state {
+            Some(finalised_state) => finalised_state.status(),
+            None => return StatusType::Offline,
+        } };
 
         non_finalised_state_status.combine(finalised_state_status)
     }
 }
 
-/// Fetches CompactBlock from the validator.
+/// Fetches `CompactBlock` from the validator.
 ///
-/// Uses 2 calls as z_get_block verbosity=1 is required to fetch txids from zcashd.
+/// Uses 2 calls as `z_get_block` verbosity=1 is required to fetch txids from zcashd.
 pub(crate) async fn fetch_block_from_node(
     state: Option<&ReadStateService>,
     network: Option<&Network>,

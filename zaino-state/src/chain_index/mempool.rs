@@ -17,7 +17,7 @@ use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 ///
 /// Holds txid.
 ///
-/// TODO: Update to hold zebra_chain::Transaction::Hash ( or internal version )
+/// TODO: Update to hold `zebra_chain::Transaction::Hash` ( or internal version )
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub struct MempoolKey {
     /// currently txid (as string) - see above TODO, could be stronger type
@@ -26,10 +26,10 @@ pub struct MempoolKey {
 
 /// Mempool value.
 ///
-/// Holds zebra_chain::transaction::SerializedTransaction.
+/// Holds `zebra_chain::transaction::SerializedTransaction`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MempoolValue {
-    /// Stores bytes that are guaranteed to be deserializable into a Transaction (zebra_chain enum).
+    /// Stores bytes that are guaranteed to be deserializable into a Transaction (`zebra_chain` enum).
     /// Sorts in lexicographic order of the transaction's serialized data.
     pub serialized_tx: Arc<SerializedTransaction>,
 }
@@ -57,15 +57,11 @@ impl<T: BlockchainSource> Mempool<T> {
     ) -> Result<Self, MempoolError> {
         // Wait for mempool in validator to come online.
         loop {
-            match fetcher.get_mempool_txids().await {
-                Ok(_) => {
-                    break;
-                }
-                Err(_) => {
-                    info!(" - Waiting for Validator mempool to come online..");
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                }
+            if let Ok(_) = fetcher.get_mempool_txids().await {
+                break;
             }
+            info!(" - Waiting for Validator mempool to come online..");
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
 
         let best_block_hash: BlockHash = match fetcher.get_best_block_hash().await {
@@ -143,19 +139,16 @@ impl<T: BlockchainSource> Mempool<T> {
             // Initialise tip.
             loop {
                 match mempool.fetcher.get_best_block_hash().await {
-                    Ok(block_hash_opt) => match block_hash_opt {
-                        Some(hash) => {
-                            mempool.mempool_chain_tip.send_replace(hash.into());
-                            best_block_hash = hash;
-                            break;
-                        }
-                        None => {
-                            mempool.status.store(StatusType::RecoverableError);
-                            state.notify(status.load());
-                            warn!("error fetching best_block_hash from validator");
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            continue;
-                        }
+                    Ok(block_hash_opt) => if let Some(hash) = block_hash_opt {
+                        mempool.mempool_chain_tip.send_replace(hash.into());
+                        best_block_hash = hash;
+                        break;
+                    } else {
+                        mempool.status.store(StatusType::RecoverableError);
+                        state.notify(status.load());
+                        warn!("error fetching best_block_hash from validator");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        continue;
                     },
                     Err(e) => {
                         mempool.status.store(StatusType::RecoverableError);
@@ -171,17 +164,14 @@ impl<T: BlockchainSource> Mempool<T> {
             loop {
                 // Check chain tip.
                 match mempool.fetcher.get_best_block_hash().await {
-                    Ok(block_hash_opt) => match block_hash_opt {
-                        Some(hash) => {
-                            check_block_hash = hash;
-                        }
-                        None => {
-                            mempool.status.store(StatusType::RecoverableError);
-                            state.notify(status.load());
-                            warn!("error fetching best_block_hash from validator");
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            continue;
-                        }
+                    Ok(block_hash_opt) => if let Some(hash) = block_hash_opt {
+                        check_block_hash = hash;
+                    } else {
+                        mempool.status.store(StatusType::RecoverableError);
+                        state.notify(status.load());
+                        warn!("error fetching best_block_hash from validator");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        continue;
                     },
                     Err(e) => {
                         state.notify(status.load());
@@ -218,7 +208,7 @@ impl<T: BlockchainSource> Mempool<T> {
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         continue;
                     }
-                };
+                }
 
                 if status.load() == StatusType::Closing {
                     state.notify(status.load());
@@ -447,7 +437,7 @@ impl MempoolSubscriber {
                                     match channel_tx
                                         .try_send(Ok((mempool_key.clone(), mempool_value.clone())))
                                     {
-                                        Ok(_) => break,
+                                        Ok(()) => break,
                                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                                             tokio::time::sleep(std::time::Duration::from_millis(
                                                 100,
@@ -530,7 +520,7 @@ impl MempoolSubscriber {
         let mut bytes: u64 = 0;
         let mut key_heap_bytes: u64 = 0;
 
-        for (mempool_key, mempool_value) in mempool_transactions.iter() {
+        for (mempool_key, mempool_value) in &mempool_transactions {
             // payload bytes are exact (we store SerializedTransaction)
             bytes =
                 bytes.saturating_add(mempool_value.serialized_tx.as_ref().as_ref().len() as u64);
@@ -546,11 +536,11 @@ impl MempoolSubscriber {
 
     // TODO noted here too
     /// Returns the status of the mempool.
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
-    /// Returns all tx currently in the mempool and updates seen_txids.
+    /// Returns all tx currently in the mempool and updates `seen_txids`.
     fn get_mempool_and_update_seen(&mut self) -> Vec<(MempoolKey, MempoolValue)> {
         let mempool_updates = self.subscriber.get_filtered_state(&HashSet::new());
         for (mempool_key, _) in mempool_updates.clone() {
@@ -559,7 +549,7 @@ impl MempoolSubscriber {
         mempool_updates
     }
 
-    /// Returns txids not yet seen by the subscriber and updates seen_txids.
+    /// Returns txids not yet seen by the subscriber and updates `seen_txids`.
     fn get_mempool_updates_and_update_seen(&mut self) -> Vec<(MempoolKey, MempoolValue)> {
         let mempool_updates = self.subscriber.get_filtered_state(&self.seen_txids);
         for (mempool_key, _) in mempool_updates.clone() {
@@ -597,13 +587,13 @@ impl MempoolSubscriber {
         }
     }
 
-    /// Clears the subscribers seen_txids.
+    /// Clears the subscribers `seen_txids`.
     fn clear_seen(&mut self) {
         self.seen_txids.clear();
     }
 
     /// Get the chain tip that the mempool is atop
-    pub fn mempool_chain_tip(&self) -> BlockHash {
+    #[must_use] pub fn mempool_chain_tip(&self) -> BlockHash {
         *self.mempool_chain_tip.borrow()
     }
 }

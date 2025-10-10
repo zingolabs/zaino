@@ -13,13 +13,13 @@ pub enum IndexerError {
     /// Configuration errors.
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    /// JSON RPSee connector errors.
+    /// JSON `RPSee` connector errors.
     #[error("JSON RPSee connector error: {0}")]
     TransportError(#[from] TransportError),
-    /// FetchService errors.
+    /// `FetchService` errors.
     #[error("FetchService error: {0}")]
     FetchServiceError(Box<FetchServiceError>),
-    /// FetchService errors.
+    /// `FetchService` errors.
     #[error("StateService error: {0}")]
     StateServiceError(Box<StateServiceError>),
     /// HTTP related errors due to invalid URI.

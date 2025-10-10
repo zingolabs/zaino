@@ -18,7 +18,7 @@ use zaino_state::{
     RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream, ZcashIndexer,
 };
 
-/// A helper macro invoked by implement_client_methods, as the
+/// A helper macro invoked by `implement_client_methods`, as the
 /// internals differ slightly in the streaming return case
 /// compared to the 'normal' case. This should never
 /// be invoked directly.
@@ -81,10 +81,10 @@ macro_rules! client_method_helper {
 /// streaming/nonstreaming.
 ///
 /// Arguments:
-/// comment method_name(input_type) -> return \[as streaming\],
+/// comment `method_name(input_type)` -> return \[as streaming\],
 /// \[comment\] A str literal to be used a doc-comment for the method.
-/// \[method_name\] The name of the method to implement
-/// \[input_type\] The type of the tonic Request to accept as an argument
+/// \[`method_name`\] The name of the method to implement
+/// \[`input_type`\] The type of the tonic Request to accept as an argument
 /// \[as streaming/empty\] the optional literal characters
 ///     'as streaming', 'as empty', or 'as streamingempty'
 ///     needed when the return type is a Streaming type, and/or

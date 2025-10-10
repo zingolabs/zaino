@@ -1,4 +1,4 @@
-//! ZainoDB V0 Implementation
+//! `ZainoDB` V0 Implementation
 //!
 //! WARNING: This is a legacy development database and should not be used in production environments.
 //!
@@ -147,17 +147,17 @@ pub struct DbV0 {
 
     /// Non-finalised state status.
     status: AtomicStatus,
-    /// BlockCache config data.
+    /// `BlockCache` config data.
     config: BlockCacheConfig,
 }
 
 impl DbV0 {
-    /// Spawns a new [`DbV0`] and syncs the FinalisedState to the servers finalised state.
+    /// Spawns a new [`DbV0`] and syncs the `FinalisedState` to the servers finalised state.
     ///
-    /// Uses ReadStateService to fetch chain data if given else uses JsonRPC client.
+    /// Uses `ReadStateService` to fetch chain data if given else uses `JsonRPC` client.
     ///
     /// Inputs:
-    /// - config: ChainIndexConfig.
+    /// - config: `ChainIndexConfig`.
     pub(crate) async fn spawn(config: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
         info!("Launching ZainoDB");
 
@@ -175,7 +175,7 @@ impl DbV0 {
 
         // Check system rescources to set max db reeaders, clamped between 512 and 4096.
         let cpu_cnt = std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(std::num::NonZero::get)
             .unwrap_or(4);
 
         // Sets LMDB max_readers based on CPU count (cpu * 32), clamped between 512 and 4096.
@@ -225,12 +225,12 @@ impl DbV0 {
             tokio::select! {
                 res = &mut handle => {
                     match res {
-                        Ok(_) => {}
+                        Ok(()) => {}
                         Err(e) if e.is_cancelled() => {}
                         Err(e) => warn!("background task ended with error: {e:?}"),
                     }
                 }
-                _ = &mut timeout => {
+                () = &mut timeout => {
                     warn!("background task didn’t exit in time – aborting");
                     handle.abort();
                 }
@@ -244,7 +244,7 @@ impl DbV0 {
         Ok(())
     }
 
-    /// Returns the status of ZainoDB.
+    /// Returns the status of `ZainoDB`.
     pub(crate) fn status(&self) -> StatusType {
         self.status.load()
     }
@@ -308,7 +308,7 @@ impl DbV0 {
     /// Helper method to wait for the next loop iteration or perform maintenance.
     async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+            () = tokio::time::sleep(Duration::from_secs(5)) => {},
             _ = maintenance.tick() => {
                 if let Err(e) = self.clean_trailing().await {
                     warn!("clean_trailing failed: {}", e);
@@ -342,7 +342,7 @@ impl DbV0 {
     // *** DB write / delete methods ***
     // These should only ever be used in a single DB control task.
 
-    /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
+    /// Writes a given (finalised) [`IndexedBlock`] to `ZainoDB`.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
 
@@ -442,7 +442,7 @@ impl DbV0 {
         .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))?;
 
         match post_result {
-            Ok(_) => {
+            Ok(()) => {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
@@ -534,13 +534,13 @@ impl DbV0 {
         Ok(())
     }
 
-    /// This is used as a backup when delete_block_at_height fails.
+    /// This is used as a backup when `delete_block_at_height` fails.
     ///
-    /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
+    /// Takes a `IndexedBlock` as input and ensures all data from this block is wiped from the database.
     ///
     /// WARNING: No checks are made that this block is at the top of the finalised state, and validated tip is not updated.
     /// This enables use for correcting corrupt data within the database but it is left to the user to ensure safe use.
-    /// Where possible delete_block_at_height should be used instead.
+    /// Where possible `delete_block_at_height` should be used instead.
     ///
     /// NOTE: LMDB database errors are propageted as these show serious database errors,
     /// all other errors are returned as `IncorrectBlock`, if this error is returned the block requested

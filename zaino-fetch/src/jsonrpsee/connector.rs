@@ -1,7 +1,7 @@
-//! JsonRPSee client implementation.
+//! `JsonRPSee` client implementation.
 //!
 //! TODO: - Add option for http connector.
-//!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [<https://github.com/zingolabs/zaino/issues/67>].
+//!       - Refactor `JsonRPSeecConnectorError` into concrete error types and implement `fmt::display` [<https://github.com/zingolabs/zaino/issues/67>].
 
 use base64::{engine::general_purpose, Engine};
 use http::Uri;
@@ -52,7 +52,7 @@ struct RpcResponse<T> {
     error: Option<RpcError>,
 }
 
-/// Json RPSee Error type.
+/// Json `RPSee` Error type.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RpcError {
     /// Error Code.
@@ -82,7 +82,7 @@ impl RpcError {
     ) -> Self {
         RpcError {
             // We can use the actual JSON-RPC code:
-            code: error_obj.code() as i64,
+            code: i64::from(error_obj.code()),
 
             // Or combine the fallback with the original message:
             message: format!("{}: {}", fallback_message.into(), error_obj.message()),
@@ -163,14 +163,14 @@ pub enum RpcRequestError<MethodError> {
     ServerWorkQueueFull,
 
     /// An error related to the specific JSON-RPC method being called, that
-    /// wasn't accounted for as a MethodError. This means that either
+    /// wasn't accounted for as a `MethodError`. This means that either
     /// Zaino has not yet accounted for the possibilty of this error,
     /// or the Node returned an undocumented/malformed error response.
     #[error("unexpected error response from server: {0}")]
     UnexpectedErrorResponse(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
-/// JsonRpSee Client config data.
+/// `JsonRpSee` Client config data.
 #[derive(Debug, Clone)]
 pub struct JsonRpSeeConnector {
     url: Url,
@@ -180,7 +180,7 @@ pub struct JsonRpSeeConnector {
 }
 
 impl JsonRpSeeConnector {
-    /// Creates a new JsonRpSeeConnector with Basic Authentication.
+    /// Creates a new `JsonRpSeeConnector` with Basic Authentication.
     pub fn new_with_basic_auth(
         url: Url,
         username: String,
@@ -201,7 +201,7 @@ impl JsonRpSeeConnector {
         })
     }
 
-    /// Creates a new JsonRpSeeConnector with Cookie Authentication.
+    /// Creates a new `JsonRpSeeConnector` with Cookie Authentication.
     pub fn new_with_cookie_auth(url: Url, cookie_path: &Path) -> Result<Self, TransportError> {
         let cookie_password = read_and_parse_cookie_token(cookie_path)?;
 
@@ -223,8 +223,8 @@ impl JsonRpSeeConnector {
         })
     }
 
-    /// Helper function to create from parts of a StateServiceConfig or
-    /// FetchServiceConfig
+    /// Helper function to create from parts of a `StateServiceConfig` or
+    /// `FetchServiceConfig`
     pub async fn new_from_config_parts(
         validator_cookie_auth: bool,
         validator_rpc_address: SocketAddr,
@@ -232,44 +232,41 @@ impl JsonRpSeeConnector {
         validator_rpc_password: String,
         validator_cookie_path: Option<String>,
     ) -> Result<Self, TransportError> {
-        match validator_cookie_auth {
-            true => JsonRpSeeConnector::new_with_cookie_auth(
-                test_node_and_return_url(
-                    validator_rpc_address,
-                    validator_cookie_auth,
-                    validator_cookie_path.clone(),
-                    None,
-                    None,
-                )
-                .await?,
-                Path::new(
-                    &validator_cookie_path
-                        .clone()
-                        .expect("validator cookie authentication path missing"),
-                ),
+        if validator_cookie_auth { JsonRpSeeConnector::new_with_cookie_auth(
+            test_node_and_return_url(
+                validator_rpc_address,
+                validator_cookie_auth,
+                validator_cookie_path.clone(),
+                None,
+                None,
+            )
+            .await?,
+            Path::new(
+                &validator_cookie_path
+                    .clone()
+                    .expect("validator cookie authentication path missing"),
             ),
-            false => JsonRpSeeConnector::new_with_basic_auth(
-                test_node_and_return_url(
-                    validator_rpc_address,
-                    false,
-                    None,
-                    Some(validator_rpc_user.clone()),
-                    Some(validator_rpc_password.clone()),
-                )
-                .await?,
-                validator_rpc_user.clone(),
-                validator_rpc_password.clone(),
-            ),
-        }
+        ) } else { JsonRpSeeConnector::new_with_basic_auth(
+            test_node_and_return_url(
+                validator_rpc_address,
+                false,
+                None,
+                Some(validator_rpc_user.clone()),
+                Some(validator_rpc_password.clone()),
+            )
+            .await?,
+            validator_rpc_user.clone(),
+            validator_rpc_password.clone(),
+        ) }
     }
 
-    /// Returns the http::uri the JsonRpSeeConnector is configured to send requests to.
+    /// Returns the `http::uri` the `JsonRpSeeConnector` is configured to send requests to.
     pub fn uri(&self) -> Result<Uri, TransportError> {
         Ok(self.url.as_str().parse()?)
     }
 
-    /// Returns the reqwest::url the JsonRpSeeConnector is configured to send requests to.
-    pub fn url(&self) -> Url {
+    /// Returns the `reqwest::url` the `JsonRpSeeConnector` is configured to send requests to.
+    #[must_use] pub fn url(&self) -> Url {
         self.url.clone()
     }
 
@@ -766,7 +763,7 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
     Ok(())
 }
 
-/// Tries to connect to zebrad/zcashd using the provided SocketAddr and returns the correct URL.
+/// Tries to connect to zebrad/zcashd using the provided `SocketAddr` and returns the correct URL.
 pub async fn test_node_and_return_url(
     addr: SocketAddr,
     rpc_cookie_auth: bool,
@@ -774,19 +771,16 @@ pub async fn test_node_and_return_url(
     user: Option<String>,
     password: Option<String>,
 ) -> Result<Url, TransportError> {
-    let auth_method = match rpc_cookie_auth {
-        true => {
-            let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
-            let cookie_password = read_and_parse_cookie_token(Path::new(&cookie_file_path_str))?;
-            AuthMethod::Cookie {
-                cookie: cookie_password,
-            }
+    let auth_method = if rpc_cookie_auth {
+        let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
+        let cookie_password = read_and_parse_cookie_token(Path::new(&cookie_file_path_str))?;
+        AuthMethod::Cookie {
+            cookie: cookie_password,
         }
-        false => AuthMethod::Basic {
-            username: user.unwrap_or_else(|| "xxxxxx".to_string()),
-            password: password.unwrap_or_else(|| "xxxxxx".to_string()),
-        },
-    };
+    } else { AuthMethod::Basic {
+        username: user.unwrap_or_else(|| "xxxxxx".to_string()),
+        password: password.unwrap_or_else(|| "xxxxxx".to_string()),
+    } };
 
     let host = match addr {
         SocketAddr::V4(_) => addr.ip().to_string(),
@@ -798,7 +792,7 @@ pub async fn test_node_and_return_url(
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
     for _ in 0..3 {
         match test_node_connection(url.clone(), auth_method.clone()).await {
-            Ok(_) => {
+            Ok(()) => {
                 return Ok(url);
             }
             Err(_) => {

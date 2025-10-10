@@ -1,4 +1,4 @@
-//! gRPC / JsonRPC service implementations.
+//! gRPC / `JsonRPC` service implementations.
 
 use zaino_state::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer};
 

@@ -2,12 +2,12 @@
 //!
 //! Components:
 //! - Mempool: Holds mempool transactions
-//! - NonFinalisedState: Holds block data for the top 100 blocks of all chains.
-//! - FinalisedState: Holds block data for the remainder of the best chain.
+//! - `NonFinalisedState`: Holds block data for the top 100 blocks of all chains.
+//! - `FinalisedState`: Holds block data for the remainder of the best chain.
 //!
-//! - Chain: Holds chain / block structs used internally by the ChainIndex.
+//! - Chain: Holds chain / block structs used internally by the `ChainIndex`.
 //!   - Holds fields required to:
-//!     - a. Serve CompactBlock data dirctly.
+//!     - a. Serve `CompactBlock` data dirctly.
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
@@ -56,7 +56,7 @@ mod tests;
 /// - Direct read access to a zebrad database via `ReadStateService` (preferred)
 /// - A JSON-RPC connection to a validator node (zcashd, zebrad, or another zainod)
 ///
-/// # Example with ReadStateService (Preferred)
+/// # Example with `ReadStateService` (Preferred)
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -157,7 +157,7 @@ mod tests;
 /// # }
 /// ```
 ///
-/// # Migrating from FetchService or StateService
+/// # Migrating from `FetchService` or `StateService`
 ///
 /// If you were previously using `FetchService::spawn()` or `StateService::spawn()`:
 /// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
@@ -170,7 +170,7 @@ pub trait ChainIndex {
     /// How it can fail
     type Error;
 
-    /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
+    /// Takes a snapshot of the `non_finalized` state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot;
@@ -275,7 +275,7 @@ pub trait ChainIndex {
 /// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
 /// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
 ///
-/// # Example with StateService (Preferred)
+/// # Example with `StateService` (Preferred)
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -392,7 +392,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// Creates a new chainindex from a connection to a validator
-    /// Currently this is a ReadStateService or JsonRpSeeConnector
+    /// Currently this is a `ReadStateService` or `JsonRpSeeConnector`
     pub async fn new(
         source: Source,
         config: crate::config::BlockCacheConfig,
@@ -454,8 +454,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         Ok(())
     }
 
-    /// Displays the status of the chain_index
-    pub fn status(&self) -> StatusType {
+    /// Displays the status of the `chain_index`
+    #[must_use] pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_db.status();
         let mempool_status = self.mempool.status();
         let combined_status = self
@@ -500,8 +500,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             .db_height()
                             .await
                             .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                            .map(|height| height + 1)
-                            .unwrap_or(types::Height(0));
+                            .map_or(types::Height(0), |height| height + 1);
                         let next_finalized_block = snapshot
                             .blocks
                             .get(
@@ -519,7 +518,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 }
                 status.store(StatusType::Ready);
                 // TODO: configure sleep duration?
-                tokio::time::sleep(Duration::from_millis(500)).await
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 // TODO: Check for shutdown signal.
             }
             Ok(())
@@ -542,7 +541,7 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
-    /// Displays the status of the chain_index
+    /// Displays the status of the `chain_index`
     pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_state.status();
         let mempool_status = self.mempool.status();
@@ -616,7 +615,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     type Snapshot = Arc<NonfinalizedBlockCacheSnapshot>;
     type Error = ChainIndexError;
 
-    /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
+    /// Takes a snapshot of the `non_finalized` state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot {
@@ -669,7 +668,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         }
                         Err(e) => Err(ChainIndexError {
                             kind: ChainIndexErrorKind::InternalServerError,
-                            message: "".to_string(),
+                            message: String::new(),
                             source: Some(Box::new(e)),
                         }),
                         Ok(None) => {
@@ -806,8 +805,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
     /// Given a transaction ID, returns all known blocks containing this transaction
     ///
-    /// If the transaction is in the mempool, it will be in the BestChainLocation
-    /// if the mempool and snapshot are up-to-date, and the NonBestChainLocation set
+    /// If the transaction is in the mempool, it will be in the `BestChainLocation`
+    /// if the mempool and snapshot are up-to-date, and the `NonBestChainLocation` set
     /// if the snapshot is out-of-date compared to the mempool
     async fn get_transaction_status(
         &self,
@@ -843,10 +842,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                                 .to_string(),
                         source: None,
                     });
-                } else {
-                    best_chain_block =
-                        Some(BestChainLocation::Mempool(snapshot.best_tip.height + 1));
                 }
+                best_chain_block =
+                    Some(BestChainLocation::Mempool(snapshot.best_tip.height + 1));
             } else {
                 let target_height = self
                     .non_finalized_state

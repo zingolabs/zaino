@@ -62,7 +62,7 @@ pub struct IndexerConfig {
     #[serde(deserialize_with = "deserialize_backendtype_from_string")]
     #[serde(serialize_with = "serialize_backendtype_to_string")]
     pub backend: zaino_state::BackendType,
-    /// Enable JsonRPC server.
+    /// Enable `JsonRPC` server.
     pub enable_json_server: bool,
     /// Server bind addr.
     #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
@@ -100,14 +100,14 @@ pub struct IndexerConfig {
     pub storage: StorageConfig,
     /// Block Cache database file path.
     ///
-    /// ZebraDB location.
+    /// `ZebraDB` location.
     pub zebra_db_path: PathBuf,
     /// Network chain type.
     pub network: Network,
     /// Disables internal sync and stops zaino waiting on server sync.
     /// Used for testing.
     pub no_sync: bool,
-    /// Disables FinalisedState.
+    /// Disables `FinalisedState`.
     /// Used for testing.
     pub no_db: bool,
     /// When enabled Zaino syncs it DB in the background, fetching data from the validator.
@@ -268,7 +268,7 @@ impl Default for IndexerConfig {
 }
 
 /// Returns the default path for Zaino's ephemeral authentication cookie.
-pub fn default_ephemeral_cookie_path() -> PathBuf {
+#[must_use] pub fn default_ephemeral_cookie_path() -> PathBuf {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         PathBuf::from(runtime_dir).join("zaino").join(".cookie")
     } else {
@@ -277,7 +277,7 @@ pub fn default_ephemeral_cookie_path() -> PathBuf {
 }
 
 /// Loads the default file path for zaino's local db.
-pub fn default_zaino_db_path() -> PathBuf {
+#[must_use] pub fn default_zaino_db_path() -> PathBuf {
     match std::env::var("HOME") {
         Ok(home) => PathBuf::from(home).join(".cache").join("zaino"),
         Err(_) => PathBuf::from("/tmp").join("zaino").join(".cache"),
@@ -294,7 +294,7 @@ pub fn default_zebra_db_path() -> Result<PathBuf, IndexerError> {
     }
 }
 
-/// Resolves a hostname to a SocketAddr.
+/// Resolves a hostname to a `SocketAddr`.
 fn fetch_socket_addr_from_hostname(address: &str) -> Result<SocketAddr, IndexerError> {
     address.parse::<SocketAddr>().or_else(|_| {
         let addrs: Vec<_> = address
@@ -417,7 +417,7 @@ impl TryFrom<IndexerConfig> for BackendConfig {
     }
 }
 
-/// Custom serializer for BackendType
+/// Custom serializer for `BackendType`
 fn serialize_backendtype_to_string<S>(
     backend_type: &zaino_state::BackendType,
     serializer: S,

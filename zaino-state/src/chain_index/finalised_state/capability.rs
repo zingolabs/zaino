@@ -1,4 +1,4 @@
-//! Holds ZainoDB capability traits and bitmaps.
+//! Holds `ZainoDB` capability traits and bitmaps.
 
 use core::fmt;
 
@@ -136,7 +136,7 @@ pub(crate) struct DbMetadata {
 }
 
 impl DbMetadata {
-    /// Creates a new DbMetadata.
+    /// Creates a new `DbMetadata`.
     pub(crate) fn new(
         version: DbVersion,
         schema_hash: [u8; 32],
@@ -229,7 +229,7 @@ pub(crate) struct DbVersion {
 }
 
 impl DbVersion {
-    /// creates a new DbVersion.
+    /// creates a new `DbVersion`.
     pub(crate) fn new(major: u32, minor: u32, patch: u32) -> Self {
         Self {
             major,
@@ -385,7 +385,7 @@ impl FixedEncodedLen for MigrationStatus {
 
 // ***** Core Database functionality *****
 
-/// Read-only operations that *every* ZainoDB version must support.
+/// Read-only operations that *every* `ZainoDB` version must support.
 #[async_trait]
 pub trait DbRead: Send + Sync {
     /// Highest block height stored (or `None` if DB empty).
@@ -407,7 +407,7 @@ pub trait DbRead: Send + Sync {
     async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError>;
 }
 
-/// Write operations that *every* ZainoDB version must support.
+/// Write operations that *every* `ZainoDB` version must support.
 #[async_trait]
 pub trait DbWrite: Send + Sync {
     /// Persist a fully-validated block to the database.
@@ -418,16 +418,16 @@ pub trait DbWrite: Send + Sync {
 
     /// Wipe the given block data from every finalised table.
     ///
-    /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
+    /// Takes a `IndexedBlock` as input and ensures all data from this block is wiped from the database.
     ///
-    /// Used as a backup when delete_block_at_height fails.
+    /// Used as a backup when `delete_block_at_height` fails.
     async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError>;
 
-    /// Update the metadata store with the given DbMetadata
+    /// Update the metadata store with the given `DbMetadata`
     async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError>;
 }
 
-/// Core database functionality that *every* ZainoDB version must support.
+/// Core database functionality that *every* `ZainoDB` version must support.
 #[async_trait]
 pub trait DbCore: DbRead + DbWrite + Send + Sync {
     /// Returns the current runtime status (`Starting`, `Syncing`, `Ready`, …).
@@ -465,13 +465,13 @@ pub trait BlockCoreExt: Send + Sync {
         end: Height,
     ) -> Result<Vec<TxidList>, FinalisedStateError>;
 
-    /// Fetch the txid bytes for a given TxLocation.
+    /// Fetch the txid bytes for a given `TxLocation`.
     async fn get_txid(
         &self,
         tx_location: TxLocation,
     ) -> Result<TransactionHash, FinalisedStateError>;
 
-    /// Fetch the TxLocation for the given txid, transaction data is indexed by TxLocation internally.
+    /// Fetch the `TxLocation` for the given txid, transaction data is indexed by `TxLocation` internally.
     async fn get_tx_location(
         &self,
         txid: &TransactionHash,
@@ -481,7 +481,7 @@ pub trait BlockCoreExt: Send + Sync {
 /// Transparent block data extension.
 #[async_trait]
 pub trait BlockTransparentExt: Send + Sync {
-    /// Fetch the serialized TransparentCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `TransparentCompactTx` for the given `TxLocation`, if present.
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
@@ -504,7 +504,7 @@ pub trait BlockTransparentExt: Send + Sync {
 /// Transparent block data extension.
 #[async_trait]
 pub trait BlockShieldedExt: Send + Sync {
-    /// Fetch the serialized SaplingCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `SaplingCompactTx` for the given `TxLocation`, if present.
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
@@ -521,7 +521,7 @@ pub trait BlockShieldedExt: Send + Sync {
         end: Height,
     ) -> Result<Vec<SaplingTxList>, FinalisedStateError>;
 
-    /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
+    /// Fetch the serialized `OrchardCompactTx` for the given `TxLocation`, if present.
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
@@ -552,10 +552,10 @@ pub trait BlockShieldedExt: Send + Sync {
     ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError>;
 }
 
-/// CompactBlock extension.
+/// `CompactBlock` extension.
 #[async_trait]
 pub trait CompactBlockExt: Send + Sync {
-    /// Returns the CompactBlock for the given Height.
+    /// Returns the `CompactBlock` for the given Height.
     ///
     /// TODO: Add separate range fetch method!
     async fn get_compact_block(
@@ -564,10 +564,10 @@ pub trait CompactBlockExt: Send + Sync {
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError>;
 }
 
-/// IndexedBlock v1 extension.
+/// `IndexedBlock` v1 extension.
 #[async_trait]
 pub trait IndexedBlockExt: Send + Sync {
-    /// Returns the IndexedBlock for the given Height.
+    /// Returns the `IndexedBlock` for the given Height.
     ///
     /// TODO: Add separate range fetch method!
     async fn get_chain_block(
@@ -576,7 +576,7 @@ pub trait IndexedBlockExt: Send + Sync {
     ) -> Result<Option<IndexedBlock>, FinalisedStateError>;
 }
 
-/// IndexedBlock v1 extension.
+/// `IndexedBlock` v1 extension.
 #[async_trait]
 pub trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.
@@ -590,7 +590,7 @@ pub trait TransparentHistExt: Send + Sync {
         addr_script: AddrScript,
     ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError>;
 
-    /// Fetch all address history records for a given address and TxLocation.
+    /// Fetch all address history records for a given address and `TxLocation`.
     ///
     /// Returns:
     /// - `Ok(Some(records))` if one or more matching records are found at that index,

@@ -1,4 +1,4 @@
-//! Zcash chain fetch and tx submission service backed by zcashds JsonRPC service.
+//! Zcash chain fetch and tx submission service backed by zcashds `JsonRPC` service.
 
 use futures::StreamExt;
 use hex::FromHex;
@@ -56,17 +56,17 @@ use crate::{
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
 };
 
-/// Chain fetch service backed by Zcashd's JsonRPC engine.
+/// Chain fetch service backed by Zcashd's `JsonRPC` engine.
 ///
 /// This service is a central service, [`FetchServiceSubscriber`] should be created to fetch data.
 /// This is done to enable large numbers of concurrent subscribers without significant slowdowns.
 ///
 /// NOTE: We currently do not implement clone for chain fetch services as this service is responsible for maintaining and closing its child processes.
-///       ServiceSubscribers are used to create separate chain fetch processes while allowing central state processes to be managed in a single place.
-///       If we want the ability to clone Service all JoinHandle's should be converted to Arc\<JoinHandle\>.
+///       `ServiceSubscribers` are used to create separate chain fetch processes while allowing central state processes to be managed in a single place.
+///       If we want the ability to clone Service all `JoinHandle`'s should be converted to Arc\<`JoinHandle`\>.
 #[derive(Debug)]
 pub struct FetchService {
-    /// JsonRPC Client.
+    /// `JsonRPC` Client.
     fetcher: JsonRpSeeConnector,
     /// Local compact block cache.
     block_cache: BlockCache,
@@ -74,7 +74,7 @@ pub struct FetchService {
     mempool: Mempool<ValidatorConnector>,
     /// Service metadata.
     data: ServiceMetadata,
-    /// StateService config data.
+    /// `StateService` config data.
     config: FetchServiceConfig,
 }
 
@@ -82,7 +82,7 @@ pub struct FetchService {
 impl ZcashService for FetchService {
     type Subscriber = FetchServiceSubscriber;
     type Config = FetchServiceConfig;
-    /// Initializes a new StateService instance and starts sync process.
+    /// Initializes a new `StateService` instance and starts sync process.
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!("Launching Chain Fetch Service..");
 
@@ -150,7 +150,7 @@ impl ZcashService for FetchService {
         mempool_status.combine(block_cache_status)
     }
 
-    /// Shuts down the StateService.
+    /// Shuts down the `StateService`.
     fn close(&mut self) {
         self.mempool.close();
         self.block_cache.close();
@@ -159,7 +159,7 @@ impl ZcashService for FetchService {
 
 impl Drop for FetchService {
     fn drop(&mut self) {
-        self.close()
+        self.close();
     }
 }
 
@@ -168,7 +168,7 @@ impl Drop for FetchService {
 /// Subscribers should be
 #[derive(Debug, Clone)]
 pub struct FetchServiceSubscriber {
-    /// JsonRPC Client.
+    /// `JsonRPC` Client.
     pub fetcher: JsonRpSeeConnector,
     /// Local compact block cache.
     pub block_cache: BlockCacheSubscriber,
@@ -176,13 +176,13 @@ pub struct FetchServiceSubscriber {
     pub mempool: MempoolSubscriber,
     /// Service metadata.
     pub data: ServiceMetadata,
-    /// StateService config data.
+    /// `StateService` config data.
     config: FetchServiceConfig,
 }
 
 impl FetchServiceSubscriber {
     /// Fetches the current status
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         let mempool_status = self.mempool.status();
         let block_cache_status = self.block_cache.status();
 
@@ -190,7 +190,7 @@ impl FetchServiceSubscriber {
     }
 
     /// Returns the network type running.
-    pub fn network(&self) -> zaino_common::Network {
+    #[must_use] pub fn network(&self) -> zaino_common::Network {
         self.config.network
     }
 }
@@ -299,7 +299,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .fetcher
             .get_address_balance(address_strings.valid_address_strings().map_err(|error| {
                 FetchServiceError::RpcError(RpcError {
-                    code: error.code() as i64,
+                    code: i64::from(error.code()),
                     message: "Invalid address provided".to_string(),
                     data: None,
                 })
@@ -576,14 +576,14 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .fetcher
             .get_address_utxos(address_strings.valid_address_strings().map_err(|error| {
                 FetchServiceError::RpcError(RpcError {
-                    code: error.code() as i64,
+                    code: i64::from(error.code()),
                     message: "Invalid address provided".to_string(),
                     data: None,
                 })
             })?)
             .await?
             .into_iter()
-            .map(|utxos| utxos.into())
+            .map(std::convert::Into::into)
             .collect())
     }
 }
@@ -600,7 +600,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             .hash;
 
         Ok(BlockId {
-            height: latest_height.0 as u64,
+            height: u64::from(latest_height.0),
             hash: latest_hash,
         })
     }
@@ -649,7 +649,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         }
     }
 
-    /// Same as GetBlock except actions contain only nullifiers
+    /// Same as `GetBlock` except actions contain only nullifiers
     ///
     /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
     async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
@@ -737,7 +737,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
-            let timeout = timeout(time::Duration::from_secs((service_timeout*4) as u64), async {
+            let timeout = timeout(time::Duration::from_secs(u64::from(service_timeout * 4)), async {
                     for height in start..=end {
                         let height = if rev_order {
                             end - (height - start)
@@ -761,21 +761,20 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                         .await
 
                                     {
-                                        Ok(_) => break,
+                                        Ok(()) => break,
                                         Err(e) => {
                                             warn!("GetBlockRange channel closed unexpectedly: {}", e);
                                             break;
                                         }
                                     }
-                                } else {
-                                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                    if channel_tx
-                                        .send(Err(tonic::Status::unknown(e.to_string())))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
+                                }
+                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                                if channel_tx
+                                    .send(Err(tonic::Status::unknown(e.to_string())))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
                                 }
                             }
                         }
@@ -783,7 +782,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 })
                 .await;
             match timeout {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(_) => {
                     channel_tx
                         .send(Err(tonic::Status::deadline_exceeded(
@@ -797,7 +796,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         Ok(CompactBlockStream::new(channel_rx))
     }
 
-    /// Same as GetBlockRange except actions contain only nullifiers
+    /// Same as `GetBlockRange` except actions contain only nullifiers
     ///
     /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
     async fn get_block_range_nullifiers(
@@ -834,7 +833,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
+                time::Duration::from_secs(u64::from(service_timeout * 4)),
                 async {
                     for height in start..=end {
                         let height = if rev_order {
@@ -897,9 +896,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 ));
             };
             let height: u64 = match height {
-                Some(h) => h as u64,
+                Some(h) => u64::from(h),
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
-                None => self.block_cache.get_chain_height().await?.0 as u64,
+                None => u64::from(self.block_cache.get_chain_height().await?.0),
             };
 
             Ok(RawTransaction {
@@ -936,13 +935,13 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
+                time::Duration::from_secs(u64::from(service_timeout * 4)),
                 async {
                     for txid in txids {
                         let transaction =
                             fetch_service_clone.get_raw_transaction(txid, Some(1)).await;
                         if handle_raw_transaction::<Self>(
-                            chain_height.0 as u64,
+                            u64::from(chain_height.0),
                             transaction,
                             transmitter.clone(),
                         )
@@ -956,7 +955,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             )
             .await;
             match timeout {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(_) => {
                     transmitter
                         .send(Err(tonic::Status::internal(
@@ -998,7 +997,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             mpsc::channel::<String>(self.config.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
+                time::Duration::from_secs(u64::from(service_timeout * 4)),
                 async {
                     let mut total_balance: u64 = 0;
                     loop {
@@ -1027,7 +1026,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         // NOTE: This timeout is so slow due to the blockcache not being implemented. This should be reduced to 30s once functionality is in place.
         // TODO: Make [rpc_timout] a configurable system variable with [default = 30s] and [mempool_rpc_timout = 4*rpc_timeout]
         let addr_recv_timeout = timeout(
-            time::Duration::from_secs((service_timeout * 4) as u64),
+            time::Duration::from_secs(u64::from(service_timeout * 4)),
             async {
                 while let Some(address_result) = request.next().await {
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
@@ -1101,7 +1100,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             .txid
             .iter()
             .map(|txid_bytes| {
-                let reversed_txid_bytes: Vec<u8> = txid_bytes.iter().cloned().rev().collect();
+                let reversed_txid_bytes: Vec<u8> = txid_bytes.iter().copied().rev().collect();
                 hex::encode(&reversed_txid_bytes)
             })
             .collect();
@@ -1111,7 +1110,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
+                time::Duration::from_secs(u64::from(service_timeout * 4)),
                 async {
                     for (mempool_key, mempool_value) in
                         mempool.get_filtered_mempool(exclude_txids).await
@@ -1125,9 +1124,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     .is_err()
                                 {
                                     break;
-                                } else {
-                                    continue;
                                 }
+                                continue;
                             }
                         };
                         match <FullTransaction as ParseFromSlice>::parse_from_slice(
@@ -1178,7 +1176,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             )
             .await;
             match timeout {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(_) => {
                     channel_tx
                         .send(Err(tonic::Status::internal(
@@ -1202,7 +1200,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let mempool_height = self.block_cache.get_chain_height().await?.0;
         tokio::spawn(async move {
             let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 6) as u64),
+                time::Duration::from_secs(u64::from(service_timeout * 6)),
                 async {
                     let (mut mempool_stream, _mempool_handle) = match mempool
                         .get_mempool_stream(None)
@@ -1228,7 +1226,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                             .as_ref()
                                             .as_ref()
                                             .to_vec(),
-                                        height: mempool_height as u64,
+                                        height: u64::from(mempool_height),
                                     }))
                                     .await
                                     .is_err()
@@ -1251,7 +1249,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             )
             .await;
             match timeout {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(_) => {
                     channel_tx
                         .send(Err(tonic::Status::internal(
@@ -1266,9 +1264,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         Ok(RawTransactionStream::new(channel_rx))
     }
 
-    /// GetTreeState returns the note commitment tree state corresponding to the given block.
+    /// `GetTreeState` returns the note commitment tree state corresponding to the given block.
     /// See section 3.7 of the Zcash protocol specification. It returns several other useful
-    /// values also (even though they can be obtained using GetBlock).
+    /// values also (even though they can be obtained using `GetBlock`).
     /// The block can be specified by either height or hash.
     async fn get_tree_state(&self, request: BlockId) -> Result<TreeState, Self::Error> {
         let chain_info = self.get_blockchain_info().await?;
@@ -1282,9 +1280,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                 height, chain_info.blocks().0,
                             ))
                         ));
-                    } else {
-                        height.to_string()
                     }
+                    height.to_string()
                 }
                 Err(_) => {
                     return Err(FetchServiceError::TonicStatusError(
@@ -1302,7 +1299,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 let (hash, height, time, sapling, orchard) = state.into_parts();
                 Ok(TreeState {
                     network: chain_info.chain().clone(),
-                    height: height.0 as u64,
+                    height: u64::from(height.0),
                     hash: hash.to_string(),
                     time,
                     sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
@@ -1318,7 +1315,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         }
     }
 
-    /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
+    /// `GetLatestTreeState` returns the note commitment tree state corresponding to the chain tip.
     async fn get_latest_tree_state(&self) -> Result<TreeState, Self::Error> {
         let chain_info = self.get_blockchain_info().await?;
         match self
@@ -1329,7 +1326,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 let (hash, height, time, sapling, orchard) = state.into_parts();
                 Ok(TreeState {
                     network: chain_info.chain().clone(),
-                    height: height.0 as u64,
+                    height: u64::from(height.0),
                     hash: hash.to_string(),
                     time,
                     sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
@@ -1354,7 +1351,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
+    /// Ignores all utxos below block height [`GetAddressUtxosArg.start_height`].
     /// Returns max [GetAddressUtxosArg.max_entries] utxos, or unrestricted if [GetAddressUtxosArg.max_entries] = 0.
     /// Utxos are collected and returned as a single Vec.
     async fn get_address_utxos(
@@ -1367,7 +1364,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let mut entries: u32 = 0;
         for utxo in utxos {
             let (address, tx_hash, output_index, script, satoshis, height) = utxo.into_parts();
-            if (height.0 as u64) < request.start_height {
+            if u64::from(height.0) < request.start_height {
                 continue;
             }
             entries += 1;
@@ -1396,16 +1393,16 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 index: checked_index,
                 script: script.as_raw_bytes().to_vec(),
                 value_zat: checked_satoshis,
-                height: height.0 as u64,
+                height: u64::from(height.0),
             };
-            address_utxos.push(utxo_reply)
+            address_utxos.push(utxo_reply);
         }
         Ok(GetAddressUtxosReplyList { address_utxos })
     }
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
+    /// Ignores all utxos below block height [`GetAddressUtxosArg.start_height`].
     /// Returns max [GetAddressUtxosArg.max_entries] utxos, or unrestricted if [GetAddressUtxosArg.max_entries] = 0.
     /// Utxos are returned in a stream.
     async fn get_address_utxos_stream(
@@ -1418,40 +1415,34 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
+                time::Duration::from_secs(u64::from(service_timeout * 4)),
                 async {
                     let mut entries: u32 = 0;
                     for utxo in utxos {
                         let (address, tx_hash, output_index, script, satoshis, height) =
                             utxo.into_parts();
-                        if (height.0 as u64) < request.start_height {
+                        if u64::from(height.0) < request.start_height {
                             continue;
                         }
                         entries += 1;
                         if request.max_entries > 0 && entries > request.max_entries {
                             break;
                         }
-                        let checked_index = match i32::try_from(output_index.index()) {
-                            Ok(index) => index,
-                            Err(_) => {
-                                let _ = channel_tx
-                                    .send(Err(tonic::Status::unknown(
-                                        "Error: Index out of range. Failed to convert to i32.",
-                                    )))
-                                    .await;
-                                return;
-                            }
+                        let checked_index = if let Ok(index) = i32::try_from(output_index.index()) { index } else {
+                            let _ = channel_tx
+                                .send(Err(tonic::Status::unknown(
+                                    "Error: Index out of range. Failed to convert to i32.",
+                                )))
+                                .await;
+                            return;
                         };
-                        let checked_satoshis = match i64::try_from(satoshis) {
-                            Ok(satoshis) => satoshis,
-                            Err(_) => {
-                                let _ = channel_tx
-                                    .send(Err(tonic::Status::unknown(
-                                        "Error: Satoshis out of range. Failed to convert to i64.",
-                                    )))
-                                    .await;
-                                return;
-                            }
+                        let checked_satoshis = if let Ok(satoshis) = i64::try_from(satoshis) { satoshis } else {
+                            let _ = channel_tx
+                                .send(Err(tonic::Status::unknown(
+                                    "Error: Satoshis out of range. Failed to convert to i64.",
+                                )))
+                                .await;
+                            return;
                         };
                         let utxo_reply = GetAddressUtxosReply {
                             address: address.to_string(),
@@ -1459,7 +1450,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             index: checked_index,
                             script: script.as_raw_bytes().to_vec(),
                             value_zat: checked_satoshis,
-                            height: height.0 as u64,
+                            height: u64::from(height.0),
                         };
                         if channel_tx.send(Ok(utxo_reply)).await.is_err() {
                             return;
@@ -1469,7 +1460,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             )
             .await;
             match timeout {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(_) => {
                     channel_tx
                         .send(Err(tonic::Status::deadline_exceeded(
@@ -1510,14 +1501,14 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             vendor: "ZingoLabs ZainoD".to_string(),
             taddr_support: true,
             chain_name: blockchain_info.chain().clone(),
-            sapling_activation_height: sapling_activation_height.0 as u64,
+            sapling_activation_height: u64::from(sapling_activation_height.0),
             consensus_branch_id,
-            block_height: blockchain_info.blocks().0 as u64,
+            block_height: u64::from(blockchain_info.blocks().0),
             git_commit: self.data.build_info().commit_hash(),
             branch: self.data.build_info().branch(),
             build_date: self.data.build_info().build_date(),
             build_user: self.data.build_info().build_user(),
-            estimated_height: blockchain_info.estimated_height().0 as u64,
+            estimated_height: u64::from(blockchain_info.estimated_height().0),
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
         })

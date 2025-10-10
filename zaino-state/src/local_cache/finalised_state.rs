@@ -97,9 +97,9 @@ impl DbRequest {
 /// Fanalised part of the chain, held in an LMDB database.
 #[derive(Debug)]
 pub struct FinalisedState {
-    /// JsonRPC client based chain fetch service.
+    /// `JsonRPC` client based chain fetch service.
     fetcher: JsonRpSeeConnector,
-    /// Optional ReadStateService based chain fetch service.
+    /// Optional `ReadStateService` based chain fetch service.
     state: Option<ReadStateService>,
     /// LMDB Database Environmant.
     database: Arc<Environment>,
@@ -115,19 +115,19 @@ pub struct FinalisedState {
     write_task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Non-finalised state status.
     status: AtomicStatus,
-    /// BlockCache config data.
+    /// `BlockCache` config data.
     config: BlockCacheConfig,
 }
 
 impl FinalisedState {
-    /// Spawns a new [`Self`] and syncs the FinalisedState to the servers finalised state.
+    /// Spawns a new [`Self`] and syncs the `FinalisedState` to the servers finalised state.
     ///
     /// Inputs:
     /// - fetcher: Json RPC client.
-    /// - db_path: File path of the db.
-    /// - db_size: Max size of the db in gb.
-    /// - block_reciever: Channel that recieves new blocks to add to the db.
-    /// - status_signal: Used to send error status signals to outer processes.
+    /// - `db_path`: File path of the db.
+    /// - `db_size`: Max size of the db in gb.
+    /// - `block_reciever`: Channel that recieves new blocks to add to the db.
+    /// - `status_signal`: Used to send error status signals to outer processes.
     pub async fn spawn(
         fetcher: &JsonRpSeeConnector,
         state: Option<&ReadStateService>,
@@ -214,7 +214,7 @@ impl FinalisedState {
 
                 loop {
                     match finalised_state.insert_block((height, hash, compact_block.clone())) {
-                        Ok(_) => {
+                        Ok(()) => {
                             info!(
                                 "Block at height [{}] with hash [{}] successfully committed to finalised state.",
                                 height.0, hash
@@ -222,27 +222,22 @@ impl FinalisedState {
                             break;
                         }
                         Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
-                            match finalised_state.get_hash(height.0) {
-                                Ok(db_hash) => {
-                                    if db_hash != hash {
-                                        if finalised_state.delete_block(height).is_err() {
-                                            finalised_state.status.store(StatusType::CriticalError);
-                                            return;
-                                        };
-                                        continue;
-                                    } else {
-                                        info!(
-                                            "Block at height {} already exists, skipping.",
-                                            height.0
-                                        );
-                                        break;
+                            if let Ok(db_hash) = finalised_state.get_hash(height.0) {
+                                if db_hash != hash {
+                                    if finalised_state.delete_block(height).is_err() {
+                                        finalised_state.status.store(StatusType::CriticalError);
+                                        return;
                                     }
+                                    continue;
                                 }
-                                Err(_) => {
-                                    finalised_state.status.store(StatusType::CriticalError);
-                                    return;
-                                }
+                                info!(
+                                    "Block at height {} already exists, skipping.",
+                                    height.0
+                                );
+                                break;
                             }
+                            finalised_state.status.store(StatusType::CriticalError);
+                            return;
                         }
                         Err(FinalisedStateError::LmdbError(db_err)) => {
                             error!("LMDB error inserting block {}: {:?}", height.0, db_err);
@@ -326,35 +321,29 @@ impl FinalisedState {
                 response_channel,
             }) = request_receiver.recv().await
             {
-                let response = match finalised_state.get_block(hash_or_height) {
-                    Ok(block) => Ok(block),
-                    Err(_) => {
-                        warn!("Failed to fetch block from DB, re-fetching from validator.");
-                        match fetch_block_from_node(
-                            finalised_state.state.as_ref(),
-                            Some(&finalised_state.config.network.to_zebra_network()),
-                            &finalised_state.fetcher,
-                            hash_or_height,
-                        )
-                        .await
-                        {
-                            Ok((hash, block)) => {
-                                match finalised_state.insert_block((
-                                    Height(block.height as u32),
-                                    hash,
-                                    block.clone(),
-                                )) {
-                                    Ok(_) => Ok(block),
-                                    Err(_) => {
-                                        warn!("Failed to insert missing block into DB, serving from validator.");
-                                        Ok(block)
-                                    }
-                                }
+                let response = if let Ok(block) = finalised_state.get_block(hash_or_height) { Ok(block) } else {
+                    warn!("Failed to fetch block from DB, re-fetching from validator.");
+                    match fetch_block_from_node(
+                        finalised_state.state.as_ref(),
+                        Some(&finalised_state.config.network.to_zebra_network()),
+                        &finalised_state.fetcher,
+                        hash_or_height,
+                    )
+                    .await
+                    {
+                        Ok((hash, block)) => {
+                            if let Ok(()) = finalised_state.insert_block((
+                                Height(block.height as u32),
+                                hash,
+                                block.clone(),
+                            )) { Ok(block) } else {
+                                warn!("Failed to insert missing block into DB, serving from validator.");
+                                Ok(block)
                             }
-                            Err(_) => Err(FinalisedStateError::Custom(format!(
-                                "Block {hash_or_height:?} not found in finalised state or validator."
-                            ))),
                         }
+                        Err(_) => Err(FinalisedStateError::Custom(format!(
+                            "Block {hash_or_height:?} not found in finalised state or validator."
+                        ))),
                     }
                 };
 
@@ -371,7 +360,7 @@ impl FinalisedState {
     /// Syncs database with the server, and waits for server to sync with P2P network.
     ///
     /// Checks for reorg before syncing:
-    /// - Searches from ZainoDB tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
+    /// - Searches from `ZainoDB` tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
     async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
         let network = self.config.network.to_zebra_network();
@@ -412,7 +401,7 @@ impl FinalisedState {
                     }
                     break;
                 }
-            };
+            }
 
             reorg_hash = self.get_hash(reorg_height.0).unwrap_or(Hash([0u8; 32]));
 
@@ -511,20 +500,19 @@ impl FinalisedState {
                     }
                 }
                 sync_height = server_height - 99;
-                if (blockchain_info.blocks.0 as i64 - blockchain_info.estimated_height.0 as i64)
+                if (i64::from(blockchain_info.blocks.0) - i64::from(blockchain_info.estimated_height.0))
                     .abs()
                     <= 10
                 {
                     break;
-                } else {
-                    info!(" - Validator syncing with network. ZainoDB chain height: {}, Validator chain height: {}, Estimated Network chain height: {}",
-                            &sync_height,
-                            &blockchain_info.blocks.0,
-                            &blockchain_info.estimated_height.0
-                        );
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                    continue;
                 }
+                info!(" - Validator syncing with network. ZainoDB chain height: {}, Validator chain height: {}, Estimated Network chain height: {}",
+                        &sync_height,
+                        &blockchain_info.blocks.0,
+                        &blockchain_info.estimated_height.0
+                    );
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                continue;
             }
         }
 
@@ -579,7 +567,7 @@ impl FinalisedState {
         Ok(())
     }
 
-    /// Retrieves a CompactBlock by Height or Hash.
+    /// Retrieves a `CompactBlock` by Height or Hash.
     ///
     /// NOTE: It may be more efficient to implement a `get_block_range` method and batch database read calls.
     fn get_block(&self, height_or_hash: HashOrHeight) -> Result<CompactBlock, FinalisedStateError> {
@@ -636,7 +624,7 @@ impl FinalisedState {
     }
 
     /// Returns a [`FinalisedStateSubscriber`].
-    pub fn subscriber(&self) -> FinalisedStateSubscriber {
+    #[must_use] pub fn subscriber(&self) -> FinalisedStateSubscriber {
         FinalisedStateSubscriber {
             request_sender: self.request_sender.clone(),
             status: self.status.clone(),
@@ -644,7 +632,7 @@ impl FinalisedState {
     }
 
     /// Returns the status of the finalised state.
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
@@ -717,8 +705,8 @@ impl FinalisedStateSubscriber {
         }
     }
 
-    /// Returns the status of the FinalisedState..
-    pub fn status(&self) -> StatusType {
+    /// Returns the status of the `FinalisedState`..
+    #[must_use] pub fn status(&self) -> StatusType {
         self.status.load()
     }
 }

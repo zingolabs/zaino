@@ -23,18 +23,18 @@ pub struct CommitmentTreeData {
 }
 
 impl CommitmentTreeData {
-    /// Returns a new CommitmentTreeData instance.
-    pub fn new(roots: CommitmentTreeRoots, sizes: CommitmentTreeSizes) -> Self {
+    /// Returns a new `CommitmentTreeData` instance.
+    #[must_use] pub fn new(roots: CommitmentTreeRoots, sizes: CommitmentTreeSizes) -> Self {
         Self { roots, sizes }
     }
 
     /// Returns the commitment tree roots for the block.
-    pub fn roots(&self) -> &CommitmentTreeRoots {
+    #[must_use] pub fn roots(&self) -> &CommitmentTreeRoots {
         &self.roots
     }
 
     /// Returns the commitment tree sizes for the block.
-    pub fn sizes(&self) -> &CommitmentTreeSizes {
+    #[must_use] pub fn sizes(&self) -> &CommitmentTreeSizes {
         &self.sizes
     }
 }
@@ -60,7 +60,7 @@ impl ZainoVersionedSerialise for CommitmentTreeData {
     }
 }
 
-/// CommitmentTreeData: 74 bytes total
+/// `CommitmentTreeData`: 74 bytes total
 impl FixedEncodedLen for CommitmentTreeData {
     // 1 byte tag + 64 body for roots
     // + 1 byte tag +  8 body for sizes
@@ -79,18 +79,18 @@ pub struct CommitmentTreeRoots {
 }
 
 impl CommitmentTreeRoots {
-    /// Reutns a new CommitmentTreeRoots instance.
-    pub fn new(sapling: [u8; 32], orchard: [u8; 32]) -> Self {
+    /// Reutns a new `CommitmentTreeRoots` instance.
+    #[must_use] pub fn new(sapling: [u8; 32], orchard: [u8; 32]) -> Self {
         Self { sapling, orchard }
     }
 
     /// Returns sapling commitment tree root.
-    pub fn sapling(&self) -> &[u8; 32] {
+    #[must_use] pub fn sapling(&self) -> &[u8; 32] {
         &self.sapling
     }
 
     /// returns orchard commitment tree root.
-    pub fn orchard(&self) -> &[u8; 32] {
+    #[must_use] pub fn orchard(&self) -> &[u8; 32] {
         &self.orchard
     }
 }
@@ -116,7 +116,7 @@ impl ZainoVersionedSerialise for CommitmentTreeRoots {
     }
 }
 
-/// CommitmentTreeRoots: 64 bytes total
+/// `CommitmentTreeRoots`: 64 bytes total
 impl FixedEncodedLen for CommitmentTreeRoots {
     /// 32 byte hash + 32 byte hash.
     const ENCODED_LEN: usize = 32 + 32;
@@ -133,18 +133,18 @@ pub struct CommitmentTreeSizes {
 }
 
 impl CommitmentTreeSizes {
-    /// Creates a new CompactSaplingSizes instance.
-    pub fn new(sapling: u32, orchard: u32) -> Self {
+    /// Creates a new `CompactSaplingSizes` instance.
+    #[must_use] pub fn new(sapling: u32, orchard: u32) -> Self {
         Self { sapling, orchard }
     }
 
     /// Returns sapling commitment tree size
-    pub fn sapling(&self) -> u32 {
+    #[must_use] pub fn sapling(&self) -> u32 {
         self.sapling
     }
 
     /// Returns orchard commitment tree size
-    pub fn orchard(&self) -> u32 {
+    #[must_use] pub fn orchard(&self) -> u32 {
         self.orchard
     }
 }
@@ -170,7 +170,7 @@ impl ZainoVersionedSerialise for CommitmentTreeSizes {
     }
 }
 
-/// CommitmentTreeSizes: 8 bytes total
+/// `CommitmentTreeSizes`: 8 bytes total
 impl FixedEncodedLen for CommitmentTreeSizes {
     /// 4 byte LE int32 + 4 byte LE int32
     const ENCODED_LEN: usize = 4 + 4;

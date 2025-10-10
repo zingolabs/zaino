@@ -38,11 +38,11 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-/// created for NonfinalizedBlockCacheSnapshot best_tip field for naming fields
+/// created for `NonfinalizedBlockCacheSnapshot` `best_tip` field for naming fields
 pub struct BestTip {
-    /// from chain_index types
+    /// from `chain_index` types
     pub height: Height,
-    /// from chain_index types
+    /// from `chain_index` types
     pub blockhash: BlockHash,
 }
 
@@ -77,7 +77,7 @@ pub enum NodeConnectionError {
 }
 
 #[derive(Debug)]
-/// An error occurred during sync of the NonFinalized State.
+/// An error occurred during sync of the `NonFinalized` State.
 pub enum SyncError {
     /// The backing validator node returned corrupt, invalid, or incomplete data
     /// TODO: This may not be correctly disambibuated from temporary network issues
@@ -93,7 +93,7 @@ pub enum SyncError {
     /// only happens when we attempt to reorg below the start of the chain,
     /// indicating an entirely separate regtest/testnet chain to what we expected
     ReorgFailure(String),
-    /// UnrecoverableFinalizedStateError
+    /// `UnrecoverableFinalizedStateError`
     CannotReadFinalizedState,
 }
 
@@ -116,7 +116,7 @@ struct MissingGenesisBlock;
 struct InvalidData(String);
 
 #[derive(Debug, thiserror::Error)]
-/// An error occured during initial creation of the NonFinalizedState
+/// An error occured during initial creation of the `NonFinalizedState`
 pub enum InitError {
     #[error("zebra returned invalid data: {0}")]
     /// the connected node returned garbage data
@@ -148,174 +148,171 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         info!("Initialising non-finalised state.");
         let (staging_sender, staging_receiver) = mpsc::channel(100);
         let staged = Mutex::new(staging_receiver);
-        let chainblock = match start_block {
-            Some(block) => block,
-            None => {
-                let genesis_block = source
-                    .get_block(HashOrHeight::Height(zebra_chain::block::Height(0)))
-                    .await
-                    .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
-                    .ok_or_else(|| InitError::InvalidNodeData(Box::new(MissingGenesisBlock)))?;
-                let (sapling_root_and_len, orchard_root_and_len) = source
-                    .get_commitment_tree_roots(genesis_block.hash().into())
-                    .await
-                    .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?;
-                let ((sapling_root, sapling_size), (orchard_root, orchard_size)) = (
-                    sapling_root_and_len.unwrap_or_default(),
-                    orchard_root_and_len.unwrap_or_default(),
-                );
+        let chainblock = if let Some(block) = start_block { block } else {
+            let genesis_block = source
+                .get_block(HashOrHeight::Height(zebra_chain::block::Height(0)))
+                .await
+                .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
+                .ok_or_else(|| InitError::InvalidNodeData(Box::new(MissingGenesisBlock)))?;
+            let (sapling_root_and_len, orchard_root_and_len) = source
+                .get_commitment_tree_roots(genesis_block.hash().into())
+                .await
+                .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?;
+            let ((sapling_root, sapling_size), (orchard_root, orchard_size)) = (
+                sapling_root_and_len.unwrap_or_default(),
+                orchard_root_and_len.unwrap_or_default(),
+            );
 
-                let data = BlockData {
-                    version: genesis_block.header.version,
-                    time: genesis_block.header.time.timestamp(),
-                    merkle_root: genesis_block.header.merkle_root.0,
-                    bits: u32::from_be_bytes(
-                        genesis_block
-                            .header
-                            .difficulty_threshold
-                            .bytes_in_display_order(),
-                    ),
-                    block_commitments: match genesis_block
-                        .commitment(&network)
-                        .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
-                    {
-                        zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
-                        zebra_chain::block::Commitment::FinalSaplingRoot(root) => root.into(),
-                        zebra_chain::block::Commitment::ChainHistoryActivationReserved => [0; 32],
-                        zebra_chain::block::Commitment::ChainHistoryRoot(
-                            chain_history_mmr_root_hash,
-                        ) => chain_history_mmr_root_hash.bytes_in_serialized_order(),
-                        zebra_chain::block::Commitment::ChainHistoryBlockTxAuthCommitment(
-                            chain_history_block_tx_auth_commitment_hash,
-                        ) => {
-                            chain_history_block_tx_auth_commitment_hash.bytes_in_serialized_order()
-                        }
-                    },
-
-                    nonce: *genesis_block.header.nonce,
-                    solution: genesis_block.header.solution.into(),
-                };
-
-                let mut transactions = Vec::new();
-                for (i, trnsctn) in genesis_block.transactions.iter().enumerate() {
-                    let transparent = TransparentCompactTx::new(
-                        trnsctn
-                            .inputs()
-                            .iter()
-                            .filter_map(|input| {
-                                input.outpoint().map(|outpoint| {
-                                    TxInCompact::new(outpoint.hash.0, outpoint.index)
-                                })
-                            })
-                            .collect(),
-                        trnsctn
-                            .outputs()
-                            .iter()
-                            .filter_map(|output| {
-                                TxOutCompact::try_from((
-                                    u64::from(output.value),
-                                    output.lock_script.as_raw_bytes(),
-                                ))
-                                .ok()
-                            })
-                            .collect(),
-                    );
-
-                    let sapling = SaplingCompactTx::new(
-                        Some(i64::from(trnsctn.sapling_value_balance().sapling_amount())),
-                        trnsctn
-                            .sapling_nullifiers()
-                            .map(|nf| CompactSaplingSpend::new(*nf.0))
-                            .collect(),
-                        trnsctn
-                            .sapling_outputs()
-                            .map(|output| {
-                                CompactSaplingOutput::new(
-                                    output.cm_u.to_bytes(),
-                                    <[u8; 32]>::from(output.ephemeral_key),
-                                    // This unwrap is unnecessary, but to remove it one would need to write
-                                    // a new array of [input[0], input[1]..] and enumerate all 52 elements
-                                    //
-                                    // This would be uglier than the unwrap
-                                    <[u8; 580]>::from(output.enc_ciphertext)[..52]
-                                        .try_into()
-                                        .unwrap(),
-                                )
-                            })
-                            .collect(),
-                    );
-                    let orchard = OrchardCompactTx::new(
-                        Some(i64::from(trnsctn.orchard_value_balance().orchard_amount())),
-                        trnsctn
-                            .orchard_actions()
-                            .map(|action| {
-                                CompactOrchardAction::new(
-                                    <[u8; 32]>::from(action.nullifier),
-                                    <[u8; 32]>::from(action.cm_x),
-                                    <[u8; 32]>::from(action.ephemeral_key),
-                                    // This unwrap is unnecessary, but to remove it one would need to write
-                                    // a new array of [input[0], input[1]..] and enumerate all 52 elements
-                                    //
-                                    // This would be uglier than the unwrap
-                                    <[u8; 580]>::from(action.enc_ciphertext)[..52]
-                                        .try_into()
-                                        .unwrap(),
-                                )
-                            })
-                            .collect(),
-                    );
-
-                    let txdata = CompactTxData::new(
-                        i as u64,
-                        TransactionHash(trnsctn.hash().0),
-                        transparent,
-                        sapling,
-                        orchard,
-                    );
-                    transactions.push(txdata);
-                }
-
-                let height = Some(GENESIS_HEIGHT);
-                let hash = BlockHash::from(genesis_block.hash());
-                let parent_hash = BlockHash::from(genesis_block.header.previous_block_hash);
-                let chainwork = ChainWork::from(U256::from(
+            let data = BlockData {
+                version: genesis_block.header.version,
+                time: genesis_block.header.time.timestamp(),
+                merkle_root: genesis_block.header.merkle_root.0,
+                bits: u32::from_be_bytes(
                     genesis_block
                         .header
                         .difficulty_threshold
-                        .to_work()
-                        .ok_or_else(|| {
-                            InitError::InvalidNodeData(Box::new(InvalidData(format!(
-                                "Invalid work field of block {hash} {height:?}"
-                            ))))
-                        })?
-                        .as_u128(),
-                ));
+                        .bytes_in_display_order(),
+                ),
+                block_commitments: match genesis_block
+                    .commitment(&network)
+                    .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
+                {
+                    zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
+                    zebra_chain::block::Commitment::FinalSaplingRoot(root) => root.into(),
+                    zebra_chain::block::Commitment::ChainHistoryActivationReserved => [0; 32],
+                    zebra_chain::block::Commitment::ChainHistoryRoot(
+                        chain_history_mmr_root_hash,
+                    ) => chain_history_mmr_root_hash.bytes_in_serialized_order(),
+                    zebra_chain::block::Commitment::ChainHistoryBlockTxAuthCommitment(
+                        chain_history_block_tx_auth_commitment_hash,
+                    ) => {
+                        chain_history_block_tx_auth_commitment_hash.bytes_in_serialized_order()
+                    }
+                },
 
-                let index = BlockIndex {
-                    hash,
-                    parent_hash,
-                    chainwork,
-                    height,
-                };
+                nonce: *genesis_block.header.nonce,
+                solution: genesis_block.header.solution.into(),
+            };
 
-                //TODO: Is a default (zero) root correct?
-                let commitment_tree_roots = CommitmentTreeRoots::new(
-                    <[u8; 32]>::from(sapling_root),
-                    <[u8; 32]>::from(orchard_root),
+            let mut transactions = Vec::new();
+            for (i, trnsctn) in genesis_block.transactions.iter().enumerate() {
+                let transparent = TransparentCompactTx::new(
+                    trnsctn
+                        .inputs()
+                        .iter()
+                        .filter_map(|input| {
+                            input.outpoint().map(|outpoint| {
+                                TxInCompact::new(outpoint.hash.0, outpoint.index)
+                            })
+                        })
+                        .collect(),
+                    trnsctn
+                        .outputs()
+                        .iter()
+                        .filter_map(|output| {
+                            TxOutCompact::try_from((
+                                u64::from(output.value),
+                                output.lock_script.as_raw_bytes(),
+                            ))
+                            .ok()
+                        })
+                        .collect(),
                 );
 
-                let commitment_tree_size =
-                    CommitmentTreeSizes::new(sapling_size as u32, orchard_size as u32);
+                let sapling = SaplingCompactTx::new(
+                    Some(i64::from(trnsctn.sapling_value_balance().sapling_amount())),
+                    trnsctn
+                        .sapling_nullifiers()
+                        .map(|nf| CompactSaplingSpend::new(*nf.0))
+                        .collect(),
+                    trnsctn
+                        .sapling_outputs()
+                        .map(|output| {
+                            CompactSaplingOutput::new(
+                                output.cm_u.to_bytes(),
+                                <[u8; 32]>::from(output.ephemeral_key),
+                                // This unwrap is unnecessary, but to remove it one would need to write
+                                // a new array of [input[0], input[1]..] and enumerate all 52 elements
+                                //
+                                // This would be uglier than the unwrap
+                                <[u8; 580]>::from(output.enc_ciphertext)[..52]
+                                    .try_into()
+                                    .unwrap(),
+                            )
+                        })
+                        .collect(),
+                );
+                let orchard = OrchardCompactTx::new(
+                    Some(i64::from(trnsctn.orchard_value_balance().orchard_amount())),
+                    trnsctn
+                        .orchard_actions()
+                        .map(|action| {
+                            CompactOrchardAction::new(
+                                <[u8; 32]>::from(action.nullifier),
+                                <[u8; 32]>::from(action.cm_x),
+                                <[u8; 32]>::from(action.ephemeral_key),
+                                // This unwrap is unnecessary, but to remove it one would need to write
+                                // a new array of [input[0], input[1]..] and enumerate all 52 elements
+                                //
+                                // This would be uglier than the unwrap
+                                <[u8; 580]>::from(action.enc_ciphertext)[..52]
+                                    .try_into()
+                                    .unwrap(),
+                            )
+                        })
+                        .collect(),
+                );
 
-                let commitment_tree_data =
-                    CommitmentTreeData::new(commitment_tree_roots, commitment_tree_size);
+                let txdata = CompactTxData::new(
+                    i as u64,
+                    TransactionHash(trnsctn.hash().0),
+                    transparent,
+                    sapling,
+                    orchard,
+                );
+                transactions.push(txdata);
+            }
 
-                IndexedBlock {
-                    index,
-                    data,
-                    transactions,
-                    commitment_tree_data,
-                }
+            let height = Some(GENESIS_HEIGHT);
+            let hash = BlockHash::from(genesis_block.hash());
+            let parent_hash = BlockHash::from(genesis_block.header.previous_block_hash);
+            let chainwork = ChainWork::from(U256::from(
+                genesis_block
+                    .header
+                    .difficulty_threshold
+                    .to_work()
+                    .ok_or_else(|| {
+                        InitError::InvalidNodeData(Box::new(InvalidData(format!(
+                            "Invalid work field of block {hash} {height:?}"
+                        ))))
+                    })?
+                    .as_u128(),
+            ));
+
+            let index = BlockIndex {
+                hash,
+                parent_hash,
+                chainwork,
+                height,
+            };
+
+            //TODO: Is a default (zero) root correct?
+            let commitment_tree_roots = CommitmentTreeRoots::new(
+                <[u8; 32]>::from(sapling_root),
+                <[u8; 32]>::from(orchard_root),
+            );
+
+            let commitment_tree_size =
+                CommitmentTreeSizes::new(sapling_size as u32, orchard_size as u32);
+
+            let commitment_tree_data =
+                CommitmentTreeData::new(commitment_tree_roots, commitment_tree_size);
+
+            IndexedBlock {
+                index,
+                data,
+                transactions,
+                commitment_tree_data,
             }
         };
         let working_height = chainblock

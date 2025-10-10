@@ -109,7 +109,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
 
     /// The V0 database that we are migrating from was a lightwallet specific database
     /// that only built compact block data from sapling activation onwards.
-    /// DbV1 is required to be built from genasis to correctly build the transparent address indexes.
+    /// `DbV1` is required to be built from genasis to correctly build the transparent address indexes.
     /// For this reason we do not do any partial builds in the V0 to V1 migration.
     /// We just run V0 as primary until V1 is fully built in shadow, then switch primary, deleting V0.
     async fn migrate(
@@ -253,7 +253,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
             info!("Wiping v0 database from disk.");
 
             match tokio::fs::remove_dir_all(&db_path).await {
-                Ok(_) => tracing::info!("Deleted old database at {}", db_path.display()),
+                Ok(()) => tracing::info!("Deleted old database at {}", db_path.display()),
                 Err(e) => tracing::error!(
                     "Failed to delete old database at {}: {}",
                     db_path.display(),

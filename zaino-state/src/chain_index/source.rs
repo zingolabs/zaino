@@ -94,12 +94,12 @@ pub struct InvalidData(String);
 
 type BlockchainSourceResult<T> = Result<T, BlockchainSourceError>;
 
-/// ReadStateService based validator connector.
+/// `ReadStateService` based validator connector.
 ///
-/// Currently the Mempool cannot utilise the mempool change endpoint in the ReadStateService,
+/// Currently the Mempool cannot utilise the mempool change endpoint in the `ReadStateService`,
 /// for this reason the lagacy jsonrpc inteface is used until the Mempool updates required can be implemented.
 ///
-/// Due to the difference if the mempool inteface provided by the ReadStateService and the Json RPC service
+/// Due to the difference if the mempool inteface provided by the `ReadStateService` and the Json RPC service
 /// two seperate Mempool implementation will likely be required.
 #[derive(Clone, Debug)]
 pub struct State {
@@ -120,7 +120,7 @@ pub enum ValidatorConnector {
     ///
     /// NOTE: See docs for State struct.
     State(State),
-    /// We are connected to a zebrad, zcashd, or other zainod via JsonRpc ("JsonRpSee")
+    /// We are connected to a zebrad, zcashd, or other zainod via `JsonRpc` ("`JsonRpSee`")
     Fetch(JsonRpSeeConnector),
 }
 

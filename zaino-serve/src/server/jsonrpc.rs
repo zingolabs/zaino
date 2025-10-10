@@ -1,4 +1,4 @@
-//! Zaino's JsonRPC Server Implementation.
+//! Zaino's `JsonRPC` Server Implementation.
 
 use crate::{
     rpc::{jsonrpc::service::ZcashIndexerRpcServer as _, JsonRpcClient},
@@ -22,7 +22,7 @@ use tracing::warn;
 pub struct JsonRpcServer {
     /// Current status of the server.
     pub status: AtomicStatus,
-    /// JoinHandle for the servers `serve` task.
+    /// `JoinHandle` for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
     /// Cookie dir.
     cookie_dir: Option<PathBuf>,
@@ -32,7 +32,7 @@ impl JsonRpcServer {
     /// Starts the JSON-RPC service.
     ///
     /// Launches all components then enters command loop:
-    /// - Updates the ServerStatus.
+    /// - Updates the `ServerStatus`.
     /// - Checks for shutdown signal, shutting down server if received.
     pub async fn spawn<Service: ZcashIndexer + LightWalletIndexer + Clone>(
         service_subscriber: IndexerSubscriber<Service>,
@@ -99,10 +99,10 @@ impl JsonRpcServer {
                 task_status.store(StatusType::Ready);
 
                 tokio::select! {
-                    _ = shutdown_signal => {
+                    () = shutdown_signal => {
                         let _ = server_handle_clone.stop();
                     }
-                    _ = server_handle.stopped() => {},
+                    () = server_handle.stopped() => {},
                 }
 
                 task_status.store(StatusType::Offline);
@@ -133,7 +133,7 @@ impl JsonRpcServer {
     }
 
     /// Returns the servers current status.
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         self.status.load()
     }
 }

@@ -1,4 +1,4 @@
-//! A mempool-fetching, chain-fetching and transaction submission service that uses zcashd's JsonRPC interface.
+//! A mempool-fetching, chain-fetching and transaction submission service that uses zcashd's `JsonRPC` interface.
 //!
 //! Usable as a backwards-compatible, legacy option.
 

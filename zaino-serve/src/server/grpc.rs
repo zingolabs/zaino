@@ -13,11 +13,11 @@ use crate::{
     server::{config::GrpcConfig, error::ServerError},
 };
 
-/// LightWallet server capable of servicing clients over TCP.
+/// `LightWallet` server capable of servicing clients over TCP.
 pub struct TonicServer {
     /// Current status of the server.
     pub status: AtomicStatus,
-    /// JoinHandle for the servers `serve` task.
+    /// `JoinHandle` for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
 }
 
@@ -25,7 +25,7 @@ impl TonicServer {
     /// Starts the gRPC service.
     ///
     /// Launches all components then enters command loop:
-    /// - Updates the ServerStatus.
+    /// - Updates the `ServerStatus`.
     /// - Checks for shutdown signal, shutting down server if received.
     pub async fn spawn<Indexer: ZcashIndexer + LightWalletIndexer>(
         service_subscriber: IndexerSubscriber<Indexer>,
@@ -82,7 +82,7 @@ impl TonicServer {
     }
 
     /// Returns the servers current status.
-    pub fn status(&self) -> StatusType {
+    #[must_use] pub fn status(&self) -> StatusType {
         self.status.load()
     }
 }

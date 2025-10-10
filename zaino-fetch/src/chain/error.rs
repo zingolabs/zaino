@@ -1,4 +1,4 @@
-//! Hold error types for the BlockCache and related functionality.
+//! Hold error types for the `BlockCache` and related functionality.
 
 /// Parser Error Type.
 #[derive(Debug, thiserror::Error)]

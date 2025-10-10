@@ -51,7 +51,7 @@ struct BlockHeaderData {
     hash_merkle_root: Vec<u8>,
 
     /// \[Pre-Sapling\] A reserved field which should be ignored.
-    /// \[Sapling onward\] The root LEBS2OSP_256(rt) of the Sapling note
+    /// \[Sapling onward\] The root `LEBS2OSP_256(rt)` of the Sapling note
     /// commitment tree corresponding to the final Sapling treestate of this
     /// block.
     ///
@@ -85,7 +85,7 @@ struct BlockHeaderData {
 
     /// The Equihash solution.
     ///
-    /// Size \[bytes\]: CompactLength
+    /// Size \[bytes\]: `CompactLength`
     solution: Vec<u8>,
 }
 
@@ -202,47 +202,47 @@ pub struct FullBlockHeader {
 
 impl FullBlockHeader {
     /// Returns the Zcash block version.
-    pub fn version(&self) -> i32 {
+    #[must_use] pub fn version(&self) -> i32 {
         self.raw_block_header.version
     }
 
     /// Returns The hash of the previous block.
-    pub fn hash_prev_block(&self) -> Vec<u8> {
+    #[must_use] pub fn hash_prev_block(&self) -> Vec<u8> {
         self.raw_block_header.hash_prev_block.clone()
     }
 
     /// Returns the root of the Bitcoin-inherited transaction Merkle tree.
-    pub fn hash_merkle_root(&self) -> Vec<u8> {
+    #[must_use] pub fn hash_merkle_root(&self) -> Vec<u8> {
         self.raw_block_header.hash_merkle_root.clone()
     }
 
     /// Returns the final sapling root of the block.
-    pub fn final_sapling_root(&self) -> Vec<u8> {
+    #[must_use] pub fn final_sapling_root(&self) -> Vec<u8> {
         self.raw_block_header.hash_final_sapling_root.clone()
     }
 
     /// Returns the time when the miner started hashing the header (according to the miner).
-    pub fn time(&self) -> u32 {
+    #[must_use] pub fn time(&self) -> u32 {
         self.raw_block_header.time
     }
 
     /// Returns an encoded version of the target threshold.
-    pub fn n_bits_bytes(&self) -> Vec<u8> {
+    #[must_use] pub fn n_bits_bytes(&self) -> Vec<u8> {
         self.raw_block_header.n_bits_bytes.clone()
     }
 
     /// Returns the block's nonce.
-    pub fn nonce(&self) -> Vec<u8> {
+    #[must_use] pub fn nonce(&self) -> Vec<u8> {
         self.raw_block_header.nonce.clone()
     }
 
     /// Returns the block's Equihash solution.
-    pub fn solution(&self) -> Vec<u8> {
+    #[must_use] pub fn solution(&self) -> Vec<u8> {
         self.raw_block_header.solution.clone()
     }
 
     /// Returns the Hash of the current block.
-    pub fn cached_hash(&self) -> Vec<u8> {
+    #[must_use] pub fn cached_hash(&self) -> Vec<u8> {
         self.cached_hash.clone()
     }
 }
@@ -291,7 +291,7 @@ impl ParseFromSlice for FullBlock {
         }
         let mut transactions = Vec::with_capacity(tx_count as usize);
         let mut remaining_data = &data[cursor.position() as usize..];
-        for txid_item in txid.iter() {
+        for txid_item in &txid {
             if remaining_data.is_empty() {
                 return Err(ParseError::InvalidData(
                     "parsing block transactions: not enough data for transaction.".to_string(),
@@ -325,23 +325,23 @@ impl ParseFromSlice for FullBlock {
 
 /// Genesis block special case.
 ///
-/// From LightWalletD:
+/// From `LightWalletD`:
 /// see <https://github.com/zcash/lightwalletd/issues/17#issuecomment-467110828>.
 const GENESIS_TARGET_DIFFICULTY: u32 = 520617983;
 
 impl FullBlock {
     /// Returns the full block header.
-    pub fn header(&self) -> FullBlockHeader {
+    #[must_use] pub fn header(&self) -> FullBlockHeader {
         self.hdr.clone()
     }
 
     /// Returns the transactions held in  the block.
-    pub fn transactions(&self) -> Vec<super::transaction::FullTransaction> {
+    #[must_use] pub fn transactions(&self) -> Vec<super::transaction::FullTransaction> {
         self.vtx.clone()
     }
 
     /// Returns the block height.
-    pub fn height(&self) -> i32 {
+    #[must_use] pub fn height(&self) -> i32 {
         self.height
     }
 
@@ -351,11 +351,11 @@ impl FullBlock {
     /// after applying all Orchard actions in the block.
     ///
     /// Returns `Some(Vec<u8>)` if present, else `None`.
-    pub fn auth_data_root(&self) -> Option<Vec<u8>> {
-        self.vtx.first().and_then(|tx| tx.anchor_orchard())
+    #[must_use] pub fn auth_data_root(&self) -> Option<Vec<u8>> {
+        self.vtx.first().and_then(super::transaction::FullTransaction::anchor_orchard)
     }
 
-    /// Decodes a hex encoded zcash full block into a FullBlock struct.
+    /// Decodes a hex encoded zcash full block into a `FullBlock` struct.
     pub fn parse_from_hex(data: &[u8], txid: Option<Vec<Vec<u8>>>) -> Result<Self, ParseError> {
         let (remaining_data, full_block) = Self::parse_from_slice(data, txid, None)?;
         if !remaining_data.is_empty() {

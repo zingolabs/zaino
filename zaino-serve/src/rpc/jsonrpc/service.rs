@@ -337,7 +337,7 @@ pub trait ZcashIndexerRpc {
     ) -> Result<Vec<GetAddressUtxos>, ErrorObjectOwned>;
 }
 
-/// Uses ErrorCode::InvalidParams as this is converted to zcash legacy "minsc" ErrorCode in RPC middleware.
+/// Uses `ErrorCode::InvalidParams` as this is converted to zcash legacy "minsc" `ErrorCode` in RPC middleware.
 #[jsonrpsee::core::async_trait]
 impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonRpcClient<Indexer> {
     async fn get_info(&self) -> Result<GetInfo, ErrorObjectOwned> {

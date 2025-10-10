@@ -102,7 +102,7 @@ pub trait ZainoVersionedSerialise: Sized {
     /*──────────── router ────────────*/
 
     #[inline]
-    /// Decode the body, dispatcing to the appropriate decode_vx function
+    /// Decode the body, dispatcing to the appropriate `decode_vx` function
     fn decode_body<R: Read>(r: &mut R, version_tag: u8) -> io::Result<Self> {
         if version_tag == Self::VERSION {
             Self::decode_latest(r)
@@ -164,10 +164,10 @@ pub trait FixedEncodedLen {
 }
 
 /* ──────────────────────────── CompactSize helpers ────────────────────────────── */
-/// A zcash/bitcoin CompactSize, a form of variable-length integer
+/// A zcash/bitcoin `CompactSize`, a form of variable-length integer
 pub struct CompactSize;
 
-/// The largest value representable as a CompactSize
+/// The largest value representable as a `CompactSize`
 pub const MAX_COMPACT_SIZE: u32 = 0x0200_0000;
 
 impl CompactSize {
@@ -178,7 +178,7 @@ impl CompactSize {
         let flag = flag_bytes[0];
 
         let result = if flag < 253 {
-            Ok(flag as u64)
+            Ok(u64::from(flag))
         } else if flag == 253 {
             let mut bytes = [0; 2];
             reader.read_exact(&mut bytes)?;
@@ -187,7 +187,7 @@ impl CompactSize {
                     io::ErrorKind::InvalidInput,
                     "non-canonical CompactSize",
                 )),
-                n => Ok(n as u64),
+                n => Ok(u64::from(n)),
             }
         } else if flag == 254 {
             let mut bytes = [0; 4];
@@ -197,7 +197,7 @@ impl CompactSize {
                     io::ErrorKind::InvalidInput,
                     "non-canonical CompactSize",
                 )),
-                n => Ok(n as u64),
+                n => Ok(u64::from(n)),
             }
         } else {
             let mut bytes = [0; 8];
@@ -252,7 +252,7 @@ impl CompactSize {
     }
 
     /// Returns the number of bytes needed to encode the given size in compact form.
-    pub fn serialized_size(size: usize) -> usize {
+    #[must_use] pub fn serialized_size(size: usize) -> usize {
         match size {
             s if s < 253 => 1,
             s if s <= 0xFFFF => 3,
@@ -469,7 +469,7 @@ where
 {
     CompactSize::write(&mut w, vec.len())?;
     for item in vec {
-        f(&mut w, item)?
+        f(&mut w, item)?;
     }
     Ok(())
 }
