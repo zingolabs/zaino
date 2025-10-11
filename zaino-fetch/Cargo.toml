@@ -37,6 +37,7 @@ byteorder = { workspace = true }
 sha2 = { workspace = true }
 jsonrpsee-types = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }
+blake3 = "1.8.2"
 
 [dev-dependencies]
 zaino-testvectors = { workspace = true }
