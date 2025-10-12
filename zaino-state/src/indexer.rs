@@ -411,6 +411,16 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<String>, Self::Error>;
 
+    /// Returns statistics about the unspent transaction output set.
+    /// Note this call may take some time.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Notes
+    ///
+    /// Only `zcashd` supports this method. Zebra has no intention of supporting it.
     async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, Self::Error>;
 
     /// Returns all unspent outputs for a list of addresses.
