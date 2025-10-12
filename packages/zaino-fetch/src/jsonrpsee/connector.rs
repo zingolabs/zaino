@@ -768,6 +768,16 @@ impl JsonRpSeeConnector {
         self.send_request("getaddresstxids", vec![params]).await
     }
 
+    /// Returns statistics about the unspent transaction output set.
+    /// Note this call may take some time.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Notes
+    ///
+    /// Only `zcashd` supports this method. Zebra has no intention of supporting it.
     pub async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, RpcRequestError<Infallible>> {
         self.send_request::<(), GetTxOutSetInfo>("gettxoutsetinfo", ())
             .await
