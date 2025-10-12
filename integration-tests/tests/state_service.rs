@@ -1236,9 +1236,45 @@ mod zebrad {
             test_manager.close().await;
         }
 
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_network_sol_ps() {
+            let (
+                mut test_manager,
+                _fetch_service,
+                fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                Some(NetworkKind::Regtest),
+            )
+            .await;
+
+            test_manager.local_net.generate_blocks(2).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let initial_fetch_service_get_network_sol_ps = fetch_service_subscriber
+                .get_network_sol_ps(None, None)
+                .await
+                .unwrap();
+            let initial_state_service_get_network_sol_ps = state_service_subscriber
+                .get_network_sol_ps(None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                initial_fetch_service_get_network_sol_ps,
+                initial_state_service_get_network_sol_ps
+            );
+
+            test_manager.close().await;
+        }
+
         /// A proper test would boot up multiple nodes at the same time, and ask each node
         /// for information about its peers. In the current state, this test does nothing.
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn peer_info() {
             let (
                 mut test_manager,
@@ -1254,6 +1290,9 @@ mod zebrad {
                 Some(NetworkKind::Regtest),
             )
             .await;
+
+            test_manager.local_net.generate_blocks(2).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             let fetch_service_peer_info = fetch_service_subscriber.get_peer_info().await.unwrap();
             let state_service_peer_info = state_service_subscriber.get_peer_info().await.unwrap();
