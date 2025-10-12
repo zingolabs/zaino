@@ -34,7 +34,7 @@ use zaino_fetch::{
             common::{amount::ZecAmount, block::BlockHash, BlockHeight},
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            txout_set_info::{GetTxOutSetInfo, TxOutSetInfo},
+            txout_set_info::{self, GetTxOutSetInfo, TxOutSetInfo},
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
     },
@@ -965,6 +965,7 @@ impl StateServiceSubscriber {
         }
     }
 
+    /// Fetches all UTXOs from the state service, and returns them in a map.
     pub(crate) async fn get_txout_set(
         state: &ReadStateService,
     ) -> Result<HashMap<transparent::OutPoint, transparent::Output>, StateServiceError> {
@@ -1941,6 +1942,33 @@ impl ZcashIndexer for StateServiceSubscriber {
             zebra_chain::amount::Amount<NonNegative>,
             zebra_chain::amount::Error,
         > = txouts.values().map(|txout| txout.value).sum();
+        let network = self.config.network;
+
+        let network_str = match network {
+            // TODO: use proper enum
+            zaino_common::network::Network::Mainnet => "mainnet",
+            zaino_common::network::Network::Testnet => "testnet",
+            zaino_common::network::Network::Regtest(_) => "regtest",
+        };
+
+        let items: Vec<txout_set_info::helpers::SnapshotItem> = txouts
+            .iter()
+            .map(|(op, txout)| {
+                return txout_set_info::helpers::SnapshotItem {
+                    index: op.index,
+                    script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // TODO: How can this fail
+                    txid_raw: op.hash.0,
+                    value_zat: txout.value.zatoshis().cast_unsigned(), // TODO: There is no reason for `txout.value.zatoshis()` to be negative.
+                };
+            })
+            .collect();
+
+        let utxo_set_hash = txout_set_info::helpers::utxoset_hash_v1(
+            network_str,
+            best_block_height.0,
+            best_block_hash.bytes_in_display_order(), // TODO: Check if this is correct
+            items,
+        );
 
         let total_zats: u64 =
             u64::try_from(total_amt.unwrap()).expect("non-negative amount should fit in u64");
@@ -1950,8 +1978,8 @@ impl ZcashIndexer for StateServiceSubscriber {
             best_block: BlockHash(best_block_hash.0),
             transactions: unique_txs.len() as u64,
             tx_outs: txouts.len() as u64,
-            bytes_serialized: todo!(),
-            hash_serialized: todo!(), // A SHA256d over that serialized UTXO set, useful to detect changes in the set.
+            bytes_serialized: 0, // TODO: How big the UTXO set is when serialized using the indexer's internal, deterministic format.
+            hash_serialized: utxo_set_hash.to_string(), // TODO: Use proper type
             total_amount: ZecAmount::from_zats(total_zats),
         }))
     }

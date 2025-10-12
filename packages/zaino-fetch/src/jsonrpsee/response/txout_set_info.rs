@@ -105,14 +105,14 @@ pub mod helpers {
 
     /// Compute canonical snapshot hash. See ZAINO-UHS-01 for details.
     ///
-    /// - `network`: "main" or "test".
+    /// - `network`: "mainnet", "testnet" or "regtest".
     /// - `best_height`: current block height.
-    /// - `best_block_raw`: raw 32-byte block hash.
+    /// - `best_block_hash`: raw 32-byte block hash.
     /// - `items`: anything that can be iterated, we'll sort it into BTreeMap to canonicalize order.
     pub fn utxoset_hash_v1<I>(
-        network: &str,
+        network: &str, // TODO: Use typed enum
         best_height: u32,
-        best_block_raw: [u8; 32],
+        best_block_hash: [u8; 32],
         items: I,
     ) -> blake3::Hash
     where
@@ -134,7 +134,7 @@ pub mod helpers {
         h.update(network.as_bytes());
         h.update(&[0]); // NUL
         h.update(&best_height.to_le_bytes());
-        h.update(&best_block_raw);
+        h.update(&best_block_hash);
         let total_outputs: u64 = ordered.values().map(|v| v.len() as u64).sum();
         h.update(&total_outputs.to_le_bytes());
 
