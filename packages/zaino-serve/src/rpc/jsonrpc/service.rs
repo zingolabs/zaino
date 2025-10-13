@@ -5,6 +5,7 @@ use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
+use zaino_fetch::jsonrpsee::response::txout_set_info::GetTxOutSetInfo;
 use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -113,6 +114,19 @@ pub trait ZcashIndexerRpc {
     /// Current `zebrad` does not include the same fields as `zcashd`.
     #[method(name = "getpeerinfo")]
     async fn get_peer_info(&self) -> Result<GetPeerInfo, ErrorObjectOwned>;
+
+    /// Returns statistics about the unspent transaction output set.
+    /// Note this call may take some time.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Notes
+    ///
+    /// Only `zcashd` supports this method. Zebra has no intention of supporting it.
+    #[method(name = "gettxoutsetinfo")]
+    async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, ErrorObjectOwned>;
 
     /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
     ///
@@ -496,6 +510,20 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_peer_info()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_txout_set_info(&self) -> Result<GetTxOutSetInfo, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_txout_set_info()
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(
