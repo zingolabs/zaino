@@ -1411,6 +1411,34 @@ async fn fetch_service_get_lightd_info(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+async fn assert_fetch_service_getnetworksols_matches_rpc(validator: &ValidatorKind) {
+    let (test_manager, _fetch_service, fetch_service_subscriber) =
+        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+
+    let fetch_service_get_networksolps = fetch_service_subscriber
+        .get_network_sol_ps(None, None)
+        .await
+        .unwrap();
+
+    let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+        test_node_and_return_url(
+            test_manager.zebrad_rpc_listen_address,
+            false,
+            None,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap(),
+        "xxxxxx".to_string(),
+        "xxxxxx".to_string(),
+    )
+    .unwrap();
+
+    let rpc_getnetworksolps_response = jsonrpc_client.get_network_sol_ps(None, None).await.unwrap();
+    assert_eq!(fetch_service_get_networksolps, rpc_getnetworksolps_response);
+}
+
 mod zcashd {
 
     use super::*;
@@ -1612,6 +1640,11 @@ mod zcashd {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn lightd_info() {
             fetch_service_get_lightd_info(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test]
+        pub(crate) async fn get_network_sol_ps() {
+            assert_fetch_service_getnetworksols_matches_rpc(&ValidatorKind::Zcashd).await;
         }
     }
 }
@@ -1817,6 +1850,11 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn lightd_info() {
             fetch_service_get_lightd_info(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test]
+        pub(crate) async fn get_network_sol_ps() {
+            assert_fetch_service_getnetworksols_matches_rpc(&ValidatorKind::Zebrad).await;
         }
     }
 }

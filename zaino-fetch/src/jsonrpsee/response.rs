@@ -229,6 +229,14 @@ impl ResponseToError for GetBlockchainInfoResponse {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetDifficultyResponse(pub f64);
 
+/// Response to a `getnetworksolps` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetNetworkSolPsResponse(pub u64);
+
+impl ResponseToError for GetNetworkSolPsResponse {
+    type RpcError = Infallible;
+}
+
 fn default_header() -> Height {
     Height(0)
 }
