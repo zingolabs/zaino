@@ -1570,7 +1570,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let mut unique_txs = HashSet::<transaction::Hash>::with_capacity(txouts.len());
         for op in txouts.keys() {
-            let _ = unique_txs.insert(op.hash.clone());
+            let _ = unique_txs.insert(op.hash);
         }
 
         let total_amt: Result<
@@ -1589,12 +1589,12 @@ impl ZcashIndexer for StateServiceSubscriber {
         let items: Vec<txout_set_info::helpers::SnapshotItem> = txouts
             .iter()
             .map(|(op, txout)| {
-                return txout_set_info::helpers::SnapshotItem {
+                txout_set_info::helpers::SnapshotItem {
                     index: op.index,
                     script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // TODO: How can this fail?
                     txid_raw: op.hash.0,
                     value_zat: txout.value.zatoshis().cast_unsigned(), // TODO: There is no reason for `txout.value.zatoshis()` to be negative.
-                };
+                }
             })
             .collect();
 
@@ -1605,8 +1605,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             items,
         );
 
-        let total_zats: u64 =
-            u64::try_from(total_amt.unwrap()).expect("non-negative amount should fit in u64");
+        let total_zats: u64 = u64::from(total_amt.unwrap()); // This cannot fail because `txout.value.zatoshis()` cannot be negative
 
         Ok(GetTxOutSetInfo::Known(TxOutSetInfo {
             height: BlockHeight(best_block_height.0),
