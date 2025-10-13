@@ -1,3 +1,5 @@
+//! Tests that compare the output of the [`StateService`] with the output of [`FetchService`].
+
 use futures::StreamExt;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
@@ -1689,6 +1691,59 @@ async fn state_service_get_address_tx_ids_testnet() {
     test_manager.close().await;
 }
 
+async fn state_service_get_txout_set_info() {
+    let (
+        mut test_manager,
+        _fetch_service,
+        _fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services(&ValidatorKind::Zebrad, None, true, true, None).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    test_manager.local_net.generate_blocks(1).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    clients.faucet.sync_and_await().await.unwrap();
+
+    test_manager.local_net.generate_blocks(100).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+    test_manager.local_net.generate_blocks(100).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+    test_manager.local_net.generate_blocks(1).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    clients.faucet.sync_and_await().await.unwrap();
+
+    let recipient_ua = clients.get_recipient_address("unified").await;
+    let recipient_taddr = clients.get_recipient_address("transparent").await;
+    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
+        .await
+        .unwrap();
+    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    test_manager.local_net.generate_blocks(2).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let txout_set_info_result = state_service_subscriber.get_txout_set_info().await;
+
+    assert!(&txout_set_info_result.is_ok());
+
+    dbg!(&txout_set_info_result.unwrap());
+
+    test_manager.close().await;
+}
+
 async fn state_service_get_address_utxos<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
@@ -1979,6 +2034,11 @@ mod zebra {
         #[tokio::test(flavor = "multi_thread")]
         async fn address_tx_ids_testnet() {
             state_service_get_address_tx_ids_testnet().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn txout_set_info() {
+            state_service_get_txout_set_info().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
