@@ -1,4 +1,6 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
+//!
+//! Note that they both rely on the `JsonRpcConnector` to get the data.
 
 use futures::StreamExt as _;
 use hex::ToHex as _;
