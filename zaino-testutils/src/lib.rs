@@ -804,10 +804,6 @@ mod launch_testmanager {
                 assert_eq!(2, (test_manager.local_net.get_chain_height().await));
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 assert_eq!(3, (test_manager.local_net.get_chain_height().await));
-                assert_eq!(
-                    3,
-                    u32::from(test_manager.local_net.get_chain_height().await)
-                );
                 test_manager.close().await;
             }
 
