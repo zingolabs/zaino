@@ -102,10 +102,13 @@ impl<'de> Deserialize<'de> for BlockHash {
     }
 }
 
-// Errors
+/// Error parsing a block hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseBlockHashError {
+    /// Length is not 64 hex chars.
     WrongLength(usize),
+
+    /// Invalid hex.
     InvalidHex,
 }
 
