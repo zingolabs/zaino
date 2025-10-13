@@ -561,6 +561,53 @@ async fn fetch_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
     test_manager.close().await;
 }
 
+async fn fetch_service_get_txout_set_info() {
+    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
+        create_test_manager_and_fetch_service(&ValidatorKind::Zcashd, None, true, true, true, true)
+            .await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    clients.faucet.sync_and_await().await.unwrap();
+
+    let recipient_ua = clients.get_recipient_address("unified").await;
+    let _tx = zaino_testutils::from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(&recipient_ua, 250_000, None)],
+    )
+    .await
+    .unwrap();
+
+    test_manager.local_net.generate_blocks(1).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    let txout_set_info = fetch_service_subscriber.get_txout_set_info().await.unwrap();
+
+    let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+        test_node_and_return_url(
+            test_manager.zebrad_rpc_listen_address,
+            false,
+            None,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap(),
+        "xxxxxx".to_string(),
+        "xxxxxx".to_string(),
+    )
+    .unwrap();
+    let json_rpc_txout_set_info = jsonrpc_client.get_txout_set_info().await.unwrap();
+    dbg!(&json_rpc_txout_set_info);
+    dbg!(&txout_set_info);
+
+    assert_eq!(txout_set_info, json_rpc_txout_set_info);
+
+    test_manager.close().await;
+}
+
 #[allow(deprecated)]
 async fn fetch_service_get_address_utxos<V: ValidatorExt>(validator: &ValidatorKind) {
     let mut test_manager =
@@ -2178,6 +2225,11 @@ mod zcashd {
         #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn address_tx_ids() {
             fetch_service_get_address_tx_ids::<Zcashd>(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn txout_set_info() {
+            fetch_service_get_txout_set_info().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
