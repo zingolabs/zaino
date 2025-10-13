@@ -1591,7 +1591,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             .map(|(op, txout)| {
                 return txout_set_info::helpers::SnapshotItem {
                     index: op.index,
-                    script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // TODO: How can this fail
+                    script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // TODO: How can this fail?
                     txid_raw: op.hash.0,
                     value_zat: txout.value.zatoshis().cast_unsigned(), // TODO: There is no reason for `txout.value.zatoshis()` to be negative.
                 };
