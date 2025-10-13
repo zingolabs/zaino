@@ -1,4 +1,4 @@
-//! Tests that compare the output of both `zcashd` and `zainod` through `FetchService`.
+//! Tests that compare the output of both `zcashd` and `zainod` through [`FetchService`].
 
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
@@ -722,6 +722,50 @@ mod zcashd {
 
                 test_manager.local_net.generate_blocks(1).await.unwrap();
             }
+
+            test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_txout_set_info() {
+            let (
+                mut test_manager,
+                _zcashd_service,
+                zcashd_subscriber,
+                _zaino_service,
+                zaino_subscriber,
+            ) = create_test_manager_and_fetch_services(false, true).await;
+
+            let mut clients = test_manager
+                .clients
+                .take()
+                .expect("Clients are not initialized");
+
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+            clients.faucet.sync_and_await().await.unwrap();
+
+            let recipient_ua = &clients.get_recipient_address("unified").await;
+            let recipient_taddr = &clients.get_recipient_address("transparent").await;
+            from_inputs::quick_send(&mut clients.faucet, vec![(recipient_taddr, 250_000, None)])
+                .await
+                .unwrap();
+            from_inputs::quick_send(&mut clients.faucet, vec![(recipient_ua, 250_000, None)])
+                .await
+                .unwrap();
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+            let zcashd_subscriber_txout_set_info =
+                zcashd_subscriber.get_txout_set_info().await.unwrap();
+            let zaino_subscriber_txout_set_info =
+                zaino_subscriber.get_txout_set_info().await.unwrap();
+
+            assert_eq!(
+                zcashd_subscriber_txout_set_info,
+                zaino_subscriber_txout_set_info
+            );
 
             test_manager.close().await;
         }
