@@ -978,12 +978,7 @@ impl StateServiceSubscriber {
             .and_then(|service| service.call(zebra_state::ReadRequest::Tip))
             .await
             .map_err(|_| {
-                StateServiceError::RpcError(RpcError {
-                    // TODO: wrong error
-                    code: LegacyCode::InvalidParameter as i64,
-                    message: "block height not in best chain".to_string(),
-                    data: None,
-                })
+                StateServiceError::Custom("Failed to get state service tip".to_string())
             })?
         else {
             return Err(StateServiceError::Custom(
@@ -1949,9 +1944,11 @@ impl ZcashIndexer for StateServiceSubscriber {
             .map(|(op, txout)| {
                 txout_set_info::helpers::SnapshotItem {
                     index: op.index,
-                    script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // TODO: How can this fail?
+                    script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // From zebra: serialization MUST be infallible up to errors in the underlying writer.
                     txid_raw: op.hash.0,
-                    value_zat: txout.value.zatoshis().cast_unsigned(), // TODO: There is no reason for `txout.value.zatoshis()` to be negative.
+                    // `txout.value.zatoshis()` is already enforced to be non-negative.
+                    // `txout.value` is of type `Amount<NonNegative>`.
+                    value_zat: u64::try_from(txout.value.zatoshis()).unwrap(),
                 }
             })
             .collect();
@@ -1971,7 +1968,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             transactions: unique_txs.len() as u64,
             tx_outs: txouts.len() as u64,
             bytes_serialized: 0, // TODO: How big the UTXO set is when serialized using the indexer's internal, deterministic format.
-            hash_serialized: utxo_set_hash.to_string(), // TODO: Use proper type
+            hash_serialized: utxo_set_hash.to_string(),
             total_amount: ZecAmount::from_zats(total_zats),
         }))
     }
