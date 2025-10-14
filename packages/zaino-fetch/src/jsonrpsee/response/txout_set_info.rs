@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn txoutsetinfo_parses_known_with_numeric_amount() {
-        // typical zcashd-like payload (amount as number)
+        // `zcashd` payload, with the amount as a number
         let j = json!({
             "height": 123,
             "bestblock": "029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327",
