@@ -925,9 +925,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.40"
+version = "1.2.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1d05d92f4b1fd76aad469d46cdd858ca761576082cd37df81416691e50199fb"
+checksum = "ac9fe6cdbb24b6ade63616c0a0688e45bb56732262c158df3c0c4bea4ca47cb7"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1018,9 +1018,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.48"
+version = "4.5.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2134bb3ea021b78629caa971416385309e0131b351b25e01dc16fb54e1b5fae"
+checksum = "f4512b90fa68d3a9932cea5184017c5d200f5921df706d45e853537dea51508f"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -1028,9 +1028,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.48"
+version = "4.5.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2ba64afa3c0a6df7fa517765e31314e983f51dda798ffba27b988194fb65dc9"
+checksum = "0025e98baa12e766c67ba13ff4695a887a1eba19569aad00a472546795bd6730"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1040,9 +1040,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.5.47"
+version = "4.5.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbfd7eae0b0f1a6e63d4b13c9c478de77c2eb546fba158ad50b4203dc24b9f9c"
+checksum = "2a0b5487afeab2deb2ff4e03a807ad1a03ac532ff5a2cee5d86884440c7f7671"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1052,9 +1052,9 @@ dependencies = [
 
 [[package]]
 name = "clap_lex"
-version = "0.7.5"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
+checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
 name = "cmake"
@@ -2017,9 +2017,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0399f9d26e5191ce32c498bebd31e7a3ceabc2745f0ac54af3f335126c3f24b3"
+checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
 
 [[package]]
 name = "fixed-hash"
@@ -2230,9 +2230,9 @@ dependencies = [
 
 [[package]]
 name = "generic-array"
-version = "0.14.7"
+version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
+checksum = "4bb6743198531e02858aeaea5398fcc883e71851fcbcb5a2f773e2fb6cb1edf2"
 dependencies = [
  "typenum",
  "version_check",
@@ -2656,7 +2656,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.0",
+ "socket2 0.6.1",
  "tokio",
  "tower-service",
  "tracing",
@@ -2919,8 +2919,8 @@ dependencies = [
  "zaino-state",
  "zaino-testutils",
  "zebra-chain",
- "zebra-rpc",
- "zebra-state",
+ "zebra-rpc 2.0.0",
+ "zebra-state 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
  "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=51162c0c603d324a3c36f1cead17bf4680aa1dca)",
  "zip32",
 ]
@@ -3140,11 +3140,11 @@ dependencies = [
 
 [[package]]
 name = "known-folders"
-version = "1.3.1"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c644f4623d1c55eb60a9dac35e0858a59f982fb87db6ce34c872372b0a5b728f"
+checksum = "d463f34ca3c400fde3a054da0e0b8c6ffa21e4590922f3e18281bb5eeef4cbdc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3577,11 +3577,11 @@ checksum = "5e0826a989adedc2a244799e823aece04662b66609d96af8dff7ac6df9a8925d"
 
 [[package]]
 name = "nu-ansi-term"
-version = "0.50.1"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4a28e057d01f97e61255210fcff094d74ed0466038633e95017f5beb68e4399"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3986,7 +3986,7 @@ dependencies = [
 [[package]]
 name = "pepper-sync"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=15a99649d1b97bbb2c56f33d2642036c1096319a#15a99649d1b97bbb2c56f33d2642036c1096319a"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=989dccdbc469d15aaeab2663ca9dc9a637d34d24#989dccdbc469d15aaeab2663ca9dc9a637d34d24"
 dependencies = [
  "bip32",
  "byteorder",
@@ -4015,7 +4015,7 @@ dependencies = [
  "zcash_transparent 0.4.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zingo-memo",
  "zingo-status",
- "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/zingo-common.git)",
+ "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?rev=2a2d2ec037eafe421e78994768e8a665106c3a83)",
  "zip32",
 ]
 
@@ -4468,7 +4468,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls 0.23.32",
- "socket2 0.6.0",
+ "socket2 0.6.1",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -4505,7 +4505,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.0",
+ "socket2 0.6.1",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -4733,25 +4733,25 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.11.3"
+version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b5288124840bee7b386bc413c487869b360b2b4ec421ea56425128692f2a82c"
+checksum = "843bc0191f75f3e22651ae5f1e72939ab2f72a4bc30fa80a066bd66edefc24d4"
 dependencies = [
  "aho-corasick",
  "memchr",
  "regex-automata",
- "regex-syntax 0.8.6",
+ "regex-syntax 0.8.8",
 ]
 
 [[package]]
 name = "regex-automata"
-version = "0.4.11"
+version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "833eb9ce86d40ef33cb1306d8accf7bc8ec2bfea4355cbdebb3df68b40925cad"
+checksum = "5276caf25ac86c8d810222b3dbb938e512c55c6831a10f3e6ed1c93b84041f1c"
 dependencies = [
  "aho-corasick",
  "memchr",
- "regex-syntax 0.8.6",
+ "regex-syntax 0.8.8",
 ]
 
 [[package]]
@@ -4762,9 +4762,9 @@ checksum = "f162c6dd7b008981e4d40210aca20b4bd0f9b60ca9271061b07f78537722f2e1"
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.6"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
+checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rend"
@@ -4777,9 +4777,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.23"
+version = "0.12.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d429f34c8092b2d42c7c93cec323bb4adeb7c67698f70839adec842ec10c7ceb"
+checksum = "9d0946410b9f7b082a427e4ef5c8ff541a88b357bc6c637c40db3a68ac70a36f"
 dependencies = [
  "base64",
  "bytes",
@@ -5004,9 +5004,9 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal"
-version = "1.38.0"
+version = "1.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8975fc98059f365204d635119cf9c5a60ae67b841ed49b5422a9a7e56cdfac0"
+checksum = "35affe401787a9bd846712274d97654355d21b2a2c092a3139aabe31e9022282"
 dependencies = [
  "arrayvec",
  "borsh",
@@ -5710,12 +5710,12 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "233504af464074f9d066d7b5416c5f9b894a5862a6506e306f7b816cdd6f1807"
+checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6061,7 +6061,7 @@ dependencies = [
  "pin-project-lite",
  "signal-hook-registry",
  "slab",
- "socket2 0.6.0",
+ "socket2 0.6.1",
  "tokio-macros",
  "tracing",
  "windows-sys 0.59.0",
@@ -7207,10 +7207,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "tower-batch-control"
+version = "0.2.41"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
+dependencies = [
+ "futures",
+ "futures-core",
+ "pin-project",
+ "rayon",
+ "tokio",
+ "tokio-util",
+ "tower 0.4.13",
+ "tracing",
+ "tracing-futures",
+]
+
+[[package]]
 name = "tower-fallback"
 version = "0.2.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4434e19ee996ee5c6aa42f11463a355138452592e5c5b5b73b6f0f19534556af"
+dependencies = [
+ "futures-core",
+ "pin-project",
+ "tower 0.4.13",
+ "tracing",
+]
+
+[[package]]
+name = "tower-fallback"
+version = "0.2.41"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -8233,7 +8260,7 @@ dependencies = [
  "zaino-proto",
  "zaino-testvectors",
  "zebra-chain",
- "zebra-rpc",
+ "zebra-rpc 2.0.0",
 ]
 
 [[package]]
@@ -8262,7 +8289,7 @@ dependencies = [
  "zaino-proto",
  "zaino-state",
  "zebra-chain",
- "zebra-rpc",
+ "zebra-rpc 2.0.0",
 ]
 
 [[package]]
@@ -8309,9 +8336,9 @@ dependencies = [
  "zcash_protocol 0.6.2",
  "zcash_transparent 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zebra-chain",
- "zebra-rpc",
- "zebra-state",
- "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=51162c0c603d324a3c36f1cead17bf4680aa1dca)",
+ "zebra-rpc 2.0.0",
+ "zebra-state 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?rev=3d54602cc12c40e32e63c7e4e534766690279bba)",
 ]
 
 [[package]]
@@ -8365,8 +8392,8 @@ dependencies = [
  "zaino-state",
  "zainod",
  "zebra-chain",
- "zebra-state",
- "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/infrastructure.git?rev=51162c0c603d324a3c36f1cead17bf4680aa1dca)",
+ "zebra-state 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?rev=3d54602cc12c40e32e63c7e4e534766690279bba)",
 ]
 
 [[package]]
@@ -8561,8 +8588,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zebra-chain",
- "zebra-node-services",
- "zebra-rpc",
+ "zebra-node-services 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-rpc 2.0.1",
  "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?rev=23814ee904ee64913585c0b8f871c6dbd94504c6)",
 ]
 
@@ -8808,7 +8835,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "2.0.0"
-source = "git+https://github.com/zingolabs/zebra.git?rev=1168a2f391a17f3ccab65a095d9219b7455d0fea#1168a2f391a17f3ccab65a095d9219b7455d0fea"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
 dependencies = [
  "bech32",
  "bitflags 2.9.4",
@@ -8889,16 +8916,53 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control",
- "tower-fallback",
+ "tower-batch-control 0.2.41 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tower-fallback 0.2.41 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
  "tracing-futures",
  "wagyu-zcash-parameters",
  "zcash_proofs 0.24.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zebra-chain",
- "zebra-node-services",
- "zebra-script",
- "zebra-state",
+ "zebra-node-services 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-script 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-state 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "zebra-consensus"
+version = "2.0.0"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
+dependencies = [
+ "bellman",
+ "blake2b_simd",
+ "bls12_381",
+ "chrono",
+ "futures",
+ "futures-util",
+ "halo2_proofs",
+ "jubjub",
+ "lazy_static",
+ "metrics",
+ "mset",
+ "once_cell",
+ "orchard",
+ "rand 0.8.5",
+ "rayon",
+ "sapling-crypto",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+ "tower 0.4.13",
+ "tower-batch-control 0.2.41 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "tower-fallback 0.2.41 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "tracing",
+ "tracing-futures",
+ "wagyu-zcash-parameters",
+ "zcash_proofs 0.24.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-chain",
+ "zebra-node-services 1.0.1 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zebra-script 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zebra-state 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
 ]
 
 [[package]]
@@ -8906,6 +8970,42 @@ name = "zebra-network"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0230d1e515518e0ef33ca668f3abb98e364485f384f7ee101506ec64bca7e7d3"
+dependencies = [
+ "bitflags 2.9.4",
+ "byteorder",
+ "bytes",
+ "chrono",
+ "dirs",
+ "futures",
+ "hex",
+ "humantime-serde",
+ "indexmap 2.11.4",
+ "itertools 0.14.0",
+ "lazy_static",
+ "metrics",
+ "num-integer",
+ "ordered-map",
+ "pin-project",
+ "rand 0.8.5",
+ "rayon",
+ "regex",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower 0.4.13",
+ "tracing",
+ "tracing-error",
+ "tracing-futures",
+ "zebra-chain",
+]
+
+[[package]]
+name = "zebra-network"
+version = "1.1.0"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
 dependencies = [
  "bitflags 2.9.4",
  "byteorder",
@@ -8954,6 +9054,65 @@ dependencies = [
 ]
 
 [[package]]
+name = "zebra-node-services"
+version = "1.0.1"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
+dependencies = [
+ "color-eyre",
+ "jsonrpsee-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zebra-chain",
+]
+
+[[package]]
+name = "zebra-rpc"
+version = "2.0.0"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
+dependencies = [
+ "base64",
+ "chrono",
+ "color-eyre",
+ "derive-getters",
+ "derive-new",
+ "futures",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "indexmap 2.11.4",
+ "jsonrpsee",
+ "jsonrpsee-proc-macros",
+ "jsonrpsee-types",
+ "nix",
+ "prost",
+ "rand 0.8.5",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.12.3",
+ "tonic-build 0.12.3",
+ "tonic-reflection",
+ "tower 0.4.13",
+ "tracing",
+ "zcash_address 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_keys 0.10.1",
+ "zcash_primitives 0.24.1",
+ "zcash_protocol 0.6.2",
+ "zcash_transparent 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-chain",
+ "zebra-consensus 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zebra-network 1.1.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zebra-node-services 1.0.1 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zebra-script 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+ "zebra-state 2.0.0 (git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1)",
+]
+
+[[package]]
 name = "zebra-rpc"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8993,11 +9152,11 @@ dependencies = [
  "zcash_protocol 0.6.2",
  "zcash_transparent 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zebra-chain",
- "zebra-consensus",
- "zebra-network",
- "zebra-node-services",
- "zebra-script",
- "zebra-state",
+ "zebra-consensus 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-network 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-node-services 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-script 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zebra-state 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -9013,10 +9172,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "zebra-script"
+version = "2.0.0"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
+dependencies = [
+ "thiserror 2.0.17",
+ "zcash_primitives 0.24.1",
+ "zcash_script",
+ "zebra-chain",
+]
+
+[[package]]
 name = "zebra-state"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "129b32692f22207719dd1c5ddcbae59b96a322e2329664787f6247acef78c7f3"
+dependencies = [
+ "bincode",
+ "chrono",
+ "crossbeam-channel",
+ "dirs",
+ "futures",
+ "hex",
+ "hex-literal",
+ "human_bytes",
+ "humantime-serde",
+ "indexmap 2.11.4",
+ "itertools 0.14.0",
+ "lazy_static",
+ "metrics",
+ "mset",
+ "rayon",
+ "regex",
+ "rlimit",
+ "rocksdb",
+ "semver",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "zebra-chain",
+]
+
+[[package]]
+name = "zebra-state"
+version = "2.0.0"
+source = "git+https://github.com/zingolabs/zebra.git?tag=2.5.0-zl.1#b7b56b24166f2a4f97b450356cf9e9733b899425"
 dependencies = [
  "bincode",
  "chrono",
@@ -9143,7 +9346,7 @@ dependencies = [
 [[package]]
 name = "zingo-memo"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=15a99649d1b97bbb2c56f33d2642036c1096319a#15a99649d1b97bbb2c56f33d2642036c1096319a"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=989dccdbc469d15aaeab2663ca9dc9a637d34d24#989dccdbc469d15aaeab2663ca9dc9a637d34d24"
 dependencies = [
  "zcash_address 0.9.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_client_backend",
@@ -9155,7 +9358,7 @@ dependencies = [
 [[package]]
 name = "zingo-price"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=15a99649d1b97bbb2c56f33d2642036c1096319a#15a99649d1b97bbb2c56f33d2642036c1096319a"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=989dccdbc469d15aaeab2663ca9dc9a637d34d24#989dccdbc469d15aaeab2663ca9dc9a637d34d24"
 dependencies = [
  "byteorder",
  "reqwest",
@@ -9171,7 +9374,7 @@ dependencies = [
 [[package]]
 name = "zingo-status"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=15a99649d1b97bbb2c56f33d2642036c1096319a#15a99649d1b97bbb2c56f33d2642036c1096319a"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=989dccdbc469d15aaeab2663ca9dc9a637d34d24#989dccdbc469d15aaeab2663ca9dc9a637d34d24"
 dependencies = [
  "byteorder",
  "zcash_primitives 0.24.0",
@@ -9196,7 +9399,7 @@ dependencies = [
 [[package]]
 name = "zingo_common_components"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=51162c0c603d324a3c36f1cead17bf4680aa1dca#51162c0c603d324a3c36f1cead17bf4680aa1dca"
+source = "git+https://github.com/zingolabs/zingo-common.git?rev=2a2d2ec037eafe421e78994768e8a665106c3a83#2a2d2ec037eafe421e78994768e8a665106c3a83"
 dependencies = [
  "zebra-chain",
 ]
@@ -9204,7 +9407,15 @@ dependencies = [
 [[package]]
 name = "zingo_common_components"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingo-common.git#98d020384a06ba2d67ff539eb24e62dd9fd5def5"
+source = "git+https://github.com/zingolabs/zingo-common.git?rev=3d54602cc12c40e32e63c7e4e534766690279bba#3d54602cc12c40e32e63c7e4e534766690279bba"
+dependencies = [
+ "zebra-chain",
+]
+
+[[package]]
+name = "zingo_common_components"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=51162c0c603d324a3c36f1cead17bf4680aa1dca#51162c0c603d324a3c36f1cead17bf4680aa1dca"
 dependencies = [
  "zebra-chain",
 ]
@@ -9230,7 +9441,7 @@ dependencies = [
 [[package]]
 name = "zingo_netutils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingo-common.git#98d020384a06ba2d67ff539eb24e62dd9fd5def5"
+source = "git+https://github.com/zingolabs/zingo-common.git?rev=2a2d2ec037eafe421e78994768e8a665106c3a83#2a2d2ec037eafe421e78994768e8a665106c3a83"
 dependencies = [
  "http",
  "http-body",
@@ -9264,7 +9475,7 @@ dependencies = [
 [[package]]
 name = "zingolib"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=15a99649d1b97bbb2c56f33d2642036c1096319a#15a99649d1b97bbb2c56f33d2642036c1096319a"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=989dccdbc469d15aaeab2663ca9dc9a637d34d24#989dccdbc469d15aaeab2663ca9dc9a637d34d24"
 dependencies = [
  "append-only-vec",
  "bech32",
@@ -9313,7 +9524,6 @@ dependencies = [
  "zcash_client_backend",
  "zcash_encoding 0.3.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_keys 0.10.0",
- "zcash_local_net",
  "zcash_primitives 0.24.0",
  "zcash_proofs 0.24.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_protocol 0.6.1",
@@ -9322,8 +9532,8 @@ dependencies = [
  "zingo-memo",
  "zingo-price",
  "zingo-status",
- "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/zingo-common.git)",
- "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/zingo-common.git)",
+ "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?rev=2a2d2ec037eafe421e78994768e8a665106c3a83)",
+ "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?rev=2a2d2ec037eafe421e78994768e8a665106c3a83)",
  "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=51162c0c603d324a3c36f1cead17bf4680aa1dca)",
  "zip32",
 ]

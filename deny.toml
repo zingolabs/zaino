@@ -1,0 +1,15 @@
+# List of crates that can never become zaino dependencies
+deny = [
+    # OpenSSL and related crates are banned - use rustls instead
+    { name = "openssl", wrappers = [] },
+    { name = "openssl-sys", wrappers = [] },
+    { name = "openssl-probe", wrappers = [] },
+    { name = "openssl-macros", wrappers = [] },
+
+    # BoringSSL and related crates are also banned
+    { name = "boringssl", wrappers = [] },
+    { name = "boringssl-sys", wrappers = [] },
+    { name = "bssl-sys", wrappers = [] },
+    { name = "boring", wrappers = [] },
+    { name = "boring-sys", wrappers = [] },
+]

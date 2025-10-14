@@ -31,7 +31,7 @@ ARG ZEBRA_VERSION
 RUN apt-get update
 RUN apt-get install -y git clang cmake pkg-config libssl-dev protobuf-compiler
 WORKDIR /zebra
-RUN git clone https://github.com/ZcashFoundation/zebra .
+RUN git clone https://github.com/zingolabs/zebra .
 RUN git checkout "${ZEBRA_VERSION}" 
 # Use persistent cache for cargo
 # RUN --mount=type=cache,target=/usr/local/cargo/registry \

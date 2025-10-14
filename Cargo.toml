@@ -35,9 +35,9 @@ zcash_primitives = "0.24"
 zcash_transparent = "0.4"
 
 # Zebra
-zebra-chain = "2.0"
-zebra-state = "2.0"
-zebra-rpc = "2.0"
+zebra-chain = { git = "https://github.com/zingolabs/zebra.git", tag = "2.5.0-zl.1" }
+zebra-state = { git = "https://github.com/zingolabs/zebra.git", tag = "2.5.0-zl.1" }
+zebra-rpc = { git = "https://github.com/zingolabs/zebra.git", tag = "2.5.0-zl.1" }
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -129,7 +129,7 @@ arc-swap = "1.7.1"
 cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"
-zingo_common_components = { git = "https://github.com/zingolabs/infrastructure", rev = "51162c0c603d324a3c36f1cead17bf4680aa1dca" }
+zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", rev = "3d54602cc12c40e32e63c7e4e534766690279bba" }
 zcash_client_backend = "0.19.1"
 
 [profile.test]
@@ -137,6 +137,6 @@ opt-level = 3
 debug = true
 
 [patch.crates-io]
-zebra-chain = { git = "https://github.com/zingolabs/zebra.git", rev = "1168a2f391a17f3ccab65a095d9219b7455d0fea" }
+zebra-chain = { git = "https://github.com/zingolabs/zebra.git", tag = "2.5.0-zl.1" }
 #[workspace.dev-dependencies]
 # zingolib is imported in zaino-testutils!!
