@@ -58,7 +58,7 @@ use zebra_chain::{
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
-    serialization::{BytesInDisplayOrder as _, ZcashSerialize},
+    serialization::{BytesInDisplayOrder as _, ZcashDeserialize, ZcashSerialize},
     subtree::NoteCommitmentSubtreeIndex,
     transaction, transparent,
 };
@@ -1924,7 +1924,12 @@ impl ZcashIndexer for StateServiceSubscriber {
             .await
             .unwrap()
         {
-            GetBlock::Raw(_) => todo!(),
+            GetBlock::Raw(raw_object) => {
+                // From Zebra: guaranteed to be deserializable into a `Block`.
+                let block =
+                    zebra_chain::block::Block::zcash_deserialize(raw_object.as_ref()).unwrap();
+                block.coinbase_height().unwrap() // From Zebra: Verified blocks have a valid height.
+            }
             GetBlock::Object(block_object) => block_object.height().expect("expected height"),
         };
 
