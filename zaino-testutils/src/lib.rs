@@ -27,7 +27,7 @@ use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
 pub use zingolib::testutils::lightclient::from_inputs;
-use zingolib::testutils::scenarios::ClientBuilder;
+use zingolib_testutils::scenarios::ClientBuilder;
 
 // TODO: update zebra to allow full nu6.1 test support
 /// Temporary default zebrad activation height until zaino is updated to next zebra release (or latest main).
