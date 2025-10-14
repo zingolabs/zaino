@@ -1574,10 +1574,10 @@ impl ZcashIndexer for StateServiceSubscriber {
         > = txouts.values().map(|txout| txout.value).sum();
         let network = self.config.network;
 
-        let items: Vec<txout_set_info::helpers::SnapshotItem> = txouts
+        let items: Vec<txout_set_info::utxo_set_hash::SnapshotItem> = txouts
             .iter()
             .map(|(op, txout)| {
-                txout_set_info::helpers::SnapshotItem {
+                txout_set_info::utxo_set_hash::SnapshotItem {
                     index: op.index,
                     script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // From zebra: serialization MUST be infallible up to errors in the underlying writer.
                     txid_raw: op.hash.0,
@@ -1588,21 +1588,25 @@ impl ZcashIndexer for StateServiceSubscriber {
             })
             .collect();
 
-        let utxo_set_hash = txout_set_info::helpers::utxoset_hash_v1(
+        let utxo_set_hash = txout_set_info::utxo_set_hash::utxo_set_hash_v1(
             &network,
             best_block_height.0,
-            best_block_hash.bytes_in_display_order(), // TODO: Check if this is correct
-            items,
+            best_block_hash.bytes_in_display_order(),
+            items.clone(),
         );
 
-        let total_zats: u64 = u64::from(total_amt.unwrap()); // This cannot fail because `txout.value.zatoshis()` cannot be negative
+        let utxo_serialized_size =
+            txout_set_info::utxo_set_hash::utxo_set_serialized_size_v1(items);
+
+        // This cannot fail because `txout.value.zatoshis()` cannot be negative
+        let total_zats: u64 = u64::from(total_amt.unwrap());
 
         Ok(GetTxOutSetInfo::Known(TxOutSetInfo {
             height: BlockHeight(best_block_height.0),
             best_block: BlockHash(best_block_hash.0),
             transactions: unique_txs.len() as u64,
             tx_outs: txouts.len() as u64,
-            bytes_serialized: 0, // TODO: How big the UTXO set is when serialized using the indexer's internal, deterministic format.
+            bytes_serialized: utxo_serialized_size,
             hash_serialized: utxo_set_hash.to_string(),
             total_amount: ZecAmount::from_zats(total_zats),
         }))

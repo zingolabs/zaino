@@ -1,4 +1,4 @@
-# ZAINO-UHS-01: Canonical UTXO Set Snapshot Hash (v1)
+# ZAINO-UTXOSET-01: Canonical UTXO Set Snapshot Hash (v1)
 
 ## Status
 
