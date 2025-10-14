@@ -442,4 +442,116 @@ mod tests {
             assert_ne!(h_252, h_253, "length prefix must change at boundary");
         }
     }
+
+    mod byte_order_tests {
+        use zaino_common::Network;
+
+        use crate::jsonrpsee::response::{
+            common::{amount::ZecAmount, block::BlockHash, BlockHeight},
+            txout_set_info::{
+                helpers::{utxoset_hash_v1, SnapshotItem},
+                TxOutSetInfo,
+            },
+        };
+
+        const MAINNET_NETWORK_STR: &str = "mainnet";
+
+        const TESTNET_NETWORK: Network = Network::Testnet;
+        const MAINNET_NETWORK: Network = Network::Mainnet;
+
+        /// Return a sequence of bytes with a known display order.
+        fn seq_bytes() -> [u8; 32] {
+            let mut b = [0u8; 32];
+            for (i, x) in b.iter_mut().enumerate() {
+                *x = i as u8;
+            }
+            b
+        }
+
+        #[test]
+        fn utxoset_header_uses_display_order_bytes() {
+            let height = 123u32;
+            let display_bytes = seq_bytes();
+
+            let h_func = utxoset_hash_v1(
+                &MAINNET_NETWORK,
+                height,
+                display_bytes,
+                std::iter::empty::<SnapshotItem>(),
+            );
+
+            let mut h = blake3::Hasher::new();
+            h.update(b"ZAINO-UTXOSET-V1\0");
+            h.update(MAINNET_NETWORK_STR.as_bytes());
+            h.update(&[0]);
+            h.update(&height.to_le_bytes());
+            h.update(&display_bytes);
+            h.update(&0u64.to_le_bytes());
+            let h_manual = h.finalize();
+
+            assert_eq!(
+                h_func, h_manual,
+                "header must be fed with display-order bytes"
+            );
+        }
+
+        #[test]
+        fn wrong_endianness_changes_digest() {
+            let height = 7u32;
+            let display_bytes = seq_bytes();
+
+            let h_ok = utxoset_hash_v1(
+                &MAINNET_NETWORK,
+                height,
+                display_bytes,
+                std::iter::empty::<SnapshotItem>(),
+            );
+
+            let mut flipped = display_bytes;
+            flipped.reverse();
+            let h_bad = utxoset_hash_v1(
+                &MAINNET_NETWORK,
+                height,
+                flipped,
+                std::iter::empty::<SnapshotItem>(),
+            );
+
+            assert_ne!(
+                h_ok, h_bad,
+                "feeding non-display-order bytes must change the digest"
+            );
+        }
+
+        #[test]
+        fn bestblock_string_matches_bytes_used_in_hash() {
+            let height = 0u32;
+            let best_block = seq_bytes();
+            let best_block_hex = hex::encode(best_block);
+
+            // Compute digest using display-order bytes
+            let digest = utxoset_hash_v1(
+                &TESTNET_NETWORK,
+                height,
+                best_block,
+                std::iter::empty::<SnapshotItem>(),
+            );
+
+            // SAFEST construction: go through the hex string, so display is as stored
+            let best_block: BlockHash = best_block_hex.parse().expect("valid 32-byte hex");
+
+            let info = TxOutSetInfo {
+                height: BlockHeight(height),
+                best_block,
+                transactions: 0,
+                tx_outs: 0,
+                bytes_serialized: 0,
+                hash_serialized: digest.to_string(),
+                total_amount: ZecAmount::from_zats(0),
+            };
+            let v = serde_json::to_value(&info).unwrap();
+
+            // The JSON should carry the same hex we hashed in the header.
+            assert_eq!(v["bestblock"].as_str().unwrap(), best_block_hex);
+        }
+    }
 }
