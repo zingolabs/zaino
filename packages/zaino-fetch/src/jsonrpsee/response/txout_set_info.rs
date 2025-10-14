@@ -60,6 +60,7 @@ pub mod helpers {
     use std::collections::BTreeMap;
 
     /// A single UTXO snapshot item.
+    #[derive(Debug, Clone)]
     pub struct SnapshotItem {
         /// Raw txid bytes. Same order everywhere.
         pub txid_raw: [u8; 32],
@@ -75,7 +76,7 @@ pub mod helpers {
     }
 
     /// Encode Zcash CompactSize varint.
-    fn write_compact_size(size: u64, h: &mut blake3::Hasher) {
+    pub(crate) fn write_compact_size(size: u64, h: &mut blake3::Hasher) {
         if size < 0xFD {
             h.update(&[size as u8]);
         } else if size <= 0xFFFF {
@@ -150,5 +151,266 @@ pub mod helpers {
         }
 
         h.finalize()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::jsonrpsee::response::{common::block::BlockHash, txout_set_info::GetTxOutSetInfo};
+
+    #[test]
+    fn txoutsetinfo_parses_known_with_numeric_amount() {
+        // typical zcashd-like payload (amount as number)
+        let j = json!({
+            "height": 123,
+            "bestblock": "029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327",
+            "transactions": 42,
+            "txouts": 77,
+            "bytes_serialized": 999,
+            "hash_serialized": "c26d00...718f",
+            "total_amount": 3.5
+        });
+
+        let parsed: GetTxOutSetInfo = serde_json::from_value(j).unwrap();
+        match parsed {
+            GetTxOutSetInfo::Known(k) => {
+                assert_eq!(k.height.0, 123);
+                assert_eq!(k.transactions, 42);
+                assert_eq!(k.tx_outs, 77);
+                assert_eq!(k.bytes_serialized, 999);
+                assert_eq!(k.hash_serialized, "c26d00...718f");
+                assert_eq!(u64::from(k.total_amount), 350_000_000);
+
+                // BlockHash round-trip formatting is stable
+                let hex = k.best_block.to_string();
+                assert_eq!(hex.len(), 64);
+                let back: BlockHash = hex.parse().unwrap();
+                assert_eq!(k.best_block, back);
+            }
+            other => panic!("expected Known, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn txoutsetinfo_parses_known_with_string_amount() {
+        // Amount as a string is accepted
+        let j = json!({
+            "height": 0,
+            "bestblock": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "transactions": 0,
+            "txouts": 0,
+            "bytes_serialized": 0,
+            "hash_serialized": "deadbeef",
+            "total_amount": "0.00000001"
+        });
+
+        let parsed: GetTxOutSetInfo = serde_json::from_value(j).unwrap();
+        match parsed {
+            GetTxOutSetInfo::Known(k) => {
+                assert_eq!(k.height.0, 0);
+                assert_eq!(u64::from(k.total_amount), 1);
+            }
+            other => panic!("expected Known, got: {:?}", other),
+        }
+    }
+
+    /// Missing 'bestblock'. Should deserialize to [`GetTxOutSetInfo::Unknown`].
+    #[test]
+    fn txoutsetinfo_falls_back_to_unknown_when_required_fields_missing() {
+        let j = json!({
+            "height": 1,
+            "transactions": 0,
+            "txouts": 0,
+            "bytes_serialized": 0,
+            "hash_serialized": "x",
+            "total_amount": 0
+        });
+
+        let parsed: GetTxOutSetInfo = serde_json::from_value(j).unwrap();
+        match parsed {
+            GetTxOutSetInfo::Unknown(v) => {
+                assert!(v.get("bestblock").is_none());
+            }
+            other => panic!("expected Unknown, got: {:?}", other),
+        }
+    }
+
+    /// UTXO Hash Set (UHS) tests
+    ///
+    /// For more information, see `ZAINO-UHS-01`.
+    mod uhs_tests {
+        use super::super::helpers::*;
+        use blake3;
+
+        fn txid(fill: u8) -> [u8; 32] {
+            [fill; 32]
+        }
+
+        fn script(len: usize, byte: u8) -> Vec<u8> {
+            vec![byte; len]
+        }
+
+        fn item(fill: u8, index: u32, value_zat: u64, script_len: usize) -> SnapshotItem {
+            SnapshotItem {
+                txid_raw: txid(fill),
+                index,
+                value_zat,
+                script: script(script_len, 0xAA),
+            }
+        }
+
+        #[test]
+        fn compact_size_encoding_edges() {
+            // Verify that the CompactSize encoder emits the exact byte sequences
+            // for boundaries: <0xFD, 0xFD..=0xFFFF, 0x10000..=0xFFFF_FFFF, >= 2^32.
+            fn expected_bytes(n: u64) -> Vec<u8> {
+                if n < 0xFD {
+                    vec![n as u8]
+                } else if n <= 0xFFFF {
+                    vec![0xFD, (n & 0xFF) as u8, ((n >> 8) & 0xFF) as u8]
+                } else if n <= 0xFFFF_FFFF {
+                    vec![
+                        0xFE,
+                        (n & 0xFF) as u8,
+                        ((n >> 8) & 0xFF) as u8,
+                        ((n >> 16) & 0xFF) as u8,
+                        ((n >> 24) & 0xFF) as u8,
+                    ]
+                } else {
+                    vec![
+                        0xFF,
+                        (n & 0xFF) as u8,
+                        ((n >> 8) & 0xFF) as u8,
+                        ((n >> 16) & 0xFF) as u8,
+                        ((n >> 24) & 0xFF) as u8,
+                        ((n >> 32) & 0xFF) as u8,
+                        ((n >> 40) & 0xFF) as u8,
+                        ((n >> 48) & 0xFF) as u8,
+                        ((n >> 56) & 0xFF) as u8,
+                    ]
+                }
+            }
+
+            for &n in &[
+                0u64,
+                1,
+                252,
+                253,
+                65535,
+                65536,
+                4_294_967_295,
+                4_294_967_296,
+            ] {
+                let mut h1 = blake3::Hasher::new();
+                write_compact_size(n, &mut h1);
+                let got = h1.finalize();
+
+                let mut h2 = blake3::Hasher::new();
+                h2.update(&expected_bytes(n));
+                let exp = h2.finalize();
+
+                assert_eq!(got, exp, "mismatch for n={n}");
+            }
+        }
+
+        /// Same logical set, different insertion orders. Should get the same digest.
+        #[test]
+        fn utxoset_hash_is_deterministic_and_order_canonicalized() {
+            let best_block_hash = [0x11; 32];
+
+            let a = vec![
+                item(0xAA, 0, 50, 10),
+                item(0xAA, 1, 60, 0),
+                item(0xBB, 0, 70, 3),
+            ];
+
+            // Shuffled order
+            let b = vec![
+                item(0xBB, 0, 70, 3),
+                item(0xAA, 1, 60, 0),
+                item(0xAA, 0, 50, 10),
+            ];
+
+            let h1 = utxoset_hash_v1("mainnet", 100, best_block_hash, a);
+            let h2 = utxoset_hash_v1("mainnet", 100, best_block_hash, b);
+
+            assert_eq!(h1, h2);
+        }
+
+        #[test]
+        fn utxoset_hash_changes_with_header_fields() {
+            let items = [item(0x01, 0, 1, 0)];
+            let best_block_hash_1 = [0x22; 32];
+            let best_block_hash_2 = [0x23; 32];
+
+            let base = utxoset_hash_v1("mainnet", 1, best_block_hash_1, items.clone());
+            assert_ne!(
+                base,
+                utxoset_hash_v1("testnet", 1, best_block_hash_1, items.clone()),
+                "network must affect hash"
+            );
+            assert_ne!(
+                base,
+                utxoset_hash_v1("mainnet", 2, best_block_hash_1, items.clone()),
+                "height must affect hash"
+            );
+            assert_ne!(
+                base,
+                utxoset_hash_v1("mainnet", 1, best_block_hash_2, items.clone()),
+                "best_block must affect hash"
+            );
+        }
+
+        #[test]
+        fn utxoset_hash_changes_when_entry_changes() {
+            let best_block_hash = [0x99; 32];
+
+            let base = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 0, 1_000, 5)]);
+
+            // Change value
+            let h_val = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 0, 2_000, 5)]);
+            assert_ne!(base, h_val);
+
+            // Change index
+            let h_idx = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 1, 1_000, 5)]);
+            assert_ne!(base, h_idx);
+
+            // Change script content/length
+            let h_scr = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 0, 1_000, 6)]);
+            assert_ne!(base, h_scr);
+        }
+
+        #[test]
+        fn utxoset_compactsize_boundary_lengths_affect_hash() {
+            // Check that going from 252 to 253 (boundary into 0xFD form) changes the hash.
+            let best_block_hash = [0x55; 32];
+
+            let h_252 = utxoset_hash_v1(
+                "mainnet",
+                7,
+                best_block_hash,
+                [SnapshotItem {
+                    txid_raw: [1; 32],
+                    index: 0,
+                    value_zat: 42,
+                    script: vec![0xAA; 252],
+                }],
+            );
+            let h_253 = utxoset_hash_v1(
+                "mainnet",
+                7,
+                best_block_hash,
+                [SnapshotItem {
+                    txid_raw: [1; 32],
+                    index: 0,
+                    value_zat: 42,
+                    script: vec![0xAA; 253],
+                }],
+            );
+
+            assert_ne!(h_252, h_253, "length prefix must change at boundary");
+        }
     }
 }
