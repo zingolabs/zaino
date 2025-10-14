@@ -56,10 +56,14 @@ impl ResponseToError for GetTxOutSetInfo {
 }
 
 /// This module provides helper functions and types for computing the canonical UTXO set hash.
-pub mod helpers {
+pub mod utxo_set_hash {
     use std::collections::BTreeMap;
 
     use zaino_common::Network;
+
+    pub(crate) const DOMAIN_TAG: &[u8] = b"ZAINO-UTXOSET-V1\0";
+    pub(crate) const NETWORK_TAG_LEN: u64 = b"mainnet".len() as u64; // Same as testnet and regtest
+    pub(crate) const NETWORK_TAG_NUL: &[u8] = b"\0";
 
     /// A single UTXO snapshot item.
     #[derive(Debug, Clone)]
@@ -106,13 +110,27 @@ pub mod helpers {
         }
     }
 
-    /// Compute canonical snapshot hash. See ZAINO-UHS-01 for details.
+    /// Return the number of bytes needed to encode a CompactSize varint.
+    #[inline]
+    pub(crate) fn compact_size_len(n: u64) -> u64 {
+        if n < 0xFD {
+            1
+        } else if n <= 0xFFFF {
+            3
+        } else if n <= 0xFFFF_FFFF {
+            5
+        } else {
+            9
+        }
+    }
+
+    /// Compute canonical snapshot hash. See ZAINO-UTXOSET-01 for details.
     ///
     /// - `network`: "mainnet", "testnet" or "regtest".
     /// - `best_height`: current block height.
     /// - `best_block_hash`: raw 32-byte block hash.
     /// - `items`: anything that can be iterated, we'll sort it into BTreeMap to canonicalize order.
-    pub fn utxoset_hash_v1<I>(
+    pub fn utxo_set_hash_v1<I>(
         network: &Network,
         best_height: u32,
         best_block_hash: [u8; 32],
@@ -139,7 +157,7 @@ pub mod helpers {
         };
 
         // Header, with domain separation and metadata
-        h.update(b"ZAINO-UTXOSET-V1\0");
+        h.update(DOMAIN_TAG);
         h.update(network_str.as_bytes());
         h.update(&[0]); // NUL
         h.update(&best_height.to_le_bytes());
@@ -159,6 +177,50 @@ pub mod helpers {
         }
 
         h.finalize()
+    }
+
+    /// Compute the serialized size (in bytes) of the UTXO set snapshot using the same
+    /// deterministic V1 format as `utxo_set_hash_v1`.
+    ///
+    /// This MUST stay in lockstep with the hashing/serialization spec:
+    /// - Header: "ZAINO-UTXOSET-V1\0" || `network` || `NUL` || `height_le` || `best_block` || `total_outputs_le`
+    /// - Entries (sorted by `txid` asc, `index` asc): `txid` || `index_le` || `value_le` || `CompactSize(script_len)` || `script`
+    pub fn utxo_set_serialized_size_v1<I>(items: I) -> u64
+    where
+        I: IntoIterator<Item = SnapshotItem>,
+    {
+        // Header size, independent of contents
+        let mut total = 0u64;
+        total += DOMAIN_TAG.len() as u64;
+        total += NETWORK_TAG_LEN;
+        total += NETWORK_TAG_NUL.len() as u64;
+        total += std::mem::size_of::<u32>() as u64; // best_height
+        total += std::mem::size_of::<[u8; 32]>() as u64; // best_block_hash
+        total += std::mem::size_of::<u64>() as u64; // total_outputs
+
+        // Canonicalize order to match hashing (not strictly necessary for size, but keeps invariants).
+        use std::collections::BTreeMap;
+        let mut ordered: BTreeMap<[u8; 32], Vec<SnapshotItem>> = BTreeMap::new();
+
+        for item in items {
+            ordered.entry(item.txid_raw).or_default().push(item);
+        }
+        for v in ordered.values_mut() {
+            v.sort_by_key(|x| x.index);
+        }
+
+        for outs in ordered.into_values() {
+            for o in outs {
+                total += 32; // txid
+                total += 4; // index
+                total += 8; // value_zat
+                let slen = o.script.len() as u64;
+                total += compact_size_len(slen); // varint length
+                total += slen; // script bytes
+            }
+        }
+
+        total
     }
 }
 
@@ -245,11 +307,11 @@ mod tests {
         }
     }
 
-    /// UTXO Hash Set (UHS) tests
+    /// UTXO Set Hash tests
     ///
-    /// For more information, see `ZAINO-UHS-01`.
-    mod uhs_tests {
-        use super::super::helpers::*;
+    /// For more information, see `ZAINO-UTXOSET-01`.
+    mod utxoset_hash {
+        use super::super::utxo_set_hash::*;
         use blake3;
         use zaino_common::{network::ActivationHeights, Network};
 
@@ -326,7 +388,7 @@ mod tests {
 
         /// Same logical set, different insertion orders. Should get the same digest.
         #[test]
-        fn utxoset_hash_is_deterministic_and_order_canonicalized() {
+        fn utxo_set_hash_is_deterministic_and_order_canonicalized() {
             let best_block_hash = [0x11; 32];
 
             let a = vec![
@@ -342,41 +404,41 @@ mod tests {
                 item(0xAA, 0, 50, 10),
             ];
 
-            let h1 = utxoset_hash_v1(&Network::Mainnet, 100, best_block_hash, a);
-            let h2 = utxoset_hash_v1(&Network::Mainnet, 100, best_block_hash, b);
+            let h1 = utxo_set_hash_v1(&Network::Mainnet, 100, best_block_hash, a);
+            let h2 = utxo_set_hash_v1(&Network::Mainnet, 100, best_block_hash, b);
 
             assert_eq!(h1, h2);
         }
 
         #[test]
-        fn utxoset_hash_changes_with_header_fields() {
+        fn utxo_set_hash_changes_with_header_fields() {
             let items = [item(0x01, 0, 1, 0)];
             let best_block_hash_1 = [0x22; 32];
             let best_block_hash_2 = [0x23; 32];
 
-            let base = utxoset_hash_v1(&Network::Mainnet, 1, best_block_hash_1, items.clone());
+            let base = utxo_set_hash_v1(&Network::Mainnet, 1, best_block_hash_1, items.clone());
             assert_ne!(
                 base,
-                utxoset_hash_v1(&Network::Testnet, 1, best_block_hash_1, items.clone()),
+                utxo_set_hash_v1(&Network::Testnet, 1, best_block_hash_1, items.clone()),
                 "network must affect hash"
             );
             assert_ne!(
                 base,
-                utxoset_hash_v1(&Network::Mainnet, 2, best_block_hash_1, items.clone()),
+                utxo_set_hash_v1(&Network::Mainnet, 2, best_block_hash_1, items.clone()),
                 "height must affect hash"
             );
             assert_ne!(
                 base,
-                utxoset_hash_v1(&Network::Mainnet, 1, best_block_hash_2, items.clone()),
+                utxo_set_hash_v1(&Network::Mainnet, 1, best_block_hash_2, items.clone()),
                 "best_block must affect hash"
             );
         }
 
         #[test]
-        fn utxoset_hash_changes_when_entry_changes() {
+        fn utxo_set_hash_changes_when_entry_changes() {
             let best_block_hash = [0x99; 32];
 
-            let base = utxoset_hash_v1(
+            let base = utxo_set_hash_v1(
                 &Network::Regtest(ActivationHeights::default()),
                 123,
                 best_block_hash,
@@ -384,7 +446,7 @@ mod tests {
             );
 
             // Change value
-            let h_val = utxoset_hash_v1(
+            let h_val = utxo_set_hash_v1(
                 &Network::Regtest(ActivationHeights::default()),
                 123,
                 best_block_hash,
@@ -393,7 +455,7 @@ mod tests {
             assert_ne!(base, h_val);
 
             // Change index
-            let h_idx = utxoset_hash_v1(
+            let h_idx = utxo_set_hash_v1(
                 &Network::Regtest(ActivationHeights::default()),
                 123,
                 best_block_hash,
@@ -402,7 +464,7 @@ mod tests {
             assert_ne!(base, h_idx);
 
             // Change script content/length
-            let h_scr = utxoset_hash_v1(
+            let h_scr = utxo_set_hash_v1(
                 &Network::Regtest(ActivationHeights::default()),
                 123,
                 best_block_hash,
@@ -412,11 +474,11 @@ mod tests {
         }
 
         #[test]
-        fn utxoset_compactsize_boundary_lengths_affect_hash() {
+        fn utxo_set_compactsize_boundary_lengths_affect_hash() {
             // Check that going from 252 to 253 (boundary into 0xFD form) changes the hash.
             let best_block_hash = [0x55; 32];
 
-            let h_252 = utxoset_hash_v1(
+            let h_252 = utxo_set_hash_v1(
                 &Network::Mainnet,
                 7,
                 best_block_hash,
@@ -427,7 +489,7 @@ mod tests {
                     script: vec![0xAA; 252],
                 }],
             );
-            let h_253 = utxoset_hash_v1(
+            let h_253 = utxo_set_hash_v1(
                 &Network::Mainnet,
                 7,
                 best_block_hash,
@@ -449,7 +511,7 @@ mod tests {
         use crate::jsonrpsee::response::{
             common::{amount::ZecAmount, block::BlockHash, BlockHeight},
             txout_set_info::{
-                helpers::{utxoset_hash_v1, SnapshotItem},
+                utxo_set_hash::{utxo_set_hash_v1, SnapshotItem, DOMAIN_TAG},
                 TxOutSetInfo,
             },
         };
@@ -469,11 +531,11 @@ mod tests {
         }
 
         #[test]
-        fn utxoset_header_uses_display_order_bytes() {
+        fn utxo_set_header_uses_display_order_bytes() {
             let height = 123u32;
             let display_bytes = seq_bytes();
 
-            let h_func = utxoset_hash_v1(
+            let h_func = utxo_set_hash_v1(
                 &MAINNET_NETWORK,
                 height,
                 display_bytes,
@@ -481,7 +543,7 @@ mod tests {
             );
 
             let mut h = blake3::Hasher::new();
-            h.update(b"ZAINO-UTXOSET-V1\0");
+            h.update(DOMAIN_TAG);
             h.update(MAINNET_NETWORK_STR.as_bytes());
             h.update(&[0]);
             h.update(&height.to_le_bytes());
@@ -500,7 +562,7 @@ mod tests {
             let height = 7u32;
             let display_bytes = seq_bytes();
 
-            let h_ok = utxoset_hash_v1(
+            let h_ok = utxo_set_hash_v1(
                 &MAINNET_NETWORK,
                 height,
                 display_bytes,
@@ -509,7 +571,7 @@ mod tests {
 
             let mut flipped = display_bytes;
             flipped.reverse();
-            let h_bad = utxoset_hash_v1(
+            let h_bad = utxo_set_hash_v1(
                 &MAINNET_NETWORK,
                 height,
                 flipped,
@@ -529,7 +591,7 @@ mod tests {
             let best_block_hex = hex::encode(best_block);
 
             // Compute digest using display-order bytes
-            let digest = utxoset_hash_v1(
+            let digest = utxo_set_hash_v1(
                 &TESTNET_NETWORK,
                 height,
                 best_block,
@@ -552,6 +614,100 @@ mod tests {
 
             // The JSON should carry the same hex we hashed in the header.
             assert_eq!(v["bestblock"].as_str().unwrap(), best_block_hex);
+        }
+    }
+
+    mod size_tests {
+        use crate::jsonrpsee::response::txout_set_info::utxo_set_hash::{
+            utxo_set_serialized_size_v1, SnapshotItem, DOMAIN_TAG, NETWORK_TAG_LEN, NETWORK_TAG_NUL,
+        };
+
+        #[test]
+        fn header_only_size_is_constant_plus_network() {
+            let size = utxo_set_serialized_size_v1(std::iter::empty::<SnapshotItem>());
+            let expected = DOMAIN_TAG.len() as u64
+            + NETWORK_TAG_LEN
+            + NETWORK_TAG_NUL.len() as u64
+            + 4 // u32 height
+            + 32
+            + 8; // total_outputs u64
+            assert_eq!(size, expected);
+        }
+
+        #[test]
+        fn single_entry_zero_script_size_matches_manual() {
+            let net = "regtest";
+            let best_block = [0xAA; 32];
+            let item = SnapshotItem {
+                txid_raw: [0x11; 32],
+                index: 2,
+                value_zat: 42,
+                script: vec![],
+            };
+
+            let counted = utxo_set_serialized_size_v1([item]);
+
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(DOMAIN_TAG);
+            bytes.extend_from_slice(net.as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(&7u32.to_le_bytes());
+            bytes.extend_from_slice(&best_block);
+            bytes.extend_from_slice(&1u64.to_le_bytes()); // total_outputs = 1
+
+            // entry
+            bytes.extend_from_slice(&[0x11; 32]);
+            bytes.extend_from_slice(&2u32.to_le_bytes());
+            bytes.extend_from_slice(&42u64.to_le_bytes());
+            bytes.push(0); // No script bytes
+
+            assert_eq!(counted as usize, bytes.len());
+        }
+
+        #[test]
+        fn compactsize_thresholds_change_size() {
+            let mk_item = |len: usize| SnapshotItem {
+                txid_raw: [0u8; 32],
+                index: 0,
+                value_zat: 0,
+                script: vec![0xAA; len],
+            };
+
+            let with_len = |len| utxo_set_serialized_size_v1([mk_item(len)]);
+
+            // 1 byte varint
+            let a = with_len(252);
+            // 3 bytes varint
+            let b = with_len(253);
+            assert_eq!(b - a, 3);
+
+            // 3 bytes varint
+            let c = with_len(65535);
+            // 5 bytes varint
+            let d = with_len(65536);
+            assert_eq!(d - c, 3);
+        }
+
+        #[test]
+        fn multiple_entries_add_linearly() {
+            let base = SnapshotItem {
+                txid_raw: [0x77; 32],
+                index: 1,
+                value_zat: 1_000,
+                script: vec![1, 2, 3, 4], // CompactSize = 1
+            };
+
+            let s1 = utxo_set_serialized_size_v1([base.clone()]);
+            let s2 = utxo_set_serialized_size_v1([base.clone(), base.clone()]);
+            assert_eq!(
+                s2 - s1,
+                s1 - (DOMAIN_TAG.len() as u64
+                    + NETWORK_TAG_LEN
+                    + NETWORK_TAG_NUL.len() as u64
+                    + 4
+                    + 32
+                    + 8)
+            );
         }
     }
 }
