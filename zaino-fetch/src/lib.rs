@@ -7,3 +7,5 @@
 
 pub mod chain;
 pub mod jsonrpsee;
+
+pub use zaino_common::Network;
