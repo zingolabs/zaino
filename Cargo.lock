@@ -8420,6 +8420,7 @@ dependencies = [
  "tonic 0.12.3",
  "tracing",
  "url",
+ "zaino-common",
  "zaino-proto",
  "zaino-testvectors",
  "zebra-chain",

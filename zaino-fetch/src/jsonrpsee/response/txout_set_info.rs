@@ -59,6 +59,8 @@ impl ResponseToError for GetTxOutSetInfo {
 pub mod helpers {
     use std::collections::BTreeMap;
 
+    use zaino_common::Network;
+
     /// A single UTXO snapshot item.
     #[derive(Debug, Clone)]
     pub struct SnapshotItem {
@@ -111,7 +113,7 @@ pub mod helpers {
     /// - `best_block_hash`: raw 32-byte block hash.
     /// - `items`: anything that can be iterated, we'll sort it into BTreeMap to canonicalize order.
     pub fn utxoset_hash_v1<I>(
-        network: &str, // TODO: Use typed enum
+        network: &Network,
         best_height: u32,
         best_block_hash: [u8; 32],
         items: I,
@@ -130,9 +132,15 @@ pub mod helpers {
 
         let mut h = blake3::Hasher::new();
 
+        let network_str = match network {
+            Network::Mainnet => "mainnet",
+            Network::Testnet => "testnet",
+            Network::Regtest(_) => "regtest",
+        };
+
         // Header, with domain separation and metadata
         h.update(b"ZAINO-UTXOSET-V1\0");
-        h.update(network.as_bytes());
+        h.update(network_str.as_bytes());
         h.update(&[0]); // NUL
         h.update(&best_height.to_le_bytes());
         h.update(&best_block_hash);
@@ -243,6 +251,7 @@ mod tests {
     mod uhs_tests {
         use super::super::helpers::*;
         use blake3;
+        use zaino_common::{network::ActivationHeights, Network};
 
         fn txid(fill: u8) -> [u8; 32] {
             [fill; 32]
@@ -333,8 +342,8 @@ mod tests {
                 item(0xAA, 0, 50, 10),
             ];
 
-            let h1 = utxoset_hash_v1("mainnet", 100, best_block_hash, a);
-            let h2 = utxoset_hash_v1("mainnet", 100, best_block_hash, b);
+            let h1 = utxoset_hash_v1(&Network::Mainnet, 100, best_block_hash, a);
+            let h2 = utxoset_hash_v1(&Network::Mainnet, 100, best_block_hash, b);
 
             assert_eq!(h1, h2);
         }
@@ -345,20 +354,20 @@ mod tests {
             let best_block_hash_1 = [0x22; 32];
             let best_block_hash_2 = [0x23; 32];
 
-            let base = utxoset_hash_v1("mainnet", 1, best_block_hash_1, items.clone());
+            let base = utxoset_hash_v1(&Network::Mainnet, 1, best_block_hash_1, items.clone());
             assert_ne!(
                 base,
-                utxoset_hash_v1("testnet", 1, best_block_hash_1, items.clone()),
+                utxoset_hash_v1(&Network::Testnet, 1, best_block_hash_1, items.clone()),
                 "network must affect hash"
             );
             assert_ne!(
                 base,
-                utxoset_hash_v1("mainnet", 2, best_block_hash_1, items.clone()),
+                utxoset_hash_v1(&Network::Mainnet, 2, best_block_hash_1, items.clone()),
                 "height must affect hash"
             );
             assert_ne!(
                 base,
-                utxoset_hash_v1("mainnet", 1, best_block_hash_2, items.clone()),
+                utxoset_hash_v1(&Network::Mainnet, 1, best_block_hash_2, items.clone()),
                 "best_block must affect hash"
             );
         }
@@ -367,18 +376,38 @@ mod tests {
         fn utxoset_hash_changes_when_entry_changes() {
             let best_block_hash = [0x99; 32];
 
-            let base = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 0, 1_000, 5)]);
+            let base = utxoset_hash_v1(
+                &Network::Regtest(ActivationHeights::default()),
+                123,
+                best_block_hash,
+                [item(0x10, 0, 1_000, 5)],
+            );
 
             // Change value
-            let h_val = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 0, 2_000, 5)]);
+            let h_val = utxoset_hash_v1(
+                &Network::Regtest(ActivationHeights::default()),
+                123,
+                best_block_hash,
+                [item(0x10, 0, 2_000, 5)],
+            );
             assert_ne!(base, h_val);
 
             // Change index
-            let h_idx = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 1, 1_000, 5)]);
+            let h_idx = utxoset_hash_v1(
+                &Network::Regtest(ActivationHeights::default()),
+                123,
+                best_block_hash,
+                [item(0x10, 1, 1_000, 5)],
+            );
             assert_ne!(base, h_idx);
 
             // Change script content/length
-            let h_scr = utxoset_hash_v1("regtest", 123, best_block_hash, [item(0x10, 0, 1_000, 6)]);
+            let h_scr = utxoset_hash_v1(
+                &Network::Regtest(ActivationHeights::default()),
+                123,
+                best_block_hash,
+                [item(0x10, 0, 1_000, 6)],
+            );
             assert_ne!(base, h_scr);
         }
 
@@ -388,7 +417,7 @@ mod tests {
             let best_block_hash = [0x55; 32];
 
             let h_252 = utxoset_hash_v1(
-                "mainnet",
+                &Network::Mainnet,
                 7,
                 best_block_hash,
                 [SnapshotItem {
@@ -399,7 +428,7 @@ mod tests {
                 }],
             );
             let h_253 = utxoset_hash_v1(
-                "mainnet",
+                &Network::Mainnet,
                 7,
                 best_block_hash,
                 [SnapshotItem {

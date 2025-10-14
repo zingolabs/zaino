@@ -1579,13 +1579,6 @@ impl ZcashIndexer for StateServiceSubscriber {
         > = txouts.values().map(|txout| txout.value).sum();
         let network = self.config.network;
 
-        let network_str = match network {
-            // TODO: use proper enum
-            zaino_common::network::Network::Mainnet => "mainnet",
-            zaino_common::network::Network::Testnet => "testnet",
-            zaino_common::network::Network::Regtest(_) => "regtest",
-        };
-
         let items: Vec<txout_set_info::helpers::SnapshotItem> = txouts
             .iter()
             .map(|(op, txout)| {
@@ -1599,7 +1592,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             .collect();
 
         let utxo_set_hash = txout_set_info::helpers::utxoset_hash_v1(
-            network_str,
+            &network,
             best_block_height.0,
             best_block_hash.bytes_in_display_order(), // TODO: Check if this is correct
             items,
