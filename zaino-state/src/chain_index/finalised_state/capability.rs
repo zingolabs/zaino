@@ -6,9 +6,10 @@ use crate::{
     chain_index::types::{AddrEventBytes, TransactionHash},
     error::FinalisedStateError,
     read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
-    AddrScript, BlockHash, BlockHeaderData, ChainBlock, CommitmentTreeData, FixedEncodedLen,
-    Height, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerialise,
+    AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, FixedEncodedLen, Height,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+    ZainoVersionedSerialise,
 };
 
 use async_trait::async_trait;
@@ -42,7 +43,7 @@ bitflags! {
         const BLOCK_SHIELDED_EXT    = 0b0001_0000;
         /// Implements `CompactBlockExt`.
         const COMPACT_BLOCK_EXT     = 0b0010_0000;
-        /// Implements `ChainBlockExt`.
+        /// Implements `IndexedBlockExt`.
         const CHAIN_BLOCK_EXT       = 0b0100_0000;
         /// Implements `TransparentHistExt`.
         const TRANSPARENT_HIST_EXT  = 0b1000_0000;
@@ -76,7 +77,7 @@ pub(crate) enum CapabilityRequest {
     BlockTransparentExt,
     BlockShieldedExt,
     CompactBlockExt,
-    ChainBlockExt,
+    IndexedBlockExt,
     TransparentHistExt,
 }
 
@@ -91,7 +92,7 @@ impl CapabilityRequest {
             CapabilityRequest::BlockTransparentExt => Capability::BLOCK_TRANSPARENT_EXT,
             CapabilityRequest::BlockShieldedExt => Capability::BLOCK_SHIELDED_EXT,
             CapabilityRequest::CompactBlockExt => Capability::COMPACT_BLOCK_EXT,
-            CapabilityRequest::ChainBlockExt => Capability::CHAIN_BLOCK_EXT,
+            CapabilityRequest::IndexedBlockExt => Capability::CHAIN_BLOCK_EXT,
             CapabilityRequest::TransparentHistExt => Capability::TRANSPARENT_HIST_EXT,
         }
     }
@@ -106,7 +107,7 @@ impl CapabilityRequest {
             CapabilityRequest::BlockTransparentExt => "BLOCK_TRANSPARENT_EXT",
             CapabilityRequest::BlockShieldedExt => "BLOCK_SHIELDED_EXT",
             CapabilityRequest::CompactBlockExt => "COMPACT_BLOCK_EXT",
-            CapabilityRequest::ChainBlockExt => "CHAIN_BLOCK_EXT",
+            CapabilityRequest::IndexedBlockExt => "CHAIN_BLOCK_EXT",
             CapabilityRequest::TransparentHistExt => "TRANSPARENT_HIST_EXT",
         }
     }
@@ -410,17 +411,17 @@ pub trait DbRead: Send + Sync {
 #[async_trait]
 pub trait DbWrite: Send + Sync {
     /// Persist a fully-validated block to the database.
-    async fn write_block(&self, block: ChainBlock) -> Result<(), FinalisedStateError>;
+    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError>;
 
     /// Deletes a block identified height from every finalised table.
     async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError>;
 
     /// Wipe the given block data from every finalised table.
     ///
-    /// Takes a ChainBlock as input and ensures all data from this block is wiped from the database.
+    /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
     ///
     /// Used as a backup when delete_block_at_height fails.
-    async fn delete_block(&self, block: &ChainBlock) -> Result<(), FinalisedStateError>;
+    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError>;
 
     /// Update the metadata store with the given DbMetadata
     async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError>;
@@ -563,19 +564,19 @@ pub trait CompactBlockExt: Send + Sync {
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError>;
 }
 
-/// ChainBlock v1 extension.
+/// IndexedBlock v1 extension.
 #[async_trait]
-pub trait ChainBlockExt: Send + Sync {
-    /// Returns the ChainBlock for the given Height.
+pub trait IndexedBlockExt: Send + Sync {
+    /// Returns the IndexedBlock for the given Height.
     ///
     /// TODO: Add separate range fetch method!
     async fn get_chain_block(
         &self,
         height: Height,
-    ) -> Result<Option<ChainBlock>, FinalisedStateError>;
+    ) -> Result<Option<IndexedBlock>, FinalisedStateError>;
 }
 
-/// ChainBlock v1 extension.
+/// IndexedBlock v1 extension.
 #[async_trait]
 pub trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.

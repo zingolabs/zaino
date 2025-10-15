@@ -15,9 +15,12 @@ use serde::{
     de::{self, Deserializer},
     Deserialize, Serialize,
 };
-#[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
+#[cfg(feature = "no_tls_use_unencrypted_traffic")]
 use tracing::warn;
 use tracing::{error, info};
+use zaino_common::{
+    CacheConfig, DatabaseConfig, DatabaseSize, Network, ServiceConfig, StorageConfig,
+};
 use zaino_state::{BackendConfig, FetchServiceConfig, StateServiceConfig};
 
 use crate::error::IndexerError;
@@ -91,29 +94,16 @@ pub struct IndexerConfig {
     pub validator_user: Option<String>,
     /// full node / validator Password.
     pub validator_password: Option<String>,
-    /// Capacity of the Dashmaps used for the Mempool.
-    /// Also use by the BlockCache::NonFinalisedState when using the FetchService.
-    pub map_capacity: Option<usize>,
-    /// Number of shard used in the DashMap used for the Mempool.
-    /// Also use by the BlockCache::NonFinalisedState when using the FetchService.
-    ///
-    /// shard_amount should greater than 0 and be a power of two.
-    /// If a shard_amount which is not a power of two is provided, the function will panic.
-    pub map_shard_amount: Option<usize>,
-    /// Block Cache database file path.
-    ///
-    /// ZainoDB location.
-    pub zaino_db_path: PathBuf,
+    /// Service-level configuration (timeout, channel size).
+    pub service: ServiceConfig,
+    /// Storage configuration (cache and database).
+    pub storage: StorageConfig,
     /// Block Cache database file path.
     ///
     /// ZebraDB location.
     pub zebra_db_path: PathBuf,
-    /// Block Cache database maximum size in gb.
-    ///
-    /// Only used by the FetchService.
-    pub db_size: Option<usize>,
-    /// Network chain type (Mainnet, Testnet, Regtest).
-    pub network: String,
+    /// Network chain type.
+    pub network: Network,
     /// Disables internal sync and stops zaino waiting on server sync.
     /// Used for testing.
     pub no_sync: bool,
@@ -129,14 +119,7 @@ pub struct IndexerConfig {
 impl IndexerConfig {
     /// Performs checks on config data.
     pub(crate) fn check_config(&self) -> Result<(), IndexerError> {
-        // Check network type.
-        if (self.network != "Regtest") && (self.network != "Testnet") && (self.network != "Mainnet")
-        {
-            return Err(IndexerError::ConfigError(
-                "Incorrect network name given, must be one of (Mainnet, Testnet, Regtest)."
-                    .to_string(),
-            ));
-        }
+        // Network type is validated at the type level via Network enum.
 
         // Check TLS settings.
         if self.grpc_tls {
@@ -181,9 +164,9 @@ impl IndexerConfig {
             }
         }
 
-        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
+        #[cfg(not(feature = "no_tls_use_unencrypted_traffic"))]
         let grpc_addr = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
-        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
+        #[cfg(feature = "no_tls_use_unencrypted_traffic")]
         let _ = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
 
         let validator_addr =
@@ -196,7 +179,7 @@ impl IndexerConfig {
             ));
         }
 
-        #[cfg(not(feature = "disable_tls_unencrypted_traffic_mode"))]
+        #[cfg(not(feature = "no_tls_use_unencrypted_traffic"))]
         {
             // Ensure TLS is used when connecting to external addresses.
             if !is_private_listen_addr(&grpc_addr) && !self.grpc_tls {
@@ -213,9 +196,11 @@ impl IndexerConfig {
             ));
             }
         }
-        #[cfg(feature = "disable_tls_unencrypted_traffic_mode")]
+        #[cfg(feature = "no_tls_use_unencrypted_traffic")]
         {
-            warn!("Zaino built using disable_tls_unencrypted_traffic_mode feature, proceed with caution.");
+            warn!(
+                "Zaino built using no_tls_use_unencrypted_traffic feature, proceed with caution."
+            );
         }
 
         // Check gRPC and JsonRPC server are not listening on the same address.
@@ -230,28 +215,7 @@ impl IndexerConfig {
 
     /// Returns the network type currently being used by the server.
     pub fn get_network(&self) -> Result<zebra_chain::parameters::Network, IndexerError> {
-        match self.network.as_str() {
-            "Regtest" => Ok(zebra_chain::parameters::Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
-                    nu6_1: None,
-                    nu7: None,
-                },
-            )),
-            "Testnet" => Ok(zebra_chain::parameters::Network::new_default_testnet()),
-            "Mainnet" => Ok(zebra_chain::parameters::Network::Mainnet),
-            _ => Err(IndexerError::ConfigError(
-                "Incorrect network name given.".to_string(),
-            )),
-        }
+        Ok(self.network.to_zebra_network())
     }
 
     /// Finalizes the configuration after initial parsing, applying conditional defaults.
@@ -286,12 +250,16 @@ impl Default for IndexerConfig {
             validator_cookie_path: None,
             validator_user: Some("xxxxxx".to_string()),
             validator_password: Some("xxxxxx".to_string()),
-            map_capacity: None,
-            map_shard_amount: None,
-            zaino_db_path: default_zaino_db_path(),
+            service: ServiceConfig::default(),
+            storage: StorageConfig {
+                cache: CacheConfig::default(),
+                database: DatabaseConfig {
+                    path: default_zaino_db_path(),
+                    size: DatabaseSize::default(),
+                },
+            },
             zebra_db_path: default_zebra_db_path().unwrap(),
-            db_size: None,
-            network: "Testnet".to_string(),
+            network: Network::Testnet,
             no_sync: false,
             no_db: false,
             slow_sync: false,
@@ -359,7 +327,7 @@ pub(crate) fn is_private_listen_addr(addr: &SocketAddr) -> bool {
 /// Validates that the configured `address` is a loopback address.
 ///
 /// Returns `Ok(BindAddress)` if valid.
-#[cfg_attr(feature = "disable_tls_unencrypted_traffic_mode", allow(dead_code))]
+#[cfg_attr(feature = "no_tls_use_unencrypted_traffic", allow(dead_code))]
 pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
     match ip {
@@ -407,8 +375,6 @@ impl TryFrom<IndexerConfig> for BackendConfig {
     type Error = IndexerError;
 
     fn try_from(cfg: IndexerConfig) -> Result<Self, Self::Error> {
-        let network = cfg.get_network()?;
-
         match cfg.backend {
             zaino_state::BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
                 validator_config: zebra_state::Config {
@@ -426,13 +392,9 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                 validator_rpc_password: cfg
                     .validator_password
                     .unwrap_or_else(|| "xxxxxx".to_string()),
-                service_timeout: 30,
-                service_channel_size: 32,
-                map_capacity: cfg.map_capacity,
-                map_shard_amount: cfg.map_shard_amount,
-                db_path: cfg.zaino_db_path,
-                db_size: cfg.db_size,
-                network,
+                service: cfg.service,
+                storage: cfg.storage,
+                network: cfg.network,
                 no_sync: cfg.no_sync,
                 no_db: cfg.no_db,
             })),
@@ -445,13 +407,9 @@ impl TryFrom<IndexerConfig> for BackendConfig {
                 validator_rpc_password: cfg
                     .validator_password
                     .unwrap_or_else(|| "xxxxxx".to_string()),
-                service_timeout: 30,
-                service_channel_size: 32,
-                map_capacity: cfg.map_capacity,
-                map_shard_amount: cfg.map_shard_amount,
-                db_path: cfg.zaino_db_path,
-                db_size: cfg.db_size,
-                network,
+                service: cfg.service,
+                storage: cfg.storage,
+                network: cfg.network,
                 no_sync: cfg.no_sync,
                 no_db: cfg.no_db,
             })),

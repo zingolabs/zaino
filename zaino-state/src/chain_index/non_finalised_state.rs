@@ -2,10 +2,9 @@ use super::{finalised_state::ZainoDB, source::BlockchainSource};
 use crate::{
     chain_index::types::{self, BlockHash, Height, TransactionHash, GENESIS_HEIGHT},
     error::FinalisedStateError,
-    BlockData, BlockIndex, ChainBlock, ChainWork, CommitmentTreeData, CommitmentTreeRoots,
-    CommitmentTreeSizes, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend,
-    CompactTxData, OrchardCompactTx, SaplingCompactTx, TransparentCompactTx, TxInCompact,
-    TxOutCompact,
+    BlockData, BlockIndex, ChainWork, CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes,
+    CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTxData, IndexedBlock,
+    OrchardCompactTx, SaplingCompactTx, TransparentCompactTx, TxInCompact, TxOutCompact,
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
@@ -21,14 +20,14 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
     /// We need access to the validator's best block hash, as well
     /// as a source of blocks
     pub(super) source: Source,
-    staged: Mutex<mpsc::Receiver<ChainBlock>>,
-    staging_sender: mpsc::Sender<ChainBlock>,
+    staged: Mutex<mpsc::Receiver<IndexedBlock>>,
+    staging_sender: mpsc::Sender<IndexedBlock>,
     /// This lock should not be exposed to consumers. Rather,
     /// clone the Arc and offer that. This means we can overwrite the arc
     /// without interfering with readers, who will hold a stale copy
     current: ArcSwap<NonfinalizedBlockCacheSnapshot>,
     /// Used mostly to determine activation heights
-    network: Network,
+    pub(crate) network: Network,
     /// Listener used to detect non-best-chain blocks, if available
     #[allow(clippy::type_complexity)]
     nfs_change_listener: Option<
@@ -38,6 +37,15 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
     >,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+/// created for NonfinalizedBlockCacheSnapshot best_tip field for naming fields
+pub struct BestTip {
+    /// from chain_index types
+    pub height: Height,
+    /// from chain_index types
+    pub blockhash: BlockHash,
+}
+
 #[derive(Debug)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
 pub struct NonfinalizedBlockCacheSnapshot {
@@ -45,12 +53,14 @@ pub struct NonfinalizedBlockCacheSnapshot {
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
     /// removed by a reorg. Blocks reorged away have no height.
-    pub blocks: HashMap<BlockHash, ChainBlock>,
+    pub blocks: HashMap<BlockHash, IndexedBlock>,
     /// hashes indexed by height
     pub heights_to_hashes: HashMap<Height, BlockHash>,
     // Do we need height here?
     /// The highest known block
-    pub best_tip: (Height, BlockHash),
+    // best_tip is a BestTip, which contains
+    // a Height, and a BlockHash as named fields.
+    pub best_tip: BestTip,
 }
 
 #[derive(Debug)]
@@ -132,7 +142,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     pub async fn initialize(
         source: Source,
         network: Network,
-        start_block: Option<ChainBlock>,
+        start_block: Option<IndexedBlock>,
     ) -> Result<Self, InitError> {
         // TODO: Consider arbitrary buffer length
         info!("Initialising non-finalised state.");
@@ -300,7 +310,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 let commitment_tree_data =
                     CommitmentTreeData::new(commitment_tree_roots, commitment_tree_size);
 
-                ChainBlock {
+                IndexedBlock {
                     index,
                     data,
                     transactions,
@@ -308,16 +318,19 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 }
             }
         };
-        let height = chainblock
+        let working_height = chainblock
             .height()
             .ok_or(InitError::InitalBlockMissingHeight)?;
-        let best_tip = (height, chainblock.index().hash);
+        let best_tip = BestTip {
+            height: working_height,
+            blockhash: chainblock.index().hash,
+        };
 
         let mut blocks = HashMap::new();
         let mut heights_to_hashes = HashMap::new();
         let hash = chainblock.index().hash;
         blocks.insert(hash, chainblock);
-        heights_to_hashes.insert(height, hash);
+        heights_to_hashes.insert(working_height, hash);
 
         let current = ArcSwap::new(Arc::new(NonfinalizedBlockCacheSnapshot {
             blocks,
@@ -356,7 +369,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         while let Some(block) = self
             .source
             .get_block(HashOrHeight::Height(zebra_chain::block::Height(
-                u32::from(best_tip.0) + 1,
+                u32::from(best_tip.height) + 1,
             )))
             .await
             .map_err(|e| {
@@ -368,32 +381,38 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         {
             // If this block is next in the chain, we sync it as normal
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
-            if parent_hash == best_tip.1 {
+            if parent_hash == best_tip.blockhash {
                 let prev_block = match new_blocks.last() {
                     Some(block) => block,
-                    None => initial_state.blocks.get(&best_tip.1).ok_or_else(|| {
-                        SyncError::ReorgFailure(format!(
-                            "found blocks {:?}, expected block {:?}",
-                            initial_state
-                                .blocks
-                                .values()
-                                .map(|block| (block.index().hash(), block.index().height()))
-                                .collect::<Vec<_>>(),
-                            best_tip
-                        ))
-                    })?,
+                    None => initial_state
+                        .blocks
+                        .get(&best_tip.blockhash)
+                        .ok_or_else(|| {
+                            SyncError::ReorgFailure(format!(
+                                "found blocks {:?}, expected block {:?}",
+                                initial_state
+                                    .blocks
+                                    .values()
+                                    .map(|block| (block.index().hash(), block.index().height()))
+                                    .collect::<Vec<_>>(),
+                                best_tip
+                            ))
+                        })?,
                 };
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
                 info!(
                     "syncing block {} at height {}",
                     &chainblock.index().hash(),
-                    best_tip.0 + 1
+                    best_tip.height + 1
                 );
-                best_tip = (best_tip.0 + 1, *chainblock.hash());
+                best_tip = BestTip {
+                    height: best_tip.height + 1,
+                    blockhash: *chainblock.hash(),
+                };
                 new_blocks.push(chainblock.clone());
             } else {
-                info!("Reorg detected at height {}", best_tip.0 + 1);
-                let mut next_height_down = best_tip.0 - 1;
+                info!("Reorg detected at height {}", best_tip.height + 1);
+                let mut next_height_down = best_tip.height - 1;
                 // If not, there's been a reorg, and we need to adjust our best-tip
                 let prev_hash = loop {
                     if next_height_down == Height(0) {
@@ -405,7 +424,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         .blocks
                         .values()
                         .find(|block| block.height() == Some(next_height_down))
-                        .map(ChainBlock::hash)
+                        .map(IndexedBlock::hash)
                     {
                         Some(hash) => break hash,
                         // There is a hole in our database.
@@ -414,7 +433,10 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     }
                 };
 
-                best_tip = (next_height_down, *prev_hash);
+                best_tip = BestTip {
+                    height: next_height_down,
+                    blockhash: *prev_hash,
+                };
                 // We can't calculate things like chainwork until we
                 // know the parent block
                 // this is done separately, after we've updated with the
@@ -516,7 +538,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
     async fn sync_stage_update_loop(
         &self,
-        block: ChainBlock,
+        block: IndexedBlock,
         finalized_db: Arc<ZainoDB>,
     ) -> Result<(), UpdateError> {
         if let Err(e) = self.stage(block.clone()) {
@@ -534,13 +556,16 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// Stage a block
-    fn stage(&self, block: ChainBlock) -> Result<(), Box<mpsc::error::TrySendError<ChainBlock>>> {
+    fn stage(
+        &self,
+        block: IndexedBlock,
+    ) -> Result<(), Box<mpsc::error::TrySendError<IndexedBlock>>> {
         self.staging_sender.try_send(block).map_err(Box::new)
     }
 
     /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalised tip.
     async fn update(&self, finalized_db: Arc<ZainoDB>) -> Result<(), UpdateError> {
-        let mut new = HashMap::<BlockHash, ChainBlock>::new();
+        let mut new = HashMap::<BlockHash, IndexedBlock>::new();
         let mut staged = self.staged.lock().await;
         loop {
             match staged.try_recv() {
@@ -580,7 +605,10 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
         let best_tip = blocks.iter().fold(snapshot.best_tip, |acc, (hash, block)| {
             match block.index().height() {
-                Some(height) if height > acc.0 => (height, (*hash)),
+                Some(working_height) if working_height > acc.height => BestTip {
+                    height: working_height,
+                    blockhash: *hash,
+                },
                 _ => acc,
             }
         });
@@ -608,20 +636,28 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
             // Log chain tip change
             if new_best_tip != stale_best_tip {
-                if new_best_tip.0 > stale_best_tip.0 {
+                if new_best_tip.height > stale_best_tip.height {
                     info!(
                         "non-finalized tip advanced: Height: {} -> {}, Hash: {} -> {}",
-                        stale_best_tip.0, new_best_tip.0, stale_best_tip.1, new_best_tip.1,
+                        stale_best_tip.height,
+                        new_best_tip.height,
+                        stale_best_tip.blockhash,
+                        new_best_tip.blockhash,
                     );
-                } else if new_best_tip.0 == stale_best_tip.0 && new_best_tip.1 != stale_best_tip.1 {
+                } else if new_best_tip.height == stale_best_tip.height
+                    && new_best_tip.blockhash != stale_best_tip.blockhash
+                {
                     info!(
                         "non-finalized tip reorg at height {}: Hash: {} -> {}",
-                        new_best_tip.0, stale_best_tip.1, new_best_tip.1,
+                        new_best_tip.height, stale_best_tip.blockhash, new_best_tip.blockhash,
                     );
-                } else if new_best_tip.0 < stale_best_tip.0 {
+                } else if new_best_tip.height < stale_best_tip.height {
                     info!(
                         "non-finalized tip rollback from height {} to {}, Hash: {} -> {}",
-                        stale_best_tip.0, new_best_tip.0, stale_best_tip.1, new_best_tip.1,
+                        stale_best_tip.height,
+                        new_best_tip.height,
+                        stale_best_tip.blockhash,
+                        new_best_tip.blockhash,
                     );
                 }
             }
@@ -638,9 +674,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
     async fn block_to_chainblock(
         &self,
-        prev_block: &ChainBlock,
+        prev_block: &IndexedBlock,
         block: &zebra_chain::block::Block,
-    ) -> Result<ChainBlock, SyncError> {
+    ) -> Result<IndexedBlock, SyncError> {
         let (sapling_root_and_len, orchard_root_and_len) = self
             .source
             .get_commitment_tree_roots(block.hash().into())
@@ -655,7 +691,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             orchard_root_and_len.unwrap_or_default(),
         );
 
-        ChainBlock::try_from((
+        IndexedBlock::try_from((
             block,
             sapling_root,
             sapling_size as u32,

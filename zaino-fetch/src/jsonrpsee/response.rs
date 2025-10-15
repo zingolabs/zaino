@@ -3,9 +3,9 @@
 //! These types are redefined rather than imported from zebra_rpc
 //! to prevent locking consumers into a zebra_rpc version
 
-// TODO: rust does not have a u256 in its standard library.
-// try ethnum::U256::from_le_bytes or similar
-// or check zebra types
+pub mod block_subsidy;
+mod common;
+pub mod peer_info;
 
 use std::{convert::Infallible, num::ParseIntError};
 
@@ -228,6 +228,14 @@ impl ResponseToError for GetBlockchainInfoResponse {
 /// Response to a `getdifficulty` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetDifficultyResponse(pub f64);
+
+/// Response to a `getnetworksolps` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetNetworkSolPsResponse(pub u64);
+
+impl ResponseToError for GetNetworkSolPsResponse {
+    type RpcError = Infallible;
+}
 
 fn default_header() -> Height {
     Height(0)
@@ -1053,8 +1061,6 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
 
         let tx_value = serde_json::Value::deserialize(deserializer)?;
 
-        println!("got txvalue");
-
         if let Some(hex_value) = tx_value.get("hex") {
             let hex_str = hex_value
                 .as_str()
@@ -1125,8 +1131,6 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 let block_hash: String = tx_value["blockhash"];
                 let block_time: i64 = tx_value["blocktime"];
             }
-
-            println!("got fields");
 
             let txid = txid.ok_or(DeserError::missing_field("txid"))?;
 

@@ -2,43 +2,59 @@
 
 use anyhow::Context;
 use core2::io::{self, Read, Write};
-use prost::Message;
+use futures::TryFutureExt as _;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
+use std::sync::Arc;
+use tower::{Service, ServiceExt as _};
+use zaino_common::network::ActivationHeights;
+use zaino_common::DatabaseConfig;
+use zaino_common::ServiceConfig;
+use zaino_common::StorageConfig;
 use zaino_fetch::chain::transaction::FullTransaction;
 use zaino_fetch::chain::utils::ParseFromSlice;
-use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_state::read_u32_le;
 use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
 use zaino_state::write_u64_le;
 use zaino_state::CompactSize;
-use zaino_state::ZainoVersionedSerialise;
-use zaino_state::{BackendType, ChainBlock, ChainWork};
+use zaino_state::{BackendType, ChainWork, IndexedBlock};
 use zaino_state::{
     StateService, StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::from_inputs;
-use zaino_testutils::services;
 use zaino_testutils::test_vectors::transactions::get_test_vectors;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::parameters::Network;
+use zebra_chain::parameters::NetworkKind;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlockTransaction};
+use zebra_state::HashOrHeight;
+use zebra_state::{ReadRequest, ReadResponse};
+
+macro_rules! expected_read_response {
+    ($response:ident, $expected_variant:ident) => {
+        match $response {
+            ReadResponse::$expected_variant(inner) => inner,
+            unexpected => {
+                unreachable!("Unexpected response from state service: {unexpected:?}")
+            }
+        }
+    };
+}
 
 async fn create_test_manager_and_services(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-    network: Option<services::network::Network>,
+    network: Option<NetworkKind>,
 ) -> (TestManager, StateService, StateServiceSubscriber) {
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
         network,
@@ -53,33 +69,19 @@ async fn create_test_manager_and_services(
     .await
     .unwrap();
 
-    let (network_type, _zaino_sync_bool) = match network {
-        Some(services::network::Network::Mainnet) => {
+    let (network_type, zaino_sync_bool) = match network {
+        Some(NetworkKind::Mainnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (Network::Mainnet, false)
+            (zaino_common::Network::Mainnet, false)
         }
-        Some(services::network::Network::Testnet) => {
+        Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (Network::new_default_testnet(), false)
+            (zaino_common::Network::Testnet, false)
         }
         _ => (
-            Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                    nu6_1: None,
-                    nu7: None,
-                },
-            ),
+            zaino_common::Network::Regtest(ActivationHeights::default()),
             true,
         ),
     };
@@ -105,19 +107,21 @@ async fn create_test_manager_and_services(
         None,
         None,
         None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
+        ServiceConfig::default(),
+        StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         network_type,
-        true,
+        zaino_sync_bool,
         true,
     ))
     .await
@@ -130,7 +134,7 @@ async fn create_test_manager_and_services(
     (test_manager, state_service, state_subscriber)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Not a test! Used to build test vector data for zaino_state::chain_index unit tests."]
 async fn create_200_block_regtest_chain_vectors() {
     let (mut test_manager, _state_service, state_service_subscriber) =
@@ -160,7 +164,11 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.faucet.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     // Generate block
     test_manager.local_net.generate_blocks(1).await.unwrap(); // Block 102
@@ -170,7 +178,11 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.faucet.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
     from_inputs::quick_send(
         &mut clients.faucet,
         vec![(recipient_uaddr.as_str(), 250_000, None)],
@@ -187,7 +199,11 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.recipient.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     from_inputs::quick_send(
         &mut clients.faucet,
@@ -218,8 +234,16 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.recipient.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
-    clients.recipient.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
+    clients
+        .recipient
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     from_inputs::quick_send(
         &mut clients.faucet,
@@ -257,8 +281,16 @@ async fn create_200_block_regtest_chain_vectors() {
         }
 
         // create transactions
-        clients.faucet.quick_shield().await.unwrap();
-        clients.recipient.quick_shield().await.unwrap();
+        clients
+            .faucet
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
+        clients
+            .recipient
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
 
         from_inputs::quick_send(
             &mut clients.faucet,
@@ -301,8 +333,16 @@ async fn create_200_block_regtest_chain_vectors() {
         }
 
         // create transactions
-        clients.faucet.quick_shield().await.unwrap();
-        clients.recipient.quick_shield().await.unwrap();
+        clients
+            .faucet
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
+        clients
+            .recipient
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
 
         from_inputs::quick_send(
             &mut clients.faucet,
@@ -353,9 +393,9 @@ async fn create_200_block_regtest_chain_vectors() {
         let mut parent_block_orchard_tree_size: u32 = 0;
 
         for height in 0..=chain_height.0 {
-            let (chain_block, compact_block, zebra_block, block_roots) = {
+            let (chain_block, zebra_block, block_roots, block_treestate) = {
                 // Fetch block data
-                let (_hash, tx, trees) = state_service_subscriber
+                let (_hash, tx, _trees) = state_service_subscriber
                     .z_get_block(height.to_string(), Some(1))
                     .await
                     .and_then(|response| match response {
@@ -385,7 +425,6 @@ async fn create_200_block_regtest_chain_vectors() {
                         )),
                     })
                     .unwrap();
-                let (sapling, orchard) = trees;
 
                 let block_data = state_service_subscriber
                     .z_get_block(height.to_string(), Some(0))
@@ -401,8 +440,87 @@ async fn create_200_block_regtest_chain_vectors() {
                     })
                     .unwrap();
 
-                // Roots are not easily calculated and are not currently required in unit tests so defaults are used.
-                let (sapling_root, orchard_root): ([u8; 32], [u8; 32]) = { ([0u8; 32], [1u8; 32]) };
+                let mut state = state_service_subscriber.read_state_service.clone();
+                let (sapling_root, orchard_root) = {
+                    let (sapling_tree_response, orchard_tree_response) = futures::future::join(
+                        state.clone().call(zebra_state::ReadRequest::SaplingTree(
+                            HashOrHeight::Height(zebra_chain::block::Height(height)),
+                        )),
+                        state.clone().call(zebra_state::ReadRequest::OrchardTree(
+                            HashOrHeight::Height(zebra_chain::block::Height(height)),
+                        )),
+                    )
+                    .await;
+                    let (sapling_tree, orchard_tree) = match (
+                        //TODO: Better readstateservice error handling
+                        sapling_tree_response.unwrap(),
+                        orchard_tree_response.unwrap(),
+                    ) {
+                        (
+                            zebra_state::ReadResponse::SaplingTree(saptree),
+                            zebra_state::ReadResponse::OrchardTree(orctree),
+                        ) => (saptree, orctree),
+                        (_, _) => panic!("Bad response"),
+                    };
+
+                    (
+                        sapling_tree
+                            .as_deref()
+                            .map(|tree| (tree.root(), tree.count()))
+                            .unwrap(),
+                        orchard_tree
+                            .as_deref()
+                            .map(|tree| (tree.root(), tree.count()))
+                            .unwrap(),
+                    )
+                };
+
+                let sapling_treestate = match zebra_chain::parameters::NetworkUpgrade::Sapling
+                    .activation_height(&state_service_subscriber.network().to_zebra_network())
+                {
+                    Some(activation_height) if height >= activation_height.0 => Some(
+                        state
+                            .ready()
+                            .and_then(|service| {
+                                service.call(ReadRequest::SaplingTree(HashOrHeight::Height(
+                                    zebra_chain::block::Height(height),
+                                )))
+                            })
+                            .await
+                            .unwrap(),
+                    ),
+                    _ => Some(zebra_state::ReadResponse::SaplingTree(Some(Arc::new(
+                        zebra_chain::sapling::tree::NoteCommitmentTree::default(),
+                    )))),
+                }
+                .and_then(|sap_response| {
+                    expected_read_response!(sap_response, SaplingTree)
+                        .map(|tree| tree.to_rpc_bytes())
+                })
+                .unwrap();
+                let orchard_treestate = match zebra_chain::parameters::NetworkUpgrade::Nu5
+                    .activation_height(&state_service_subscriber.network().to_zebra_network())
+                {
+                    Some(activation_height) if height >= activation_height.0 => Some(
+                        state
+                            .ready()
+                            .and_then(|service| {
+                                service.call(ReadRequest::OrchardTree(HashOrHeight::Height(
+                                    zebra_chain::block::Height(height),
+                                )))
+                            })
+                            .await
+                            .unwrap(),
+                    ),
+                    _ => Some(zebra_state::ReadResponse::OrchardTree(Some(Arc::new(
+                        zebra_chain::orchard::tree::NoteCommitmentTree::default(),
+                    )))),
+                }
+                .and_then(|orch_response| {
+                    expected_read_response!(orch_response, OrchardTree)
+                        .map(|tree| tree.to_rpc_bytes())
+                })
+                .unwrap();
 
                 // Build block data
                 let full_block = zaino_fetch::chain::block::FullBlock::parse_from_hex(
@@ -411,38 +529,37 @@ async fn create_200_block_regtest_chain_vectors() {
                 )
                 .unwrap();
 
-                let chain_block = ChainBlock::try_from((
+                let chain_block = IndexedBlock::try_from((
                     full_block.clone(),
                     parent_chain_work,
-                    sapling_root,
-                    orchard_root,
+                    sapling_root.0.into(),
+                    orchard_root.0.into(),
                     parent_block_sapling_tree_size,
                     parent_block_orchard_tree_size,
                 ))
                 .unwrap();
 
-                let compact_block = full_block
-                    .clone()
-                    .into_compact(sapling.try_into().unwrap(), orchard.try_into().unwrap())
-                    .unwrap();
-
                 let zebra_block =
                     zebra_chain::block::Block::zcash_deserialize(block_data.as_ref()).unwrap();
 
-                // Roots are not easily calculated and are not currently required in unit tests so defaults are used.
                 let block_roots = (
-                    zebra_chain::sapling::tree::Root::default(),
+                    sapling_root.0,
                     chain_block.commitment_tree_data().sizes().sapling() as u64,
-                    zebra_chain::orchard::tree::Root::default(),
+                    orchard_root.0,
                     chain_block.commitment_tree_data().sizes().orchard() as u64,
                 );
 
-                (chain_block, compact_block, zebra_block, block_roots)
+                let block_treestate = (sapling_treestate, orchard_treestate);
+
+                (chain_block, zebra_block, block_roots, block_treestate)
             };
+
+            // Update parent block
             parent_block_sapling_tree_size = chain_block.commitment_tree_data().sizes().sapling();
             parent_block_orchard_tree_size = chain_block.commitment_tree_data().sizes().orchard();
             parent_chain_work = *chain_block.index().chainwork();
-            data.push((height, chain_block, compact_block, zebra_block, block_roots));
+
+            data.push((height, zebra_block, block_roots, block_treestate));
         }
         data
     };
@@ -512,25 +629,10 @@ async fn create_200_block_regtest_chain_vectors() {
 
     let (re_blocks, re_faucet, re_recipient) = read_vectors_from_file(&vec_dir).unwrap();
 
-    for (
-        (h_orig, chain_orig, compact_orig, zebra_orig, roots_orig),
-        (h_new, chain_new, compact_new, zebra_new, roots_new),
-    ) in block_data.iter().zip(re_blocks.iter())
+    for ((h_orig, zebra_orig, roots_orig, trees_orig), (h_new, zebra_new, roots_new, trees_new)) in
+        block_data.iter().zip(re_blocks.iter())
     {
         assert_eq!(h_orig, h_new, "height mismatch at block {h_orig}");
-        assert_eq!(
-            chain_orig.to_bytes().unwrap(),
-            chain_new.to_bytes().unwrap(),
-            "ChainBlock serialisation mismatch at height {h_orig}"
-        );
-        let mut buf1 = Vec::new();
-        let mut buf2 = Vec::new();
-        compact_orig.encode(&mut buf1).unwrap();
-        compact_new.encode(&mut buf2).unwrap();
-        assert_eq!(
-            buf1, buf2,
-            "CompactBlock protobuf mismatch at height {h_orig}"
-        );
         assert_eq!(
             zebra_orig, zebra_new,
             "zebra_chain::block::Block serialisation mismatch at height {h_orig}"
@@ -538,6 +640,10 @@ async fn create_200_block_regtest_chain_vectors() {
         assert_eq!(
             roots_orig, roots_new,
             "block root serialisation mismatch at height {h_orig}"
+        );
+        assert_eq!(
+            trees_orig, trees_new,
+            "block treestate serialisation mismatch at height {h_orig}"
         );
     }
 
@@ -562,8 +668,6 @@ pub fn write_vectors_to_file<P: AsRef<Path>>(
     base_dir: P,
     block_data: &[(
         u32,
-        ChainBlock,
-        CompactBlock,
         zebra_chain::block::Block,
         (
             zebra_chain::sapling::tree::Root,
@@ -571,6 +675,7 @@ pub fn write_vectors_to_file<P: AsRef<Path>>(
             zebra_chain::orchard::tree::Root,
             u64,
         ),
+        (Vec<u8>, Vec<u8>),
     )],
     faucet_data: &(Vec<String>, Vec<GetAddressUtxos>, u64),
     recipient_data: &(Vec<String>, Vec<GetAddressUtxos>, u64),
@@ -578,28 +683,9 @@ pub fn write_vectors_to_file<P: AsRef<Path>>(
     let base = base_dir.as_ref();
     fs::create_dir_all(base)?;
 
-    // chain_blocks.dat
-    let mut cb_out = BufWriter::new(File::create(base.join("chain_blocks.dat"))?);
-    for (h, chain, _, _, _) in block_data {
-        write_u32_le(&mut cb_out, *h)?;
-        let payload = chain.to_bytes()?; // <── new
-        CompactSize::write(&mut cb_out, payload.len())?;
-        cb_out.write_all(&payload)?;
-    }
-
-    // compact_blocks.dat
-    let mut cp_out = BufWriter::new(File::create(base.join("compact_blocks.dat"))?);
-    for (h, _, compact, _, _) in block_data {
-        write_u32_le(&mut cp_out, *h)?;
-        let mut buf = Vec::with_capacity(compact.encoded_len());
-        compact.encode(&mut buf).unwrap();
-        CompactSize::write(&mut cp_out, buf.len())?;
-        cp_out.write_all(&buf)?;
-    }
-
     // zcash_blocks.dat
     let mut zb_out = BufWriter::new(File::create(base.join("zcash_blocks.dat"))?);
-    for (h, _, _, zcash_block, _) in block_data {
+    for (h, zcash_block, _roots, _treestate) in block_data {
         write_u32_le(&mut zb_out, *h)?;
         let mut bytes = Vec::new();
         zcash_block.zcash_serialize(&mut bytes)?;
@@ -609,12 +695,25 @@ pub fn write_vectors_to_file<P: AsRef<Path>>(
 
     // tree_roots.dat
     let mut tr_out = BufWriter::new(File::create(base.join("tree_roots.dat"))?);
-    for (h, _, _, _, (sapling_root, sapling_size, orchard_root, orchard_size)) in block_data {
+    for (h, _blocks, (sapling_root, sapling_size, orchard_root, orchard_size), _treestate) in
+        block_data
+    {
         write_u32_le(&mut tr_out, *h)?;
         tr_out.write_all(&<[u8; 32]>::from(*sapling_root))?;
         write_u64_le(&mut tr_out, *sapling_size)?;
         tr_out.write_all(&<[u8; 32]>::from(*orchard_root))?;
         write_u64_le(&mut tr_out, *orchard_size)?;
+    }
+
+    // tree_states.dat
+    let mut ts_out = BufWriter::new(File::create(base.join("tree_states.dat"))?);
+    for (h, _blocks, _roots, (sapling_treestate, orchard_treestate)) in block_data {
+        write_u32_le(&mut ts_out, *h)?;
+        // Write length-prefixed treestate bytes (variable length)
+        CompactSize::write(&mut ts_out, sapling_treestate.len())?;
+        ts_out.write_all(sapling_treestate)?;
+        CompactSize::write(&mut ts_out, orchard_treestate.len())?;
+        ts_out.write_all(orchard_treestate)?;
     }
 
     // faucet_data.json
@@ -635,8 +734,6 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(
 ) -> io::Result<(
     Vec<(
         u32,
-        ChainBlock,
-        CompactBlock,
         zebra_chain::block::Block,
         (
             zebra_chain::sapling::tree::Root,
@@ -644,67 +741,23 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(
             zebra_chain::orchard::tree::Root,
             u64,
         ),
+        (Vec<u8>, Vec<u8>),
     )>,
     (Vec<String>, Vec<GetAddressUtxos>, u64),
     (Vec<String>, Vec<GetAddressUtxos>, u64),
 )> {
     let base = base_dir.as_ref();
 
-    // chain_blocks.dat
-    let mut chain_blocks = Vec::<(u32, ChainBlock)>::new();
+    // zebra_blocks.dat
+    let mut zebra_blocks = Vec::<(u32, zebra_chain::block::Block)>::new();
     {
-        let mut r = BufReader::new(File::open(base.join("chain_blocks.dat"))?);
+        let mut r = BufReader::new(File::open(base.join("zcash_blocks.dat"))?);
         loop {
             let height = match read_u32_le(&mut r) {
                 Ok(h) => h,
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e),
             };
-            let len: usize = CompactSize::read_t(&mut r)?;
-            let mut buf = vec![0u8; len];
-            r.read_exact(&mut buf)?;
-            let chain = ChainBlock::from_bytes(&buf)?; // <── new
-            chain_blocks.push((height, chain));
-        }
-    }
-
-    // compact_blocks.dat
-    let mut compact_blocks =
-        Vec::<(u32, ChainBlock, CompactBlock)>::with_capacity(chain_blocks.len());
-    {
-        let mut r = BufReader::new(File::open(base.join("compact_blocks.dat"))?);
-        for (h1, chain) in chain_blocks {
-            let h2 = read_u32_le(&mut r)?;
-            if h1 != h2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "height mismatch between ChainBlock and CompactBlock",
-                ));
-            }
-            let len: usize = CompactSize::read_t(&mut r)?;
-            let mut buf = vec![0u8; len];
-            r.read_exact(&mut buf)?;
-            let compact = CompactBlock::decode(&*buf)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            compact_blocks.push((h1, chain, compact));
-        }
-    }
-
-    // zebra_blocks.dat
-    let mut full_blocks =
-        Vec::<(u32, ChainBlock, CompactBlock, zebra_chain::block::Block)>::with_capacity(
-            compact_blocks.len(),
-        );
-    {
-        let mut r = BufReader::new(File::open(base.join("zcash_blocks.dat"))?);
-        for (h1, chain, compact) in compact_blocks {
-            let h2 = read_u32_le(&mut r)?;
-            if h1 != h2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "height mismatch in zcash_blocks.dat",
-                ));
-            }
 
             let len: usize = CompactSize::read_t(&mut r)?;
             let mut buf = vec![0u8; len];
@@ -713,17 +766,17 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(
             let zcash_block = zebra_chain::block::Block::zcash_deserialize(&*buf)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-            full_blocks.push((h1, chain, compact, zcash_block));
+            zebra_blocks.push((height, zcash_block));
         }
     }
 
     // tree_roots.dat
-    let mut full_data = Vec::with_capacity(full_blocks.len());
+    let mut blocks_and_roots = Vec::with_capacity(zebra_blocks.len());
     {
         let mut r = BufReader::new(File::open(base.join("tree_roots.dat"))?);
-        for (h1, chain, compact, zcash_block) in full_blocks {
+        for (height, zebra_block) in zebra_blocks {
             let h2 = read_u32_le(&mut r)?;
-            if h1 != h2 {
+            if height != h2 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "height mismatch in tree_roots.dat",
@@ -743,13 +796,36 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(
 
             let orchard_size = read_u64_le(&mut r)?;
 
-            full_data.push((
-                h1,
-                chain,
-                compact,
-                zcash_block,
+            blocks_and_roots.push((
+                height,
+                zebra_block,
                 (sapling_root, sapling_size, orchard_root, orchard_size),
             ));
+        }
+    }
+
+    // tree_states.dat
+    let mut full_data = Vec::with_capacity(blocks_and_roots.len());
+    {
+        let mut r = BufReader::new(File::open(base.join("tree_states.dat"))?);
+        for (height, zebra_block, roots) in blocks_and_roots {
+            let h2 = read_u32_le(&mut r)?;
+            if height != h2 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "height mismatch in tree_states.dat",
+                ));
+            }
+
+            let sapling_len: usize = CompactSize::read_t(&mut r)?;
+            let mut sapling_state = vec![0u8; sapling_len];
+            r.read_exact(&mut sapling_state)?;
+
+            let orchard_len: usize = CompactSize::read_t(&mut r)?;
+            let mut orchard_state = vec![0u8; orchard_len];
+            r.read_exact(&mut orchard_state)?;
+
+            full_data.push((height, zebra_block, roots, (sapling_state, orchard_state)));
         }
     }
 
@@ -764,7 +840,7 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(
     Ok((full_data, faucet, recipient))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_v4_txs_parsing() -> anyhow::Result<()> {
     let test_vectors = get_test_vectors();
 

@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - '**'
+      - "**"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
@@ -112,7 +113,6 @@ jobs:
         run: |
           cargo check --all-features
           cargo check --tests --all-features
-
 
   test:
     name: Tests

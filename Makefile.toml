@@ -6,7 +6,7 @@ default_to_workspace = false
 
 [env]
 IMAGE_NAME = "zingodevops/zaino-ci"
-TEST_BINARIES_DIR = "/home/container_user/zaino/test_binaries/bins"
+TEST_BINARIES_DIR = "/home/container_user/artifacts"
 
 [tasks.help]
 description = "List available commands and usage notes"

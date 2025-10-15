@@ -15,7 +15,7 @@ use crate::{
     config::BlockCacheConfig,
     error::FinalisedStateError,
     status::{AtomicStatus, StatusType},
-    ChainBlock, Height,
+    Height, IndexedBlock,
 };
 
 use zaino_proto::proto::compact_formats::CompactBlock;
@@ -76,7 +76,7 @@ impl DbRead for DbV0 {
 
 #[async_trait]
 impl DbWrite for DbV0 {
-    async fn write_block(&self, block: ChainBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.write_block(block).await
     }
 
@@ -87,7 +87,7 @@ impl DbWrite for DbV0 {
         self.delete_block_at_height(height).await
     }
 
-    async fn delete_block(&self, block: &ChainBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
         self.delete_block(block).await
     }
 
@@ -100,11 +100,11 @@ impl DbWrite for DbV0 {
 #[async_trait]
 impl DbCore for DbV0 {
     fn status(&self) -> StatusType {
-        self.status()
+        self.status.load()
     }
 
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Closing as usize);
+        self.status.store(StatusType::Closing);
 
         if let Some(handle) = &self.db_handler {
             let timeout = tokio::time::sleep(Duration::from_secs(5));
@@ -162,14 +162,13 @@ impl DbV0 {
         info!("Launching ZainoDB");
 
         // Prepare database details and path.
-        let db_size = config.db_size.unwrap_or(128);
-        let db_size_bytes = db_size * 1024 * 1024 * 1024;
-        let db_path_dir = match config.network.kind() {
+        let db_size_bytes = config.storage.database.size.to_byte_count();
+        let db_path_dir = match config.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
         };
-        let db_path = config.db_path.join(db_path_dir);
+        let db_path = config.storage.database.path.join(db_path_dir);
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }
@@ -205,7 +204,7 @@ impl DbV0 {
             heights_to_hashes,
             hashes_to_blocks,
             db_handler: None,
-            status: AtomicStatus::new(StatusType::Spawning.into()),
+            status: AtomicStatus::new(StatusType::Spawning),
             config: config.clone(),
         };
 
@@ -217,7 +216,7 @@ impl DbV0 {
 
     /// Try graceful shutdown, fall back to abort after a timeout.
     pub(crate) async fn close(&mut self) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Closing as usize);
+        self.status.store(StatusType::Closing);
 
         if let Some(mut handle) = self.db_handler.take() {
             let timeout = tokio::time::sleep(Duration::from_secs(5));
@@ -247,7 +246,7 @@ impl DbV0 {
 
     /// Returns the status of ZainoDB.
     pub(crate) fn status(&self) -> StatusType {
-        (&self.status).into()
+        self.status.load()
     }
 
     /// Awaits until the DB returns a Ready status.
@@ -257,7 +256,7 @@ impl DbV0 {
 
         loop {
             ticker.tick().await;
-            if self.status.load() == StatusType::Ready as usize {
+            if self.status.load() == StatusType::Ready {
                 break;
             }
         }
@@ -286,14 +285,14 @@ impl DbV0 {
         let handle = tokio::spawn({
             let zaino_db = zaino_db;
             async move {
-                zaino_db.status.store(StatusType::Ready.into());
+                zaino_db.status.store(StatusType::Ready);
 
                 // *** steady-state loop ***
                 let mut maintenance = interval(Duration::from_secs(60));
 
                 loop {
                     // Check for closing status.
-                    if zaino_db.status.load() == StatusType::Closing as usize {
+                    if zaino_db.status.load() == StatusType::Closing {
                         break;
                     }
 
@@ -343,9 +342,9 @@ impl DbV0 {
     // *** DB write / delete methods ***
     // These should only ever be used in a single DB control task.
 
-    /// Writes a given (finalised) [`ChainBlock`] to ZainoDB.
-    pub(crate) async fn write_block(&self, block: ChainBlock) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Syncing.into());
+    /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
+    pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+        self.status.store(StatusType::Syncing);
 
         let compact_block: CompactBlock = block.to_compact_block();
         let zebra_height: ZebraHeight = block
@@ -446,14 +445,14 @@ impl DbV0 {
             Ok(_) => {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-                self.status.store(StatusType::Ready.into());
+                self.status.store(StatusType::Ready);
                 Ok(())
             }
             Err(e) => {
                 let _ = self.delete_block(&block).await;
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-                self.status.store(StatusType::RecoverableError.into());
+                self.status.store(StatusType::RecoverableError);
                 Err(FinalisedStateError::InvalidBlock {
                     height: block_height,
                     hash: *block.index().hash(),
@@ -537,7 +536,7 @@ impl DbV0 {
 
     /// This is used as a backup when delete_block_at_height fails.
     ///
-    /// Takes a ChainBlock as input and ensures all data from this block is wiped from the database.
+    /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
     ///
     /// WARNING: No checks are made that this block is at the top of the finalised state, and validated tip is not updated.
     /// This enables use for correcting corrupt data within the database but it is left to the user to ensure safe use.
@@ -546,7 +545,10 @@ impl DbV0 {
     /// NOTE: LMDB database errors are propageted as these show serious database errors,
     /// all other errors are returned as `IncorrectBlock`, if this error is returned the block requested
     /// should be fetched from the validator and this method called with the correct data.
-    pub(crate) async fn delete_block(&self, block: &ChainBlock) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn delete_block(
+        &self,
+        block: &IndexedBlock,
+    ) -> Result<(), FinalisedStateError> {
         let zebra_height: ZebraHeight = block
             .index()
             .height()

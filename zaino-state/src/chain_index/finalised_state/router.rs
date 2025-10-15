@@ -11,7 +11,7 @@ use super::{
 
 use crate::{
     chain_index::finalised_state::capability::CapabilityRequest, error::FinalisedStateError,
-    BlockHash, ChainBlock, Height, StatusType,
+    BlockHash, Height, IndexedBlock, StatusType,
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -157,7 +157,7 @@ impl DbCore for Router {
 
 #[async_trait]
 impl DbWrite for Router {
-    async fn write_block(&self, blk: ChainBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, blk: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.backend(CapabilityRequest::WriteCore)?
             .write_block(blk)
             .await
@@ -169,7 +169,7 @@ impl DbWrite for Router {
             .await
     }
 
-    async fn delete_block(&self, blk: &ChainBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, blk: &IndexedBlock) -> Result<(), FinalisedStateError> {
         self.backend(CapabilityRequest::WriteCore)?
             .delete_block(blk)
             .await

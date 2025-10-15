@@ -1,10 +1,14 @@
+//! Tests that compare the output of both `zcashd` and `zainod` through `FetchService`.
+
+use zaino_common::network::ActivationHeights;
+use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::{
     BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, ZcashIndexer,
     ZcashService as _,
 };
 use zaino_testutils::{from_inputs, Validator as _};
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
 async fn create_test_manager_and_fetch_services(
@@ -18,7 +22,7 @@ async fn create_test_manager_and_fetch_services(
     FetchServiceSubscriber,
 ) {
     println!("Launching test manager..");
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::launch_with_default_activation_heights(
         &ValidatorKind::Zcashd,
         &BackendType::Fetch,
         None,
@@ -42,32 +46,20 @@ async fn create_test_manager_and_fetch_services(
         None,
         None,
         None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
+        ServiceConfig::default(),
+        StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                ..Default::default()
             },
-        ),
+            ..Default::default()
+        },
+        zaino_common::Network::Regtest(ActivationHeights::default()),
         true,
         true,
     ))
@@ -88,32 +80,20 @@ async fn create_test_manager_and_fetch_services(
             .map(|p| p.to_string_lossy().into_owned()),
         None,
         None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
+        ServiceConfig::default(),
+        StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                ..Default::default()
             },
-        ),
+            ..Default::default()
+        },
+        zaino_common::Network::Regtest(ActivationHeights::default()),
         true,
         true,
     ))
@@ -324,7 +304,11 @@ async fn z_get_address_balance_inner() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
-    let recipient_balance = clients.recipient.do_balance().await;
+    let recipient_balance = clients
+        .recipient
+        .account_balance(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     let zcashd_service_balance = zcashd_subscriber
         .z_get_address_balance(AddressStrings::new(vec![recipient_taddr.clone()]))
@@ -341,11 +325,17 @@ async fn z_get_address_balance_inner() {
     dbg!(&zaino_service_balance);
 
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         250_000,
     );
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         zcashd_service_balance.balance(),
     );
     assert_eq!(zcashd_service_balance, zaino_service_balance);
@@ -676,33 +666,34 @@ async fn z_get_address_utxos_inner() {
     test_manager.close().await;
 }
 
+// TODO: This module should not be called `zcashd`
 mod zcashd {
     use super::*;
 
     pub(crate) mod zcash_indexer {
         use super::*;
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn check_info_no_cookie() {
             launch_json_server_check_info(false).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn check_info_with_cookie() {
             launch_json_server_check_info(false).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_address_balance() {
             z_get_address_balance_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_best_blockhash() {
             get_best_blockhash_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_block_count() {
             get_block_count_inner().await;
         }
@@ -711,7 +702,7 @@ mod zcashd {
         ///
         /// This tests generates blocks and checks that the difficulty is the same between zcashd and zaino
         /// after each block is generated.
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_difficulty() {
             let (
                 mut test_manager,
@@ -735,47 +726,87 @@ mod zcashd {
             test_manager.close().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_peer_info() {
+            let (
+                mut test_manager,
+                _zcashd_service,
+                zcashd_subscriber,
+                _zaino_service,
+                zaino_subscriber,
+            ) = create_test_manager_and_fetch_services(false, false).await;
+
+            let zcashd_peer_info = zcashd_subscriber.get_peer_info().await.unwrap();
+            let zaino_peer_info = zaino_subscriber.get_peer_info().await.unwrap();
+
+            assert_eq!(zcashd_peer_info, zaino_peer_info);
+
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+
+            test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_block_subsidy() {
+            let (
+                mut test_manager,
+                _zcashd_service,
+                zcashd_subscriber,
+                _zaino_service,
+                zaino_subscriber,
+            ) = create_test_manager_and_fetch_services(false, false).await;
+
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+
+            let zcashd_block_subsidy = zcashd_subscriber.get_block_subsidy(1).await.unwrap();
+            let zaino_block_subsidy = zaino_subscriber.get_block_subsidy(1).await.unwrap();
+
+            assert_eq!(zcashd_block_subsidy, zaino_block_subsidy);
+
+            test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn validate_address() {
             validate_address_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_block() {
             z_get_block_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_raw_mempool() {
             get_raw_mempool_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_mempool_info() {
             get_mempool_info_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_treestate() {
             z_get_treestate_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_subtrees_by_index() {
             z_get_subtrees_by_index_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_raw_transaction() {
             get_raw_transaction_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_address_tx_ids() {
             get_address_tx_ids_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_address_utxos() {
             z_get_address_utxos_inner().await;
         }

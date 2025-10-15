@@ -17,7 +17,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
-    BlockHash, MempoolKey,
+    MempoolKey,
 };
 
 use nonempty::NonEmpty;
@@ -26,7 +26,10 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
-        response::{GetMempoolInfoResponse, GetSubtreesResponse},
+        response::{
+            block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetMempoolInfoResponse,
+            GetNetworkSolPsResponse, GetSubtreesResponse,
+        },
     },
 };
 use zaino_proto::proto::{
@@ -127,16 +130,16 @@ impl StateService {
         let mut read_state_service = self.read_state_service.clone();
         poll_fn(|cx| match read_state_service.poll_ready(cx) {
             std::task::Poll::Ready(Ok(())) => {
-                self.status.store(StatusType::Ready.into());
+                self.status.store(StatusType::Ready);
                 std::task::Poll::Ready(StatusType::Ready)
             }
             std::task::Poll::Ready(Err(e)) => {
                 eprintln!("Service readiness error: {e:?}");
-                self.status.store(StatusType::CriticalError.into());
+                self.status.store(StatusType::CriticalError);
                 std::task::Poll::Ready(StatusType::CriticalError)
             }
             std::task::Poll::Pending => {
-                self.status.store(StatusType::Busy.into());
+                self.status.store(StatusType::Busy);
                 std::task::Poll::Pending
             }
         })
@@ -199,7 +202,7 @@ impl ZcashService for StateService {
         };
         let data = ServiceMetadata::new(
             get_build_info(),
-            config.network.clone(),
+            config.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -209,7 +212,7 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_config.clone(),
-                &config.network,
+                &config.network.to_zebra_network(),
                 config.validator_indexer_rpc_address,
             )
             .await??;
@@ -252,6 +255,7 @@ impl ZcashService for StateService {
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
             read_state_service: read_state_service.clone(),
             mempool_fetcher: rpc_client.clone(),
+            network: config.network,
         });
 
         let mempool = Mempool::spawn(mempool_source, None).await?;
@@ -265,10 +269,10 @@ impl ZcashService for StateService {
             mempool,
             data,
             config,
-            status: AtomicStatus::new(StatusType::Spawning.into()),
+            status: AtomicStatus::new(StatusType::Spawning),
         };
 
-        state_service.status.store(StatusType::Ready.into());
+        state_service.status.store(StatusType::Ready);
 
         Ok(state_service)
     }
@@ -290,7 +294,7 @@ impl ZcashService for StateService {
     /// We first check for `status = StatusType::Closing` as this signifies a shutdown order
     /// from an external process.
     async fn status(&self) -> StatusType {
-        let current_status = self.status.load().into();
+        let current_status = self.status.load();
         if current_status == StatusType::Closing {
             current_status
         } else {
@@ -334,13 +338,17 @@ pub struct StateServiceSubscriber {
 
 /// A subscriber to any chaintip updates
 #[derive(Clone)]
-pub struct ChainTipSubscriber(zebra_state::ChainTipChange);
+pub struct ChainTipSubscriber {
+    monitor: zebra_state::ChainTipChange,
+}
 
 impl ChainTipSubscriber {
     /// Waits until the tip hash has changed (relative to the last time this method
     /// was called), then returns the best tip's block hash.
-    pub async fn next_tip_hash(&mut self) -> Result<Hash, tokio::sync::watch::error::RecvError> {
-        self.0
+    pub async fn next_tip_hash(
+        &mut self,
+    ) -> Result<zebra_chain::block::Hash, tokio::sync::watch::error::RecvError> {
+        self.monitor
             .wait_for_tip_change()
             .await
             .map(|tip| tip.best_tip_hash())
@@ -354,7 +362,9 @@ impl ChainTipSubscriber {
 impl StateServiceSubscriber {
     /// Gets a Subscriber to any updates to the latest chain tip
     pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
-        ChainTipSubscriber(self.chain_tip_change.clone())
+        ChainTipSubscriber {
+            monitor: self.chain_tip_change.clone(),
+        }
     }
 
     /// Return a list of consecutive compact blocks.
@@ -406,8 +416,8 @@ impl StateServiceSubscriber {
         };
         let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -699,6 +709,11 @@ impl StateServiceSubscriber {
                 format!("invalid verbosity of {more_than_two}"),
             ))),
         }
+    }
+
+    /// Returns the network type running.
+    pub fn network(&self) -> zaino_common::Network {
+        self.config.network
     }
 }
 
@@ -1114,7 +1129,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         chain_tip_difficulty(
-            self.config.network.clone(),
+            self.config.network.to_zebra_network(),
             self.read_state_service.clone(),
             false,
         )
@@ -1125,6 +1140,13 @@ impl ZcashIndexer for StateServiceSubscriber {
                 "failed to get difficulty",
             ))
         })
+    }
+
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+        self.rpc_client
+            .get_block_subsidy(height)
+            .await
+            .map_err(|e| StateServiceError::Custom(e.to_string()))
     }
 
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
@@ -1165,7 +1187,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let now = Utc::now();
         let zebra_estimated_height =
-            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.network)
+            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.network.into())
                 .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
@@ -1176,6 +1198,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         let upgrades = IndexMap::from_iter(
             self.config
                 .network
+                .to_zebra_network()
                 .full_activation_list()
                 .into_iter()
                 .filter_map(|(activation_height, network_upgrade)| {
@@ -1209,14 +1232,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             (height + 1).expect("valid chain tips are a lot less than Height::MAX");
         let consensus = TipConsensusBranch::from_parts(
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network, height)
+                NetworkUpgrade::current(&self.config.network.into(), height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
             )
             .inner(),
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network, next_block_height)
+                NetworkUpgrade::current(&self.config.network.into(), next_block_height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
@@ -1226,7 +1249,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         // TODO: Remove unwrap()
         let difficulty = chain_tip_difficulty(
-            self.config.network.clone(),
+            self.config.network.to_zebra_network(),
             self.read_state_service.clone(),
             false,
         )
@@ -1236,7 +1259,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockchainInfoResponse::new(
-            self.config.network.bip70_network_name(),
+            self.config.network.to_zebra_network().bip70_network_name(),
             height,
             hash,
             estimated_height,
@@ -1274,6 +1297,10 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// the [optional `fullyNotified` field](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1549>), is only utilized for zcashd regtests, is deprecated, and is not included.
     async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error> {
         Ok(self.mempool.get_mempool_info().await?)
+    }
+
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+        Ok(self.rpc_client.get_peer_info().await?)
     }
 
     async fn z_get_address_balance(
@@ -1336,7 +1363,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             .get_mempool()
             .await
             .into_iter()
-            .map(|(key, _)| key.0)
+            .map(|(key, _)| key.txid)
             .collect())
     }
 
@@ -1363,20 +1390,21 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        let sapling = match NetworkUpgrade::Sapling.activation_height(&self.config.network) {
-            Some(activation_height) if height >= activation_height => Some(
-                state
-                    .ready()
-                    .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
-                    .await?,
-            ),
-            _ => None,
-        }
-        .and_then(|sap_response| {
-            expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
-        });
+        let sapling =
+            match NetworkUpgrade::Sapling.activation_height(&self.config.network.into()) {
+                Some(activation_height) if height >= activation_height => Some(
+                    state
+                        .ready()
+                        .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
+                        .await?,
+                ),
+                _ => None,
+            }
+            .and_then(|sap_response| {
+                expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
+            });
 
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network) {
+        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network.into()) {
             Some(activation_height) if height >= activation_height => Some(
                 state
                     .ready()
@@ -1441,18 +1469,19 @@ impl ZcashIndexer for StateServiceSubscriber {
             return Ok(ValidateAddressResponse::invalid());
         };
 
-        let address =
-            match address.convert_if_network::<Address>(match self.config.network.kind() {
+        let address = match address.convert_if_network::<Address>(
+            match self.config.network.to_zebra_network().kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
                 NetworkKind::Regtest => NetworkType::Regtest,
-            }) {
-                Ok(address) => address,
-                Err(err) => {
-                    tracing::debug!(?err, "conversion error");
-                    return Ok(ValidateAddressResponse::invalid());
-                }
-            };
+            },
+        ) {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::debug!(?err, "conversion error");
+                return Ok(ValidateAddressResponse::invalid());
+            }
+        };
 
         // we want to match zcashd's behaviour
         Ok(match address {
@@ -1552,18 +1581,22 @@ impl ZcashIndexer for StateServiceSubscriber {
         // First check if transaction is in mempool as this is quick.
         match self
             .mempool
-            .contains_txid(&MempoolKey(txid.to_string()))
+            .contains_txid(&MempoolKey {
+                txid: txid.to_string(),
+            })
             .await
         {
             // Fetch trasaction from mempool.
             true => {
                 match self
                     .mempool
-                    .get_transaction(&MempoolKey(txid.to_string()))
+                    .get_transaction(&MempoolKey {
+                        txid: txid.to_string(),
+                    })
                     .await
                 {
                     Some(tx) => {
-                        let serialized = tx.as_ref().0.as_ref().clone();
+                        let serialized = tx.as_ref().serialized_tx.as_ref().clone();
 
                         match verbose {
                             // Return an object view, matching the chain path semantics.
@@ -1577,13 +1610,13 @@ impl ZcashIndexer for StateServiceSubscriber {
                                 Ok(GetRawTransaction::Object(Box::new(
                                     TransactionObject::from_transaction(
                                         parsed_tx.into(),
-                                        None,                 // best_chain_height
-                                        Some(0),              // confirmations
-                                        &self.config.network, // network
-                                        None,                 // block_time
-                                        None,                 // block_hash
-                                        Some(false),          // in_best_chain
-                                        txid,                 // txid
+                                        None,                        // best_chain_height
+                                        Some(0),                     // confirmations
+                                        &self.config.network.into(), // network
+                                        None,                        // block_time
+                                        None,                        // block_hash
+                                        Some(false),                 // in_best_chain
+                                        txid,                        // txid
                                     ),
                                 )))
                             }
@@ -1613,7 +1646,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                                     tx.tx.clone(),
                                     best_chain_height,
                                     Some(tx.confirmations),
-                                    &self.config.network,
+                                    &self.config.network.into(),
                                     Some(tx.block_time),
                                     Some(Hash::from_bytes(
                                         self.block_cache
@@ -1724,22 +1757,45 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         Ok(utxos
             .utxos()
-            .map(|utxo| {
-                assert!(utxo.2 > &last_output_location);
-                last_output_location = *utxo.2;
-                // What an odd argument order for new
-                // at least they are all different types, so they can't be
-                // supplied in the wrong order
-                GetAddressUtxos::new(
-                    utxo.0,
-                    *utxo.1,
-                    utxo.2.output_index(),
-                    utxo.3.lock_script.clone(),
-                    u64::from(utxo.3.value()),
-                    utxo.2.height(),
-                )
-            })
+            .map(
+                |(utxo_address, utxo_hash, utxo_output_location, utxo_transparent_output)| {
+                    assert!(utxo_output_location > &last_output_location);
+                    last_output_location = *utxo_output_location;
+                    GetAddressUtxos::new(
+                        utxo_address,
+                        *utxo_hash,
+                        utxo_output_location.output_index(),
+                        utxo_transparent_output.lock_script.clone(),
+                        u64::from(utxo_transparent_output.value()),
+                        utxo_output_location.height(),
+                    )
+                },
+            )
             .collect())
+    }
+
+    /// Returns the estimated network solutions per second based on the last n blocks.
+    ///
+    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// This RPC is implemented in the [mining.cpp](https://github.com/zcash/zcash/blob/d00fc6f4365048339c83f463874e4d6c240b63af/src/rpc/mining.cpp#L104)
+    /// file of the Zcash repository. The Zebra implementation can be found [here](https://github.com/ZcashFoundation/zebra/blob/19bca3f1159f9cb9344c9944f7e1cb8d6a82a07f/zebra-rpc/src/methods.rs#L2687).
+    ///
+    /// # Parameters
+    ///
+    /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
+    /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
+    async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+        self.rpc_client
+            .get_network_sol_ps(blocks, height)
+            .await
+            .map_err(|e| StateServiceError::Custom(e.to_string()))
     }
 
     // Helper function, to get the chain height in rpc implementations
@@ -1770,9 +1826,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         )?;
         Ok(BlockId {
             height: chain_height.as_usize() as u64,
-            hash: BlockHash::from_bytes_in_display_order(&chain_hash.0)
-                .0
-                .to_vec(),
+            hash: chain_hash.0.to_vec(),
         })
     }
 
@@ -1881,8 +1935,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
     ) -> Result<RawTransactionStream, Self::Error> {
         let txids = self.get_taddress_txids_helper(request).await?;
         let chain_height = self.chain_height().await?;
-        let (transmitter, receiver) = mpsc::channel(self.config.service_channel_size as usize);
-        let service_timeout = self.config.service_timeout;
+        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.service.timeout;
         let service_clone = self.clone();
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1946,9 +2000,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
         mut request: AddressStream,
     ) -> Result<zaino_proto::proto::service::Balance, Self::Error> {
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
+        let service_timeout = self.config.service.timeout;
         let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.service_channel_size as usize);
+            mpsc::channel::<String>(self.config.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -2060,16 +2114,16 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .collect();
 
         let mempool = self.mempool.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for (txid, serialized_transaction) in
+                    for (mempool_key, mempool_value) in
                         mempool.get_filtered_mempool(exclude_txids).await
                     {
-                        let txid_bytes = match hex::decode(txid.0) {
+                        let txid_bytes = match hex::decode(mempool_key.txid) {
                             Ok(bytes) => bytes,
                             Err(error) => {
                                 if channel_tx
@@ -2084,7 +2138,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                             }
                         };
                         match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                            serialized_transaction.0.as_ref().as_ref(),
+                            mempool_value.serialized_tx.as_ref().as_ref(),
                             Some(vec![txid_bytes]),
                             None,
                         ) {
@@ -2150,8 +2204,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let mut mempool = self.mempool.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let mempool_height = self.block_cache.get_chain_height().await?.0;
         tokio::spawn(async move {
             let timeout = timeout(
@@ -2176,7 +2230,11 @@ impl LightWalletIndexer for StateServiceSubscriber {
                             Ok((_mempool_key, mempool_value)) => {
                                 if channel_tx
                                     .send(Ok(RawTransaction {
-                                        data: mempool_value.0.as_ref().as_ref().to_vec(),
+                                        data: mempool_value
+                                            .serialized_tx
+                                            .as_ref()
+                                            .as_ref()
+                                            .to_vec(),
                                         height: mempool_height as u64,
                                     }))
                                     .await
@@ -2233,7 +2291,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.network.bip70_network_name(),
+            network: self.config.network.to_zebra_network().bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,
@@ -2254,8 +2312,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
-            self.config.service_timeout,
-            self.config.service_channel_size,
+            self.config.service.timeout,
+            self.config.service.channel_size,
         )
     }
 
@@ -2300,7 +2358,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .and_then(|service| service.call(ReadRequest::UtxosByAddresses(address_set)))
             .await?;
         let utxos = expected_read_response!(address_utxos_response, AddressUtxos);
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             for utxo in utxos
                 .utxos()

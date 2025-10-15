@@ -135,20 +135,20 @@ impl FinalisedState {
         config: BlockCacheConfig,
     ) -> Result<Self, FinalisedStateError> {
         info!("Launching Finalised State..");
-        let db_size = config.db_size.unwrap_or(64);
-        let db_path_dir = match config.network.kind() {
+        let db_size_bytes = config.storage.database.size.to_byte_count();
+        let db_path_dir = match config.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
         };
-        let db_path = config.db_path.join(db_path_dir);
+        let db_path = config.storage.database.path.join(db_path_dir);
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }
         let database = Arc::new(
             Environment::new()
                 .set_max_dbs(2)
-                .set_map_size(db_size * 1024 * 1024 * 1024)
+                .set_map_size(db_size_bytes)
                 .open(&db_path)?,
         );
 
@@ -178,7 +178,7 @@ impl FinalisedState {
             request_sender: request_tx,
             read_task_handle: None,
             write_task_handle: None,
-            status: AtomicStatus::new(StatusType::Spawning.into()),
+            status: AtomicStatus::new(StatusType::Spawning),
             config,
         };
 
@@ -186,7 +186,7 @@ impl FinalisedState {
         finalised_state.spawn_writer(block_receiver).await?;
         finalised_state.spawn_reader(request_rx).await?;
 
-        finalised_state.status.store(StatusType::Ready.into());
+        finalised_state.status.store(StatusType::Ready);
 
         Ok(finalised_state)
     }
@@ -226,9 +226,7 @@ impl FinalisedState {
                                 Ok(db_hash) => {
                                     if db_hash != hash {
                                         if finalised_state.delete_block(height).is_err() {
-                                            finalised_state
-                                                .status
-                                                .store(StatusType::CriticalError.into());
+                                            finalised_state.status.store(StatusType::CriticalError);
                                             return;
                                         };
                                         continue;
@@ -241,18 +239,14 @@ impl FinalisedState {
                                     }
                                 }
                                 Err(_) => {
-                                    finalised_state
-                                        .status
-                                        .store(StatusType::CriticalError.into());
+                                    finalised_state.status.store(StatusType::CriticalError);
                                     return;
                                 }
                             }
                         }
                         Err(FinalisedStateError::LmdbError(db_err)) => {
                             error!("LMDB error inserting block {}: {:?}", height.0, db_err);
-                            finalised_state
-                                .status
-                                .store(StatusType::CriticalError.into());
+                            finalised_state.status.store(StatusType::CriticalError);
                             return;
                         }
                         Err(e) => {
@@ -266,9 +260,7 @@ impl FinalisedState {
                                     "Failed to insert block {} after multiple retries.",
                                     height.0
                                 );
-                                finalised_state
-                                    .status
-                                    .store(StatusType::CriticalError.into());
+                                finalised_state.status.store(StatusType::CriticalError);
                                 return;
                             }
 
@@ -276,7 +268,7 @@ impl FinalisedState {
 
                             match fetch_block_from_node(
                                 finalised_state.state.as_ref(),
-                                Some(&finalised_state.config.network),
+                                Some(&finalised_state.config.network.to_zebra_network()),
                                 &finalised_state.fetcher,
                                 HashOrHeight::Height(height),
                             )
@@ -295,9 +287,7 @@ impl FinalisedState {
                                         "Failed to fetch block {} from validator: {:?}",
                                         height.0, fetch_err
                                     );
-                                    finalised_state
-                                        .status
-                                        .store(StatusType::CriticalError.into());
+                                    finalised_state.status.store(StatusType::CriticalError);
                                     return;
                                 }
                             }
@@ -342,7 +332,7 @@ impl FinalisedState {
                         warn!("Failed to fetch block from DB, re-fetching from validator.");
                         match fetch_block_from_node(
                             finalised_state.state.as_ref(),
-                            Some(&finalised_state.config.network),
+                            Some(&finalised_state.config.network.to_zebra_network()),
                             &finalised_state.fetcher,
                             hash_or_height,
                         )
@@ -384,7 +374,7 @@ impl FinalisedState {
     /// - Searches from ZainoDB tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
     async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
-        let network = self.config.network.clone();
+        let network = self.config.network.to_zebra_network();
 
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
         // let reorg_height_int = reorg_height.0.saturating_sub(100);
@@ -448,9 +438,13 @@ impl FinalisedState {
             .blocks
             .0
             .saturating_sub(99);
-        for block_height in ((reorg_height.0 + 1)
-            .max(self.config.network.sapling_activation_height().0))
-            ..=sync_height
+        for block_height in ((reorg_height.0 + 1).max(
+            self.config
+                .network
+                .to_zebra_network()
+                .sapling_activation_height()
+                .0,
+        ))..=sync_height
         {
             if self.get_hash(block_height).is_ok() {
                 self.delete_block(Height(block_height))?;
@@ -473,7 +467,7 @@ impl FinalisedState {
                         break;
                     }
                     Err(e) => {
-                        self.status.store(StatusType::RecoverableError.into());
+                        self.status.store(StatusType::RecoverableError);
                         warn!("{e}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
@@ -482,8 +476,8 @@ impl FinalisedState {
         }
 
         // Wait for server to sync to with p2p network and sync new blocks.
-        if !self.config.network.is_regtest() && !self.config.no_sync {
-            self.status.store(StatusType::Syncing.into());
+        if !self.config.network.to_zebra_network().is_regtest() && !self.config.no_sync {
+            self.status.store(StatusType::Syncing);
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await?;
                 let server_height = blockchain_info.blocks.0;
@@ -509,7 +503,7 @@ impl FinalisedState {
                                 break;
                             }
                             Err(e) => {
-                                self.status.store(StatusType::RecoverableError.into());
+                                self.status.store(StatusType::RecoverableError);
                                 warn!("{e}");
                                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             }
@@ -534,7 +528,7 @@ impl FinalisedState {
             }
         }
 
-        self.status.store(StatusType::Ready.into());
+        self.status.store(StatusType::Ready);
 
         Ok(())
     }
@@ -651,12 +645,12 @@ impl FinalisedState {
 
     /// Returns the status of the finalised state.
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 
     /// Sets the finalised state to close gracefully.
     pub fn close(&mut self) {
-        self.status.store(StatusType::Closing.into());
+        self.status.store(StatusType::Closing);
         if let Some(handle) = self.read_task_handle.take() {
             handle.abort();
         }
@@ -672,7 +666,7 @@ impl FinalisedState {
 
 impl Drop for FinalisedState {
     fn drop(&mut self) {
-        self.status.store(StatusType::Closing.into());
+        self.status.store(StatusType::Closing);
         if let Some(handle) = self.read_task_handle.take() {
             handle.abort();
         }
@@ -725,6 +719,6 @@ impl FinalisedStateSubscriber {
 
     /// Returns the status of the FinalisedState..
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 }

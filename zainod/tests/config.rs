@@ -2,6 +2,8 @@
 
 use figment::Jail;
 use std::path::PathBuf;
+use zaino_common::network::ActivationHeights;
+use zaino_common::Network;
 
 // Use the explicit library name `zainodlib` as defined in Cargo.toml [lib] name.
 use zainodlib::config::{load_config, IndexerConfig};
@@ -44,15 +46,15 @@ fn test_deserialize_full_valid_config() {
             validator_cookie_path = "{validator_cookie_file_name}"
             validator_user = "user"
             validator_password = "password"
-            map_capacity = 10000
-            map_shard_amount = 16
-            zaino_db_path = "{zaino_db_dir_name}"
+            storage.database.path = "{zaino_db_dir_name}"
             zebra_db_path = "{zebra_db_dir_name}"
             db_size = 100
             network = "Mainnet"
             no_sync = false
             no_db = false
             slow_sync = false
+
+
         "#
         );
 
@@ -96,14 +98,14 @@ fn test_deserialize_full_valid_config() {
             Some(validator_cookie_file_name.to_string())
         );
         assert_eq!(
-            finalized_config.zaino_db_path,
+            finalized_config.storage.database.path,
             PathBuf::from(zaino_db_dir_name)
         );
         assert_eq!(
             finalized_config.zebra_db_path,
             PathBuf::from(zebra_db_dir_name)
         );
-        assert_eq!(finalized_config.network, "Mainnet");
+        assert_eq!(finalized_config.network, Network::Mainnet);
         assert_eq!(
             finalized_config.grpc_listen_address,
             "0.0.0.0:9000".parse().unwrap()
@@ -114,9 +116,12 @@ fn test_deserialize_full_valid_config() {
             finalized_config.validator_password,
             Some("password".to_string())
         );
-        assert_eq!(finalized_config.map_capacity, Some(10000));
-        assert_eq!(finalized_config.map_shard_amount, Some(16));
-        assert_eq!(finalized_config.db_size, Some(100));
+        assert_eq!(finalized_config.storage.cache.capacity, 10000);
+        assert_eq!(finalized_config.storage.cache.shard_count(), 16);
+        assert_eq!(
+            finalized_config.storage.database.size.to_byte_count(),
+            128 * 1024 * 1024 * 1024
+        );
         assert!(!finalized_config.no_sync);
         assert!(!finalized_config.no_db);
         assert!(!finalized_config.slow_sync);
@@ -148,9 +153,18 @@ fn test_deserialize_optional_fields_missing() {
         assert_eq!(config.enable_json_server, default_values.enable_json_server);
         assert_eq!(config.validator_user, default_values.validator_user);
         assert_eq!(config.validator_password, default_values.validator_password);
-        assert_eq!(config.map_capacity, default_values.map_capacity);
-        assert_eq!(config.map_shard_amount, default_values.map_shard_amount);
-        assert_eq!(config.db_size, default_values.db_size);
+        assert_eq!(
+            config.storage.cache.capacity,
+            default_values.storage.cache.capacity
+        );
+        assert_eq!(
+            config.storage.cache.shard_count(),
+            default_values.storage.cache.shard_count(),
+        );
+        assert_eq!(
+            config.storage.database.size,
+            default_values.storage.database.size
+        );
         assert_eq!(config.no_sync, default_values.no_sync);
         assert_eq!(config.no_db, default_values.no_db);
         assert_eq!(config.slow_sync, default_values.slow_sync);
@@ -283,9 +297,18 @@ fn test_deserialize_empty_string_yields_default() {
         assert_eq!(config.enable_json_server, default_config.enable_json_server);
         assert_eq!(config.validator_user, default_config.validator_user);
         assert_eq!(config.validator_password, default_config.validator_password);
-        assert_eq!(config.map_capacity, default_config.map_capacity);
-        assert_eq!(config.map_shard_amount, default_config.map_shard_amount);
-        assert_eq!(config.db_size, default_config.db_size);
+        assert_eq!(
+            config.storage.cache.capacity,
+            default_config.storage.cache.capacity
+        );
+        assert_eq!(
+            config.storage.cache.shard_count(),
+            default_config.storage.cache.shard_count()
+        );
+        assert_eq!(
+            config.storage.database.size,
+            default_config.storage.database.size
+        );
         assert_eq!(config.no_sync, default_config.no_sync);
         assert_eq!(config.no_db, default_config.no_db);
         assert_eq!(config.slow_sync, default_config.slow_sync);
@@ -365,16 +388,16 @@ fn test_figment_env_override_toml_and_defaults() {
         )?;
         jail.set_env("ZAINO_NETWORK", "Mainnet");
         jail.set_env("ZAINO_ENABLE_JSON_SERVER", "true");
-        jail.set_env("ZAINO_MAP_CAPACITY", "12345");
+        jail.set_env("ZAINO_STORAGE.CACHE.CAPACITY", "12345");
         jail.set_env("ZAINO_ENABLE_COOKIE_AUTH", "true");
         jail.set_env("ZAINO_COOKIE_DIR", "/env/cookie/path");
 
         let temp_toml_path = jail.directory().join("test_config.toml");
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
 
-        assert_eq!(config.network, "Mainnet");
+        assert_eq!(config.network, Network::Mainnet);
         assert!(config.enable_json_server);
-        assert_eq!(config.map_capacity, Some(12345));
+        assert_eq!(config.storage.cache.capacity, 12345);
         assert_eq!(config.cookie_dir, Some(PathBuf::from("/env/cookie/path")));
         assert_eq!(!config.grpc_tls, true);
         Ok(())
@@ -393,7 +416,10 @@ fn test_figment_toml_overrides_defaults() {
         )?;
         let temp_toml_path = jail.directory().join("test_config.toml");
         let config = load_config(&temp_toml_path).expect("load_config should succeed");
-        assert_eq!(config.network, "Regtest");
+        assert_eq!(
+            config.network,
+            Network::Regtest(ActivationHeights::default())
+        );
         assert!(config.enable_json_server);
         Ok(())
     });
@@ -409,7 +435,10 @@ fn test_figment_all_defaults() {
         let defaults = IndexerConfig::default();
         assert_eq!(config.network, defaults.network);
         assert_eq!(config.enable_json_server, defaults.enable_json_server);
-        assert_eq!(config.map_capacity, defaults.map_capacity);
+        assert_eq!(
+            config.storage.cache.capacity,
+            defaults.storage.cache.capacity
+        );
         Ok(())
     });
 }
@@ -418,12 +447,12 @@ fn test_figment_all_defaults() {
 fn test_figment_invalid_env_var_type() {
     Jail::expect_with(|jail| {
         jail.create_file("test_config.toml", "")?;
-        jail.set_env("ZAINO_MAP_CAPACITY", "not_a_number");
+        jail.set_env("ZAINO_STORAGE.CACHE.CAPACITY", "not_a_number");
         let temp_toml_path = jail.directory().join("test_config.toml");
         let result = load_config(&temp_toml_path);
         assert!(result.is_err());
         if let Err(IndexerError::ConfigError(msg)) = result {
-            assert!(msg.to_lowercase().contains("map_capacity") && msg.contains("invalid type"),
+            assert!(msg.to_lowercase().contains("storage.cache.capacity") && msg.contains("invalid type"),
                     "Error message should mention 'map_capacity' (case-insensitive) and 'invalid type'. Got: {msg}");
         } else {
             panic!("Expected ConfigError, got {result:?}");

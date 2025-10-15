@@ -12,3 +12,4 @@ test_binaries/
 docker_cargo/**/*
 !docker_cargo/**/.gitkeep
 container-target/
+.local/

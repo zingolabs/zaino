@@ -3,17 +3,17 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-use zaino_proto::proto::compact_formats::CompactBlock;
+use zaino_common::network::ActivationHeights;
+use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zebra_rpc::methods::GetAddressUtxos;
 
-use crate::bench::BlockCacheConfig;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::test::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::error::FinalisedStateError;
-use crate::{ChainBlock, ChainWork, Height};
+use crate::{BlockCacheConfig, ChainWork, Height, IndexedBlock};
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,
@@ -22,26 +22,16 @@ pub(crate) async fn spawn_v0_zaino_db(
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
     let config = BlockCacheConfig {
-        map_capacity: None,
-        map_shard_amount: None,
-        db_version: 0,
-        db_path,
-        db_size: None,
-        network: zebra_chain::parameters::Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
-                nu6_1: None,
-                nu7: None,
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: db_path,
+                ..Default::default()
             },
-        ),
+            ..Default::default()
+        },
+        db_version: 0,
+        network: Network::Regtest(ActivationHeights::default()),
+
         no_sync: false,
         no_db: false,
     };
@@ -54,8 +44,6 @@ pub(crate) async fn spawn_v0_zaino_db(
 pub(crate) async fn load_vectors_and_spawn_and_sync_v0_zaino_db() -> (
     Vec<(
         u32,
-        ChainBlock,
-        CompactBlock,
         zebra_chain::block::Block,
         (
             zebra_chain::sapling::tree::Root,
@@ -63,6 +51,7 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v0_zaino_db() -> (
             zebra_chain::orchard::tree::Root,
             u64,
         ),
+        (Vec<u8>, Vec<u8>),
     )>,
     (Vec<String>, Vec<GetAddressUtxos>, u64),
     (Vec<String>, Vec<GetAddressUtxos>, u64),
@@ -79,13 +68,12 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v0_zaino_db() -> (
 
     for (
         _h,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.clone()
     {
-        let chain_block = ChainBlock::try_from((
+        let chain_block = IndexedBlock::try_from((
             &zebra_block,
             sapling_root,
             sapling_root_size as u32,
@@ -120,8 +108,6 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v0_zaino_db() -> (
 pub(crate) async fn load_vectors_v0db_and_reader() -> (
     Vec<(
         u32,
-        ChainBlock,
-        CompactBlock,
         zebra_chain::block::Block,
         (
             zebra_chain::sapling::tree::Root,
@@ -129,6 +115,7 @@ pub(crate) async fn load_vectors_v0db_and_reader() -> (
             zebra_chain::orchard::tree::Root,
             u64,
         ),
+        (Vec<u8>, Vec<u8>),
     )>,
     (Vec<String>, Vec<GetAddressUtxos>, u64),
     (Vec<String>, Vec<GetAddressUtxos>, u64),
@@ -204,7 +191,7 @@ async fn delete_blocks_from_db() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn load_db_from_file() {
+async fn save_db_to_file_and_reload() {
     init_tracing();
 
     let (blocks, _faucet, _recipient) = load_test_vectors().unwrap();
@@ -212,26 +199,16 @@ async fn load_db_from_file() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
     let config = BlockCacheConfig {
-        map_capacity: None,
-        map_shard_amount: None,
-        db_version: 1,
-        db_path,
-        db_size: None,
-        network: zebra_chain::parameters::Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
-                nu6_1: None,
-                nu7: None,
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: db_path,
+                ..Default::default()
             },
-        ),
+            ..Default::default()
+        },
+        db_version: 0,
+        network: Network::Regtest(ActivationHeights::default()),
+
         no_sync: false,
         no_db: false,
     };
@@ -250,13 +227,12 @@ async fn load_db_from_file() {
 
             for (
                 _h,
-                _chain_block,
-                _compact_block,
                 zebra_block,
                 (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+                (_sapling_treestate, _orchard_treestate),
             ) in blocks_clone
             {
-                let chain_block = ChainBlock::try_from((
+                let chain_block = IndexedBlock::try_from((
                     &zebra_block,
                     sapling_root,
                     sapling_root_size as u32,
@@ -301,7 +277,13 @@ async fn load_db_from_file() {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            dbg!(config.db_path.read_dir().unwrap().collect::<Vec<_>>());
+            dbg!(config
+                .storage
+                .database
+                .path
+                .read_dir()
+                .unwrap()
+                .collect::<Vec<_>>());
             let zaino_db_2 = ZainoDB::spawn(config, source_clone).await.unwrap();
 
             zaino_db_2.wait_until_ready().await;
@@ -324,7 +306,7 @@ async fn create_db_reader() {
     let (blocks, _faucet, _recipient, _db_dir, zaino_db, db_reader) =
         load_vectors_v0db_and_reader().await;
 
-    let (data_height, _, _, _, _) = blocks.last().unwrap();
+    let (data_height, _blocks, _roots, _treestates) = blocks.last().unwrap();
     let db_height = dbg!(zaino_db.db_height().await.unwrap()).unwrap();
     let db_reader_height = dbg!(db_reader.db_height().await.unwrap()).unwrap();
 
@@ -343,13 +325,12 @@ async fn get_compact_blocks() {
 
     for (
         height,
-        _chain_block,
-        _compact_block,
         zebra_block,
         (sapling_root, sapling_root_size, orchard_root, orchard_root_size),
+        (_sapling_treestate, _orchard_treestate),
     ) in blocks.iter()
     {
-        let chain_block = ChainBlock::try_from((
+        let chain_block = IndexedBlock::try_from((
             zebra_block,
             *sapling_root,
             *sapling_root_size as u32,

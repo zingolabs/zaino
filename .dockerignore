@@ -1,0 +1,18 @@
+# Build artifacts
+target/
+**/target/
+**/*.rs.bk
+
+# VCS / CI
+.git/
+.gitignore
+.github/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Misc
+**/*.log

@@ -1,6 +1,7 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "zaino-common",
     "integration-tests",
     "zaino-testutils",
     "zainod",
@@ -8,7 +9,7 @@ members = [
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
-    "zaino-testvectors"
+    "zaino-testvectors",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -24,15 +25,6 @@ version = "0.1.2"
 
 
 [workspace.dependencies]
-# Zingolabs
-# Should be updated to crates.io releases when available.
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2", features = [
-    "test-elevation",
-] }
-testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
-zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "7509a6d26c6424b2e22585fabd0bb974bff6bf55" }
-zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "7509a6d26c6424b2e22585fabd0bb974bff6bf55" }
-
 # Librustzcash
 zcash_address = "0.9"
 zcash_keys = "0.10"
@@ -41,7 +33,6 @@ zcash_primitives = "0.24"
 zcash_transparent = "0.4"
 
 # Zebra
-# Can be updated to 2.4.0 once lands. Should be updated to crates.io releases once available.
 zebra-chain = "2.0"
 zebra-state = "2.0"
 zebra-rpc = "2.0"
@@ -55,7 +46,7 @@ clap = "4.0"
 
 # Tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = [
+tracing-subscriber = { version = "0.3.20", features = [
     "fmt",
     "env-filter",
     "time",
@@ -120,15 +111,22 @@ zaino-fetch = { path = "zaino-fetch" }
 zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
+zaino-common.path = "zaino-common"
 zaino-testutils = { path = "zaino-testutils" }
 zaino-testvectors = { path = "zaino-testvectors" }
 zainod = { path = "zainod" }
 figment = "0.10"
 nonempty = "0.11.0"
 proptest = "~1.2"
+zip32 = "0.2.1"
 
 # Patch for vulnerable dependency
 slab = "0.4.11"
+anyhow = "1.0"
+arc-swap = "1.7.1"
+cargo-lock = "10.1.0"
+derive_more = "2.0.1"
+lazy_static = "1.5.0"
 
 [profile.test]
 opt-level = 3

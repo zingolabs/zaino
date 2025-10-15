@@ -21,20 +21,19 @@ mod mockchain_tests {
     use tempfile::TempDir;
     use tokio::time::{sleep, Duration};
     use tokio_stream::StreamExt as _;
-    use zaino_proto::proto::compact_formats::CompactBlock;
+    use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
     use zebra_chain::serialization::ZcashDeserializeInto;
 
     use crate::{
-        bench::BlockCacheConfig,
         chain_index::{
             source::test::MockchainSource,
             tests::vectors::{
                 build_active_mockchain_source, build_mockchain_source, load_test_vectors,
             },
-            types::TransactionHash,
+            types::{BestChainLocation, TransactionHash},
             ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
         },
-        ChainBlock,
+        BlockCacheConfig,
     };
 
     async fn load_test_vectors_and_sync_chain_index(
@@ -42,8 +41,6 @@ mod mockchain_tests {
     ) -> (
         Vec<(
             u32,
-            ChainBlock,
-            CompactBlock,
             zebra_chain::block::Block,
             (
                 zebra_chain::sapling::tree::Root,
@@ -51,6 +48,7 @@ mod mockchain_tests {
                 zebra_chain::orchard::tree::Root,
                 u64,
             ),
+            (Vec<u8>, Vec<u8>),
         )>,
         NodeBackedChainIndex<MockchainSource>,
         NodeBackedChainIndexSubscriber<MockchainSource>,
@@ -66,30 +64,25 @@ mod mockchain_tests {
             build_mockchain_source(blocks.clone())
         };
 
+        // TODO: the temp_dir is deleted when it goes out of scope
+        // at the end of this function.
+        // Somehow, this isn't breaking the database, but I'm confused
+        // as to how the database works when the directory containing
+        // it is deleted
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = temp_dir.path().to_path_buf();
 
         let config = BlockCacheConfig {
-            map_capacity: None,
-            map_shard_amount: None,
-            db_version: 1,
-            db_path,
-            db_size: None,
-            network: zebra_chain::parameters::Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
-                    nu6_1: None,
-                    nu7: None,
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path: db_path,
+                    ..Default::default()
                 },
-            ),
+                ..Default::default()
+            },
+            db_version: 1,
+            network: Network::Regtest(ActivationHeights::default()),
+
             no_sync: false,
             no_db: false,
         };
@@ -135,7 +128,7 @@ mod mockchain_tests {
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
 
-            let expected_block = &blocks[i].3;
+            let expected_block = &blocks[i].1;
             assert_eq!(&parsed_block, expected_block);
         }
     }
@@ -145,21 +138,39 @@ mod mockchain_tests {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-        for expected_transaction in blocks
-            .into_iter()
-            .flat_map(|block| block.3.transactions.into_iter())
-        {
-            let zaino_transaction = index_reader
+        for (expected_transaction, height) in blocks.into_iter().flat_map(|block| {
+            block
+                .1
+                .transactions
+                .into_iter()
+                .map(move |transaction| (transaction, block.0))
+        }) {
+            let (transaction, branch_id) = index_reader
                 .get_raw_transaction(
                     &nonfinalized_snapshot,
                     &TransactionHash::from(expected_transaction.hash()),
                 )
                 .await
                 .unwrap()
-                .unwrap()
+                .unwrap();
+            let zaino_transaction = transaction
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap();
-            assert_eq!(expected_transaction.as_ref(), &zaino_transaction)
+            assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
+            assert_eq!(
+                branch_id,
+                if height == 0 {
+                    None
+                } else if height == 1 {
+                    zebra_chain::parameters::NetworkUpgrade::Canopy
+                        .branch_id()
+                        .map(u32::from)
+                } else {
+                    zebra_chain::parameters::NetworkUpgrade::Nu6
+                        .branch_id()
+                        .map(u32::from)
+                }
+            );
         }
     }
 
@@ -172,28 +183,32 @@ mod mockchain_tests {
         for (expected_transaction, block_hash, block_height) in
             blocks.into_iter().flat_map(|block| {
                 block
-                    .3
+                    .1
                     .transactions
                     .iter()
                     .cloned()
-                    .map(|transaction| (transaction, block.3.hash(), block.3.coinbase_height()))
+                    .map(|transaction| (transaction, block.1.hash(), block.1.coinbase_height()))
                     .collect::<Vec<_>>()
                     .into_iter()
             })
         {
             let expected_txid = expected_transaction.hash();
 
-            let (tx_status_blocks, _tx_mempool_status) = index_reader
+            let (transaction_status_best_chain, transaction_status_nonbest_chain) = index_reader
                 .get_transaction_status(
                     &nonfinalized_snapshot,
                     &TransactionHash::from(expected_txid),
                 )
                 .await
                 .unwrap();
-            assert_eq!(tx_status_blocks.len(), 1);
-            let (hash, height) = tx_status_blocks.iter().next().unwrap();
-            assert_eq!(hash.0, block_hash.0);
-            assert_eq!(height.unwrap().0, block_height.unwrap().0);
+            assert_eq!(
+                transaction_status_best_chain.unwrap(),
+                BestChainLocation::Block(
+                    crate::BlockHash(block_hash.0),
+                    crate::Height(block_height.unwrap().0)
+                )
+            );
+            assert!(transaction_status_nonbest_chain.is_empty());
         }
     }
 
@@ -202,9 +217,9 @@ mod mockchain_tests {
         let (_blocks, _indexer, index_reader, mockchain) =
             load_test_vectors_and_sync_chain_index(true).await;
 
-        let indexer_tip = dbg!(index_reader.snapshot_nonfinalized_state().best_tip)
-            .0
-             .0;
+        let indexer_tip = dbg!(&index_reader.snapshot_nonfinalized_state().best_tip)
+            .height
+            .0;
         let active_mockchain_tip = dbg!(mockchain.active_height());
         assert_eq!(active_mockchain_tip, indexer_tip);
 
@@ -214,9 +229,9 @@ mod mockchain_tests {
         }
         sleep(Duration::from_millis(2000)).await;
 
-        let indexer_tip = dbg!(index_reader.snapshot_nonfinalized_state().best_tip)
-            .0
-             .0;
+        let indexer_tip = dbg!(&index_reader.snapshot_nonfinalized_state().best_tip)
+            .height
+            .0;
         let active_mockchain_tip = dbg!(mockchain.active_height());
         assert_eq!(active_mockchain_tip, indexer_tip);
     }
@@ -227,30 +242,44 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, _chain_block, _compact_block, zebra_block, _roots)| zebra_block.clone())
+            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
 
         let mempool_height = (dbg!(mockchain.active_height()) as usize) + 1;
-        let mempool_transactions = block_data
+
+        let mempool_transactions: Vec<_> = block_data
             .get(mempool_height)
-            .map(|b| b.transactions.clone())
+            .map(|b| {
+                b.transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
 
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
         for expected_transaction in mempool_transactions.into_iter() {
-            let zaino_transaction = index_reader
+            let (transaction, branch_id) = index_reader
                 .get_raw_transaction(
                     &nonfinalized_snapshot,
                     &TransactionHash::from(expected_transaction.hash()),
                 )
                 .await
                 .unwrap()
-                .unwrap()
+                .unwrap();
+            let zaino_transaction = transaction
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap();
-            assert_eq!(expected_transaction.as_ref(), &zaino_transaction)
+            assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
+            assert_eq!(
+                branch_id,
+                zebra_chain::parameters::NetworkUpgrade::Nu6
+                    .branch_id()
+                    .map(u32::from)
+            );
         }
     }
 
@@ -260,30 +289,42 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, _chain_block, _compact_block, zebra_block, _roots)| zebra_block.clone())
+            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
 
         let mempool_height = (dbg!(mockchain.active_height()) as usize) + 1;
-        let mempool_transactions = block_data
+
+        let mempool_transactions: Vec<_> = block_data
             .get(mempool_height)
-            .map(|b| b.transactions.clone())
+            .map(|b| {
+                b.transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
 
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
         for expected_transaction in mempool_transactions.into_iter() {
             let expected_txid = expected_transaction.hash();
 
-            let (tx_status_blocks, tx_mempool_status) = index_reader
+            let (transaction_status_best_chain, transaction_status_nonbest_chain) = index_reader
                 .get_transaction_status(
                     &nonfinalized_snapshot,
                     &TransactionHash::from(expected_txid),
                 )
                 .await
                 .unwrap();
-            assert!(tx_status_blocks.is_empty());
-            assert!(tx_mempool_status);
+            assert_eq!(
+                transaction_status_best_chain,
+                Some(BestChainLocation::Mempool(
+                    crate::chain_index::types::Height(mempool_height as u32)
+                ))
+            );
+            assert!(transaction_status_nonbest_chain.is_empty());
         }
     }
 
@@ -293,15 +334,21 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, _chain_block, _compact_block, zebra_block, _roots)| zebra_block.clone())
+            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
 
         let mempool_height = (dbg!(mockchain.active_height()) as usize) + 1;
-        let mut mempool_transactions = block_data
+        let mut mempool_transactions: Vec<_> = block_data
             .get(mempool_height)
-            .map(|b| b.transactions.clone())
+            .map(|b| {
+                b.transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         mempool_transactions.sort_by_key(|a| a.hash());
 
@@ -333,15 +380,21 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, _chain_block, _compact_block, zebra_block, _roots)| zebra_block.clone())
+            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
 
         let mempool_height = (dbg!(mockchain.active_height()) as usize) + 1;
-        let mut mempool_transactions = block_data
+        let mut mempool_transactions: Vec<_> = block_data
             .get(mempool_height)
-            .map(|b| b.transactions.clone())
+            .map(|b| {
+                b.transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         let exclude_tx = mempool_transactions.pop().unwrap();
         dbg!(&exclude_tx.hash());
@@ -392,15 +445,21 @@ mod mockchain_tests {
 
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, _chain_block, _compact_block, zebra_block, _roots)| zebra_block.clone())
+            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
 
         let next_mempool_height_index = (dbg!(mockchain.active_height()) as usize) + 1;
-        let mut mempool_transactions = block_data
+        let mut mempool_transactions: Vec<_> = block_data
             .get(next_mempool_height_index)
-            .map(|block| block.transactions.clone())
+            .map(|b| {
+                b.transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
@@ -454,5 +513,56 @@ mod mockchain_tests {
         let mempool_stream = index_reader.get_mempool_stream(&stale_nonfinalized_snapshot);
 
         assert!(mempool_stream.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_block_height() {
+        let (blocks, _indexer, index_reader, _mockchain) =
+            load_test_vectors_and_sync_chain_index(false).await;
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+
+        // Positive cases: every known best-chain block returns its height
+        for (expected_height, zebra_block, _roots, _treestates) in blocks.iter() {
+            let got = index_reader
+                .get_block_height(
+                    &nonfinalized_snapshot,
+                    crate::BlockHash(zebra_block.hash().0),
+                )
+                .await
+                .unwrap();
+            assert_eq!(got, Some(crate::Height(*expected_height)));
+        }
+
+        // Negative case: an unknown hash returns None
+        let unknown = crate::BlockHash([0u8; 32]);
+        let got = index_reader
+            .get_block_height(&nonfinalized_snapshot, unknown)
+            .await
+            .unwrap();
+        assert_eq!(got, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_treestate() {
+        let (blocks, _indexer, index_reader, _mockchain) =
+            load_test_vectors_and_sync_chain_index(false).await;
+
+        for (_height, zebra_block, _roots, (expected_sapling_bytes, expected_orchard_bytes)) in
+            blocks.into_iter()
+        {
+            let (sapling_bytes_opt, orchard_bytes_opt) = index_reader
+                .get_treestate(&crate::BlockHash(zebra_block.hash().0))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                sapling_bytes_opt.as_deref(),
+                Some(expected_sapling_bytes.as_slice())
+            );
+            assert_eq!(
+                orchard_bytes_opt.as_deref(),
+                Some(expected_orchard_bytes.as_slice())
+            );
+        }
     }
 }

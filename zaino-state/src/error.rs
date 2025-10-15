@@ -480,8 +480,10 @@ pub enum FinalisedStateError {
 
 /// A general error type to represent error StatusTypes.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Unexpected status error: {0:?}")]
-pub struct StatusError(pub crate::status::StatusType);
+#[error("Unexpected status error: {server_status:?}")]
+pub struct StatusError {
+    pub server_status: crate::status::StatusType,
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}: {message}")]
@@ -535,11 +537,10 @@ impl ChainIndexError {
         }
     }
 
-    pub(crate) fn child_process_status_error(process: &str, value: StatusError) -> Self {
+    pub(crate) fn child_process_status_error(process: &str, status_err: StatusError) -> Self {
         use crate::status::StatusType;
 
-        let status = value.0;
-        let message = match status {
+        let message = match status_err.server_status {
             StatusType::Spawning => format!("{process} status: Spawning (not ready yet)"),
             StatusType::Syncing => format!("{process} status: Syncing (not ready yet)"),
             StatusType::Ready => format!("{process} status: Ready (unexpected error path)"),
@@ -557,7 +558,7 @@ impl ChainIndexError {
         ChainIndexError {
             kind: ChainIndexErrorKind::InternalServerError,
             message,
-            source: Some(Box::new(value)),
+            source: Some(Box::new(status_err)),
         }
     }
 }

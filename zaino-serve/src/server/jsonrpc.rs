@@ -38,7 +38,7 @@ impl JsonRpcServer {
         service_subscriber: IndexerSubscriber<Service>,
         server_config: JsonRpcConfig,
     ) -> Result<Self, ServerError> {
-        let status = AtomicStatus::new(StatusType::Spawning.into());
+        let status = AtomicStatus::new(StatusType::Spawning);
 
         let rpc_impl = JsonRpcClient {
             service_subscriber: service_subscriber.clone(),
@@ -86,7 +86,7 @@ impl JsonRpcServer {
         let shutdown_signal = async move {
             loop {
                 shutdown_check_interval.tick().await;
-                if StatusType::from(shutdown_check_status.load()) == StatusType::Closing {
+                if shutdown_check_status.load() == StatusType::Closing {
                     break;
                 }
             }
@@ -96,7 +96,7 @@ impl JsonRpcServer {
         let server_task_handle = tokio::task::spawn({
             let server_handle_clone = server_handle.clone();
             async move {
-                task_status.store(StatusType::Ready.into());
+                task_status.store(StatusType::Ready);
 
                 tokio::select! {
                     _ = shutdown_signal => {
@@ -105,7 +105,7 @@ impl JsonRpcServer {
                     _ = server_handle.stopped() => {},
                 }
 
-                task_status.store(StatusType::Offline.into());
+                task_status.store(StatusType::Offline);
                 Ok(())
             }
         });
@@ -119,7 +119,7 @@ impl JsonRpcServer {
 
     /// Sets the servers to close gracefully.
     pub async fn close(&mut self) {
-        self.status.store(StatusType::Closing as usize);
+        self.status.store(StatusType::Closing);
 
         if let Some(dir) = &self.cookie_dir {
             if let Err(e) = remove_from_disk(dir) {
@@ -134,7 +134,7 @@ impl JsonRpcServer {
 
     /// Returns the servers current status.
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 }
 

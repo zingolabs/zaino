@@ -52,11 +52,17 @@ impl NonFinalisedState {
         let mut non_finalised_state = NonFinalisedState {
             fetcher: fetcher.clone(),
             state: state.cloned(),
-            heights_to_hashes: Broadcast::new(config.map_capacity, config.map_shard_amount),
-            hashes_to_blocks: Broadcast::new(config.map_capacity, config.map_shard_amount),
+            heights_to_hashes: Broadcast::new(
+                Some(config.storage.cache.capacity),
+                Some(1 << config.storage.cache.shard_power),
+            ),
+            hashes_to_blocks: Broadcast::new(
+                Some(config.storage.cache.capacity),
+                Some(1 << config.storage.cache.shard_power),
+            ),
             sync_task_handle: None,
             block_sender,
-            status: AtomicStatus::new(StatusType::Spawning.into()),
+            status: AtomicStatus::new(StatusType::Spawning),
             config,
         };
 
@@ -73,6 +79,7 @@ impl NonFinalisedState {
             non_finalised_state
                 .config
                 .network
+                .to_zebra_network()
                 .sapling_activation_height()
                 .0,
         )..=chain_height
@@ -80,7 +87,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     non_finalised_state.state.as_ref(),
-                    Some(&non_finalised_state.config.network),
+                    Some(&non_finalised_state.config.network.to_zebra_network()),
                     &non_finalised_state.fetcher,
                     HashOrHeight::Height(Height(height)),
                 )
@@ -129,7 +136,7 @@ impl NonFinalisedState {
                 match non_finalised_state.fetcher.get_blockchain_info().await {
                     Ok(chain_info) => {
                         best_block_hash = chain_info.best_block_hash;
-                        non_finalised_state.status.store(StatusType::Ready.into());
+                        non_finalised_state.status.store(StatusType::Ready);
                         break;
                     }
                     Err(e) => {
@@ -141,7 +148,7 @@ impl NonFinalisedState {
             }
 
             loop {
-                if non_finalised_state.status.load() == StatusType::Closing as usize {
+                if non_finalised_state.status.load() == StatusType::Closing {
                     non_finalised_state.update_status_and_notify(StatusType::Closing);
                     return;
                 }
@@ -160,13 +167,13 @@ impl NonFinalisedState {
 
                 if check_block_hash != best_block_hash {
                     best_block_hash = check_block_hash;
-                    non_finalised_state.status.store(StatusType::Syncing.into());
+                    non_finalised_state.status.store(StatusType::Syncing);
                     non_finalised_state
                         .heights_to_hashes
-                        .notify(non_finalised_state.status.clone().into());
+                        .notify(non_finalised_state.status.load());
                     non_finalised_state
                         .hashes_to_blocks
-                        .notify(non_finalised_state.status.clone().into());
+                        .notify(non_finalised_state.status.load());
                     loop {
                         match non_finalised_state.fill_from_reorg().await {
                             Ok(_) => break,
@@ -185,7 +192,7 @@ impl NonFinalisedState {
                         }
                     }
                 }
-                non_finalised_state.status.store(StatusType::Ready.into());
+                non_finalised_state.status.store(StatusType::Ready);
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         });
@@ -275,9 +282,13 @@ impl NonFinalisedState {
             .map_err(|e| NonFinalisedStateError::Custom(e.to_string()))?
             .blocks
             .0;
-        for block_height in ((reorg_height.0 + 1)
-            .max(self.config.network.sapling_activation_height().0))
-            ..=validator_height
+        for block_height in ((reorg_height.0 + 1).max(
+            self.config
+                .network
+                .to_zebra_network()
+                .sapling_activation_height()
+                .0,
+        ))..=validator_height
         {
             // Either pop the reorged block or pop the oldest block in non-finalised state.
             // If we pop the oldest (valid) block we send it to the finalised state to be saved to disk.
@@ -311,7 +322,7 @@ impl NonFinalisedState {
                                     .await
                                     .is_err()
                                 {
-                                    self.status.store(StatusType::CriticalError.into());
+                                    self.status.store(StatusType::CriticalError);
                                     return Err(NonFinalisedStateError::Critical(
                                         "Critical error in database. Closing NonFinalisedState"
                                             .to_string(),
@@ -327,7 +338,7 @@ impl NonFinalisedState {
             loop {
                 match fetch_block_from_node(
                     self.state.as_ref(),
-                    Some(&self.config.network.clone()),
+                    Some(&self.config.network.to_zebra_network()),
                     &self.fetcher,
                     HashOrHeight::Height(Height(block_height)),
                 )
@@ -358,8 +369,11 @@ impl NonFinalisedState {
     /// Waits for server to sync with p2p network.
     pub async fn wait_on_server(&self) -> Result<(), NonFinalisedStateError> {
         // If no_db is active wait for server to sync with p2p network.
-        if self.config.no_db && !self.config.network.is_regtest() && !self.config.no_sync {
-            self.status.store(StatusType::Syncing.into());
+        if self.config.no_db
+            && !self.config.network.to_zebra_network().is_regtest()
+            && !self.config.no_sync
+        {
+            self.status.store(StatusType::Syncing);
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {
                     NonFinalisedStateError::Custom(format!("Failed to fetch blockchain info: {e}"))
@@ -395,14 +409,14 @@ impl NonFinalisedState {
 
     /// Returns the status of the non-finalised state.
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 
     /// Updates the status of the non-finalised state and notifies subscribers.
     fn update_status_and_notify(&self, status: StatusType) {
-        self.status.store(status.into());
-        self.heights_to_hashes.notify(self.status.clone().into());
-        self.hashes_to_blocks.notify(self.status.clone().into());
+        self.status.store(status);
+        self.heights_to_hashes.notify(self.status.load());
+        self.hashes_to_blocks.notify(self.status.load());
     }
 
     /// Sets the non-finalised state to close gracefully.
@@ -481,6 +495,6 @@ impl NonFinalisedStateSubscriber {
 
     /// Returns the status of the NonFinalisedState.
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 }

@@ -22,7 +22,10 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
-        response::{GetBlockHeaderResponse, GetMempoolInfoResponse},
+        response::{
+            block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetBlockHeaderResponse,
+            GetMempoolInfoResponse, GetNetworkSolPsResponse,
+        },
     },
 };
 
@@ -96,7 +99,7 @@ impl ZcashService for FetchService {
         let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(
             get_build_info(),
-            config.network.clone(),
+            config.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -185,6 +188,11 @@ impl FetchServiceSubscriber {
         let block_cache_status = self.block_cache.status();
 
         mempool_status.combine(block_cache_status)
+    }
+
+    /// Returns the network type running.
+    pub fn network(&self) -> zaino_common::Network {
+        self.config.network
     }
 }
 
@@ -281,6 +289,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.mempool.get_mempool_info().await?)
     }
 
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+        Ok(self.fetcher.get_peer_info().await?)
+    }
+
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
     /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
@@ -288,6 +300,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// tags: blockchain
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         Ok(self.fetcher.get_difficulty().await?.0)
+    }
+
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+        Ok(self.fetcher.get_block_subsidy(height).await?)
     }
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
@@ -450,7 +466,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .get_mempool()
             .await
             .into_iter()
-            .map(|(key, _)| key.0)
+            .map(|(key, _)| key.txid)
             .collect())
     }
 
@@ -607,6 +623,27 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .map(|utxos| utxos.into())
             .collect())
     }
+
+    /// Returns the estimated network solutions per second based on the last n blocks.
+    ///
+    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// This RPC is implemented in the [mining.cpp](https://github.com/zcash/zcash/blob/d00fc6f4365048339c83f463874e4d6c240b63af/src/rpc/mining.cpp#L104)
+    /// file of the Zcash repository. The Zebra implementation can be found [here](https://github.com/ZcashFoundation/zebra/blob/19bca3f1159f9cb9344c9944f7e1cb8d6a82a07f/zebra-rpc/src/methods.rs#L2687).
+    ///
+    /// # Parameters
+    ///
+    /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
+    /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
+    async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+        Ok(self.fetcher.get_network_sol_ps(blocks, height).await?)
+    }
 }
 
 #[async_trait]
@@ -614,12 +651,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let latest_height = self.block_cache.get_chain_height().await?;
-        let mut latest_hash = self
+        let latest_hash = self
             .block_cache
             .get_compact_block(latest_height.0.to_string())
             .await?
             .hash;
-        latest_hash.reverse();
 
         Ok(BlockId {
             height: latest_height.0 as u64,
@@ -756,8 +792,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         };
         let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(time::Duration::from_secs((service_timeout*4) as u64), async {
                     for height in start..=end {
@@ -852,8 +888,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         };
         let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -954,8 +990,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let chain_height = self.chain_height().await?;
         let txids = self.get_taddress_txids_helper(request).await?;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
-        let (transmitter, receiver) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1015,9 +1051,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         mut request: AddressStream,
     ) -> Result<Balance, Self::Error> {
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
+        let service_timeout = self.config.service.timeout;
         let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.service_channel_size as usize);
+            mpsc::channel::<String>(self.config.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1129,16 +1165,16 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             .collect();
 
         let mempool = self.mempool.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for (txid, serialized_transaction) in
+                    for (mempool_key, mempool_value) in
                         mempool.get_filtered_mempool(exclude_txids).await
                     {
-                        let txid_bytes = match hex::decode(txid.0) {
+                        let txid_bytes = match hex::decode(mempool_key.txid) {
                             Ok(bytes) => bytes,
                             Err(error) => {
                                 if channel_tx
@@ -1153,7 +1189,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             }
                         };
                         match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                            serialized_transaction.0.as_ref().as_ref(),
+                            mempool_value.serialized_tx.as_ref().as_ref(),
                             Some(vec![txid_bytes]),
                             None,
                         ) {
@@ -1219,8 +1255,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let mut mempool = self.mempool.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let mempool_height = self.block_cache.get_chain_height().await?.0;
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1245,7 +1281,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             Ok((_mempool_key, mempool_value)) => {
                                 if channel_tx
                                     .send(Ok(RawTransaction {
-                                        data: mempool_value.0.as_ref().as_ref().to_vec(),
+                                        data: mempool_value
+                                            .serialized_tx
+                                            .as_ref()
+                                            .as_ref()
+                                            .to_vec(),
                                         height: mempool_height as u64,
                                     }))
                                     .await
@@ -1365,8 +1405,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
-            self.config.service_timeout,
-            self.config.service_channel_size,
+            self.config.service.timeout,
+            self.config.service.channel_size,
         )
     }
 
@@ -1384,7 +1424,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
         let mut entries: u32 = 0;
         for utxo in utxos {
-            let (address, txid, output_index, script, satoshis, height) = utxo.into_parts();
+            let (address, tx_hash, output_index, script, satoshis, height) = utxo.into_parts();
             if (height.0 as u64) < request.start_height {
                 continue;
             }
@@ -1410,7 +1450,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             };
             let utxo_reply = GetAddressUtxosReply {
                 address: address.to_string(),
-                txid: txid.0.to_vec(),
+                txid: tx_hash.0.to_vec(),
                 index: checked_index,
                 script: script.as_raw_bytes().to_vec(),
                 value_zat: checked_satoshis,
@@ -1432,15 +1472,15 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     ) -> Result<UtxoReplyStream, Self::Error> {
         let taddrs = AddressStrings::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     let mut entries: u32 = 0;
                     for utxo in utxos {
-                        let (address, txid, output_index, script, satoshis, height) =
+                        let (address, tx_hash, output_index, script, satoshis, height) =
                             utxo.into_parts();
                         if (height.0 as u64) < request.start_height {
                             continue;
@@ -1473,7 +1513,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         };
                         let utxo_reply = GetAddressUtxosReply {
                             address: address.to_string(),
-                            txid: txid.0.to_vec(),
+                            txid: tx_hash.0.to_vec(),
                             index: checked_index,
                             script: script.as_raw_bytes().to_vec(),
                             value_zat: checked_satoshis,

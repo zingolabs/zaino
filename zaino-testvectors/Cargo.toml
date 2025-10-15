@@ -9,5 +9,5 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
-lazy_static = "1.5.0"
+lazy_static = { workspace = true }
 
