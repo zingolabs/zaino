@@ -16,7 +16,7 @@ Different nodes (e.g., `zcashd`, Zebra, indexers) may expose distinct internals 
 
 - The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are to be interpreted as described in RFC 2119.
 - Integers are encoded **little-endian** unless otherwise stated.
-- “CompactSize” refers to the Bitcoin/Zcash variable-length integer format.
+- “CompactSize” refers to the [Bitcoin Specified](https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer) [Zcash Implementation](https://docs.rs/zcash_encoding/0.3.0/zcash_encoding/struct.CompactSize.html) of variable-length integer format.
 - `BLAKE3` denotes the 32-byte output of the BLAKE3 hash function.
 - This specification defines **version 1** (“V1”) of the ZAINO UTXO snapshot.
 
