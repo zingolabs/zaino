@@ -51,6 +51,7 @@ fn main() -> io::Result<()> {
                 .as_ref()
                 .and_then(|source_id| match source_id.kind() {
                     SourceKind::Git(GitReference::Rev(rev)) => Some(rev),
+                    SourceKind::Git(GitReference::Tag(tag)) => Some(tag),
                     _ => None,
                 })
         } else {

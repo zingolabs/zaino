@@ -176,14 +176,14 @@ impl ZcashService for StateService {
         // generate it from hash-based dependencies.
         // in all other cases, this check will be skipped.
         if let Some(expected_zebrad_version) = crate::ZEBRA_VERSION {
+            // Strip leading 'v' from connected version for comparison
+            let connected_version = zebra_build_data.build.trim_start_matches('v');
+
             // this `+` indicates a git describe run
             // i.e. the first seven characters of the commit hash
             // have been appended. We match on those
-            if zebra_build_data.build.contains('+') {
-                if !zebra_build_data
-                    .build
-                    .contains(&expected_zebrad_version[0..7])
-                {
+            if connected_version.contains('+') {
+                if !connected_version.contains(&expected_zebrad_version[0..7]) {
                     return Err(StateServiceError::ZebradVersionMismatch {
                         expected_zebrad_version: expected_zebrad_version.to_string(),
                         connected_zebrad_version: zebra_build_data.build,
@@ -191,7 +191,7 @@ impl ZcashService for StateService {
                 }
             } else {
                 // With no `+`, we expect a version number to be an exact match
-                if expected_zebrad_version != zebra_build_data.build {
+                if expected_zebrad_version != connected_version {
                     return Err(StateServiceError::ZebradVersionMismatch {
                         expected_zebrad_version: expected_zebrad_version.to_string(),
                         connected_zebrad_version: zebra_build_data.build,
