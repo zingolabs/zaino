@@ -79,7 +79,7 @@ For each `(txid, vout, value_zat, scriptPubKey)`:
 
 **Note:** No per-transaction terminators or grouping markers are used; the format commits to _outputs_, not _transactions_.
 
-### CompactSize (reference)
+### CompactSize ([reference](https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer))
 
 - If `n < 0xFD`: a single byte `n`.
 - Else if `n ≤ 0xFFFF`: `0xFD` followed by `n` as `u16` little-endian.
