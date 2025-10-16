@@ -154,7 +154,7 @@ impl StagingChannel {
 impl BestTip {
     /// Create a BestTip from an IndexedBlock
     fn from_block(block: &IndexedBlock) -> Result<Self, InitError> {
-        let height = block.height().ok_or(InitError::InitalBlockMissingHeight)?;
+        let height = block.height();
         let blockhash = *block.hash();
         Ok(Self { height, blockhash })
     }

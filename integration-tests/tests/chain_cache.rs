@@ -350,7 +350,7 @@ mod chain_query_interface {
                 branch_id,
                 if height == chain_index::types::GENESIS_HEIGHT {
                     None
-                } else if height == Some(Height::try_from(1).unwrap()) {
+                } else if height == Height::try_from(1).unwrap() {
                     zebra_chain::parameters::NetworkUpgrade::Canopy
                         .branch_id()
                         .map(u32::from)
