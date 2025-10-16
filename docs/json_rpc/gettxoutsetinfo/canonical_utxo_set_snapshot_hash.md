@@ -34,7 +34,7 @@ Any change to the encoding rules or semantics **MUST** bump the domain string (e
 
 To compute the snapshot hash, the implementation needs:
 
-- `network`: ASCII string identifying the chain; recommended values: `"mainnet"`, `"testnet"`, `"regtest"`.
+- `network`: ASCII string identifying the chain. Recommended values: `"mainnet"`, `"testnet"`, `"regtest"`.
 - `best_height`: the best chain height at the time of the snapshot (unsigned 32-bit).
 - `best_block`: the 32-byte block hash of the best chain tip, in the node’s _canonical internal byte order_.
 - `UTXO set`: a finite multimap keyed by outpoints `(txid, vout)` to outputs `(value_zat, scriptPubKey)`, where:
@@ -77,7 +77,7 @@ For each `(txid, vout, value_zat, scriptPubKey)`:
 - `script_len` as CompactSize (Bitcoin/Zcash varint) of `scriptPubKey.len()`.
 - `scriptPubKey` raw bytes.
 
-**Note:** No per-transaction terminators or grouping markers are used; the format commits to _outputs_, not _transactions_.
+**Note:** No per-transaction terminators or grouping markers are used. Instead, the format commits to _outputs_, not _transactions_.
 
 ### CompactSize ([reference](https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer))
 
@@ -145,9 +145,9 @@ function UtxoSnapshotHashV1(network, best_height, best_block, utxos):
 
 Implementations **SHOULD** include tests covering:
 
-1. **Determinism:** Shuffle input; hash remains constant.
-2. **Sensitivity:** Flip one bit in `value_zat` or `scriptPubKey`; hash changes.
-3. **Metadata:** Change `network` or `best_block`; hash changes.
+1. **Determinism:** Shuffle input, and the hash remains constant.
+2. **Sensitivity:** Flip one bit in `value_zat` or `scriptPubKey`, and the hash changes.
+3. **Metadata:** Change `network` or `best_block`, and the hash changes.
 4. **Empty Set:** With `count_txouts = 0`, the hash is well-defined.
 5. **Large Scripts:** Scripts with CompactSize boundaries (252, 253, 2^16, 2^32).
 6. **Ordering:** Two entries with same `txid` different `vout` are ordered by `vout`.
