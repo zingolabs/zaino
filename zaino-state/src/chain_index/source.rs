@@ -156,6 +156,8 @@ impl BlockchainSource for ValidatorConnector {
                     Ok(_) => unreachable!(),
                     Err(e) => match e {
                         RpcRequestError::Method(GetBlockError::MissingBlock(_)) => Ok(None),
+                        // TODO/FIX: zcashd returns this transport error when a block is requested higher than current chain. is this correct?
+                        RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) => Ok(None),
                         RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
                         _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
                     },
@@ -229,32 +231,22 @@ impl BlockchainSource for ValidatorConnector {
                     .commitments()
                     .final_state()
                     .as_ref()
-                    .map(hex::decode)
-                    .transpose()
-                    .map_err(|_e| {
-                        BlockchainSourceError::Unrecoverable(
-                            InvalidData(format!("could not interpret sapling tree of block {id}"))
-                                .to_string(),
+                    .map(|final_state| {
+                        read_commitment_tree::<zebra_chain::sapling::tree::Node, _, 32>(
+                            final_state.as_slice(),
                         )
-                    })?
-                    .as_deref()
-                    .map(read_commitment_tree::<zebra_chain::sapling::tree::Node, _, 32>)
+                    })
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let orchard_frontier = orchard
                     .commitments()
                     .final_state()
                     .as_ref()
-                    .map(hex::decode)
-                    .transpose()
-                    .map_err(|_e| {
-                        BlockchainSourceError::Unrecoverable(
-                            InvalidData(format!("could not interpret orchard tree of block {id}"))
-                                .to_string(),
+                    .map(|final_state| {
+                        read_commitment_tree::<zebra_chain::orchard::tree::Node, _, 32>(
+                            final_state.as_slice(),
                         )
-                    })?
-                    .as_deref()
-                    .map(read_commitment_tree::<zebra_chain::orchard::tree::Node, _, 32>)
+                    })
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let sapling_root = sapling_frontier

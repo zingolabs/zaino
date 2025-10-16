@@ -19,7 +19,7 @@ on:
         description: Flags to pass to cargo-hack
         type: string
         # Default: isolate each crate, try all feature combos, no dev-deps, build lib+bins only
-        default: "--workspace --feature-powerset --lib --bins --target-dir target/hack"
+        default: "--workspace --feature-powerset --lib --bins --ignore-private --target-dir target/hack"
       install_protoc:
         description: Install protobuf-compiler
         type: boolean
@@ -58,4 +58,3 @@ jobs:
 
       - name: Run cargo-hack
         run: cargo hack ${{ inputs.hack-subcommand }} ${{ inputs.hack-flags }}
-

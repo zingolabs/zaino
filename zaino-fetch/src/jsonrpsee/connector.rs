@@ -25,15 +25,16 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetBalanceError,
+        GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
+        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
+        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
+        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
+        TxidsResponse,
     },
 };
 
-use super::response::GetDifficultyResponse;
+use super::response::{GetDifficultyResponse, GetNetworkSolPsResponse};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest<T> {
@@ -435,6 +436,17 @@ impl JsonRpSeeConnector {
             .await
     }
 
+    /// Returns data about each connected network node as a json array of objects.
+    ///
+    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// tags: network
+    ///
+    /// Current `zebrad` does not include the same fields as `zcashd`.
+    pub async fn get_peer_info(&self) -> Result<GetPeerInfo, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetPeerInfo>("getpeerinfo", ())
+            .await
+    }
+
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
     /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
@@ -445,6 +457,23 @@ impl JsonRpSeeConnector {
     ) -> Result<GetDifficultyResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetDifficultyResponse>("getdifficulty", ())
             .await
+    }
+
+    /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
+    ///
+    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
+    pub async fn get_block_subsidy(
+        &self,
+        height: u32,
+    ) -> Result<GetBlockSubsidy, RpcRequestError<Infallible>> {
+        let params = vec![serde_json::to_value(height).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getblocksubsidy", params).await
     }
 
     /// Returns the total balance of a provided `addresses` in an [`crate::jsonrpsee::response::GetBalanceResponse`] instance.
@@ -692,6 +721,44 @@ impl JsonRpSeeConnector {
     ) -> Result<Vec<GetUtxosResponse>, RpcRequestError<GetUtxosError>> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressutxos", params).await
+    }
+
+    /// Returns the estimated network solutions per second based on the last n blocks.
+    ///
+    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// This RPC is implemented in the [mining.cpp](https://github.com/zcash/zcash/blob/d00fc6f4365048339c83f463874e4d6c240b63af/src/rpc/mining.cpp#L104)
+    /// file of the Zcash repository. The Zebra implementation can be found [here](https://github.com/ZcashFoundation/zebra/blob/19bca3f1159f9cb9344c9944f7e1cb8d6a82a07f/zebra-rpc/src/methods.rs#L2687).
+    ///
+    /// # Parameters
+    ///
+    /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
+    /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
+    pub async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<GetNetworkSolPsResponse, RpcRequestError<Infallible>> {
+        let mut params = Vec::new();
+
+        // check whether the blocks parameter is present
+        if let Some(b) = blocks {
+            params.push(serde_json::json!(b));
+        } else {
+            params.push(serde_json::json!(120_i32))
+        }
+
+        // check whether the height parameter is present
+        if let Some(h) = height {
+            params.push(serde_json::json!(h));
+        } else {
+            // default to -1
+            params.push(serde_json::json!(-1_i32))
+        }
+
+        self.send_request("getnetworksolps", params).await
     }
 }
 

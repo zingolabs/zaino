@@ -1,13 +1,12 @@
-use core::panic;
-use zaino_common::{DatabaseConfig, StorageConfig};
+use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::{
     bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
     BackendType,
 };
-use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::block::Height;
+use zaino_testutils::{Validator as _, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
+use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
 
 async fn create_test_manager_and_block_cache(
@@ -23,10 +22,16 @@ async fn create_test_manager_and_block_cache(
     BlockCache,
     BlockCacheSubscriber,
 ) {
+    let activation_heights = match validator {
+        ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
+        ValidatorKind::Zcashd => ActivationHeights::default(),
+    };
+
     let test_manager = TestManager::launch(
         validator,
         &BackendType::Fetch,
         None,
+        Some(activation_heights),
         chain_cache,
         enable_zaino,
         false,
@@ -53,25 +58,12 @@ async fn create_test_manager_and_block_cache(
     )
     .unwrap();
 
-    let network = match test_manager.network.to_string().as_str() {
-        "Regtest" => zebra_chain::parameters::Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
-            },
-        ),
-        "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
-        "Mainnet" => zebra_chain::parameters::Network::Mainnet,
-        _ => panic!("Incorrect newtork type found."),
+    let network = match test_manager.network {
+        NetworkKind::Regtest => {
+            zebra_chain::parameters::Network::new_regtest(activation_heights.into())
+        }
+        NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
+        NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
     };
 
     let block_cache_config = BlockCacheConfig {

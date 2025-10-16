@@ -10,40 +10,45 @@ version = { workspace = true }
 publish = false
 
 [dependencies]
+# Zaino
 zaino-state = { workspace = true, features = ["bench"] }
 zaino-testvectors.workspace = true
 zaino-common.workspace = true
+zainod = { workspace = true }
 
 # Librustzcash
-zcash_protocol = "0.5.4"
-zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = [
+  "local-consensus",
+] }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = ["lightwalletd-tonic"] }
 
 # Zebra
 zebra-chain = { workspace = true }
 
 # Zingo-infra
-zingo-infra-services = { workspace = true }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0"  }
+
+# Zingo-common
+zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [ "for_test" ]}
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2", features = [
-    "test-elevation",
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "f88e1d76ea244d6cc48d7fd4c3a609c6598318dc", features = [
+    "testutils",
 ] }
-testvectors = { workspace = true }
+
+# Miscellaneous
+http = { workspace = true }
+once_cell = { workspace = true }
+portpicker = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tempfile = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
     "fmt",
     "env-filter",
     "time",
 ] }
-
-# Miscellaneous
-tokio = { workspace = true }
-tonic = { workspace = true }
-http = { workspace = true }
-tempfile = { workspace = true }
-portpicker = { workspace = true }
-once_cell = { workspace = true }
-
-zainod = { workspace = true }
 
 # We don't need this as a direct dependency.
 # Rather, we need to pin this version of proptest.
@@ -55,6 +60,7 @@ zainod = { workspace = true }
 # its rand version update.
 proptest = { workspace = true }
 lazy_static = { workspace = true }
+zip32 = {workspace = true}
 
 [dev-dependencies]
-zingo-netutils = { workspace = true }
+zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0"  }

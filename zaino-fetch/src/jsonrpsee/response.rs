@@ -3,6 +3,10 @@
 //! These types are redefined rather than imported from zebra_rpc
 //! to prevent locking consumers into a zebra_rpc version
 
+pub mod block_subsidy;
+mod common;
+pub mod peer_info;
+
 use std::{convert::Infallible, num::ParseIntError};
 
 use hex::FromHex;
@@ -224,6 +228,14 @@ impl ResponseToError for GetBlockchainInfoResponse {
 /// Response to a `getdifficulty` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetDifficultyResponse(pub f64);
+
+/// Response to a `getnetworksolps` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetNetworkSolPsResponse(pub u64);
+
+impl ResponseToError for GetNetworkSolPsResponse {
+    type RpcError = Infallible;
+}
 
 fn default_header() -> Height {
     Height(0)

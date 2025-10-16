@@ -1,6 +1,7 @@
 //! Network type for Zaino configuration.
 
 use serde::{Deserialize, Serialize};
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
 /// Network type for Zaino configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -82,17 +83,17 @@ impl Default for ActivationHeights {
             blossom: Some(1),
             heartwood: Some(1),
             canopy: Some(1),
-            nu5: Some(1),
-            nu6: Some(1),
-            nu6_1: None,
+            nu5: Some(2),
+            nu6: Some(2),
+            nu6_1: Some(1000),
             nu7: None,
         }
     }
 }
 
-impl From<zebra_chain::parameters::testnet::ConfiguredActivationHeights> for ActivationHeights {
+impl From<ConfiguredActivationHeights> for ActivationHeights {
     fn from(
-        zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+        ConfiguredActivationHeights {
             before_overwinter,
             overwinter,
             sapling,
@@ -103,7 +104,7 @@ impl From<zebra_chain::parameters::testnet::ConfiguredActivationHeights> for Act
             nu6,
             nu6_1,
             nu7,
-        }: zebra_chain::parameters::testnet::ConfiguredActivationHeights,
+        }: ConfiguredActivationHeights,
     ) -> Self {
         Self {
             before_overwinter,
@@ -119,7 +120,7 @@ impl From<zebra_chain::parameters::testnet::ConfiguredActivationHeights> for Act
         }
     }
 }
-impl From<ActivationHeights> for zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+impl From<ActivationHeights> for ConfiguredActivationHeights {
     fn from(
         ActivationHeights {
             before_overwinter,
@@ -161,9 +162,8 @@ impl Network {
     }
 
     /// Get the standard regtest activation heights used by Zaino.
-    pub fn zaino_regtest_heights() -> zebra_chain::parameters::testnet::ConfiguredActivationHeights
-    {
-        zebra_chain::parameters::testnet::ConfiguredActivationHeights {
+    pub fn zaino_regtest_heights() -> ConfiguredActivationHeights {
+        ConfiguredActivationHeights {
             before_overwinter: Some(1),
             overwinter: Some(1),
             sapling: Some(1),
@@ -187,26 +187,15 @@ impl Network {
             Network::Regtest(_) => true,                  // Local network - safe and fast to sync
         }
     }
-}
 
-impl From<Network> for zingo_infra_services::network::Network {
-    fn from(val: Network) -> Self {
-        match val {
-            Network::Mainnet => zingo_infra_services::network::Network::Mainnet,
-            Network::Regtest(_) => zingo_infra_services::network::Network::Regtest,
-            Network::Testnet => zingo_infra_services::network::Network::Testnet,
-        }
-    }
-}
-
-impl From<zingo_infra_services::network::Network> for Network {
-    fn from(value: zingo_infra_services::network::Network) -> Self {
-        match value {
-            zingo_infra_services::network::Network::Regtest => {
-                Network::Regtest(ActivationHeights::default())
-            }
-            zingo_infra_services::network::Network::Testnet => Network::Testnet,
-            zingo_infra_services::network::Network::Mainnet => Network::Mainnet,
+    pub fn from_network_kind_and_activation_heights(
+        network: &zebra_chain::parameters::NetworkKind,
+        activation_heights: &ActivationHeights,
+    ) -> Self {
+        match network {
+            zebra_chain::parameters::NetworkKind::Mainnet => Network::Mainnet,
+            zebra_chain::parameters::NetworkKind::Testnet => Network::Testnet,
+            zebra_chain::parameters::NetworkKind::Regtest => Network::Regtest(*activation_heights),
         }
     }
 }

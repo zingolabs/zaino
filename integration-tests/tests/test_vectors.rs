@@ -26,10 +26,10 @@ use zaino_state::{
     StateService, StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
 };
 use zaino_testutils::from_inputs;
-use zaino_testutils::services;
 use zaino_testutils::test_vectors::transactions::get_test_vectors;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
+use zebra_chain::parameters::NetworkKind;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlockTransaction};
@@ -52,9 +52,9 @@ async fn create_test_manager_and_services(
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-    network: Option<services::network::Network>,
+    network: Option<NetworkKind>,
 ) -> (TestManager, StateService, StateServiceSubscriber) {
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
         network,
@@ -70,12 +70,12 @@ async fn create_test_manager_and_services(
     .unwrap();
 
     let (network_type, zaino_sync_bool) = match network {
-        Some(services::network::Network::Mainnet) => {
+        Some(NetworkKind::Mainnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             (zaino_common::Network::Mainnet, false)
         }
-        Some(services::network::Network::Testnet) => {
+        Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             (zaino_common::Network::Testnet, false)
@@ -134,7 +134,7 @@ async fn create_test_manager_and_services(
     (test_manager, state_service, state_subscriber)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Not a test! Used to build test vector data for zaino_state::chain_index unit tests."]
 async fn create_200_block_regtest_chain_vectors() {
     let (mut test_manager, _state_service, state_service_subscriber) =
@@ -164,7 +164,11 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.faucet.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     // Generate block
     test_manager.local_net.generate_blocks(1).await.unwrap(); // Block 102
@@ -174,7 +178,11 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.faucet.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
     from_inputs::quick_send(
         &mut clients.faucet,
         vec![(recipient_uaddr.as_str(), 250_000, None)],
@@ -191,7 +199,11 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.recipient.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     from_inputs::quick_send(
         &mut clients.faucet,
@@ -222,8 +234,16 @@ async fn create_200_block_regtest_chain_vectors() {
     clients.recipient.sync_and_await().await.unwrap();
 
     // create transactions
-    clients.faucet.quick_shield().await.unwrap();
-    clients.recipient.quick_shield().await.unwrap();
+    clients
+        .faucet
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
+    clients
+        .recipient
+        .quick_shield(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     from_inputs::quick_send(
         &mut clients.faucet,
@@ -261,8 +281,16 @@ async fn create_200_block_regtest_chain_vectors() {
         }
 
         // create transactions
-        clients.faucet.quick_shield().await.unwrap();
-        clients.recipient.quick_shield().await.unwrap();
+        clients
+            .faucet
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
+        clients
+            .recipient
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
 
         from_inputs::quick_send(
             &mut clients.faucet,
@@ -305,8 +333,16 @@ async fn create_200_block_regtest_chain_vectors() {
         }
 
         // create transactions
-        clients.faucet.quick_shield().await.unwrap();
-        clients.recipient.quick_shield().await.unwrap();
+        clients
+            .faucet
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
+        clients
+            .recipient
+            .quick_shield(zip32::AccountId::ZERO)
+            .await
+            .unwrap();
 
         from_inputs::quick_send(
             &mut clients.faucet,
@@ -804,7 +840,7 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(
     Ok((full_data, faucet, recipient))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_v4_txs_parsing() -> anyhow::Result<()> {
     let test_vectors = get_test_vectors();
 

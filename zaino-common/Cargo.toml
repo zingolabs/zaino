@@ -12,8 +12,9 @@ version = { workspace = true }
 # Zebra
 zebra-chain = { workspace = true }
 
-# Zingo Infrastructure
-zingo-infra-services = { workspace = true }
-
 # Serialization
 serde = { workspace = true, features = ["derive"] }
+
+# Error handling
+thiserror = { workspace = true }
+
