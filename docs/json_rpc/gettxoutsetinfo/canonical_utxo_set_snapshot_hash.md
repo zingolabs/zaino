@@ -1,12 +1,27 @@
-# ZAINO-UTXOSET-01: Canonical UTXO Set Snapshot Hash (v1)
+    ZIP-LIKE
+    Title: ZAINO-UTXOSET-01: Canonical UTXO Set Snapshot Hash (v1)
+    Owners: A Nym <somenym@zingolabs.org>
+            Za Wil <zancas@zingolabs.org>
+    Status: Draft
+    Category: Lightclients
+    Created: 2025-10-16
+    License: MIT
 
-## Status
+## Terminology
 
-Draft
+consensus network - a set of validators cooperating to consense on a blockchain
+
 
 ## Abstract
 
-This document specifies a deterministic, versioned procedure to compute a 32-byte digest over a node’s UTXO set. The intent is operational: fast equality checks between independently built indices, reproducible debugging across nodes, and audit logs. The hash is _not_ a consensus commitment.
+This document specifies a deterministic, versioned procedure to compute a 32-byte digest over a consensus network’s UTXO set.
+The intent is to provide indexer operators with a utiliy for:
+
+ * fast equality checks between independently built indices
+ * reproducible debugging across indexers
+ * audit logs.
+
+The hash is _not_ input to consensus validation.
 
 ## Motivation
 
