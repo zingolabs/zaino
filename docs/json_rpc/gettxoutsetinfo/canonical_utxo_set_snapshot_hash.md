@@ -1,6 +1,5 @@
-    ZI-ng-P: 0
-    Title: ZAINO-UTXOSET-01, gettxoutsetinfo: Canonical UTXO Set Snapshot Hash (v1)
-    Owners: A Nym <somenym@zingolabs.org>
+    Title: ZAINO-UTXOSET-01 Canonical UTXO Set Snapshot Hash (v1)
+    Owners: dorianvp <dorianvp@zingolabs.org>
             Za Wil <zancas@zingolabs.org>
     Status: Draft
     Category: Lightclients
@@ -14,17 +13,18 @@
 - “CompactSize” refers to the [Bitcoin Specified](https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer) [Zcash Implementation](https://docs.rs/zcash_encoding/0.3.0/zcash_encoding/struct.CompactSize.html) of variable-length integer format.
 - `BLAKE3` denotes the 32-byte output of the BLAKE3 hash function.
 - This specification defines **version 1** (“V1”) of the ZAINO UTXO snapshot.
-- **consensus network**:
-    a set of validators cooperating to consense on a blockchain
+- **network**:
+  a blockchain instance identified by its genesis block and consensus parameters.
 
 ## Abstract
 
-This document specifies a deterministic, versioned procedure to compute a 32-byte digest over a consensus network’s UTXO set.
-The intent is to provide indexer operators with a utiliy for:
+This document specifies a deterministic, versioned procedure to compute a 32-byte hash of a node’s UTXO set at a specified best block. The snapshot uses a canonical ordering and serialization and is hashed under a domain tag.
 
- * fast equality checks between independently built indices
- * reproducible debugging across indexers
- * audit logs.
+Among other uses, the snapshot hash can be used to:
+
+- Verify that two nodes at the same best block have the same UTXO set across implementations and versions.
+- Pin failing test fixtures to a snapshot hash to reproduce issues.
+- Log periodic hashes to show continuity of state over time.
 
 The hash is _not_ input to consensus validation.
 
