@@ -375,6 +375,7 @@ mod chain_query_interface {
         get_transaction_status(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg_attr(feature = "ci_exclude", ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_transaction_status_zcashd() {
         get_transaction_status(&ValidatorKind::Zcashd).await
