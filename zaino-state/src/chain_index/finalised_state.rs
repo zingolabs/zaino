@@ -22,7 +22,7 @@ use crate::{
     chain_index::{source::BlockchainSourceError, types::GENESIS_HEIGHT},
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    BlockHash, ChainWork, Height, IndexedBlock, StatusType,
+    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, StatusType,
 };
 
 use std::{sync::Arc, time::Duration};
@@ -271,15 +271,17 @@ impl ZainoDB {
                     }
                 };
 
-            let chain_block = match IndexedBlock::try_from((
-                block.as_ref(),
+            let metadata = BlockMetadata::new(
                 sapling_root,
                 sapling_size as u32,
                 orchard_root,
                 orchard_size as u32,
-                &parent_chainwork,
-                &network.to_zebra_network(),
-            )) {
+                parent_chainwork,
+                network.to_zebra_network(),
+            );
+
+            let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
+            let chain_block = match IndexedBlock::try_from(block_with_metadata) {
                 Ok(block) => block,
                 Err(_) => {
                     return Err(FinalisedStateError::BlockchainSourceError(
