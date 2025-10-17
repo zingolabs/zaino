@@ -14,9 +14,8 @@
 - “CompactSize” refers to the [Bitcoin Specified](https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer) [Zcash Implementation](https://docs.rs/zcash_encoding/0.3.0/zcash_encoding/struct.CompactSize.html) of variable-length integer format.
 - `BLAKE3` denotes the 32-byte output of the BLAKE3 hash function.
 - This specification defines **version 1** (“V1”) of the ZAINO UTXO snapshot.
-- consensus network:
+- **consensus network**:
     a set of validators cooperating to consense on a blockchain
-
 
 ## Abstract
 
