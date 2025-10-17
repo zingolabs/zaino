@@ -1,6 +1,6 @@
 # Contributing to Zaino
 
-Welcome! Thank you for your interest in Zaino. We look forward to your contribution to this important part of the Zcash mainnet and testing ecosystem.
+Welcome! Thank you for your interest in Zaino. We look forward to your contributions.
 
 ## Table of Contents
 - [Getting Started](#getting-started)
@@ -123,3 +123,115 @@ Better quality control,
 Reduced maintenance costs.
 
 To read more, see [this document on wikibooks](https://en.wikibooks.org/wiki/FOSS_A_General_Introduction/Preface).
+
+## Styleguides
+### Coding Style
+
+The `librustzcash` authors hold our software to a high standard of quality. The
+list of style requirements below is not comprehensive, but violation of any of
+the following guidelines is likely to cause your pull request to be rejected or
+changes to be required. The coding style in this repository has evolved over
+time, and not all preexisting code follows this style; when modifications are
+being made to existing code, it should be upgraded to reflect the recommended
+style (although please ensure that you separate functional changes from
+style-oriented refactoring in the Git commit history.)
+
+#### Type Safety
+
+In `librustzcash` code, type safety is of paramount importance. This has
+numerous implications, including but not limited to the following:
+- Invalid states should be made unrepresentable at the type level. In general:
+  - `structs` should have all internal members private or crate-private, and
+    should expose constructors that result in `Result<...>` or `Option<...>`
+    that check for invariant violations, if any such violations are possible.
+    Provide public or crate-public accessors for internal members when necessary.
+  - "bare" native integer types, strings, and so forth should be avoided in
+    public APIs; use "newtype" wrappers with clearly documented semantics instead.
+  - Avoid platform-specific integer sizing (i.e. `usize`) except when e.g.
+    indexing into a Rust collection type that already requires such semantics.
+  - Use `enum`s liberally; a common type safety failure in many other languages
+    is that product (struct or tuple) types containing potentially invalid
+    state space are used.
+  - Use custom `enum`s with semantically relevant variants instead of boolean
+    arguments and return values.
+- Prefer immutability; make data types immutable unless there is a strong
+  reason to believe that values will need to be modified in-place for
+  performance reasons.
+- Take care when introducing and/or using structured enum variants, because
+  Rust does not provide adequate language features for making such values
+  immutable or ensuring safe construction. Instead of creating structured or
+  tuple variants, it is often preferable for a variant to wrap an immutable
+  type and expose a safe constructor for the variant along with accessors for
+  the members of the wrapped type.
+
+#### Public API
+
+The public API of the `librustzcash` crates is carefully curated. We rely on
+several conventions to maintain the legibility of what is public in the API
+when reviewing code:
+- Any type or function annotated `pub` MUST be part of the public API; we do
+  not permit publicly visible types in private modules (with the exception of
+  those necessary for representing the "sealed trait" pattern, which we use
+  when we want to prohibit third-party implementations of traits we define).
+- Public functions and types that expose more powerful capabilities
+  not required for ordinary use of the crate that are specifically for use in
+  testing contexts should be guarded by the `test-dependencies` feature flag.
+
+#### Side Effects & Capability-Oriented Programming
+
+Whenever it's possible to do without impairing performance in hot code paths,
+prefer a functional programming style, with allowances for Rust's limitations.
+This means:
+- Write referentially transparent functions. A referentially transparent
+  function is one that, given a particular input, always returns the same
+  output.
+- Avoid mutation whenever possible. If it's strictly necessary, use mutable
+  variables only in the narrowest possible scope.
+- In Rust, we don't have good tools for referentially transparent treatment
+  of operations that involve side effects. If a statement produces or makes use
+  of a side-effect, the context in which that statement is executed should use
+  imperative programming style to make the presence of the side effect more
+  evident. For example, use a `for` loop instead of the `map` function of a
+  collection if any side effect is performed by the body of the loop.
+- If a procedure or method will invoke operations that produce side effects,
+  the capability to perform such side effects should be provided to the
+  procedure as an explicit argument. For example, if a procedure needs to
+  access the current time, that procedure should take an argument `clock: impl
+  Clock` where `Clock` is a trait that provides a method that allows the caller
+  to obtain the current time.
+- Effect capabilities should be defined independent of implementation concerns;
+  for example, a data persistence capability should be defined to operate on
+  high-level types appropriate to the domain, not to a particular persistence
+  layer or serialization.
+
+#### Error Handling
+
+This project consistently uses `Result` with custom error `enum`s to indicate
+the presence of errors. The `std::error::Error` trait should be implemented for
+such error types when the error type is part of the public API of the crate.
+
+#### Serialization
+
+Serialization formats, and serialized data, must be treated with the utmost
+care, as serialized data imposes an essentially permanent compatibility burden.
+As such, we enforce some strict rules related to serialization:
+- All serialized data must be versioned at the top level. Any piece of
+  serialized data that may be independently stored must be versioned
+  in such a way that parsing first inspects the version prior to further
+  interpretation of the data.
+- We do NOT use derived serialization (e.g., `serde`) except in very specific
+  use cases; in those cases (such as the `pczt` crate) we explicitly mark each
+  type for which we used derived serialization as serialization-critical, and
+  these types may not be modified once they have been exposed in a public
+  release of the associated crate. The data serialized by derivation-based
+  methods MUST be wrapped in a container that provides versioning, as described
+  above.
+- The above rules MAY be relaxed for serialization formats that are purely 
+  ephemeral, such as for wire formats where both the sender and the receiver
+  are always updated simultaneously and the serialized form is never written
+  to longer-term storage.
+
+## Attribution
+This guide is based on the template supplied by the
+[CONTRIBUTING.md](https://contributing.md/) project.
+
