@@ -10,7 +10,7 @@
 ## Terminology
 ## Notation and Requirements
 
-- The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are to be interpreted as described in BCP 14 when, and only when, they appear in all capitals..
+- The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are to be interpreted as described in [^BCP 14] when, and only when, they appear in all capitals..
 - Integers are encoded **little-endian** unless otherwise stated.
 - “CompactSize” refers to the [Bitcoin Specified](https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer) [Zcash Implementation](https://docs.rs/zcash_encoding/0.3.0/zcash_encoding/struct.CompactSize.html) of variable-length integer format.
 - `BLAKE3` denotes the 32-byte output of the BLAKE3 hash function.
@@ -165,3 +165,7 @@ Implementations **SHOULD** include tests covering:
 4. **Empty Set:** With `count_txouts = 0`, the hash is well-defined.
 5. **Large Scripts:** Scripts with CompactSize boundaries (252, 253, 2^16, 2^32).
 6. **Ordering:** Two entries with same `txid` different `vout` are ordered by `vout`.
+
+## References
+
+[^BCP14]: [Information on BCP 14 — "RFC 2119"](https://www.rfc-editor.org/info/bcp14)
