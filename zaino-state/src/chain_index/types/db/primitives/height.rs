@@ -123,7 +123,7 @@ impl FixedEncodedLen for Height {
 mod height_safety_tests {
     use super::*;
 
-    /// This test demonstrates the CRITICAL underflow bug in Height subtraction.
+    /// This test demonstrates the underflow bug in Height subtraction.
     /// When subtracting from genesis (Height(0)), the result wraps to u32::MAX
     /// in release mode, or panics in debug mode.
     ///
