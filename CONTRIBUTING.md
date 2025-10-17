@@ -127,7 +127,7 @@ To read more, see [this document on wikibooks](https://en.wikibooks.org/wiki/FOS
 ## Styleguides
 ### Coding Style
 
-The `librustzcash` authors hold our software to a high standard of quality. The
+The `zaino` authors hold our software to a high standard of quality. The
 list of style requirements below is not comprehensive, but violation of any of
 the following guidelines is likely to cause your pull request to be rejected or
 changes to be required. The coding style in this repository has evolved over
@@ -138,7 +138,7 @@ style-oriented refactoring in the Git commit history.)
 
 #### Type Safety
 
-In `librustzcash` code, type safety is of paramount importance. This has
+In `zaino` code, type safety is of paramount importance. This has
 numerous implications, including but not limited to the following:
 - Invalid states should be made unrepresentable at the type level. In general:
   - `structs` should have all internal members private or crate-private, and
@@ -166,7 +166,7 @@ numerous implications, including but not limited to the following:
 
 #### Public API
 
-The public API of the `librustzcash` crates is carefully curated. We rely on
+The public API of the `zaino` crates is carefully curated. We rely on
 several conventions to maintain the legibility of what is public in the API
 when reviewing code:
 - Any type or function annotated `pub` MUST be part of the public API; we do
