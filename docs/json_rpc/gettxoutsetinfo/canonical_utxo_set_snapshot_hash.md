@@ -168,4 +168,4 @@ Implementations **SHOULD** include tests covering:
 
 ## References
 
-[^BCP14]: [Information on BCP 14 — "RFC 2119"](https://www.rfc-editor.org/info/bcp14)
+[^BCP 14]: [Information on BCP 14 — "RFC 2119"](https://www.rfc-editor.org/info/bcp14)
