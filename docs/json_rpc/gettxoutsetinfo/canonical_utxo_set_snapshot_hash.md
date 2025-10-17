@@ -1,4 +1,4 @@
-    ZIP-LIKE
+    ZI-ng-P: 0
     Title: ZAINO-UTXOSET-01: Canonical UTXO Set Snapshot Hash (v1)
     Owners: A Nym <somenym@zingolabs.org>
             Za Wil <zancas@zingolabs.org>
