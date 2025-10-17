@@ -10,6 +10,10 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
+[features]
+# ci_exclude - When enabled, excludes certain slow tests from running (used in CI)
+ci_exclude = []
+
 [dev-dependencies]
 anyhow = { workspace = true }
 

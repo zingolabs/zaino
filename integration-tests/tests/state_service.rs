@@ -1119,6 +1119,7 @@ mod zebrad {
             state_service_get_address_utxos_testnet().await;
         }
 
+        #[cfg_attr(feature = "ci_exclude", ignore)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn address_tx_ids_regtest() {
             state_service_get_address_tx_ids(&ValidatorKind::Zebrad).await;
@@ -1130,6 +1131,7 @@ mod zebrad {
             state_service_get_address_tx_ids_testnet().await;
         }
 
+        #[cfg_attr(feature = "ci_exclude", ignore)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn raw_transaction_regtest() {
             state_service_get_raw_transaction(&ValidatorKind::Zebrad).await;
@@ -1359,6 +1361,7 @@ mod zebrad {
             }
         }
 
+        #[cfg_attr(feature = "ci_exclude", ignore)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn raw_mempool_regtest() {
             state_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
@@ -1478,6 +1481,7 @@ mod zebrad {
             .await;
         }
 
+        #[cfg_attr(feature = "ci_exclude", ignore)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn address_balance_regtest() {
             state_service_get_address_balance(&ValidatorKind::Zebrad).await;

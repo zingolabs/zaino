@@ -244,6 +244,7 @@ mod chain_query_interface {
         get_block_range(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg_attr(feature = "ci_exclude", ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_block_range_zcashd() {
         get_block_range(&ValidatorKind::Zcashd).await
@@ -286,6 +287,7 @@ mod chain_query_interface {
         find_fork_point(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg_attr(feature = "ci_exclude", ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_fork_point_zcashd() {
         find_fork_point(&ValidatorKind::Zcashd).await
@@ -318,6 +320,7 @@ mod chain_query_interface {
         get_raw_transaction(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg_attr(feature = "ci_exclude", ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_raw_transaction_zcashd() {
         get_raw_transaction(&ValidatorKind::Zcashd).await
@@ -412,6 +415,7 @@ mod chain_query_interface {
         sync_large_chain(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg_attr(feature = "ci_exclude", ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_large_chain_zcashd() {
         sync_large_chain(&ValidatorKind::Zcashd).await
