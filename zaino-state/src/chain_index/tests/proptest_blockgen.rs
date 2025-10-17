@@ -4,11 +4,17 @@ use proptest::{
     prelude::{Arbitrary as _, BoxedStrategy, Just},
     strategy::Strategy,
 };
+use tonic::async_trait;
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
     fmt::SummaryDebug,
     parameters::GENESIS_PREVIOUS_BLOCK_HASH,
     LedgerState,
+};
+use zebra_state::HashOrHeight;
+
+use crate::{
+    chain_index::source::BlockchainSourceResult, BlockHash, BlockchainSource, TransactionHash,
 };
 
 #[test]
@@ -32,6 +38,77 @@ fn make_chain() {
             prev_hash = hash_atop_shared_chain;
         }
     });
+}
+
+#[derive(Clone)]
+struct ProptestMockchain {
+    genesis_segment: SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>,
+    branching_segments: Vec<SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>>,
+}
+
+#[async_trait]
+impl BlockchainSource for ProptestMockchain {
+    /// Returns the block by hash or height
+    async fn get_block(
+        &self,
+        id: HashOrHeight,
+    ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>> {
+        todo!()
+    }
+
+    /// Returns the block commitment tree data by hash
+    async fn get_commitment_tree_roots(
+        &self,
+        id: BlockHash,
+    ) -> BlockchainSourceResult<(
+        Option<(zebra_chain::sapling::tree::Root, u64)>,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
+    )> {
+        todo!()
+    }
+
+    /// Returns the sapling and orchard treestate by hash
+    async fn get_treestate(
+        &self,
+        id: BlockHash,
+    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+        todo!()
+    }
+
+    /// Returns the complete list of txids currently in the mempool.
+    async fn get_mempool_txids(
+        &self,
+    ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>> {
+        todo!()
+    }
+
+    /// Returns the transaction by txid
+    async fn get_transaction(
+        &self,
+        txid: TransactionHash,
+    ) -> BlockchainSourceResult<Option<Arc<zebra_chain::transaction::Transaction>>> {
+        todo!()
+    }
+
+    /// Returns the hash of the block at the tip of the best chain.
+    async fn get_best_block_hash(
+        &self,
+    ) -> BlockchainSourceResult<Option<zebra_chain::block::Hash>> {
+        todo!()
+    }
+
+    /// Get a listener for new nonfinalized blocks,
+    /// if supported
+    async fn nonfinalized_listener(
+        &self,
+    ) -> Result<
+        Option<
+            tokio::sync::mpsc::Receiver<(zebra_chain::block::Hash, Arc<zebra_chain::block::Block>)>,
+        >,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        todo!()
+    }
 }
 
 fn make_branching_chain(
