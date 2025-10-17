@@ -5,3 +5,7 @@
 //! - ShardIndex
 //! - ScriptType
 //! - ShardRoot
+
+mod height;
+
+pub use height::{Height, GENESIS_HEIGHT};
