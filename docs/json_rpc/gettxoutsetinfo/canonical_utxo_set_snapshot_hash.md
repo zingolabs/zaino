@@ -13,8 +13,6 @@
 - “CompactSize” refers to the [Bitcoin Specified](https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer) [Zcash Implementation](https://docs.rs/zcash_encoding/0.3.0/zcash_encoding/struct.CompactSize.html) of variable-length integer format.
 - `BLAKE3` denotes the 32-byte output of the BLAKE3 hash function.
 - This specification defines **version 1** (“V1”) of the ZAINO UTXO snapshot.
-- **network**:
-  a blockchain instance identified by its genesis block and consensus parameters.
 
 ## Abstract
 
@@ -46,8 +44,8 @@ Any change to the encoding rules or semantics **MUST** bump the domain string (e
 
 To compute the snapshot hash, the implementation needs:
 
-- `network`: ASCII string identifying the chain. Recommended values: `"mainnet"`, `"testnet"`, `"regtest"`.
-- `best_height`: the best chain height at the time of the snapshot (unsigned 32-bit).
+- `genesis_block_hash`: 32-byte hash that uniquely identifies the chain.
+- `best_height`: the height of the best block at the time of the snapshot (unsigned 32-bit).
 - `best_block`: the 32-byte block hash of the best chain tip, in the node’s _canonical internal byte order_.
 - `UTXO set`: a finite multimap keyed by outpoints `(txid, vout)` to outputs `(value_zat, scriptPubKey)`, where:
 
@@ -74,7 +72,7 @@ The byte stream fed to the hash is the concatenation of a **header** and **entri
 ### Header
 
 - ASCII bytes: `"ZAINO-UTXOSET-V1\0"`
-- `network` as ASCII bytes, followed by a single NUL byte `0x00`.
+- `genesis_block_hash`: 32 raw bytes
 - `best_height` as `u32` little-endian.
 - `best_block` as 32 raw bytes.
 - `count_txouts` as `u64` little-endian, where `count_txouts` is the total number of serialized entries below.
@@ -106,13 +104,12 @@ For each `(txid, vout, value_zat, scriptPubKey)`:
 ## Pseudocode
 
 ```text
-function UtxoSnapshotHashV1(network, best_height, best_block, utxos):
+function UtxoSnapshotHashV1(genesis_block_hash, best_height, best_block, utxos):
     H ← blake3::Hasher()
 
     // Header
     H.update("ZAINO-UTXOSET-V1\0")
-    H.update(network)
-    H.update("\0")
+    H.update(genesis_block_hash)
     H.update(le_u32(best_height))
     H.update(best_block)         // 32 raw bytes, node’s canonical order
     count ← number_of_outputs(utxos)
@@ -138,9 +135,11 @@ function UtxoSnapshotHashV1(network, best_height, best_block, utxos):
 ## Security and Interop Considerations
 
 - This hash is **not a consensus commitment** and **MUST NOT** be used to validate blocks or transactions.
-- The domain string prevents cross-protocol collisions.
-- Including `network`, `best_height`, and `best_block` prevents accidental equality across different nodes or heights.
-- Because the order is fully specified, two independent implementations reading the _same_ set will produce the _same_ hash.
+- The domain string identifies the algorithm/format version. Any change **MUST** use a new tag.
+- The snapshot **MUST** bind to a specific chain and tip by including best_block (32 bytes, consensus byte order) and
+  **SHOULD** include `best_height`. Implementations **SHOULD** include `genesis_block_hash` (32 bytes) as the chain identifier.
+- The serialization **MUST** be injective. Duplicates or out-of-range values **MUST** cause failure.
+- Equal hashes indicate equal inputs under this specification. They do not imply authenticity, provenance, or liveness.
 
 ## Rationale
 
@@ -159,7 +158,7 @@ Implementations **SHOULD** include tests covering:
 
 1. **Determinism:** Shuffle input, and the hash remains constant.
 2. **Sensitivity:** Flip one bit in `value_zat` or `scriptPubKey`, and the hash changes.
-3. **Metadata:** Change `network` or `best_block`, and the hash changes.
+3. **Metadata:** Change `genesis_block_hash` or `best_block`, and the hash changes.
 4. **Empty Set:** With `count_txouts = 0`, the hash is well-defined.
 5. **Large Scripts:** Scripts with CompactSize boundaries (252, 253, 2^16, 2^32).
 6. **Ordering:** Two entries with same `txid` different `vout` are ordered by `vout`.
