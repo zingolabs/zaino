@@ -31,7 +31,7 @@ use zaino_fetch::{
             block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
-            common::{amount::ZecAmount, block::BlockHash, BlockHeight},
+            common::{amount::ZecAmount, BlockHeight},
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             txout_set_info::{self, GetTxOutSetInfo, TxOutSetInfo},
@@ -1933,6 +1933,16 @@ impl ZcashIndexer for StateServiceSubscriber {
             GetBlock::Object(block_object) => block_object.height().expect("expected height"),
         };
 
+        let genesis_block_hash = match self.z_get_block("0".to_string(), None).await.unwrap() {
+            GetBlock::Raw(raw_object) => {
+                // From Zebra: guaranteed to be deserializable into a `Block`.
+                let block =
+                    zebra_chain::block::Block::zcash_deserialize(raw_object.as_ref()).unwrap();
+                block.hash()
+            }
+            GetBlock::Object(block_object) => block_object.hash(),
+        };
+
         let mut unique_txs = HashSet::<transaction::Hash>::with_capacity(txouts.len());
         for op in txouts.keys() {
             let _ = unique_txs.insert(op.hash);
@@ -1942,14 +1952,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             zebra_chain::amount::Amount<NonNegative>,
             zebra_chain::amount::Error,
         > = txouts.values().map(|txout| txout.value).sum();
-        let network = self.config.network;
 
         let items: Vec<txout_set_info::utxo_set_hash::SnapshotItem> = txouts
             .iter()
             .map(|(op, txout)| {
                 txout_set_info::utxo_set_hash::SnapshotItem {
                     index: op.index,
-                    script: txout.lock_script.zcash_serialize_to_vec().unwrap(), // From zebra: serialization MUST be infallible up to errors in the underlying writer.
+                    // From zebra: serialization MUST be infallible up to errors in the underlying writer.
+                    script: txout.lock_script.zcash_serialize_to_vec().unwrap(),
                     txid_raw: op.hash.0,
                     // `txout.value.zatoshis()` is already enforced to be non-negative.
                     // `txout.value` is of type `Amount<NonNegative>`.
@@ -1958,12 +1968,23 @@ impl ZcashIndexer for StateServiceSubscriber {
             })
             .collect();
 
-        let utxo_set_hash = txout_set_info::utxo_set_hash::utxo_set_hash_v1(
-            &network,
+        let utxo_set_hash = match txout_set_info::utxo_set_hash::utxo_set_hash_v1(
+            genesis_block_hash.0,
             best_block_height.0,
             best_block_hash.bytes_in_display_order(),
             items.clone(),
-        );
+        ) {
+            Ok(utxo_set_hash) => utxo_set_hash,
+            Err(e) => {
+                return Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    LegacyCode::Misc,
+                    format!(
+                        "Failed to compute UTXO set hash. UTXO set contains duplicated entries: {}",
+                        e
+                    ),
+                )))
+            }
+        };
 
         let utxo_serialized_size =
             txout_set_info::utxo_set_hash::utxo_set_serialized_size_v1(items);
@@ -1973,7 +1994,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         Ok(GetTxOutSetInfo::Known(TxOutSetInfo {
             height: BlockHeight(best_block_height.0),
-            best_block: BlockHash(best_block_hash.0),
+            best_block: best_block_hash,
             transactions: unique_txs.len() as u64,
             tx_outs: txouts.len() as u64,
             bytes_serialized: utxo_serialized_size,

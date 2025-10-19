@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::jsonrpsee::{
     connector::ResponseToError,
-    response::common::{amount::ZecAmount, block::BlockHash, BlockHeight},
+    response::common::{amount::ZecAmount, BlockHeight},
 };
 
 /// Response to a `gettxoutsetinfo` RPC request.
@@ -31,8 +31,8 @@ pub struct TxOutSetInfo {
     pub height: BlockHeight,
 
     /// The best block hash hex.
-    #[serde(rename = "bestblock")]
-    pub best_block: BlockHash,
+    #[serde(with = "hex", rename = "bestblock")]
+    pub best_block: zebra_chain::block::Hash,
 
     /// The number of transactions.
     pub transactions: u64,
@@ -59,7 +59,7 @@ impl ResponseToError for GetTxOutSetInfo {
 pub mod utxo_set_hash {
     use std::collections::BTreeMap;
 
-    use zaino_common::Network;
+    use zebra_chain::amount::MAX_MONEY;
 
     pub(crate) const DOMAIN_TAG: &[u8] = b"ZAINO-UTXOSET-V1\0";
     pub(crate) const NETWORK_TAG_LEN: u64 = b"mainnet".len() as u64; // Same as testnet and regtest
@@ -124,59 +124,68 @@ pub mod utxo_set_hash {
         }
     }
 
+    /// Error type for UTXO set hash computation.
+    #[derive(Debug, thiserror::Error)]
+    pub enum UtxoSetError {
+        /// Duplicate outpoint in the UTXO set.
+        #[error("duplicate outpoint")]
+        DuplicateOutpoint,
+    }
+
     /// Compute canonical snapshot hash. See ZAINO-UTXOSET-01 for details.
     ///
-    /// - `network`: "mainnet", "testnet" or "regtest".
+    /// - `genesis_block_hash`: raw 32-byte genesis block hash.
     /// - `best_height`: current block height.
     /// - `best_block_hash`: raw 32-byte block hash.
     /// - `items`: anything that can be iterated, we'll sort it into BTreeMap to canonicalize order.
     pub fn utxo_set_hash_v1<I>(
-        network: &Network,
+        genesis_block_hash: [u8; 32],
         best_height: u32,
         best_block_hash: [u8; 32],
         items: I,
-    ) -> blake3::Hash
+    ) -> Result<blake3::Hash, UtxoSetError>
     where
         I: IntoIterator<Item = SnapshotItem>,
     {
-        // Canonical order: txid asc, index asc
-        let mut ordered: BTreeMap<[u8; 32], Vec<SnapshotItem>> = BTreeMap::new();
+        // Group by txid, then by index to detect duplicates.
+        let mut ordered: BTreeMap<[u8; 32], BTreeMap<u32, SnapshotItem>> = BTreeMap::new();
         for it in items {
-            ordered.entry(it.txid_raw).or_default().push(it);
-        }
-        for v in ordered.values_mut() {
-            v.sort_by_key(|x| x.index);
+            let per_tx = ordered.entry(it.txid_raw).or_default();
+
+            if per_tx.contains_key(&it.index) {
+                return Err(UtxoSetError::DuplicateOutpoint);
+            }
+            per_tx.insert(it.index, it);
         }
 
         let mut h = blake3::Hasher::new();
 
-        let network_str = match network {
-            Network::Mainnet => "mainnet",
-            Network::Testnet => "testnet",
-            Network::Regtest(_) => "regtest",
-        };
-
         // Header, with domain separation and metadata
         h.update(DOMAIN_TAG);
-        h.update(network_str.as_bytes());
-        h.update(&[0]); // NUL
+        h.update(&genesis_block_hash);
         h.update(&best_height.to_le_bytes());
         h.update(&best_block_hash);
         let total_outputs: u64 = ordered.values().map(|v| v.len() as u64).sum();
         h.update(&total_outputs.to_le_bytes());
 
-        // Entries
+        // Entries (txid asc, vout asc)
         for (txid, outs) in ordered {
-            for o in outs {
+            for (index, o) in outs {
+                // Range check value
+                assert!(
+                    o.value_zat <= MAX_MONEY.try_into().unwrap(),
+                    "value_zat out of range"
+                );
                 h.update(&txid);
-                h.update(&o.index.to_le_bytes());
+                h.update(&index.to_le_bytes());
                 h.update(&o.value_zat.to_le_bytes());
-                write_compact_size(o.script.len() as u64, &mut h);
+                let slen = u64::try_from(o.script.len()).expect("script too long");
+                write_compact_size(slen, &mut h);
                 h.update(&o.script);
             }
         }
 
-        h.finalize()
+        Ok(h.finalize())
     }
 
     /// Compute the serialized size (in bytes) of the UTXO set snapshot using the same
@@ -228,7 +237,10 @@ pub mod utxo_set_hash {
 mod tests {
     use serde_json::json;
 
-    use crate::jsonrpsee::response::{common::block::BlockHash, txout_set_info::GetTxOutSetInfo};
+    use crate::jsonrpsee::response::txout_set_info::{GetTxOutSetInfo, TxOutSetInfo};
+
+    const GENESIS_BLOCK_HASH: &str =
+        "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08";
 
     #[test]
     fn txoutsetinfo_parses_known_with_numeric_amount() {
@@ -256,7 +268,7 @@ mod tests {
                 // BlockHash round-trip formatting is stable
                 let hex = k.best_block.to_string();
                 assert_eq!(hex.len(), 64);
-                let back: BlockHash = hex.parse().unwrap();
+                let back: zebra_chain::block::Hash = hex.parse().unwrap();
                 assert_eq!(k.best_block, back);
             }
             other => panic!("expected Known, got: {:?}", other),
@@ -266,7 +278,7 @@ mod tests {
     #[test]
     fn txoutsetinfo_parses_known_with_string_amount() {
         // Amount as a string is accepted
-        let j = json!({
+        let known_json = json!({
             "height": 0,
             "bestblock": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             "transactions": 0,
@@ -276,13 +288,14 @@ mod tests {
             "total_amount": "0.00000001"
         });
 
-        let parsed: GetTxOutSetInfo = serde_json::from_value(j).unwrap();
-        match parsed {
-            GetTxOutSetInfo::Known(k) => {
+        match serde_json::from_value::<TxOutSetInfo>(known_json) {
+            Ok(k) => {
                 assert_eq!(k.height.0, 0);
                 assert_eq!(u64::from(k.total_amount), 1);
             }
-            other => panic!("expected Known, got: {:?}", other),
+            Err(e) => {
+                panic!("expected Ok, got: {}", e);
+            }
         }
     }
 
@@ -311,9 +324,10 @@ mod tests {
     ///
     /// For more information, see `ZAINO-UTXOSET-01`.
     mod utxoset_hash {
+        use crate::jsonrpsee::response::txout_set_info::tests::GENESIS_BLOCK_HASH;
+
         use super::super::utxo_set_hash::*;
         use blake3;
-        use zaino_common::{network::ActivationHeights, Network};
 
         fn txid(fill: u8) -> [u8; 32] {
             [fill; 32]
@@ -391,23 +405,35 @@ mod tests {
         fn utxo_set_hash_is_deterministic_and_order_canonicalized() {
             let best_block_hash = [0x11; 32];
 
-            let a = vec![
+            let item_a = vec![
                 item(0xAA, 0, 50, 10),
                 item(0xAA, 1, 60, 0),
                 item(0xBB, 0, 70, 3),
             ];
 
             // Shuffled order
-            let b = vec![
+            let item_b = vec![
                 item(0xBB, 0, 70, 3),
                 item(0xAA, 1, 60, 0),
                 item(0xAA, 0, 50, 10),
             ];
 
-            let h1 = utxo_set_hash_v1(&Network::Mainnet, 100, best_block_hash, a);
-            let h2 = utxo_set_hash_v1(&Network::Mainnet, 100, best_block_hash, b);
+            let hash_1 = utxo_set_hash_v1(
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
+                100,
+                best_block_hash,
+                item_a,
+            )
+            .unwrap();
+            let hash_2 = utxo_set_hash_v1(
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
+                100,
+                best_block_hash,
+                item_b,
+            )
+            .unwrap();
 
-            assert_eq!(h1, h2);
+            assert_eq!(hash_1, hash_2);
         }
 
         #[test]
@@ -416,20 +442,41 @@ mod tests {
             let best_block_hash_1 = [0x22; 32];
             let best_block_hash_2 = [0x23; 32];
 
-            let base = utxo_set_hash_v1(&Network::Mainnet, 1, best_block_hash_1, items.clone());
+            let different_genesis_hash = [0x00; 32];
+
+            let base = utxo_set_hash_v1(
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
+                1,
+                best_block_hash_1,
+                items.clone(),
+            )
+            .unwrap();
             assert_ne!(
                 base,
-                utxo_set_hash_v1(&Network::Testnet, 1, best_block_hash_1, items.clone()),
+                utxo_set_hash_v1(different_genesis_hash, 1, best_block_hash_1, items.clone())
+                    .unwrap(),
                 "network must affect hash"
             );
             assert_ne!(
                 base,
-                utxo_set_hash_v1(&Network::Mainnet, 2, best_block_hash_1, items.clone()),
+                utxo_set_hash_v1(
+                    hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
+                    2,
+                    best_block_hash_1,
+                    items.clone()
+                )
+                .unwrap(),
                 "height must affect hash"
             );
             assert_ne!(
                 base,
-                utxo_set_hash_v1(&Network::Mainnet, 1, best_block_hash_2, items.clone()),
+                utxo_set_hash_v1(
+                    hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
+                    1,
+                    best_block_hash_2,
+                    items.clone()
+                )
+                .unwrap(),
                 "best_block must affect hash"
             );
         }
@@ -437,39 +484,44 @@ mod tests {
         #[test]
         fn utxo_set_hash_changes_when_entry_changes() {
             let best_block_hash = [0x99; 32];
+            let custom_genesis_hash = [0x00; 32];
 
             let base = utxo_set_hash_v1(
-                &Network::Regtest(ActivationHeights::default()),
+                custom_genesis_hash,
                 123,
                 best_block_hash,
                 [item(0x10, 0, 1_000, 5)],
-            );
+            )
+            .unwrap();
 
             // Change value
             let h_val = utxo_set_hash_v1(
-                &Network::Regtest(ActivationHeights::default()),
+                custom_genesis_hash,
                 123,
                 best_block_hash,
                 [item(0x10, 0, 2_000, 5)],
-            );
+            )
+            .unwrap();
             assert_ne!(base, h_val);
 
             // Change index
             let h_idx = utxo_set_hash_v1(
-                &Network::Regtest(ActivationHeights::default()),
+                custom_genesis_hash,
                 123,
                 best_block_hash,
                 [item(0x10, 1, 1_000, 5)],
-            );
+            )
+            .unwrap();
             assert_ne!(base, h_idx);
 
             // Change script content/length
             let h_scr = utxo_set_hash_v1(
-                &Network::Regtest(ActivationHeights::default()),
+                custom_genesis_hash,
                 123,
                 best_block_hash,
                 [item(0x10, 0, 1_000, 6)],
-            );
+            )
+            .unwrap();
             assert_ne!(base, h_scr);
         }
 
@@ -479,7 +531,7 @@ mod tests {
             let best_block_hash = [0x55; 32];
 
             let h_252 = utxo_set_hash_v1(
-                &Network::Mainnet,
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
                 7,
                 best_block_hash,
                 [SnapshotItem {
@@ -488,9 +540,10 @@ mod tests {
                     value_zat: 42,
                     script: vec![0xAA; 252],
                 }],
-            );
+            )
+            .unwrap();
             let h_253 = utxo_set_hash_v1(
-                &Network::Mainnet,
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
                 7,
                 best_block_hash,
                 [SnapshotItem {
@@ -499,35 +552,57 @@ mod tests {
                     value_zat: 42,
                     script: vec![0xAA; 253],
                 }],
-            );
+            )
+            .unwrap();
 
             assert_ne!(h_252, h_253, "length prefix must change at boundary");
+        }
+
+        #[test]
+        fn duplicate_outpoint_returns_error() {
+            let mut txid = [0u8; 32];
+            txid[0] = 1;
+
+            let a = SnapshotItem {
+                txid_raw: txid,
+                index: 0,
+                value_zat: 1,
+                script: vec![],
+            };
+            let b = SnapshotItem {
+                txid_raw: txid,
+                index: 0,
+                value_zat: 2,
+                script: vec![0x51],
+            }; // same (txid,vout)
+
+            let genesis = [9u8; 32];
+            let best = [8u8; 32];
+
+            let res = utxo_set_hash_v1(genesis, 123, best, vec![a, b]);
+
+            assert!(matches!(res, Err(UtxoSetError::DuplicateOutpoint)));
         }
     }
 
     mod byte_order_tests {
-        use zaino_common::Network;
 
         use crate::jsonrpsee::response::{
-            common::{amount::ZecAmount, block::BlockHash, BlockHeight},
+            common::{amount::ZecAmount, BlockHeight},
             txout_set_info::{
+                tests::GENESIS_BLOCK_HASH,
                 utxo_set_hash::{utxo_set_hash_v1, SnapshotItem, DOMAIN_TAG},
                 TxOutSetInfo,
             },
         };
 
-        const MAINNET_NETWORK_STR: &str = "mainnet";
-
-        const TESTNET_NETWORK: Network = Network::Testnet;
-        const MAINNET_NETWORK: Network = Network::Mainnet;
-
         /// Return a sequence of bytes with a known display order.
         fn seq_bytes() -> [u8; 32] {
-            let mut b = [0u8; 32];
-            for (i, x) in b.iter_mut().enumerate() {
+            let mut bytes = [0u8; 32];
+            for (i, x) in bytes.iter_mut().enumerate() {
                 *x = i as u8;
             }
-            b
+            bytes
         }
 
         #[test]
@@ -535,21 +610,24 @@ mod tests {
             let height = 123u32;
             let display_bytes = seq_bytes();
 
+            let genesis_block_hash_bytes: [u8; 32] =
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap();
+
             let h_func = utxo_set_hash_v1(
-                &MAINNET_NETWORK,
+                genesis_block_hash_bytes,
                 height,
                 display_bytes,
                 std::iter::empty::<SnapshotItem>(),
-            );
+            )
+            .unwrap();
 
-            let mut h = blake3::Hasher::new();
-            h.update(DOMAIN_TAG);
-            h.update(MAINNET_NETWORK_STR.as_bytes());
-            h.update(&[0]);
-            h.update(&height.to_le_bytes());
-            h.update(&display_bytes);
-            h.update(&0u64.to_le_bytes());
-            let h_manual = h.finalize();
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(DOMAIN_TAG);
+            hasher.update(&genesis_block_hash_bytes);
+            hasher.update(&height.to_le_bytes());
+            hasher.update(&display_bytes);
+            hasher.update(&0u64.to_le_bytes());
+            let h_manual = hasher.finalize();
 
             assert_eq!(
                 h_func, h_manual,
@@ -563,20 +641,22 @@ mod tests {
             let display_bytes = seq_bytes();
 
             let h_ok = utxo_set_hash_v1(
-                &MAINNET_NETWORK,
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
                 height,
                 display_bytes,
                 std::iter::empty::<SnapshotItem>(),
-            );
+            )
+            .unwrap();
 
             let mut flipped = display_bytes;
             flipped.reverse();
             let h_bad = utxo_set_hash_v1(
-                &MAINNET_NETWORK,
+                hex::decode(GENESIS_BLOCK_HASH).unwrap().try_into().unwrap(),
                 height,
                 flipped,
                 std::iter::empty::<SnapshotItem>(),
-            );
+            )
+            .unwrap();
 
             assert_ne!(
                 h_ok, h_bad,
@@ -592,14 +672,16 @@ mod tests {
 
             // Compute digest using display-order bytes
             let digest = utxo_set_hash_v1(
-                &TESTNET_NETWORK,
+                [0x00; 32],
                 height,
                 best_block,
                 std::iter::empty::<SnapshotItem>(),
-            );
+            )
+            .unwrap();
 
             // SAFEST construction: go through the hex string, so display is as stored
-            let best_block: BlockHash = best_block_hex.parse().expect("valid 32-byte hex");
+            let best_block: zebra_chain::block::Hash =
+                best_block_hex.parse().expect("valid 32-byte hex");
 
             let info = TxOutSetInfo {
                 height: BlockHeight(height),
@@ -676,16 +758,16 @@ mod tests {
             let with_len = |len| utxo_set_serialized_size_v1([mk_item(len)]);
 
             // 1 byte varint
-            let a = with_len(252);
+            let varint_a = with_len(252);
             // 3 bytes varint
-            let b = with_len(253);
-            assert_eq!(b - a, 3);
+            let varint_b = with_len(253);
+            assert_eq!(varint_b - varint_a, 3);
 
             // 3 bytes varint
-            let c = with_len(65535);
+            let varint_c = with_len(65535);
             // 5 bytes varint
-            let d = with_len(65536);
-            assert_eq!(d - c, 3);
+            let varint_d = with_len(65536);
+            assert_eq!(varint_d - varint_c, 3);
         }
 
         #[test]
@@ -697,16 +779,17 @@ mod tests {
                 script: vec![1, 2, 3, 4], // CompactSize = 1
             };
 
-            let s1 = utxo_set_serialized_size_v1([base.clone()]);
-            let s2 = utxo_set_serialized_size_v1([base.clone(), base.clone()]);
+            let size_1 = utxo_set_serialized_size_v1([base.clone()]);
+            let size_2 = utxo_set_serialized_size_v1([base.clone(), base.clone()]);
             assert_eq!(
-                s2 - s1,
-                s1 - (DOMAIN_TAG.len() as u64
-                    + NETWORK_TAG_LEN
-                    + NETWORK_TAG_NUL.len() as u64
-                    + 4
-                    + 32
-                    + 8)
+                size_2 - size_1,
+                size_1
+                    - (DOMAIN_TAG.len() as u64
+                        + NETWORK_TAG_LEN
+                        + NETWORK_TAG_NUL.len() as u64
+                        + 4
+                        + 32
+                        + 8)
             );
         }
     }
