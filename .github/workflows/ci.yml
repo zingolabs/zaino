@@ -1,4 +1,4 @@
-name: CI checks
+name: CI - PR
 
 on:
   workflow_dispatch:
@@ -296,3 +296,8 @@ jobs:
       - name: Check trailing whitespace
         run: ./utils/trailing-whitespace.sh reject
         working-directory: .
+        
+  cargo-hack-check:
+    uses: zingolabs/infrastructure/.github/workflows/cargo-hack.yaml@867b6501f3e6145ddce9c84b64fdda961e31e24b
+    with:
+      hack-subcommand: check
