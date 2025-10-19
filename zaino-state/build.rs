@@ -38,11 +38,11 @@ fn main() -> io::Result<()> {
 
     // Set the build user
     let build_user = whoami::username();
-    println!("cargo:rustc-env=BUILD_USER={}", build_user);
+    println!("cargo:rustc-env=BUILD_USER={build_user}");
 
     // Set the version from Cargo.toml
     let version = env::var("CARGO_PKG_VERSION").expect("Failed to get version from Cargo.toml");
-    println!("cargo:rustc-env=VERSION={}", version);
+    println!("cargo:rustc-env=VERSION={version}");
     let lockfile = Lockfile::load("../Cargo.lock").expect("build script cannot load lockfile");
     let maybe_zebra_rev = lockfile.packages.iter().find_map(|package| {
         if package.name == cargo_lock::Name::from_str("zebra-chain").unwrap() {
@@ -61,10 +61,7 @@ fn main() -> io::Result<()> {
     let dest_path = Path::new(&out_dir).join("zebraversion.rs");
     fs::write(
         &dest_path,
-        format!(
-            "const ZEBRA_VERSION: Option<&'static str> = {:?};",
-            maybe_zebra_rev
-        ),
+        format!("const ZEBRA_VERSION: Option<&'static str> = {maybe_zebra_rev:?};"),
     )
     .unwrap();
 

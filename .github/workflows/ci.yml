@@ -1,11 +1,12 @@
-name: CI checks
+name: CI - PR
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - '**'
+      - "**"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
@@ -24,13 +25,13 @@ jobs:
       image-tag: ${{ steps.taggen.outputs.tag }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Compute version-based image tag
         id: taggen
         run: |
           source .env.testing-artifacts
-          export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION
+          export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DOCKER_DIR_HASH
           TAG=$(./utils/get-ci-image-tag.sh)
           echo "TAG= $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -45,8 +46,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - run: rustup toolchain install stable --profile minimal
 
       - name: Restore cargo dependencies
         id: restore-cargo
@@ -97,8 +96,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
         with:
@@ -127,16 +124,24 @@ jobs:
       fail-fast: false
       matrix:
         partition:
+          - "integration-tests::chain_cache"
           - "integration-tests::fetch_service"
-          - "integration-tests::state_service"
+          - "integration-tests::json_server"
           - "integration-tests::local_cache"
+          - "integration-tests::state_service"
+          - "integration-tests::test_vectors"
           - "integration-tests::wallet_to_validator"
+          - "zaino-fetch"
+          - "zaino-proto"
+          - "zaino-serve"
+          - "zaino-state"
           - "zaino-testutils"
+          - "zainod"
+          - "zainod::config"
+          - "zainod::bin/zainod"
 
     steps:
       - uses: actions/checkout@v4
-
-      - run: rustup toolchain install stable --profile minimal
 
       - name: Restore cargo dependencies
         uses: tespkg/actions-cache/restore@v1
@@ -151,10 +156,10 @@ jobs:
             ~/.cargo
             target/debug/deps
 
-      - name: Copy bins into test_binaries
+      - name: Setup test binaries
         run: |
-          mkdir -p ./test_binaries/bins
-          cp /usr/local/bin/* ./test_binaries/bins/
+          # Run the entrypoint script with the actual working directory
+          /usr/local/bin/entrypoint.sh "$(pwd)"
 
       - name: Restore nextest archive from S3
         uses: tespkg/actions-cache/restore@v1
@@ -167,15 +172,16 @@ jobs:
           path: nextest-archive.tar.zst
 
       - name: Run Tests (Nextest)
+        env:
+          TEST_BINARIES_DIR: ${{ github.workspace }}/test_binaries/bins
         run: |
-          cargo nextest run --verbose --profile ci --retries 2 --archive-file nextest-archive.tar.zst \
+          cargo nextest run --verbose --profile ci --retries 2 --no-tests warn --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}
 
       - name: Test Summary
         uses: test-summary/action@v2
         with:
           paths: "target/nextest/ci/junit.xml"
-        if: always()
 
   fmt:
     name: Rustfmt
@@ -185,10 +191,6 @@ jobs:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -215,9 +217,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
         with:
-          components: clippy
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
+
+      # This is key to decide on the clippy job to run.
+      # The one from actions-rs prints nice annotations accross the pr, when browsing the changed files, right where the actual warning/error was found.
+      # It requires access to the GITHUB_TOKEN tho, a secret github automatically injects into every workflow run, but only for internally owned branches, not for forks.
+      # If that's the case, then we just run clippy with console output and that's it. One get's no annotations and has to check the actual job logs to see what went wrong.
+
+      - name: Run clippy with console output (external contributors)
+        if: github.secret_source != 'Actions'
+        run: cargo clippy --all-targets -- --deny warnings
+
+      - name: Output clippy to Github
+        if: github.secret_source == 'Actions'
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --all-targets -- --deny warnings
+
+  doc:
+    name: Cargo Doc
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -232,16 +268,8 @@ jobs:
             ~/.cargo
             target
 
-      - name: Run clippy with console output
-        run: cargo clippy --all-targets
-        continue-on-error: true
-
-      - name: Output clippy to Github
-        uses: actions-rs/clippy-check@v1
-        continue-on-error: true
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-targets
+      - name: Check documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
   whitespace:
     name: Whitespace check
@@ -251,8 +279,6 @@ jobs:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -270,3 +296,8 @@ jobs:
       - name: Check trailing whitespace
         run: ./utils/trailing-whitespace.sh reject
         working-directory: .
+        
+  cargo-hack-check:
+    uses: zingolabs/infrastructure/.github/workflows/cargo-hack.yaml@867b6501f3e6145ddce9c84b64fdda961e31e24b
+    with:
+      hack-subcommand: check

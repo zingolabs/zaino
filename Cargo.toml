@@ -1,6 +1,7 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "zaino-common",
     "integration-tests",
     "zaino-testutils",
     "zainod",
@@ -8,6 +9,7 @@ members = [
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
+    "zaino-testvectors",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -23,25 +25,17 @@ version = "0.1.2"
 
 
 [workspace.dependencies]
-# Zingolabs
-# Should be updated to crates.io releases when available.
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2", features = [
-    "test-elevation",
-] }
-testvectors = { git = "https://github.com/zingolabs/zingolib.git", tag = "2.0.0-beta2" }
-zingo-infra-testutils = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cca5d0705111e1e7064a691724c8501560c84782" }
-zingo-infra-services = { git = "https://github.com/zingolabs/infrastructure.git", rev = "cca5d0705111e1e7064a691724c8501560c84782" }
-
 # Librustzcash
-zcash_client_backend = { version = "0.18.0", features = ["lightwalletd-tonic"] }
-zcash_protocol = "0.5.1"
-zcash_primitives = "0.22"
+zcash_address = "0.9"
+zcash_keys = "0.10"
+zcash_protocol = "0.6"
+zcash_primitives = "0.24"
+zcash_transparent = "0.4"
 
 # Zebra
-# Can be updated to 2.4.0 once lands. Should be updated to crates.io releases once available.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "3b5cbf845146ffe43be2d40b3ed5e2e6ffb7f12c" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "3b5cbf845146ffe43be2d40b3ed5e2e6ffb7f12c" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "3b5cbf845146ffe43be2d40b3ed5e2e6ffb7f12c" }
+zebra-chain = "2.0"
+zebra-state = "2.0"
+zebra-rpc = "2.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -52,7 +46,7 @@ clap = "4.0"
 
 # Tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = [
+tracing-subscriber = { version = "0.3.20", features = [
     "fmt",
     "env-filter",
     "time",
@@ -82,6 +76,7 @@ indexmap = "2.2.6"
 crossbeam-channel = "0.5"
 dashmap = "6.1"
 lmdb = "0.8"
+lmdb-sys = "0.8"
 
 # Async
 async-stream = "0.3"
@@ -96,14 +91,18 @@ ctrlc = "3.4"
 chrono = "0.4"
 which = "4"
 whoami = "1.5"
+core2 = "0.4"
 
 # Formats
 base64 = "0.22"
 byteorder = "1.5"
 sha2 = "0.10"
+blake2 = "0.10"
 hex = "0.4"
 toml = "0.5"
 primitive-types = "0.13"
+bs58 = "0.5"
+bitflags = "2.9"
 
 # Test
 portpicker = "0.1"
@@ -112,8 +111,22 @@ zaino-fetch = { path = "zaino-fetch" }
 zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
+zaino-common.path = "zaino-common"
 zaino-testutils = { path = "zaino-testutils" }
+zaino-testvectors = { path = "zaino-testvectors" }
 zainod = { path = "zainod" }
+figment = "0.10"
+nonempty = "0.11.0"
+proptest = "~1.2"
+zip32 = "0.2.1"
+
+# Patch for vulnerable dependency
+slab = "0.4.11"
+anyhow = "1.0"
+arc-swap = "1.7.1"
+cargo-lock = "10.1.0"
+derive_more = "2.0.1"
+lazy_static = "1.5.0"
 
 [profile.test]
 opt-level = 3

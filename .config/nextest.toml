@@ -10,7 +10,6 @@ fail-fast = false
 [profile.ci]
 default-filter = """
     not test(testnet)
-    & not test(regtest)
     & not test(client_rpcs)
 """
 

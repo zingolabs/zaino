@@ -1,16 +1,16 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
 use crate::{
+    chain_index::{
+        mempool::{Mempool, MempoolSubscriber},
+        source::ValidatorConnector,
+    },
     config::StateServiceConfig,
     error::{BlockCacheError, StateServiceError},
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    local_cache::{
-        compact_block_to_nullifiers,
-        mempool::{Mempool, MempoolSubscriber},
-        BlockCache, BlockCacheSubscriber,
-    },
+    local_cache::{compact_block_to_nullifiers, BlockCache, BlockCacheSubscriber},
     status::{AtomicStatus, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
@@ -24,7 +24,13 @@ use nonempty::NonEmpty;
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
-    jsonrpsee::connector::{JsonRpSeeConnector, RpcError},
+    jsonrpsee::{
+        connector::{JsonRpSeeConnector, RpcError},
+        response::{
+            block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetMempoolInfoResponse,
+            GetNetworkSolPsResponse, GetSubtreesResponse,
+        },
+    },
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -35,29 +41,32 @@ use zaino_proto::proto::{
     },
 };
 
+use zcash_protocol::consensus::NetworkType;
 use zebra_chain::{
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
-    parameters::{ConsensusBranchId, Network, NetworkUpgrade},
+    parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
     serialization::ZcashSerialize,
     subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
+    client::{
+        GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData,
+        SubtreeRpcData, TransactionObject, ValidateAddressResponse,
+    },
     methods::{
-        chain_tip_difficulty,
-        hex_data::HexData,
-        trees::{GetSubtrees, GetTreestate, SubtreeRpcData},
-        types::transaction::TransactionObject,
-        AddressBalance, AddressStrings, ConsensusBranchIdHex, GetAddressTxIdsRequest,
-        GetAddressUtxos, GetBlock, GetBlockChainInfo, GetBlockHash, GetBlockHeader,
-        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetInfo, GetRawTransaction,
-        NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
+        chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
+        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader,
+        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
+        GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
+        TipConsensusBranch,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
 };
 use zebra_state::{
-    HashOrHeight, OutputLocation, ReadRequest, ReadResponse, ReadStateService, TransactionLocation,
+    FromDisk, HashOrHeight, OutputLocation, ReadRequest, ReadResponse, ReadStateService,
+    TransactionLocation,
 };
 
 use chrono::{DateTime, Utc};
@@ -91,7 +100,7 @@ macro_rules! expected_read_response {
 ///       ServiceSubscribers are used to create separate chain fetch processes
 /// while allowing central state processes to be managed in a single place.
 ///       If we want the ability to clone Service all JoinHandle's should be
-/// converted to Arc<JoinHandle>.
+/// converted to Arc\<JoinHandle\>.
 #[derive(Debug)]
 pub struct StateService {
     /// `ReadeStateService` from Zebra-State.
@@ -103,7 +112,7 @@ pub struct StateService {
     /// Local compact block cache.
     block_cache: BlockCache,
     /// Internal mempool.
-    mempool: Mempool,
+    mempool: Mempool<ValidatorConnector>,
     /// Service metadata.
     data: ServiceMetadata,
     /// StateService config data.
@@ -120,20 +129,26 @@ impl StateService {
         let mut read_state_service = self.read_state_service.clone();
         poll_fn(|cx| match read_state_service.poll_ready(cx) {
             std::task::Poll::Ready(Ok(())) => {
-                self.status.store(StatusType::Ready.into());
+                self.status.store(StatusType::Ready);
                 std::task::Poll::Ready(StatusType::Ready)
             }
             std::task::Poll::Ready(Err(e)) => {
-                eprintln!("Service readiness error: {:?}", e);
-                self.status.store(StatusType::CriticalError.into());
+                eprintln!("Service readiness error: {e:?}");
+                self.status.store(StatusType::CriticalError);
                 std::task::Poll::Ready(StatusType::CriticalError)
             }
             std::task::Poll::Pending => {
-                self.status.store(StatusType::Busy.into());
+                self.status.store(StatusType::Busy);
                 std::task::Poll::Pending
             }
         })
         .await
+    }
+
+    #[cfg(feature = "bench")]
+    /// Helper for tests
+    pub fn read_state_service(&self) -> &ReadStateService {
+        &self.read_state_service
     }
 }
 
@@ -186,7 +201,7 @@ impl ZcashService for StateService {
         };
         let data = ServiceMetadata::new(
             get_build_info(),
-            config.network.clone(),
+            config.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -196,19 +211,23 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_config.clone(),
-                &config.network,
-                config.validator_rpc_address,
+                &config.network.to_zebra_network(),
+                config.validator_indexer_rpc_address,
             )
             .await??;
+
+        info!("chain syncer launched!");
 
         // Wait for ReadStateService to catch up to primary database:
         loop {
             let server_height = rpc_client.get_blockchain_info().await?.blocks;
+            info!("got blockchain info!");
 
             let syncer_response = read_state_service
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await?;
+            info!("got tip!");
             let (syncer_height, _) = expected_read_response!(syncer_response, Tip).ok_or(
                 RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
             )?;
@@ -232,7 +251,13 @@ impl ZcashService for StateService {
         )
         .await?;
 
-        let mempool = Mempool::spawn(&rpc_client, None).await?;
+        let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
+            read_state_service: read_state_service.clone(),
+            mempool_fetcher: rpc_client.clone(),
+            network: config.network,
+        });
+
+        let mempool = Mempool::spawn(mempool_source, None).await?;
 
         let state_service = Self {
             chain_tip_change,
@@ -243,15 +268,14 @@ impl ZcashService for StateService {
             mempool,
             data,
             config,
-            status: AtomicStatus::new(StatusType::Spawning.into()),
+            status: AtomicStatus::new(StatusType::Spawning),
         };
 
-        state_service.status.store(StatusType::Ready.into());
+        state_service.status.store(StatusType::Ready);
 
         Ok(state_service)
     }
 
-    /// returns a [`fetchservicesubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<StateServiceSubscriber> {
         IndexerSubscriber::new(StateServiceSubscriber {
             read_state_service: self.read_state_service.clone(),
@@ -269,7 +293,7 @@ impl ZcashService for StateService {
     /// We first check for `status = StatusType::Closing` as this signifies a shutdown order
     /// from an external process.
     async fn status(&self) -> StatusType {
-        let current_status = self.status.load().into();
+        let current_status = self.status.load();
         if current_status == StatusType::Closing {
             current_status
         } else {
@@ -316,7 +340,9 @@ pub struct StateServiceSubscriber {
 
 /// A subscriber to any chaintip updates
 #[derive(Clone)]
-pub struct ChainTipSubscriber(zebra_state::ChainTipChange);
+pub struct ChainTipSubscriber {
+    monitor: zebra_state::ChainTipChange,
+}
 
 impl ChainTipSubscriber {
     /// Waits until the tip hash has changed (relative to the last time this method
@@ -324,7 +350,7 @@ impl ChainTipSubscriber {
     pub async fn next_tip_hash(
         &mut self,
     ) -> Result<zebra_chain::block::Hash, tokio::sync::watch::error::RecvError> {
-        self.0
+        self.monitor
             .wait_for_tip_change()
             .await
             .map(|tip| tip.best_tip_hash())
@@ -338,7 +364,9 @@ impl ChainTipSubscriber {
 impl StateServiceSubscriber {
     /// Gets a Subscriber to any updates to the latest chain tip
     pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
-        ChainTipSubscriber(self.chain_tip_change.clone())
+        ChainTipSubscriber {
+            monitor: self.chain_tip_change.clone(),
+        }
     }
     /// Returns the requested block header by hash or height, as a [`GetBlockHeader`] JSON string.
     /// If the block is not in Zebra's state,
@@ -459,23 +487,23 @@ impl StateServiceSubscriber {
             let block_commitments =
                 header_to_block_commitments(&header, &network, height, final_sapling_root)?;
 
-            let block_header = GetBlockHeaderObject {
-                hash: GetBlockHash(hash),
+            let block_header = GetBlockHeaderObject::new(
+                hash,
                 confirmations,
                 height,
-                version: header.version,
-                merkle_root: header.merkle_root,
+                header.version,
+                header.merkle_root,
+                block_commitments,
                 final_sapling_root,
                 sapling_tree_size,
-                time: header.time.timestamp(),
+                header.time.timestamp(),
                 nonce,
-                solution: header.solution,
-                bits: header.difficulty_threshold,
+                header.solution,
+                header.difficulty_threshold,
                 difficulty,
-                previous_block_hash: GetBlockHash(header.previous_block_hash),
-                next_block_hash: next_block_hash.map(GetBlockHash),
-                block_commitments,
-            };
+                header.previous_block_hash,
+                next_block_hash,
+            );
 
             GetBlockHeader::Object(Box::new(block_header))
         };
@@ -532,8 +560,8 @@ impl StateServiceSubscriber {
         };
         let chain_height = self.block_cache.get_chain_height().await?.0;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -553,10 +581,9 @@ impl StateServiceSubscriber {
                             Err(e) => {
                                 if end >= chain_height {
                                     Err(tonic::Status::out_of_range(format!(
-                                        "Error: Height out of range [{}]. Height \
+                                        "Error: Height out of range [{end}]. Height \
                                             requested is greater than the best \
-                                            chain tip [{}].",
-                                        end, chain_height,
+                                            chain tip [{chain_height}].",
                                     )))
                                 } else {
                                     Err(tonic::Status::unknown(e.to_string()))
@@ -591,9 +618,8 @@ impl StateServiceSubscriber {
                                     let height = end - (i - start);
                                     if height >= chain_height {
                                         Err(tonic::Status::out_of_range(format!(
-                                            "Error: Height out of range [{}]. Height requested \
-                                            is greater than the best chain tip [{}].",
-                                            height, chain_height,
+                                            "Error: Height out of range [{height}]. Height requested \
+                                            is greater than the best chain tip [{chain_height}].",
                                         )))
                                     } else {
                                         Err(tonic::Status::unknown(e.to_string()))
@@ -638,16 +664,14 @@ impl StateServiceSubscriber {
         let chain_height = self.block_cache.get_chain_height().await?.0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
-                "Error: Height out of range [{}]. Height requested \
-                                is greater than the best chain tip [{}].",
-                height, chain_height,
+                "Error: Height out of range [{height}]. Height requested \
+                                is greater than the best chain tip [{chain_height}].",
             )))
         } else {
             // TODO: Hide server error from clients before release.
             // Currently useful for dev purposes.
             StateServiceError::TonicStatusError(tonic::Status::unknown(format!(
-                "Error: Failed to retrieve block from node. Server Error: {}",
-                e,
+                "Error: Failed to retrieve block from node. Server Error: {e}",
             )))
         })
     }
@@ -679,14 +703,10 @@ impl StateServiceSubscriber {
             1 | 2 => {
                 let state_2 = state.clone();
                 let state_3 = state.clone();
+                let state_4 = state.clone();
 
-                let txids_or_fullblock_request = match verbosity {
-                    1 => ReadRequest::TransactionIdsForBlock(hash_or_height),
-                    2 => ReadRequest::Block(hash_or_height),
-                    _ => unreachable!("verbosity is known to be 1 or 2"),
-                };
-                let txids_future = {
-                    let req = txids_or_fullblock_request;
+                let blockandsize_future = {
+                    let req = ReadRequest::BlockAndSize(hash_or_height);
                     async move { state_1.ready().and_then(|service| service.call(req)).await }
                 };
                 let orchard_future = {
@@ -699,15 +719,27 @@ impl StateServiceSubscriber {
                             .await
                     }
                 };
-                let (txids_or_fullblock, orchard_tree_response, header) = futures::join!(
-                    txids_future,
+
+                let block_info_future = {
+                    let req = ReadRequest::BlockInfo(hash_or_height);
+                    async move {
+                        state_4
+                            .clone()
+                            .ready()
+                            .and_then(|service| service.call(req))
+                            .await
+                    }
+                };
+                let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
+                    blockandsize_future,
                     orchard_future,
                     StateServiceSubscriber::get_block_header(
                         &state_3,
                         network,
                         hash_or_height,
                         Some(true)
-                    )
+                    ),
+                    block_info_future
                 );
 
                 let header_obj = match header? {
@@ -716,57 +748,56 @@ impl StateServiceSubscriber {
                     ),
                     GetBlockHeader::Object(get_block_header_object) => get_block_header_object,
                 };
-                let GetBlockHeaderObject {
-                    hash,
-                    confirmations,
-                    height,
-                    version,
-                    merkle_root,
-                    final_sapling_root,
-                    sapling_tree_size,
-                    time,
-                    nonce,
-                    solution,
-                    bits,
-                    difficulty,
-                    previous_block_hash,
-                    next_block_hash,
-                    block_commitments,
-                } = *header_obj;
 
-                let transactions_response: Vec<GetBlockTransaction> = match txids_or_fullblock {
-                    Ok(ReadResponse::TransactionIdsForBlock(Some(txids))) => Ok(txids
-                        .iter()
-                        .copied()
-                        .map(GetBlockTransaction::Hash)
-                        .collect()),
-                    Ok(ReadResponse::Block(Some(block))) => Ok(block
-                        .transactions
-                        .iter()
-                        .map(|transaction| {
-                            GetBlockTransaction::Object(Box::new(
-                                TransactionObject::from_transaction(
-                                    transaction.clone(),
-                                    Some(height),
-                                    Some(confirmations as u32),
-                                    network,
-                                    DateTime::<Utc>::from_timestamp(time, 0),
-                                ),
-                            ))
-                        })
-                        .collect()),
-                    Ok(ReadResponse::TransactionIdsForBlock(None))
-                    | Ok(ReadResponse::Block(None)) => {
-                        Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                            LegacyCode::InvalidParameter,
-                            "block not found",
-                        )))
-                    }
-                    Ok(unexpected) => {
-                        unreachable!("Unexpected response from state service: {unexpected:?}")
-                    }
-                    Err(e) => Err(e.into()),
-                }?;
+                let (transactions_response, size, block_info): (Vec<GetBlockTransaction>, _, _) =
+                    match (fullblock, block_info) {
+                        (
+                            Ok(ReadResponse::BlockAndSize(Some((block, size)))),
+                            Ok(ReadResponse::BlockInfo(Some(block_info))),
+                        ) => Ok((
+                            block
+                                .transactions
+                                .iter()
+                                .map(|transaction| {
+                                    match verbosity {
+                                        1 => GetBlockTransaction::Hash(transaction.hash()),
+                                        2 => GetBlockTransaction::Object(Box::new(
+                                            TransactionObject::from_transaction(
+                                                transaction.clone(),
+                                                Some(header_obj.height()),
+                                                Some(header_obj.confirmations() as u32),
+                                                network,
+                                                DateTime::<Utc>::from_timestamp(
+                                                    header_obj.time(),
+                                                    0,
+                                                ),
+                                                Some(header_obj.hash()),
+                                                // block header has a non-optional height, which indicates
+                                                // a mainchain block. It is implied this method cannot return sidechain
+                                                // data, at least for now. This is subject to change: TODO
+                                                // return Some(true/false) after this assumption is resolved
+                                                None,
+                                                transaction.hash(),
+                                            ),
+                                        )),
+                                        _ => unreachable!("verbosity known to be 1 or 2"),
+                                    }
+                                })
+                                .collect(),
+                            size,
+                            block_info,
+                        )),
+                        (Ok(ReadResponse::Block(None)), Ok(ReadResponse::BlockInfo(None))) => {
+                            Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                                LegacyCode::InvalidParameter,
+                                "block not found",
+                            )))
+                        }
+                        (Ok(unexpected), Ok(unexpected2)) => {
+                            unreachable!("Unexpected responses from state service: {unexpected:?} {unexpected2:?}")
+                        }
+                        (Err(e), _) | (_, Err(e)) => Err(e.into()),
+                    }?;
 
                 let orchard_tree_response = orchard_tree_response?;
                 let orchard_tree = expected_read_response!(orchard_tree_response, OrchardTree)
@@ -776,40 +807,55 @@ impl StateServiceSubscriber {
                     )))?;
 
                 let final_orchard_root = match NetworkUpgrade::Nu5.activation_height(network) {
-                    Some(activation_height) if height >= activation_height => {
+                    Some(activation_height) if header_obj.height() >= activation_height => {
                         Some(orchard_tree.root().into())
                     }
                     _otherwise => None,
                 };
 
-                let trees = GetBlockTrees::new(sapling_tree_size, orchard_tree.count());
+                let trees =
+                    GetBlockTrees::new(header_obj.sapling_tree_size(), orchard_tree.count());
 
-                Ok(GetBlock::Object {
-                    hash,
-                    confirmations,
-                    height: Some(height),
-                    version: Some(version),
-                    merkle_root: Some(merkle_root),
-                    time: Some(time),
-                    nonce: Some(nonce),
-                    solution: Some(solution),
-                    bits: Some(bits),
-                    difficulty: Some(difficulty),
-                    tx: transactions_response,
-                    trees,
-                    size: None,
-                    final_sapling_root: Some(final_sapling_root),
-                    final_orchard_root,
-                    previous_block_hash: Some(previous_block_hash),
-                    next_block_hash,
-                    block_commitments: Some(block_commitments),
-                })
+                let (chain_supply, value_pools) = (
+                    GetBlockchainInfoBalance::chain_supply(*block_info.value_pools()),
+                    GetBlockchainInfoBalance::value_pools(*block_info.value_pools(), None),
+                );
+
+                Ok(GetBlock::Object(Box::new(
+                    zebra_rpc::client::BlockObject::new(
+                        header_obj.hash(),
+                        header_obj.confirmations(),
+                        Some(size as i64),
+                        Some(header_obj.height()),
+                        Some(header_obj.version()),
+                        Some(header_obj.merkle_root()),
+                        Some(header_obj.block_commitments()),
+                        Some(header_obj.final_sapling_root()),
+                        final_orchard_root,
+                        transactions_response,
+                        Some(header_obj.time()),
+                        Some(header_obj.nonce()),
+                        Some(header_obj.solution()),
+                        Some(header_obj.bits()),
+                        Some(header_obj.difficulty()),
+                        Some(chain_supply),
+                        Some(value_pools),
+                        trees,
+                        Some(header_obj.previous_block_hash()),
+                        header_obj.next_block_hash(),
+                    ),
+                )))
             }
             more_than_two => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
                 LegacyCode::InvalidParameter,
                 format!("invalid verbosity of {more_than_two}"),
             ))),
         }
+    }
+
+    /// Returns the network type running.
+    pub fn network(&self) -> zaino_common::Network {
+        self.config.network
     }
 }
 
@@ -824,12 +870,12 @@ impl ZcashIndexer for StateServiceSubscriber {
             .get_info()
             .await
             .map(GetInfo::from)
-            .map_err(Self::Error::from)
+            .map_err(|e| StateServiceError::Custom(e.to_string()))
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         chain_tip_difficulty(
-            self.config.network.clone(),
+            self.config.network.to_zebra_network(),
             self.read_state_service.clone(),
             false,
         )
@@ -842,7 +888,14 @@ impl ZcashIndexer for StateServiceSubscriber {
         })
     }
 
-    async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error> {
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+        self.rpc_client
+            .get_block_subsidy(height)
+            .await
+            .map_err(|e| StateServiceError::Custom(e.to_string()))
+    }
+
+    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
         let mut state = self.read_state_service.clone();
 
         let response = state
@@ -880,7 +933,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let now = Utc::now();
         let zebra_estimated_height =
-            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.network)
+            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.network.into())
                 .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
@@ -891,6 +944,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         let upgrades = IndexMap::from_iter(
             self.config
                 .network
+                .to_zebra_network()
                 .full_activation_list()
                 .into_iter()
                 .filter_map(|(activation_height, network_upgrade)| {
@@ -924,14 +978,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             (height + 1).expect("valid chain tips are a lot less than Height::MAX");
         let consensus = TipConsensusBranch::from_parts(
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network, height)
+                NetworkUpgrade::current(&self.config.network.into(), height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
             )
             .inner(),
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network, next_block_height)
+                NetworkUpgrade::current(&self.config.network.into(), next_block_height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
@@ -941,7 +995,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         // TODO: Remove unwrap()
         let difficulty = chain_tip_difficulty(
-            self.config.network.clone(),
+            self.config.network.to_zebra_network(),
             self.read_state_service.clone(),
             false,
         )
@@ -950,13 +1004,14 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
-        Ok(GetBlockChainInfo::new(
-            self.config.network.bip70_network_name(),
+        Ok(GetBlockchainInfoResponse::new(
+            self.config.network.to_zebra_network().bip70_network_name(),
             height,
             hash,
             estimated_height,
-            zebra_rpc::methods::types::get_blockchain_info::Balance::chain_supply(balance),
-            zebra_rpc::methods::types::get_blockchain_info::Balance::value_pools(balance),
+            zebra_rpc::client::GetBlockchainInfoBalance::chain_supply(balance),
+            // TODO: account for new delta_pools arg?
+            zebra_rpc::client::GetBlockchainInfoBalance::value_pools(balance, None),
             upgrades,
             consensus,
             height,
@@ -973,6 +1028,27 @@ impl ZcashIndexer for StateServiceSubscriber {
         ))
     }
 
+    /// Returns details on the active state of the TX memory pool.
+    /// In Zaino, this RPC call information is gathered from the local Zaino state instead of directly reflecting the full node's mempool. This state is populated from a gRPC stream, sourced from the full node.
+    /// There are no request parameters.
+    /// The Zcash source code is considered canonical:
+    /// [from the rpc definition](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1555>), [this function is called to produce the return value](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1541>>).
+    /// There are no required or optional parameters.
+    /// the `size` field is called by [this line of code](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1544>), and returns an int64.
+    /// `size` represents the number of transactions currently in the mempool.
+    /// the `bytes` field is called by [this line of code](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1545>), and returns an int64 from [this variable](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/txmempool.h#L349>).
+    /// `bytes` is the sum memory size in bytes of all transactions in the mempool: the sum of all transaction byte sizes.
+    /// the `usage` field is called by [this line of code](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1546>), and returns an int64 derived from the return of this function(<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/txmempool.h#L1199>), which includes a number of elements.
+    /// `usage` is the total memory usage for the mempool, in bytes.
+    /// the [optional `fullyNotified` field](<https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L1549>), is only utilized for zcashd regtests, is deprecated, and is not included.
+    async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error> {
+        Ok(self.mempool.get_mempool_info().await?)
+    }
+
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+        Ok(self.rpc_client.get_peer_info().await?)
+    }
+
     async fn z_get_address_balance(
         &self,
         address_strings: AddressStrings,
@@ -986,16 +1062,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             .ready()
             .and_then(|service| service.call(ReadRequest::AddressBalance(strings_set)))
             .await?;
-        let balance = match response {
-            ReadResponse::AddressBalance { balance, .. } => balance,
+        let (balance, received) = match response {
+            ReadResponse::AddressBalance { balance, received } => (balance, received),
             unexpected => {
                 unreachable!("Unexpected response from state service: {unexpected:?}")
             }
         };
 
-        Ok(AddressBalance {
-            balance: u64::from(balance),
-        })
+        Ok(AddressBalance::new(balance.into(), received))
     }
 
     async fn send_raw_transaction(
@@ -1008,7 +1082,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             .send_raw_transaction(raw_transaction_hex)
             .await
             .map(SentTransactionHash::from)
-            .map_err(StateServiceError::JsonRpcConnectorError)
+            .map_err(Into::into)
     }
 
     async fn z_get_block(
@@ -1033,11 +1107,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             .get_mempool()
             .await
             .into_iter()
-            .map(|(key, _)| key.0)
+            .map(|(key, _)| key.txid)
             .collect())
     }
 
-    async fn z_get_treestate(&self, hash_or_height: String) -> Result<GetTreestate, Self::Error> {
+    async fn z_get_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<GetTreestateResponse, Self::Error> {
         let mut state = self.read_state_service.clone();
 
         let hash_or_height = HashOrHeight::from_str(&hash_or_height)?;
@@ -1057,20 +1134,21 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        let sapling = match NetworkUpgrade::Sapling.activation_height(&self.config.network) {
-            Some(activation_height) if height >= activation_height => Some(
-                state
-                    .ready()
-                    .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
-                    .await?,
-            ),
-            _ => None,
-        }
-        .and_then(|sap_response| {
-            expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
-        });
+        let sapling =
+            match NetworkUpgrade::Sapling.activation_height(&self.config.network.into()) {
+                Some(activation_height) if height >= activation_height => Some(
+                    state
+                        .ready()
+                        .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
+                        .await?,
+                ),
+                _ => None,
+            }
+            .and_then(|sap_response| {
+                expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
+            });
 
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network) {
+        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network.into()) {
             Some(activation_height) if height >= activation_height => Some(
                 state
                     .ready()
@@ -1083,7 +1161,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
         });
 
-        Ok(GetTreestate::from_parts(
+        Ok(GetTreestateResponse::from_parts(
             hash,
             height,
             // If the timestamp is pre-unix epoch, something has gone terribly wrong
@@ -1091,6 +1169,28 @@ impl ZcashIndexer for StateServiceSubscriber {
             sapling,
             orchard,
         ))
+    }
+
+    // No request parameters.
+    /// Return the hex encoded hash of the best (tip) block, in the longest block chain.
+    /// The Zcash source code is considered canonical:
+    /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
+    /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
+    /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
+    async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error> {
+        // return should be valid hex encoded.
+        // Hash from zebra says:
+        // Return the hash bytes in big-endian byte-order suitable for printing out byte by byte.
+        //
+        // Zebra displays transaction and block hashes in big-endian byte-order,
+        // following the u256 convention set by Bitcoin and zcashd.
+        match self.read_state_service.best_tip() {
+            Some(x) => return Ok(GetBlockHash::new(x.1)),
+            None => {
+                // try RPC if state read fails:
+                Ok(self.rpc_client.get_best_blockhash().await?.into())
+            }
+        }
     }
 
     /// Returns the current block count in the best valid block chain.
@@ -1102,12 +1202,48 @@ impl ZcashIndexer for StateServiceSubscriber {
         Ok(self.block_cache.get_chain_height().await?)
     }
 
+    async fn validate_address(
+        &self,
+        raw_address: String,
+    ) -> Result<ValidateAddressResponse, Self::Error> {
+        use zcash_keys::address::Address;
+        use zcash_transparent::address::TransparentAddress;
+
+        let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
+            return Ok(ValidateAddressResponse::invalid());
+        };
+
+        let address = match address.convert_if_network::<Address>(
+            match self.config.network.to_zebra_network().kind() {
+                NetworkKind::Mainnet => NetworkType::Main,
+                NetworkKind::Testnet => NetworkType::Test,
+                NetworkKind::Regtest => NetworkType::Regtest,
+            },
+        ) {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::debug!(?err, "conversion error");
+                return Ok(ValidateAddressResponse::invalid());
+            }
+        };
+
+        // we want to match zcashd's behaviour
+        Ok(match address {
+            Address::Transparent(taddr) => ValidateAddressResponse::new(
+                true,
+                Some(raw_address),
+                Some(matches!(taddr, TransparentAddress::ScriptHash(_))),
+            ),
+            _ => ValidateAddressResponse::invalid(),
+        })
+    }
+
     async fn z_get_subtrees_by_index(
         &self,
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, Self::Error> {
+    ) -> Result<GetSubtreesByIndexResponse, Self::Error> {
         let mut state = self.read_state_service.clone();
 
         match pool.as_str() {
@@ -1120,17 +1256,21 @@ impl ZcashIndexer for StateServiceSubscriber {
                 let sapling_subtrees = expected_read_response!(response, SaplingSubtrees);
                 let subtrees = sapling_subtrees
                     .values()
-                    .map(|subtree| SubtreeRpcData {
-                        root: subtree.root.encode_hex(),
-                        end_height: subtree.end_height,
+                    .map(|subtree| {
+                        SubtreeRpcData {
+                            root: subtree.root.encode_hex(),
+                            end_height: subtree.end_height,
+                        }
+                        .into()
                     })
                     .collect();
 
-                Ok(GetSubtrees {
+                Ok(GetSubtreesResponse {
                     pool,
                     start_index,
                     subtrees,
-                })
+                }
+                .into())
             }
             "orchard" => {
                 let request = zebra_state::ReadRequest::OrchardSubtrees { start_index, limit };
@@ -1141,17 +1281,21 @@ impl ZcashIndexer for StateServiceSubscriber {
                 let orchard_subtrees = expected_read_response!(response, OrchardSubtrees);
                 let subtrees = orchard_subtrees
                     .values()
-                    .map(|subtree| SubtreeRpcData {
-                        root: subtree.root.encode_hex(),
-                        end_height: subtree.end_height,
+                    .map(|subtree| {
+                        SubtreeRpcData {
+                            root: subtree.root.encode_hex(),
+                            end_height: subtree.end_height,
+                        }
+                        .into()
                     })
                     .collect();
 
-                Ok(GetSubtrees {
+                Ok(GetSubtreesResponse {
                     pool,
                     start_index,
                     subtrees,
-                })
+                }
+                .into())
             }
             otherwise => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
                 LegacyCode::Misc,
@@ -1181,21 +1325,47 @@ impl ZcashIndexer for StateServiceSubscriber {
         // First check if transaction is in mempool as this is quick.
         match self
             .mempool
-            .contains_txid(&MempoolKey(txid.to_string()))
+            .contains_txid(&MempoolKey {
+                txid: txid.to_string(),
+            })
             .await
         {
             // Fetch trasaction from mempool.
             true => {
                 match self
                     .mempool
-                    .get_transaction(&MempoolKey(txid.to_string()))
+                    .get_transaction(&MempoolKey {
+                        txid: txid.to_string(),
+                    })
                     .await
                 {
                     Some(tx) => {
-                        if let GetRawTransaction::Object(transaction_object) = &tx.0 {
-                            Ok(GetRawTransaction::Object(transaction_object.clone()))
-                        } else {
-                            unreachable!("unmatched response to a `Transaction` read request")
+                        let serialized = tx.as_ref().serialized_tx.as_ref().clone();
+
+                        match verbose {
+                            // Return an object view, matching the chain path semantics.
+                            Some(_verbosity) => {
+                                let parsed_tx: zebra_chain::transaction::Transaction =
+                            zebra_chain::serialization::ZcashDeserialize::zcash_deserialize(
+                                serialized.as_ref(),
+                            )
+                            .map_err(|_| not_found_error())?;
+
+                                Ok(GetRawTransaction::Object(Box::new(
+                                    TransactionObject::from_transaction(
+                                        parsed_tx.into(),
+                                        None,                        // best_chain_height
+                                        Some(0),                     // confirmations
+                                        &self.config.network.into(), // network
+                                        None,                        // block_time
+                                        None,                        // block_hash
+                                        Some(false),                 // in_best_chain
+                                        txid,                        // txid
+                                    ),
+                                )))
+                            }
+                            // Return raw bytes when not verbose.
+                            None => Ok(GetRawTransaction::Raw(serialized)),
                         }
                     }
                     None => Err(not_found_error()),
@@ -1211,15 +1381,30 @@ impl ZcashIndexer for StateServiceSubscriber {
                     .map_err(|_| not_found_error())?
                 {
                     zebra_state::ReadResponse::Transaction(Some(tx)) => Ok(match verbose {
-                        Some(_verbosity) => GetRawTransaction::Object(Box::new(
-                            TransactionObject::from_transaction(
-                                tx.tx.clone(),
-                                Some(tx.height),
-                                Some(tx.confirmations),
-                                &self.config.network,
-                                Some(tx.block_time),
-                            ),
-                        )),
+                        Some(_verbosity) => {
+                            // This should be None for sidechain transactions,
+                            // which currently aren't returned by ReadResponse::Transaction
+                            let best_chain_height = Some(tx.height);
+                            GetRawTransaction::Object(Box::new(
+                                TransactionObject::from_transaction(
+                                    tx.tx.clone(),
+                                    best_chain_height,
+                                    Some(tx.confirmations),
+                                    &self.config.network.into(),
+                                    Some(tx.block_time),
+                                    Some(zebra_chain::block::Hash::from_bytes(
+                                        self.block_cache
+                                            .get_compact_block(
+                                                HashOrHeight::Height(tx.height).to_string(),
+                                            )
+                                            .await?
+                                            .hash,
+                                    )),
+                                    Some(best_chain_height.is_some()),
+                                    tx.tx.hash(),
+                                ),
+                            ))
+                        }
                         None => GetRawTransaction::Raw(tx.tx.into()),
                     }),
                     zebra_state::ReadResponse::Transaction(None) => Err(not_found_error()),
@@ -1246,11 +1431,6 @@ impl ZcashIndexer for StateServiceSubscriber {
         )?;
 
         let mut error_string = None;
-        if start == 0 || end == 0 {
-            error_string = Some(format!(
-                "start {start:?} and end {end:?} must both be greater than zero"
-            ));
-        }
         if start > end {
             error_string = Some(format!(
                 "start {start:?} must be less than or equal to end {end:?}"
@@ -1270,8 +1450,8 @@ impl ZcashIndexer for StateServiceSubscriber {
         }
 
         let request = ReadRequest::TransactionIdsByAddresses {
-            addresses: AddressStrings::new_valid(addresses)
-                .and_then(|addrs| addrs.valid_addresses())
+            addresses: AddressStrings::new(addresses)
+                .valid_addresses()
                 .map_err(|e| RpcError::new_from_errorobject(e, "invalid adddress"))?,
 
             height_range: Height(start)..=Height(end),
@@ -1321,22 +1501,45 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         Ok(utxos
             .utxos()
-            .map(|utxo| {
-                assert!(utxo.2 > &last_output_location);
-                last_output_location = *utxo.2;
-                // What an odd argument order for from_parts
-                // at least they are all different types, so they can't be
-                // supplied in the wrong order
-                GetAddressUtxos::from_parts(
-                    utxo.0,
-                    *utxo.1,
-                    utxo.2.output_index(),
-                    utxo.3.lock_script.clone(),
-                    u64::from(utxo.3.value()),
-                    utxo.2.height(),
-                )
-            })
+            .map(
+                |(utxo_address, utxo_hash, utxo_output_location, utxo_transparent_output)| {
+                    assert!(utxo_output_location > &last_output_location);
+                    last_output_location = *utxo_output_location;
+                    GetAddressUtxos::new(
+                        utxo_address,
+                        *utxo_hash,
+                        utxo_output_location.output_index(),
+                        utxo_transparent_output.lock_script.clone(),
+                        u64::from(utxo_transparent_output.value()),
+                        utxo_output_location.height(),
+                    )
+                },
+            )
             .collect())
+    }
+
+    /// Returns the estimated network solutions per second based on the last n blocks.
+    ///
+    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// This RPC is implemented in the [mining.cpp](https://github.com/zcash/zcash/blob/d00fc6f4365048339c83f463874e4d6c240b63af/src/rpc/mining.cpp#L104)
+    /// file of the Zcash repository. The Zebra implementation can be found [here](https://github.com/ZcashFoundation/zebra/blob/19bca3f1159f9cb9344c9944f7e1cb8d6a82a07f/zebra-rpc/src/methods.rs#L2687).
+    ///
+    /// # Parameters
+    ///
+    /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
+    /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
+    async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+        self.rpc_client
+            .get_network_sol_ps(blocks, height)
+            .await
+            .map_err(|e| StateServiceError::Custom(e.to_string()))
     }
 
     // Helper function, to get the chain height in rpc implementations
@@ -1385,7 +1588,10 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await
         {
             Ok(block) => Ok(block),
-            Err(e) => self.error_get_block(e, height as u32).await,
+            Err(e) => {
+                self.error_get_block(BlockCacheError::Custom(e.to_string()), height as u32)
+                    .await
+            }
         }
     }
 
@@ -1408,7 +1614,10 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await
         {
             Ok(block) => Ok(block),
-            Err(e) => self.error_get_block(e, height).await,
+            Err(e) => {
+                self.error_get_block(BlockCacheError::Custom(e.to_string()), height)
+                    .await
+            }
         }
     }
 
@@ -1446,8 +1655,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     "unreachable, verbose transaction expected".to_string(),
                 )),
                 GetRawTransaction::Object(transaction_object) => Ok(RawTransaction {
-                    data: transaction_object.hex.as_ref().to_vec(),
-                    height: transaction_object.height.unwrap_or(0) as u64,
+                    data: transaction_object.hex().as_ref().to_vec(),
+                    height: transaction_object.height().unwrap_or(0) as u64,
                 }),
             })
     }
@@ -1459,7 +1668,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
         Ok(SendResponse {
             error_code: 0,
-            error_message: tx_output.inner().to_string(),
+            error_message: tx_output.hash().to_string(),
         })
     }
 
@@ -1470,8 +1679,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
     ) -> Result<RawTransactionStream, Self::Error> {
         let txids = self.get_taddress_txids_helper(request).await?;
         let chain_height = self.chain_height().await?;
-        let (transmitter, receiver) = mpsc::channel(self.config.service_channel_size as usize);
-        let service_timeout = self.config.service_timeout;
+        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.service.timeout;
         let service_clone = self.clone();
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1498,7 +1707,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 Err(_) => {
                     transmitter
                         .send(Err(tonic::Status::deadline_exceeded(
-                            "Error: get_mempool_stream gRPC request timed out",
+                            "Error: get_taddredd_txids_stream gRPC request timed out",
                         )))
                         .await
                         .ok();
@@ -1513,14 +1722,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
         &self,
         request: AddressList,
     ) -> Result<zaino_proto::proto::service::Balance, Self::Error> {
-        let taddrs = AddressStrings::new_valid(request.addresses).map_err(|err_obj| {
-            Self::Error::RpcError(RpcError::new_from_errorobject(
-                err_obj,
-                "Error in Validator",
-            ))
-        })?;
+        let taddrs = AddressStrings::new(request.addresses);
         let balance = self.z_get_address_balance(taddrs).await?;
-        let checked_balance: i64 = match i64::try_from(balance.balance) {
+        let checked_balance: i64 = match i64::try_from(balance.balance()) {
             Ok(balance) => balance,
             Err(_) => {
                 return Err(Self::Error::TonicStatusError(tonic::Status::unknown(
@@ -1540,9 +1744,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
         mut request: AddressStream,
     ) -> Result<zaino_proto::proto::service::Balance, Self::Error> {
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service_timeout;
+        let service_timeout = self.config.service.timeout;
         let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.service_channel_size as usize);
+            mpsc::channel::<String>(self.config.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1551,16 +1755,10 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     loop {
                         match channel_rx.recv().await {
                             Some(taddr) => {
-                                let taddrs =
-                                    AddressStrings::new_valid(vec![taddr]).map_err(|err_obj| {
-                                        StateServiceError::RpcError(RpcError::new_from_errorobject(
-                                            err_obj,
-                                            "Error in Validator",
-                                        ))
-                                    })?;
+                                let taddrs = AddressStrings::new(vec![taddr]);
                                 let balance =
                                     fetch_service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance += balance.balance;
+                                total_balance += balance.balance();
                             }
                             None => {
                                 return Ok(total_balance);
@@ -1585,7 +1783,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 while let Some(address_result) = request.next().await {
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                     let address = address_result.map_err(|e| {
-                        tonic::Status::unknown(format!("Failed to read from stream: {}", e))
+                        tonic::Status::unknown(format!("Failed to read from stream: {e}"))
                     })?;
                     if channel_tx.send(address.address).await.is_err() {
                         // TODO: Hide server error from clients before release. Currently useful for dev purposes.
@@ -1632,7 +1830,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             Ok(Err(e)) => Err(StateServiceError::TonicStatusError(e)),
             // TODO: Hide server error from clients before release. Currently useful for dev purposes.
             Err(e) => Err(StateServiceError::TonicStatusError(tonic::Status::unknown(
-                format!("Fetcher Task failed: {}", e),
+                format!("Fetcher Task failed: {e}"),
             ))),
         }
     }
@@ -1660,79 +1858,65 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .collect();
 
         let mempool = self.mempool.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for (txid, transaction) in mempool.get_filtered_mempool(exclude_txids).await {
-                        match transaction.0 {
-                            GetRawTransaction::Object(transaction_object) => {
-                                let txid_bytes = match hex::decode(txid.0) {
-                                    Ok(bytes) => bytes,
-                                    Err(e) => {
-                                        if channel_tx
-                                            .send(Err(tonic::Status::unknown(e.to_string())))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        } else {
-                                            continue;
-                                        }
+                    for (mempool_key, mempool_value) in
+                        mempool.get_filtered_mempool(exclude_txids).await
+                    {
+                        let txid_bytes = match hex::decode(mempool_key.txid) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                if channel_tx
+                                    .send(Err(tonic::Status::unknown(error.to_string())))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                } else {
+                                    continue;
+                                }
+                            }
+                        };
+                        match <FullTransaction as ParseFromSlice>::parse_from_slice(
+                            mempool_value.serialized_tx.as_ref().as_ref(),
+                            Some(vec![txid_bytes]),
+                            None,
+                        ) {
+                            Ok(transaction) => {
+                                // ParseFromSlice returns any data left after the conversion to a
+                                // FullTransaction, If the conversion has succeeded this should be empty.
+                                if transaction.0.is_empty() {
+                                    if channel_tx
+                                        .send(
+                                            transaction
+                                                .1
+                                                .to_compact(0)
+                                                .map_err(|e| tonic::Status::unknown(e.to_string())),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
                                     }
-                                };
-                                match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                                    transaction_object.hex.as_ref(),
-                                    Some(vec![txid_bytes]),
-                                    None,
-                                ) {
-                                    Ok(transaction) => {
-                                        // ParseFromSlice returns any data left after
-                                        // the conversion to a FullTransaction, If the
-                                        // conversion has succeeded this should be empty.
-                                        if transaction.0.is_empty() {
-                                            if channel_tx
-                                                .send(transaction.1.to_compact(0).map_err(|e| {
-                                                    tonic::Status::unknown(e.to_string())
-                                                }))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        } else {
-                                            // TODO: Hide server error from clients before
-                                            // release. Currently useful for dev purposes.
-                                            if channel_tx
-                                                .send(Err(tonic::Status::unknown("Error: ")))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // TODO: Hide server error from clients
-                                        // before release. Currently useful for dev purposes.
-                                        if channel_tx
-                                            .send(Err(tonic::Status::unknown(e.to_string())))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
+                                } else {
+                                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                                    if channel_tx
+                                        .send(Err(tonic::Status::unknown("Error: ")))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
                                     }
                                 }
                             }
-                            GetRawTransaction::Raw(_) => {
+                            Err(e) => {
+                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                                 if channel_tx
-                                    .send(Err(tonic::Status::internal(
-                                        "Error: Received raw transaction type, \
-                                        this should not be possible.",
-                                    )))
+                                    .send(Err(tonic::Status::unknown(e.to_string())))
                                     .await
                                     .is_err()
                                 {
@@ -1764,15 +1948,15 @@ impl LightWalletIndexer for StateServiceSubscriber {
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let mut mempool = self.mempool.clone();
-        let service_timeout = self.config.service_timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let mempool_height = self.block_cache.get_chain_height().await?.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
                     let (mut mempool_stream, _mempool_handle) = match mempool
-                        .get_mempool_stream()
+                        .get_mempool_stream(None)
                         .await
                     {
                         Ok(stream) => stream,
@@ -1787,37 +1971,26 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     };
                     while let Some(result) = mempool_stream.recv().await {
                         match result {
-                            Ok((_mempool_key, mempool_value)) => match mempool_value.0 {
-                                GetRawTransaction::Object(transaction_object) => {
-                                    if channel_tx
-                                        .send(Ok(RawTransaction {
-                                            data: transaction_object.hex.as_ref().to_vec(),
-                                            height: mempool_height as u64,
-                                        }))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
+                            Ok((_mempool_key, mempool_value)) => {
+                                if channel_tx
+                                    .send(Ok(RawTransaction {
+                                        data: mempool_value
+                                            .serialized_tx
+                                            .as_ref()
+                                            .as_ref()
+                                            .to_vec(),
+                                        height: mempool_height as u64,
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
                                 }
-                                GetRawTransaction::Raw(_) => {
-                                    if channel_tx
-                                        .send(Err(tonic::Status::internal(
-                                            "Error: Received raw transaction type, \
-                                                this should not be possible.",
-                                        )))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                            },
+                            }
                             Err(e) => {
                                 channel_tx
                                     .send(Err(tonic::Status::internal(format!(
-                                        "Error in mempool stream: {:?}",
-                                        e
+                                        "Error in mempool stream: {e:?}"
                                     ))))
                                     .await
                                     .ok();
@@ -1862,7 +2035,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.network.bip70_network_name(),
+            network: self.config.network.to_zebra_network().bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,
@@ -1883,8 +2056,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
-            self.config.service_timeout,
-            self.config.service_channel_size,
+            self.config.service.timeout,
+            self.config.service.channel_size,
         )
     }
 
@@ -1929,7 +2102,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .and_then(|service| service.call(ReadRequest::UtxosByAddresses(address_set)))
             .await?;
         let utxos = expected_read_response!(address_utxos_response, AddressUtxos);
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service_channel_size as usize);
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             for utxo in utxos
                 .utxos()
@@ -1988,7 +2161,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             version: self.data.build_info().version(),
             vendor: "ZingoLabs ZainoD".to_string(),
             taddr_support: true,
-            chain_name: blockchain_info.chain(),
+            chain_name: blockchain_info.chain().clone(),
             sapling_activation_height: sapling_activation_height.0 as u64,
             consensus_branch_id,
             block_height: blockchain_info.blocks().0 as u64,

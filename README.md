@@ -40,8 +40,8 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 
 
 ## Security Vulnerability Disclosure
-If you believe you have discovered a security issue, please contact us at:
-
+If you believe you have discovered a security issue, and it is time sensitive, please contact us online on Matrix. See our [CONTRIBUTING.md document](./CONTRIBUTING.md) for contact points.
+Otherwise you can send an email to:
 zingodisclosure@proton.me
 
 

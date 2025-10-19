@@ -180,7 +180,7 @@ impl<K: Eq + Hash + Clone, V: Clone> BroadcastSubscriber<K, V> {
     /// Waits on notifier update and returns StatusType.
     pub(crate) async fn wait_on_notifier(&mut self) -> Result<StatusType, watch::error::RecvError> {
         self.notifier.changed().await?;
-        let status = self.notifier.borrow().clone();
+        let status = *self.notifier.borrow();
         Ok(status)
     }
 

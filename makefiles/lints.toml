@@ -1,0 +1,34 @@
+[tasks.fmt]
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.clippy]
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.doc]
+env = { RUSTDOCFLAGS = "-D warnings" }
+command = "cargo"
+args = ["doc", "--no-deps", "--all-features", "--document-private-items"]
+
+[tasks.lint]
+description = "Run all lints. Use as a pre-commit hook."
+dependencies = ["fmt", "clippy", "doc"]
+
+[tasks.toggle-hooks]
+description = "Toggles the git config for core.hooksPath"
+script = [
+    '''
+    set -euo pipefail
+
+    current_path=$(git config --local --get core.hooksPath || echo "unset")
+    new_path=".githooks/"
+    if [ "$current_path" = "$new_path" ]; then
+        echo "Disabling custom hooks path"
+        git config --local --unset core.hooksPath
+    else
+        echo "Enabling custom hooks path"
+        git config --local core.hooksPath $new_path
+    fi
+    '''
+]

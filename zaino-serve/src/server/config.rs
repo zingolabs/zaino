@@ -32,10 +32,10 @@ impl GrpcConfig {
             })?;
             // Read the certificate and key files asynchronously.
             let cert = tokio::fs::read(cert_path).await.map_err(|e| {
-                ServerError::ServerConfigError(format!("Failed to read TLS certificate: {}", e))
+                ServerError::ServerConfigError(format!("Failed to read TLS certificate: {e}"))
             })?;
             let key = tokio::fs::read(key_path).await.map_err(|e| {
-                ServerError::ServerConfigError(format!("Failed to read TLS key: {}", e))
+                ServerError::ServerConfigError(format!("Failed to read TLS key: {e}"))
             })?;
             // Build the identity and TLS configuration.
             let identity = Identity::from_pem(cert, key);

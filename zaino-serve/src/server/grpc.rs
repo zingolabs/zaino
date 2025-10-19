@@ -31,7 +31,7 @@ impl TonicServer {
         service_subscriber: IndexerSubscriber<Indexer>,
         server_config: GrpcConfig,
     ) -> Result<Self, ServerError> {
-        let status = AtomicStatus::new(StatusType::Spawning.into());
+        let status = AtomicStatus::new(StatusType::Spawning);
 
         let svc = CompactTxStreamerServer::new(GrpcClient {
             service_subscriber: service_subscriber.clone(),
@@ -40,7 +40,7 @@ impl TonicServer {
         let mut server_builder = Server::builder();
         if let Some(tls_config) = server_config.get_valid_tls().await? {
             server_builder = server_builder.tls_config(tls_config).map_err(|e| {
-                ServerError::ServerConfigError(format!("TLS configuration error: {}", e))
+                ServerError::ServerConfigError(format!("TLS configuration error: {e}"))
             })?;
         }
 
@@ -49,7 +49,7 @@ impl TonicServer {
         let shutdown_signal = async move {
             loop {
                 shutdown_check_interval.tick().await;
-                if StatusType::from(shutdown_check_status.load()) == StatusType::Closing {
+                if shutdown_check_status.load() == StatusType::Closing {
                     break;
                 }
             }
@@ -60,9 +60,9 @@ impl TonicServer {
 
         let task_status = status.clone();
         let server_handle = tokio::task::spawn(async move {
-            task_status.store(StatusType::Ready.into());
+            task_status.store(StatusType::Ready);
             server_future.await?;
-            task_status.store(StatusType::Offline.into());
+            task_status.store(StatusType::Offline);
             Ok(())
         });
 
@@ -74,7 +74,7 @@ impl TonicServer {
 
     /// Sets the servers to close gracefully.
     pub async fn close(&mut self) {
-        self.status.store(StatusType::Closing as usize);
+        self.status.store(StatusType::Closing);
 
         if let Some(handle) = self.server_handle.take() {
             let _ = handle.await;
@@ -83,7 +83,7 @@ impl TonicServer {
 
     /// Returns the servers current status.
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 }
 

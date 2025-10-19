@@ -14,6 +14,7 @@ pub trait ParseFromSlice {
     /// tx_version is used for deserializing sapling spends and outputs.
     fn parse_from_slice(
         data: &[u8],
+        // TODO: Why is txid a vec of vecs?
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError>
@@ -34,7 +35,7 @@ pub(crate) fn skip_bytes(
     Ok(())
 }
 
-/// Reads the next n bytes from cursor into a vec<u8>, returns error message given if eof is reached.
+/// Reads the next n bytes from cursor into a `vec<u8>`, returns error message given if eof is reached.
 pub(crate) fn read_bytes(
     cursor: &mut Cursor<&[u8]>,
     n: usize,

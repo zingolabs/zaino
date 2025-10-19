@@ -1,3 +1,4 @@
+extend = "makefiles/lints.toml"
 env_files = [".env.testing-artifacts"]
 
 [config]
@@ -5,6 +6,7 @@ default_to_workspace = false
 
 [env]
 IMAGE_NAME = "zingodevops/zaino-ci"
+TEST_BINARIES_DIR = "/home/container_user/artifacts"
 
 [tasks.help]
 description = "List available commands and usage notes"
@@ -18,7 +20,7 @@ echo "Zaino CI Image Tasks"
 echo "---------------------"
 echo ""
 echo "Common usage:"
-echo "  cargo make test"
+echo "  makers container-test"
 echo ""
 echo "If you modify '.env.testing-artifacts', the test command will automatically:"
 echo "  - Recompute the image tag"
@@ -26,16 +28,33 @@ echo "  - Build a new local Docker image if needed"
 echo ""
 echo "Available commands:"
 echo ""
-echo "  test                Run integration tests using the local image"
-echo "  build-image         Build the Docker image with current artifact versions"
-echo "  push-image          Push the image (used in CI, can be used manually)"
-echo "  compute-image-tag   Compute the tag for the Docker image based on versions"
-echo "  ensure-image-exists Check if the required image exists locally, build if not"
-echo "  copy-bins           Extract binaries from the image to ./test_binaries/bins"
+echo "  container-test             Run integration tests using the local image"
+echo "  build-image                Build the Docker image with current artifact versions"
+echo "  push-image                 Push the image (used in CI, can be used manually)"
+echo "  compute-image-tag          Compute the tag for the Docker image based on versions"
+echo "  get-docker-hash            Get DOCKER_DIR_HASH value (hash for the image defining files)"
+echo "  ensure-image-exists        Check if the required image exists locally, build if not"
+echo "  check-matching-zebras      Verify Zebra versions match between Cargo.toml and .env"
+echo "  validate-test-targets      Check if nextest targets match CI workflow matrix"
+echo "  update-test-targets        Update CI workflow matrix to match nextest targets"
+echo "  validate-makefile-tasks    Run minimal validation of all maker tasks"
+echo "  hello-rust                 Test rust-script functionality"
+echo ""
+echo "Lint commands:"
+echo "  lint                       Run all lints (fmt, clippy, doc). Use as a pre-commit hook."
+echo "  fmt                        Check formatting (cargo fmt --all -- --check)"
+echo "  clippy                     Run Clippy with -D warnings (--all-targets --all-features)"
+echo "  doc                        Build docs (no deps, all features, document private items) with RUSTDOCFLAGS='-D warnings'"
+echo "  toggle-hooks               Toggle the git config for core.hooksPath to use .githooks/"
 echo ""
 echo "Environment:"
 echo "  Defined by: .env.testing-artifacts"
 echo "  Affects:    RUST_VERSION, ZCASH_VERSION, ZEBRA_VERSION"
+echo ""
+echo "Build Context:"
+echo "  test_environment/          Directory containing the Docker build environment"
+echo "    ├── Dockerfile          Dockerfile for CI/test container"
+echo "    └── entrypoint.sh       Entrypoint script that sets up test binaries"
 echo ""
 echo "Helpers:"
 echo "  - utils/get-ci-image-tag.sh: computes the version-based image tag"
@@ -47,9 +66,70 @@ echo ""
 script.pre = '''
 source "./utils/helpers.sh"
 TAG=$(./utils/get-ci-image-tag.sh)
+
+# Generic cleanup function for docker containers
+docker_cleanup() {
+    # Prevent running cleanup twice
+    if [ "${CLEANUP_RAN:-0}" -eq 1 ]; then
+        return
+    fi
+    CLEANUP_RAN=1
+
+    # Check if we're cleaning up due to interruption
+    if [ "$?" -eq 130 ] || [ "$?" -eq 143 ]; then
+        echo ""
+        warn "Task '${CARGO_MAKE_CURRENT_TASK_NAME}' interrupted! Cleaning up..."
+    fi
+
+    # Kill all child processes
+    local pids=$(jobs -pr)
+    if [ -n "$pids" ]; then
+        kill $pids 2>/dev/null || true
+    fi
+
+    # Stop any docker containers started by this script
+    if [ -n "${CONTAINER_ID:-}" ]; then
+        info "Stopping Docker container..."
+        docker stop "$CONTAINER_ID" >/dev/null 2>&1 || true
+    fi
+
+    # Also stop by name if CONTAINER_NAME is set
+    if [ -n "${CONTAINER_NAME:-}" ] && [ -z "${CONTAINER_ID:-}" ]; then
+        info "Stopping Docker container ${CONTAINER_NAME}..."
+        docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+}
+
+# Set up cleanup trap
+trap docker_cleanup EXIT INT TERM
 '''
 script.main = "err 'default main script. define a proper script to skip this one'"
 script.post = ""
+
+# -------------------------------------------------------------------
+
+[tasks.init-docker-volumes]
+description = "Initialize Docker volume directories with proper permissions"
+script = '''
+# Check if directories exist with wrong permissions
+if [ -d "container-target" ] && [ ! -w "container-target" ]; then
+    echo "WARNING: container-target exists but is not writable by current user."
+    echo "You may need to run: sudo chown -R $(id -u):$(id -g) container-target"
+    echo "Or remove it with: sudo rm -rf container-target"
+fi
+
+# Create directories if they don't exist
+# Docker will respect the ownership if directories already exist
+for dir in container-target docker_cargo/git docker_cargo/registry; do
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        echo "Created directory: $dir"
+    fi
+done
+
+# Set permissions to ensure they're accessible
+chmod -R 755 container-target docker_cargo 2>/dev/null || true
+'''
 
 # -------------------------------------------------------------------
 
@@ -62,15 +142,31 @@ export CARGO_MAKE_IMAGE_TAG=$TAG
 '''
 # -------------------------------------------------------------------
 
+[tasks.get-docker-hash]
+description = "Get the current DOCKER_DIR_HASH"
+script_runner = "bash"
+script = '''
+HASH=$(./utils/get-docker-hash.sh)
+echo "DOCKER_DIR_HASH=$HASH"
+'''
+
 [tasks.ensure-image-exists]
-description = "Check if image with current version tag exists locally"
+description = "Ensure the image exists locally or on Docker Hub before building"
+# This task checks if the required Docker image exists locally or on Docker Hub.
+# If not found, it triggers the build-image task to build from test_environment.
+dependencies = ["init-docker-volumes"]
 extend = "base-script"
 script.main = '''
 if ! docker image inspect ${IMAGE_NAME}:${TAG} > /dev/null 2>&1; then
-  warn "Image not found locally. Triggering build..."
-  cargo make build-image
+  warn "Image not found locally. Attempting to pull from Docker Hub..."
+  if docker pull ${IMAGE_NAME}:${TAG}; then
+    info "Image ${IMAGE_NAME}:${TAG} pulled successfully."
+  else
+    warn "Image not found on Docker Hub. Building image..."
+    makers build-image
+  fi
 else
-  info "Image ${IMAGE_NAME}:${TAG} available locally"
+  info "Image ${IMAGE_NAME}:${TAG} already exists locally."
 fi
 '''
 
@@ -78,23 +174,39 @@ fi
 
 [tasks.build-image]
 description = "Build the Docker image for testing artifacts"
+# Note: This task builds the Docker image from the test_environment directory,
+# which contains the Dockerfile and entrypoint.sh for the CI/test environment.
+# The build context is set to test_environment to keep paths simple.
 script_runner = "bash"
 extend = "base-script"
 script.main = '''
 set -euo pipefail
 
+# Create target directory with correct ownership before Docker creates it as root
+mkdir -p target
+
 TARGET=$(resolve_build_target "$ZCASH_VERSION" "$ZEBRA_VERSION")
+
+# For local builds, use the current user's UID/GID to avoid permission issues
+# CI builds will use the default UID=1001 from the Dockerfile
 
 info "Building image"
 info "Tag: ${TAG}"
 info "Target: $TARGET"
+info "Current directory: $(pwd)"
+info "Files in utils/: $(ls -la utils/ | head -5)"
 
-docker build -f Dockerfile.ci \
+cd test_environment && \
+docker build -f Dockerfile \
   --target "$TARGET" \
   --build-arg ZCASH_VERSION=$ZCASH_VERSION \
   --build-arg ZEBRA_VERSION=$ZEBRA_VERSION \
   --build-arg RUST_VERSION=$RUST_VERSION \
-  -t ${IMAGE_NAME}:$TAG .
+  --build-arg UID=$(id -u) \
+  --build-arg GID=$(id -g) \
+  -t ${IMAGE_NAME}:$TAG \
+  ${@} \
+  .
 '''
 
 # -------------------------------------------------------------------
@@ -102,6 +214,7 @@ docker build -f Dockerfile.ci \
 [tasks.push-image]
 description = "Push image if running in CI"
 # condition = { env_set = ["CI"] }
+dependencies = ["ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
 script.main = '''
@@ -114,41 +227,299 @@ docker push ${IMAGE_NAME}:$TAG
 
 # -------------------------------------------------------------------
 
-[tasks.test]
+[tasks.container-test]
 clear = true
 description = "Run integration tests using the local image"
-dependencies = ["ensure-image-exists"]
+# This task runs tests inside the Docker container built from test_environment.
+# The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
+# by creating symlinks from /home/container_user/artifacts to the expected test_binaries/bins location.
+dependencies = ["init-docker-volumes", "ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
 script.main = '''
 set -euo pipefail
 
-TAG=$(./utils/get-ci-image-tag.sh)
+info "Running tests using:"
+info "-- IMAGE             = ${IMAGE_NAME}"
+info "-- TAG               = $TAG"
+# info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
-info "Running tests using image: ${IMAGE_NAME}:$TAG"
+# Create directories with correct ownership before Docker creates them as root
+mkdir -p container-target docker_cargo/git docker_cargo/registry
 
+# Set container name for cleanup
+CONTAINER_NAME="zaino-testing"
+
+# Run docker in foreground with proper signal handling
 docker run --rm \
-  --name zaino-testing \
-  -v "$PWD":/app \
-  -v "$PWD/target":/root/target \
-  -v "$PWD/docker_cargo/git":/root/.cargo/git \
-  -v "$PWD/docker_cargo/registry":/root/.cargo/registry \
-  -w /app \
+  --init \
+  --name "$CONTAINER_NAME" \
+  -v "$PWD":/home/container_user/zaino \
+  -v "$PWD/container-target":/home/container_user/zaino/target \
+  -v "$PWD/docker_cargo/git":/home/container_user/.cargo/git \
+  -v "$PWD/docker_cargo/registry":/home/container_user/.cargo/registry \
+  -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
+  -e "CARGO_TARGET_DIR=/home/container_user/zaino/target" \
+  -w /home/container_user/zaino \
+  -u container_user \
   "${IMAGE_NAME}:$TAG" \
-  cargo nextest run --profile ci "${@}"
-'''
-script.post = '''
-docker stop zaino-testing
+  cargo nextest run --profile ci "${@}" &
+
+# Capture the background job PID
+DOCKER_PID=$!
+
+# Wait for the docker process
+wait $DOCKER_PID
 '''
 
-[tasks.copy-bins]
-description = "Copy bins from image into test_binaries/bins"
+# -------------------------------------------------------------------
+
+[tasks.check-matching-zebras]
+description = "Check that zebra versions in .env.testing-artifacts match what's in Cargo.toml"
+extend = "base-script"
+script_runner = "bash"
+script.main = '''
+set -euo pipefail
+
+# source .env.testing-artifacts
+
+# Normalize Cargo.toml (stripping comments, whitespace)
+cargo_toml=$(sed 's/#.*//' Cargo.toml | tr -d '[:space:]')
+
+# Check Zebra rev
+zebra_revs=$(echo "$cargo_toml" | grep -o 'zebra-[a-z]*={[^}]*rev="[^"]*"' | grep -o 'rev="[^"]*"' | cut -d'"' -f2 | sort -u)
+
+if [[ $(echo "$zebra_revs" | wc -l) -ne 1 ]]; then
+  err "❌ Multiple Zebra revs detected in Cargo.toml:"
+  echo "$zebra_revs"
+  exit 1
+fi
+
+actual_rev="$zebra_revs"
+
+# Accept short SHA from env if it matches prefix of actual
+if [[ "$actual_rev" != "$ZEBRA_VERSION" && "${actual_rev:0:${#ZEBRA_VERSION}}" != "$ZEBRA_VERSION" ]]; then
+  err "❌ Mismatch for Zebra git rev: Cargo.toml has $actual_rev, but .env.testing-artifacts has $ZEBRA_VERSION"
+  exit 1
+fi
+
+info "✅ All versions match between Cargo.toml and .env.testing-artifacts"
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.validate-makefile-tasks]
+description = "Validate all tasks work correctly with minimal execution"
+dependencies = ["init-docker-volumes"]
+script_runner = "@rust"
+script = '''
+use std::process::{Command, Stdio};
+use std::env;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔍 Starting validation of all Makefile tasks...");
+
+    // 1. Check version matching
+    println!("\nStep 1: Checking version consistency...");
+    run_makers_task("check-matching-zebras")?;
+
+    // 2. Compute the image tag
+    println!("\nStep 2: Computing image tag...");
+    run_makers_task("compute-image-tag")?;
+
+    // 3. Ensure image exists (will build if necessary)
+    println!("\nStep 3: Ensuring Docker image exists...");
+    run_makers_task("ensure-image-exists")?;
+
+    // 4. Get the computed tag
+    let tag = get_image_tag()?;
+    let image_name = env::var("IMAGE_NAME").unwrap_or_else(|_| "zingodevops/zaino-ci".to_string());
+    let working_dir = env::current_dir()?.to_string_lossy().to_string();
+
+    // 5. Run a single fast test to validate the full pipeline
+    println!("\nStep 4: Running minimal test to validate setup...");
+    println!("Using image: {}:{}", image_name, tag);
+
+    let status = Command::new("docker")
+        .args(&[
+            "run", "--rm",
+            "--init",
+            "--name", "zaino-validation-test",
+            "-v", &format!("{}:/home/container_user/zaino", working_dir),
+            "-v", &format!("{}/container-target:/home/container_user/zaino/target", working_dir),
+            "-v", &format!("{}/docker_cargo/git:/home/container_user/.cargo/git", working_dir),
+            "-v", &format!("{}/docker_cargo/registry:/home/container_user/.cargo/registry", working_dir),
+            "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/test_binaries/bins",
+            "-e", "CARGO_TARGET_DIR=/home/container_user/zaino/target",
+            "-w", "/home/container_user/zaino",
+            "-u", "container_user",
+            &format!("{}:{}", image_name, tag),
+            "cargo", "test",
+            "--package", "zaino-testutils",
+            "--lib", "launch_testmanager::zcashd::basic",
+            "--", "--nocapture"
+        ])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if !status.success() {
+        eprintln!("❌ Validation failed!");
+        std::process::exit(1);
+    }
+
+    println!("\n✅ All tasks validated successfully!");
+    Ok(())
+}
+
+fn run_makers_task(task: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("DEBUG: About to run makers {}", task);
+    let status = Command::new("makers")
+        .arg(task)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    println!("DEBUG: makers {} completed with status: {:?}", task, status);
+    if !status.success() {
+        return Err(format!("Task '{}' failed", task).into());
+    }
+    Ok(())
+}
+
+fn get_image_tag() -> Result<String, Box<dyn std::error::Error>> {
+    println!("DEBUG: Getting image tag...");
+    // First try to get from environment
+    if let Ok(tag) = env::var("CARGO_MAKE_IMAGE_TAG") {
+        if !tag.is_empty() {
+            println!("DEBUG: Found tag in env: {}", tag);
+            return Ok(tag);
+        }
+    }
+
+    println!("DEBUG: Computing tag with script...");
+    // Otherwise compute it
+    let output = Command::new("./utils/get-ci-image-tag.sh")
+        .output()?;
+
+    if !output.status.success() {
+        return Err("Failed to compute image tag".into());
+    }
+
+    let tag = String::from_utf8(output.stdout)?.trim().to_string();
+    println!("DEBUG: Computed tag: {}", tag);
+    Ok(tag)
+}
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.validate-test-targets]
+description = "Validate that nextest targets match CI workflow matrix"
+script_runner = "bash"
 extend = "base-script"
 script.main = '''
 set -euo pipefail
 
-docker create --name my_zaino_container zingodevops/zaino-ci:"$TAG"
-docker cp my_zaino_container:/usr/local/bin ./test_binaries/
-cp -r ./test_binaries/bin ./test_binaries/bins
-docker rm my_zaino_container
+info "🔍 Validating test targets between nextest and CI workflow..."
+
+# Extract nextest targets with non-empty testcases
+info "Extracting targets from nextest..."
+NEXTEST_TARGETS=$(mktemp)
+cargo nextest list --profile ci -T json-pretty | jq -r '.["rust-suites"] | to_entries[] | select(.value.testcases | length > 0) | .key' | sort > "$NEXTEST_TARGETS"
+
+# Extract CI matrix partition values
+info "Extracting targets from CI workflow..."
+CI_TARGETS=$(mktemp)
+yq '.jobs.test.strategy.matrix.partition[]' .github/workflows/ci.yml | sed 's/"//g' | sort > "$CI_TARGETS"
+
+# Compare the lists
+info "Comparing target lists..."
+
+MISSING_IN_CI=$(mktemp)
+EXTRA_IN_CI=$(mktemp)
+
+# Find targets in nextest but not in CI
+comm -23 "$NEXTEST_TARGETS" "$CI_TARGETS" > "$MISSING_IN_CI"
+
+# Find targets in CI but not in nextest (or with empty testcases)
+comm -13 "$NEXTEST_TARGETS" "$CI_TARGETS" > "$EXTRA_IN_CI"
+
+# Display results
+if [[ ! -s "$MISSING_IN_CI" && ! -s "$EXTRA_IN_CI" ]]; then
+    info "✅ All test targets are synchronized!"
+    echo "Nextest targets ($(wc -l < "$NEXTEST_TARGETS")):"
+    cat "$NEXTEST_TARGETS" | sed 's/^/  - /'
+else
+    warn "❌ Test target synchronization issues found:"
+
+    if [[ -s "$MISSING_IN_CI" ]]; then
+        echo ""
+        warn "📋 Targets with tests missing from CI matrix ($(wc -l < "$MISSING_IN_CI")):"
+        cat "$MISSING_IN_CI" | sed 's/^/  - /'
+    fi
+
+    if [[ -s "$EXTRA_IN_CI" ]]; then
+        echo ""
+        warn "🗑️  Targets in CI matrix with no tests ($(wc -l < "$EXTRA_IN_CI")):"
+        cat "$EXTRA_IN_CI" | sed 's/^/  - /'
+    fi
+
+    echo ""
+    info "💡 To automatically update the CI workflow, run:"
+    info "   makers update-test-targets"
+fi
+
+# Cleanup temp files
+rm "$NEXTEST_TARGETS" "$CI_TARGETS" "$MISSING_IN_CI" "$EXTRA_IN_CI"
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.update-test-targets]
+description = "Update CI workflow matrix to match nextest targets"
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+info "🔧 Updating CI workflow matrix to match nextest targets..."
+
+# Extract nextest targets with non-empty testcases
+info "Extracting current nextest targets..."
+NEXTEST_TARGETS=$(mktemp)
+cargo nextest list --profile ci -T json-pretty | jq -r '.["rust-suites"] | to_entries[] | select(.value.testcases | length > 0) | .key' | sort > "$NEXTEST_TARGETS"
+
+echo "Found $(wc -l < "$NEXTEST_TARGETS") targets with tests:"
+cat "$NEXTEST_TARGETS" | sed 's/^/  - /'
+
+# Update only the partition array using sed to preserve formatting
+# First, create the new partition list in the exact format we need
+NEW_PARTITION_LINES=$(mktemp)
+while IFS= read -r target; do
+    echo "          - \"${target}\""
+done < "$NEXTEST_TARGETS" > "$NEW_PARTITION_LINES"
+
+# Use sed to replace just the partition array section
+# Find the partition: line and replace everything until the next non-indented item
+sed -i '/^[[:space:]]*partition:/,/^[[:space:]]*[^[:space:]-]/{
+    /^[[:space:]]*partition:/!{
+        /^[[:space:]]*[^[:space:]-]/!d
+    }
+}' .github/workflows/ci.yml
+
+# Now insert the new partition lines after the "partition:" line
+sed -i "/^[[:space:]]*partition:$/r $NEW_PARTITION_LINES" .github/workflows/ci.yml
+
+rm "$NEW_PARTITION_LINES"
+
+info "✅ CI workflow updated successfully!"
+
+# Show what was changed using git diff
+echo ""
+info "Changes made:"
+git diff --no-index /dev/null .github/workflows/ci.yml 2>/dev/null | grep "^[+-].*partition\|^[+-].*integration-tests\|^[+-].*zaino\|^[+-].*zainod" || git diff .github/workflows/ci.yml || echo "No changes detected"
+
+# Cleanup temp files
+rm "$NEXTEST_TARGETS"
 '''

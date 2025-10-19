@@ -1,12 +1,12 @@
-use core::panic;
+use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::{
     bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
     BackendType,
 };
-use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::block::Height;
+use zaino_testutils::{Validator as _, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
+use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
 
 async fn create_test_manager_and_block_cache(
@@ -22,10 +22,16 @@ async fn create_test_manager_and_block_cache(
     BlockCache,
     BlockCacheSubscriber,
 ) {
+    let activation_heights = match validator {
+        ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
+        ValidatorKind::Zcashd => ActivationHeights::default(),
+    };
+
     let test_manager = TestManager::launch(
         validator,
         &BackendType::Fetch,
         None,
+        Some(activation_heights),
         chain_cache,
         enable_zaino,
         false,
@@ -52,33 +58,24 @@ async fn create_test_manager_and_block_cache(
     )
     .unwrap();
 
-    let network = match test_manager.network.to_string().as_str() {
-        "Regtest" => zebra_chain::parameters::Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
-            },
-        ),
-        "Testnet" => zebra_chain::parameters::Network::new_default_testnet(),
-        "Mainnet" => zebra_chain::parameters::Network::Mainnet,
-        _ => panic!("Incorrect newtork type found."),
+    let network = match test_manager.network {
+        NetworkKind::Regtest => {
+            zebra_chain::parameters::Network::new_regtest(activation_heights.into())
+        }
+        NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
+        NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
     };
 
     let block_cache_config = BlockCacheConfig {
-        map_capacity: None,
-        map_shard_amount: None,
-        db_path: test_manager.data_dir.clone(),
-        db_size: None,
-        network,
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager.data_dir.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: network.into(),
         no_sync: zaino_no_sync,
         no_db: zaino_no_db,
     };
@@ -118,7 +115,7 @@ async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, b
         // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
         //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
         for height in 1..=100 {
-            println!("Generating block at height: {}", height);
+            println!("Generating block at height: {height}");
             test_manager.local_net.generate_blocks(1).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }

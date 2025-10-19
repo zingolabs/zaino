@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1.4
+# Begin storing hash-object for this file
 
 ########################
 # === GLOBAL ARGS ===
@@ -8,8 +9,8 @@ ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
 ARG UID=1000
 ARG GID=${UID}
-ARG USER=root
-ARG HOME="/root"
+ARG USER=container_user
+ARG HOME="/home/container_user"
 ARG CARGO_HOME="${HOME}/.cargo"
 ARG CARGO_TARGET_DIR="${HOME}/target"
 
@@ -37,7 +38,7 @@ RUN git checkout "${ZEBRA_VERSION}"
 #     --mount=type=cache,target=/usr/local/cargo/git \
 #     --mount=type=cache,target=/zebra/target \
 RUN cargo build --release --bin zebrad
-RUN cp target/release/zebrad /usr/local/bin/zebrad
+RUN cp target/release/zebrad /tmp/zebrad
 
 FROM debian:bookworm AS zcashd-builder
 
@@ -49,7 +50,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /zcash
 RUN git clone --depth 1 --branch "v${ZCASH_VERSION}" https://github.com/zcash/zcash .
 RUN ./zcutil/fetch-params.sh && ./zcutil/build.sh -j$(nproc)
-RUN cp src/zcashd src/zcash-cli /usr/local/bin/
+RUN cp src/zcashd src/zcash-cli /tmp/
 
 ########################
 # === BASE RUNTIME IMAGE ===
@@ -66,8 +67,9 @@ ARG CARGO_TARGET_DIR
 
 ENV CARGO_HOME=${CARGO_HOME}
 ENV CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
-ENV PATH="/usr/local/bin:${PATH}"
 ENV CARGO_TERM_COLOR=always
+ENV PROTOC=/usr/bin/protoc
+
 
 LABEL maintainer="nachog00"
 LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
@@ -77,13 +79,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libclang-dev \
     build-essential \
+    cmake \
+    libsnappy-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblz4-dev \
+    libzstd-dev \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
+
+# Create container_user
+RUN groupadd --gid ${GID} ${USER} && \
+    useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
 
 # Install rustup (Rust toolchain manager) and set up the Rust toolchain
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 RUN rustup update stable
 
-WORKDIR /app
+# Create artifacts directory
+RUN mkdir -p /home/container_user/artifacts
+
+# Copy and prepare entrypoint script
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+WORKDIR ${HOME}/zaino
+RUN chown -R ${UID}:${GID} ${HOME}
 USER ${USER}
 
 ########################
@@ -95,37 +116,61 @@ ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-COPY --from=zcashd-downloader /usr/bin/zcashd /usr/local/bin/
-COPY --from=zcashd-downloader /usr/bin/zcash-cli /usr/local/bin/
-COPY --from=zebra-downloader /usr/local/bin/zebrad /usr/local/bin/
-RUN cargo install cargo-nextest --locked --verbose
+USER root
+COPY --from=zcashd-downloader /usr/bin/zcashd ${HOME}/artifacts/
+COPY --from=zcashd-downloader /usr/bin/zcash-cli ${HOME}/artifacts/
+COPY --from=zebra-downloader /usr/local/bin/zebrad ${HOME}/artifacts/
+RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifacts/zebrad
+RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
+    cargo install rust-script --locked --verbose --root /usr/local
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
 
 FROM base AS final-zcashd-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-COPY --from=zcashd-builder /usr/local/bin/zcashd /usr/local/bin/
-COPY --from=zcashd-builder /usr/local/bin/zcash-cli /usr/local/bin/
-COPY --from=zebra-downloader /usr/local/bin/zebrad /usr/local/bin/
-RUN cargo install cargo-nextest --locked --verbose
+USER root
+COPY --from=zcashd-builder /tmp/zcashd ${HOME}/artifacts/
+COPY --from=zcashd-builder /tmp/zcash-cli ${HOME}/artifacts/
+COPY --from=zebra-downloader /usr/local/bin/zebrad ${HOME}/artifacts/
+RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifacts/zebrad
+RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
+    cargo install rust-script --locked --verbose --root /usr/local
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
 
 FROM base AS final-zebrad-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-COPY --from=zcashd-downloader /usr/bin/zcashd /usr/local/bin/
-COPY --from=zcashd-downloader /usr/bin/zcash-cli /usr/local/bin/
-COPY --from=zebra-builder /usr/local/bin/zebrad /usr/local/bin/
-RUN cargo install cargo-nextest --locked --verbose
+USER root
+COPY --from=zcashd-downloader /usr/bin/zcashd ${HOME}/artifacts/
+COPY --from=zcashd-downloader /usr/bin/zcash-cli ${HOME}/artifacts/
+COPY --from=zebra-builder /tmp/zebrad ${HOME}/artifacts/
+RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifacts/zebrad
+RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
+    cargo install rust-script --locked --verbose --root /usr/local
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
 
 FROM base AS final-all-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-COPY --from=zcashd-builder /usr/local/bin/zcashd /usr/local/bin/
-COPY --from=zcashd-builder /usr/local/bin/zcash-cli /usr/local/bin/
-COPY --from=zebra-builder /usr/local/bin/zebrad /usr/local/bin/
-RUN cargo install cargo-nextest --locked --verbose
+USER root
+COPY --from=zcashd-builder /tmp/zcashd ${HOME}/artifacts/
+COPY --from=zcashd-builder /tmp/zcash-cli ${HOME}/artifacts/
+COPY --from=zebra-builder /tmp/zebrad ${HOME}/artifacts/
+RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifacts/zebrad
+RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
+    cargo install rust-script --locked --verbose --root /usr/local
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]

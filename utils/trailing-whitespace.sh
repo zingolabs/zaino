@@ -1,5 +1,5 @@
 #!/bin/bash
-set -efuo pipefail
+set -efuo pipefail 
 
 function main
 {

@@ -1,10 +1,14 @@
+//! Tests that compare the output of both `zcashd` and `zainod` through `FetchService`.
+
+use zaino_common::network::ActivationHeights;
+use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_state::{
     BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, ZcashIndexer,
     ZcashService as _,
 };
 use zaino_testutils::{from_inputs, Validator as _};
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::{parameters::Network, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 
 async fn create_test_manager_and_fetch_services(
@@ -18,7 +22,7 @@ async fn create_test_manager_and_fetch_services(
     FetchServiceSubscriber,
 ) {
     println!("Launching test manager..");
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::launch_with_default_activation_heights(
         &ValidatorKind::Zcashd,
         &BackendType::Fetch,
         None,
@@ -42,32 +46,20 @@ async fn create_test_manager_and_fetch_services(
         None,
         None,
         None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
+        ServiceConfig::default(),
+        StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                ..Default::default()
             },
-        ),
+            ..Default::default()
+        },
+        zaino_common::Network::Regtest(ActivationHeights::default()),
         true,
         true,
     ))
@@ -88,32 +80,20 @@ async fn create_test_manager_and_fetch_services(
             .map(|p| p.to_string_lossy().into_owned()),
         None,
         None,
-        None,
-        None,
-        None,
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .to_path_buf()
-            .join("zaino"),
-        None,
-        Network::new_regtest(
-            zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                before_overwinter: Some(1),
-                overwinter: Some(1),
-                sapling: Some(1),
-                blossom: Some(1),
-                heartwood: Some(1),
-                canopy: Some(1),
-                nu5: Some(1),
-                nu6: Some(1),
-                // TODO: What is network upgrade 6.1? What does a minor version NU mean?
-                nu6_1: None,
-                nu7: None,
+        ServiceConfig::default(),
+        StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                ..Default::default()
             },
-        ),
+            ..Default::default()
+        },
+        zaino_common::Network::Regtest(ActivationHeights::default()),
         true,
         true,
     ))
@@ -158,7 +138,7 @@ async fn launch_json_server_check_info(enable_cookie_auth: bool) {
         errors,
         _,
     ) = zcashd_info.into_parts();
-    let cleaned_zcashd_info = GetInfo::from_parts(
+    let cleaned_zcashd_info = GetInfo::new(
         version,
         build,
         subversion,
@@ -189,7 +169,7 @@ async fn launch_json_server_check_info(enable_cookie_auth: bool) {
         errors,
         _,
     ) = zaino_info.into_parts();
-    let cleaned_zaino_info = GetInfo::from_parts(
+    let cleaned_zaino_info = GetInfo::new(
         version,
         build,
         subversion,
@@ -239,6 +219,18 @@ async fn launch_json_server_check_info(enable_cookie_auth: bool) {
     test_manager.close().await;
 }
 
+async fn get_best_blockhash_inner() {
+    let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
+        create_test_manager_and_fetch_services(false, false).await;
+
+    let zcashd_bbh = dbg!(zcashd_subscriber.get_best_blockhash().await.unwrap());
+    let zaino_bbh = dbg!(zaino_subscriber.get_best_blockhash().await.unwrap());
+
+    assert_eq!(zcashd_bbh, zaino_bbh);
+
+    test_manager.close().await;
+}
+
 async fn get_block_count_inner() {
     let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
         create_test_manager_and_fetch_services(false, false).await;
@@ -247,6 +239,45 @@ async fn get_block_count_inner() {
     let zaino_block_count = dbg!(zaino_subscriber.get_block_count().await.unwrap());
 
     assert_eq!(zcashd_block_count, zaino_block_count);
+
+    test_manager.close().await;
+}
+
+async fn validate_address_inner() {
+    let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
+        create_test_manager_and_fetch_services(false, false).await;
+
+    // Using a testnet transparent address
+    let address_string = "tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb";
+
+    let address_with_script = "t3TAfQ9eYmXWGe3oPae1XKhdTxm8JvsnFRL";
+
+    let zcashd_valid = zcashd_subscriber
+        .validate_address(address_string.to_string())
+        .await
+        .unwrap();
+
+    let zaino_valid = zaino_subscriber
+        .validate_address(address_string.to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(zcashd_valid, zaino_valid, "Address should be valid");
+
+    let zcashd_valid_script = zcashd_subscriber
+        .validate_address(address_with_script.to_string())
+        .await
+        .unwrap();
+
+    let zaino_valid_script = zaino_subscriber
+        .validate_address(address_with_script.to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        zcashd_valid_script, zaino_valid_script,
+        "Address should be valid"
+    );
 
     test_manager.close().await;
 }
@@ -273,15 +304,19 @@ async fn z_get_address_balance_inner() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     clients.recipient.sync_and_await().await.unwrap();
-    let recipient_balance = clients.recipient.do_balance().await;
+    let recipient_balance = clients
+        .recipient
+        .account_balance(zip32::AccountId::ZERO)
+        .await
+        .unwrap();
 
     let zcashd_service_balance = zcashd_subscriber
-        .z_get_address_balance(AddressStrings::new_valid(vec![recipient_taddr.clone()]).unwrap())
+        .z_get_address_balance(AddressStrings::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
 
     let zaino_service_balance = zaino_subscriber
-        .z_get_address_balance(AddressStrings::new_valid(vec![recipient_taddr]).unwrap())
+        .z_get_address_balance(AddressStrings::new(vec![recipient_taddr]))
         .await
         .unwrap();
 
@@ -290,12 +325,18 @@ async fn z_get_address_balance_inner() {
     dbg!(&zaino_service_balance);
 
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
         250_000,
     );
     assert_eq!(
-        recipient_balance.confirmed_transparent_balance.unwrap(),
-        zcashd_service_balance.balance,
+        recipient_balance
+            .confirmed_transparent_balance
+            .unwrap()
+            .into_u64(),
+        zcashd_service_balance.balance(),
     );
     assert_eq!(zcashd_service_balance, zaino_service_balance);
 
@@ -332,7 +373,7 @@ async fn z_get_block_inner() {
 
     let hash = match zcashd_block {
         zebra_rpc::methods::GetBlock::Raw(_) => panic!("expected object"),
-        zebra_rpc::methods::GetBlock::Object { hash, .. } => hash.0.to_string(),
+        zebra_rpc::methods::GetBlock::Object(obj) => obj.hash().to_string(),
     };
     let zaino_get_block_by_hash = zaino_subscriber
         .z_get_block(hash.clone(), Some(1))
@@ -378,6 +419,42 @@ async fn get_raw_mempool_inner() {
     zaino_mempool.sort();
 
     assert_eq!(zcashd_mempool, zaino_mempool);
+
+    test_manager.close().await;
+}
+
+async fn get_mempool_info_inner() {
+    let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
+        create_test_manager_and_fetch_services(false, true).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+
+    test_manager.local_net.generate_blocks(1).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    clients.faucet.sync_and_await().await.unwrap();
+
+    let recipient_ua = &clients.get_recipient_address("unified").await;
+    let recipient_taddr = &clients.get_recipient_address("transparent").await;
+    from_inputs::quick_send(&mut clients.faucet, vec![(recipient_taddr, 250_000, None)])
+        .await
+        .unwrap();
+    from_inputs::quick_send(&mut clients.faucet, vec![(recipient_ua, 250_000, None)])
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    let zcashd_subscriber_mempool_info = zcashd_subscriber.get_mempool_info().await.unwrap();
+    let zaino_subscriber_mempool_info = zaino_subscriber.get_mempool_info().await.unwrap();
+
+    assert_eq!(
+        zcashd_subscriber_mempool_info,
+        zaino_subscriber_mempool_info
+    );
 
     test_manager.close().await;
 }
@@ -516,19 +593,19 @@ async fn get_address_tx_ids_inner() {
     dbg!(&chain_height);
 
     let zcashd_txids = zcashd_subscriber
-        .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
+        .get_address_tx_ids(GetAddressTxIdsRequest::new(
             vec![recipient_taddr.clone()],
-            chain_height - 2,
-            chain_height,
+            Some(chain_height - 2),
+            Some(chain_height),
         ))
         .await
         .unwrap();
 
     let zaino_txids = zaino_subscriber
-        .get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
+        .get_address_tx_ids(GetAddressTxIdsRequest::new(
             vec![recipient_taddr],
-            chain_height - 2,
-            chain_height,
+            Some(chain_height - 2),
+            Some(chain_height),
         ))
         .await
         .unwrap();
@@ -567,13 +644,13 @@ async fn z_get_address_utxos_inner() {
     clients.faucet.sync_and_await().await.unwrap();
 
     let zcashd_utxos = zcashd_subscriber
-        .z_get_address_utxos(AddressStrings::new_valid(vec![recipient_taddr.clone()]).unwrap())
+        .z_get_address_utxos(AddressStrings::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
     let (_, zcashd_txid, ..) = zcashd_utxos[0].into_parts();
 
     let zaino_utxos = zaino_subscriber
-        .z_get_address_utxos(AddressStrings::new_valid(vec![recipient_taddr]).unwrap())
+        .z_get_address_utxos(AddressStrings::new(vec![recipient_taddr]))
         .await
         .unwrap();
     let (_, zaino_txid, ..) = zaino_utxos[0].into_parts();
@@ -589,28 +666,34 @@ async fn z_get_address_utxos_inner() {
     test_manager.close().await;
 }
 
+// TODO: This module should not be called `zcashd`
 mod zcashd {
     use super::*;
 
     pub(crate) mod zcash_indexer {
         use super::*;
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn check_info_no_cookie() {
             launch_json_server_check_info(false).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn check_info_with_cookie() {
             launch_json_server_check_info(false).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_address_balance() {
             z_get_address_balance_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_best_blockhash() {
+            get_best_blockhash_inner().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_block_count() {
             get_block_count_inner().await;
         }
@@ -619,7 +702,7 @@ mod zcashd {
         ///
         /// This tests generates blocks and checks that the difficulty is the same between zcashd and zaino
         /// after each block is generated.
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_difficulty() {
             let (
                 mut test_manager,
@@ -643,37 +726,87 @@ mod zcashd {
             test_manager.close().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_peer_info() {
+            let (
+                mut test_manager,
+                _zcashd_service,
+                zcashd_subscriber,
+                _zaino_service,
+                zaino_subscriber,
+            ) = create_test_manager_and_fetch_services(false, false).await;
+
+            let zcashd_peer_info = zcashd_subscriber.get_peer_info().await.unwrap();
+            let zaino_peer_info = zaino_subscriber.get_peer_info().await.unwrap();
+
+            assert_eq!(zcashd_peer_info, zaino_peer_info);
+
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+
+            test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_block_subsidy() {
+            let (
+                mut test_manager,
+                _zcashd_service,
+                zcashd_subscriber,
+                _zaino_service,
+                zaino_subscriber,
+            ) = create_test_manager_and_fetch_services(false, false).await;
+
+            test_manager.local_net.generate_blocks(1).await.unwrap();
+
+            let zcashd_block_subsidy = zcashd_subscriber.get_block_subsidy(1).await.unwrap();
+            let zaino_block_subsidy = zaino_subscriber.get_block_subsidy(1).await.unwrap();
+
+            assert_eq!(zcashd_block_subsidy, zaino_block_subsidy);
+
+            test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn validate_address() {
+            validate_address_inner().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_block() {
             z_get_block_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_raw_mempool() {
             get_raw_mempool_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_mempool_info() {
+            get_mempool_info_inner().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_treestate() {
             z_get_treestate_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_subtrees_by_index() {
             z_get_subtrees_by_index_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_raw_transaction() {
             get_raw_transaction_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_address_tx_ids() {
             get_address_tx_ids_inner().await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_address_utxos() {
             z_get_address_utxos_inner().await;
         }
