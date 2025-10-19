@@ -8,4 +8,4 @@
 pub mod chain;
 pub mod jsonrpsee;
 
-pub use zaino_common::Network;
+pub use zebra_chain::block::Hash;
