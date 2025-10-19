@@ -2,6 +2,7 @@
 
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
+use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
 use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -130,6 +131,12 @@ pub trait ZcashIndexerRpc {
         &self,
         address: String,
     ) -> Result<ValidateAddressResponse, ErrorObjectOwned>;
+
+    #[method(name = "z_validateaddress")]
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddress, ErrorObjectOwned>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -475,6 +482,23 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .validate_address(address)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddress, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .z_validate_address(address)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(
