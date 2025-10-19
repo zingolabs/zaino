@@ -25,8 +25,9 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetBalanceError,
-        GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
+        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo,
+        z_validate_address::ZValidateAddress, GetBalanceError, GetBalanceResponse,
+        GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
         GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
         GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
         GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
@@ -590,6 +591,14 @@ impl JsonRpSeeConnector {
     ) -> Result<ValidateAddressResponse, RpcRequestError<Infallible>> {
         let params = vec![serde_json::to_value(address).map_err(RpcRequestError::JsonRpc)?];
         self.send_request("validateaddress", params).await
+    }
+
+    pub async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddress, RpcRequestError<Infallible>> {
+        let params = vec![serde_json::to_value(address).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("z_validateaddress", params).await
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

@@ -23,9 +23,8 @@ use zaino_fetch::{
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
-            block_subsidy::GetBlockSubsidy,
-            peer_info::GetPeerInfo,
-            {GetMempoolInfoResponse, GetNetworkSolPsResponse},
+            block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo,
+            z_validate_address::ZValidateAddress, GetMempoolInfoResponse, GetNetworkSolPsResponse,
         },
     },
 };
@@ -417,6 +416,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
         address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
         Ok(self.fetcher.validate_address(address).await?)
+    }
+
+    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error> {
+        Ok(self.fetcher.z_validate_address(address).await?)
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

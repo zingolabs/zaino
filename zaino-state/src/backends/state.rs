@@ -19,6 +19,7 @@ use crate::{
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
     MempoolKey,
 };
+use zcash_keys::{address::Address, encoding::AddressCodec};
 
 use nonempty::NonEmpty;
 use tokio_stream::StreamExt as _;
@@ -27,8 +28,13 @@ use zaino_fetch::{
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
-            block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetMempoolInfoResponse,
-            GetNetworkSolPsResponse, GetSubtreesResponse,
+            block_subsidy::GetBlockSubsidy,
+            peer_info::GetPeerInfo,
+            z_validate_address::{
+                InvalidZcashdZValidateAddress, ValidZcashdZValidateAddress, ZValidateAddress,
+                ZcashdZValidateAddress,
+            },
+            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
     },
 };
@@ -1206,7 +1212,6 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         raw_address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
-        use zcash_keys::address::Address;
         use zcash_transparent::address::TransparentAddress;
 
         let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
@@ -1227,7 +1232,6 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        // we want to match zcashd's behaviour
         Ok(match address {
             Address::Transparent(taddr) => ValidateAddressResponse::new(
                 true,
@@ -1236,6 +1240,53 @@ impl ZcashIndexer for StateServiceSubscriber {
             ),
             _ => ValidateAddressResponse::invalid(),
         })
+    }
+
+    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error> {
+        let Ok(address) = address.parse::<zcash_address::ZcashAddress>() else {
+            return Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Invalid(
+                InvalidZcashdZValidateAddress::new(),
+            )));
+        };
+
+        let address = match address.convert_if_network::<Address>(
+            match self.config.network.to_zebra_network().kind() {
+                NetworkKind::Mainnet => NetworkType::Main,
+                NetworkKind::Testnet => NetworkType::Test,
+                // As regtest does not have a specified HRP, we use the same HRP as testnet
+                NetworkKind::Regtest => NetworkType::Test,
+            },
+        ) {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::debug!(?err, "conversion error");
+                return Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Invalid(
+                    InvalidZcashdZValidateAddress::new(),
+                )));
+            }
+        };
+
+        match address {
+            Address::Transparent(t) => {
+                todo!("Differentiate between P2PKH and P2SH")
+                // Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Valid(
+                //     ValidZcashdZValidateAddress::
+                // )))
+            }
+            Address::Unified(u) => Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Valid(
+                ValidZcashdZValidateAddress::unified(u.encode(&self.network().to_zebra_network())),
+            ))),
+            Address::Sapling(s) => Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Valid(
+                ValidZcashdZValidateAddress::sapling(
+                    s.encode(&self.network().to_zebra_network()),
+                    String::from_utf8(s.diversifier().0.to_vec()).unwrap(),
+                    s.pk_d().inner().to_string(),
+                ),
+            ))),
+            _ => Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Invalid(
+                InvalidZcashdZValidateAddress::new(),
+            ))),
+        }
     }
 
     async fn z_get_subtrees_by_index(
