@@ -263,6 +263,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         network: &Network,
         start_block: Option<IndexedBlock>,
     ) -> Result<IndexedBlock, InitError> {
+        dbg!(&start_block);
         match start_block {
             Some(block) => Ok(block),
             None => Self::get_genesis_indexed_block(source, network).await,
@@ -294,6 +295,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let new_blocks = self
             .fetch_main_chain_blocks(&initial_state, &mut nonbest_blocks)
             .await?;
+
+        dbg!(&new_blocks.len());
 
         // Stage and update new blocks
         self.stage_new_blocks(new_blocks, &finalized_db).await?;

@@ -22,6 +22,7 @@ use std::{sync::Arc, time::Duration};
 use futures::{FutureExt, Stream};
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
+use tokio::time::{timeout, Interval, MissedTickBehavior};
 use tokio_stream::StreamExt;
 use tracing::info;
 use zebra_chain::parameters::ConsensusBranchId;
@@ -609,6 +610,83 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 }
                 .into_iter(),
             ))
+    }
+
+    /// Wait until the non-finalized best tip height is >= `min_height`.
+    /// Returns Err on timeout or if the index is closing.
+    pub async fn wait_for_height(
+        &self,
+        min_height: types::Height,
+        deadline: Duration,
+    ) -> Result<(), ChainIndexError> {
+        if self.non_finalized_state.get_snapshot().best_tip.height >= min_height {
+            return Ok(());
+        }
+
+        timeout(deadline, async {
+            let mut ticker: Interval = tokio::time::interval(Duration::from_millis(25));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+            loop {
+                ticker.tick().await;
+
+                if self.status.load() == StatusType::Closing {
+                    return Err(ChainIndexError {
+                        kind: ChainIndexErrorKind::InternalServerError,
+                        message: "index is shutting down while waiting for height".into(),
+                        source: None,
+                    });
+                }
+
+                let snap = self.non_finalized_state.get_snapshot();
+                if snap.best_tip.height >= min_height {
+                    return Ok(());
+                }
+            }
+        })
+        .await
+        .map_err(|_| ChainIndexError {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message: format!("timeout waiting for height >= {}", min_height.0),
+            source: None,
+        })?
+    }
+
+    /// Wait until a specific block hash is present in the snapshot.
+    pub async fn wait_for_hash(
+        &self,
+        hash: types::BlockHash,
+        deadline: Duration,
+    ) -> Result<types::Height, ChainIndexError> {
+        timeout(deadline, async {
+            let mut ticker = tokio::time::interval(Duration::from_millis(25));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+            loop {
+                ticker.tick().await;
+
+                if self.status.load() == StatusType::Closing {
+                    return Err(ChainIndexError {
+                        kind: ChainIndexErrorKind::InternalServerError,
+                        message: "index is shutting down while waiting for hash".into(),
+                        source: None,
+                    });
+                }
+
+                let snap = self.non_finalized_state.get_snapshot();
+                if let Some(block) = snap.get_chainblock_by_hash(&hash) {
+                    if let Some(h) = block.height() {
+                        return Ok(h);
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| ChainIndexError {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message: "timeout waiting for block hash to appear".into(),
+            source: None,
+        })?
     }
 }
 

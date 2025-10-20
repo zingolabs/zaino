@@ -242,7 +242,7 @@ mod chain_query_interface {
     // Copied over from `get_block_range`
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn repro_flake_zcashd() {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(
                 &ValidatorKind::Zcashd,
                 None,
@@ -255,6 +255,19 @@ mod chain_query_interface {
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
+
+        let node_tip: zebra_chain::block::Height =
+            json_service.get_block_count().await.unwrap().into();
+
+        // Try commenting this out
+        match indexer
+            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .await
+        {
+            Ok(()) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
+        }
+
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
     }
