@@ -226,7 +226,7 @@ As such, we enforce some strict rules related to serialization:
   release of the associated crate. The data serialized by derivation-based
   methods MUST be wrapped in a container that provides versioning, as described
   above.
-- The above rules MAY be relaxed for serialization formats that are purely 
+- The above rules MAY be relaxed for serialization formats that are purely
   ephemeral, such as for wire formats where both the sender and the receiver
   are always updated simultaneously and the serialized form is never written
   to longer-term storage.
