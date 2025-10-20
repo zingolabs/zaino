@@ -275,7 +275,7 @@ mod chain_query_interface {
     // Copied over from `get_block_range`
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn repro_flake_zebrad() {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(
                 &ValidatorKind::Zebrad,
                 None,
@@ -288,7 +288,18 @@ mod chain_query_interface {
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
-        // indexer.
+
+        let node_tip: zebra_chain::block::Height =
+            json_service.get_block_count().await.unwrap().into();
+
+        match indexer
+            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .await
+        {
+            Ok(()) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
+        }
+
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
     }
@@ -304,11 +315,23 @@ mod chain_query_interface {
     }
 
     async fn get_block_range(validator: &ValidatorKind) {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
+
+        let node_tip: zebra_chain::block::Height =
+            dbg!(json_service.get_block_count().await.unwrap().into());
+
+        match indexer
+            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .await
+        {
+            Ok(()) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
+        }
+
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         let range = indexer
@@ -346,11 +369,23 @@ mod chain_query_interface {
     }
 
     async fn find_fork_point(validator: &ValidatorKind) {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
+
+        let node_tip: zebra_chain::block::Height =
+            dbg!(json_service.get_block_count().await.unwrap().into());
+
+        match indexer
+            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .await
+        {
+            Ok(()) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
+        }
+
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for block_hash in snapshot.heights_to_hashes.values() {
@@ -378,11 +413,23 @@ mod chain_query_interface {
     }
 
     async fn get_raw_transaction(validator: &ValidatorKind) {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
+
+        let node_tip: zebra_chain::block::Height =
+            dbg!(json_service.get_block_count().await.unwrap().into());
+
+        match indexer
+            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .await
+        {
+            Ok(()) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
+        }
+
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height) in snapshot.blocks.values().flat_map(|block| {
@@ -432,7 +479,7 @@ mod chain_query_interface {
     }
 
     async fn get_transaction_status(validator: &ValidatorKind) {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         // I don't know where this second block is generated. Somewhere in the
@@ -441,6 +488,18 @@ mod chain_query_interface {
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
+
+        let node_tip: zebra_chain::block::Height =
+            dbg!(json_service.get_block_count().await.unwrap().into());
+
+        match indexer
+            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .await
+        {
+            Ok(()) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
+        }
+
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height, block_hash) in snapshot.blocks.values().flat_map(|block| {
@@ -477,17 +536,60 @@ mod chain_query_interface {
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager.generate_blocks_with_delay(5).await;
+
+        // let node_tip: zebra_chain::block::Height =
+        //     dbg!(json_service.get_block_count().await.unwrap().into());
+
+        let latest_block_hash: zebra_chain::block::Hash =
+            json_service.get_best_blockhash().await.unwrap().0;
+
+        match indexer
+            // .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .wait_for_hash(latest_block_hash.into(), Duration::from_secs(30))
+            .await
         {
-            let chain_height =
-                Height::try_from(json_service.get_blockchain_info().await.unwrap().blocks.0)
-                    .unwrap();
-            let indexer_height = indexer.snapshot_nonfinalized_state().best_tip.height;
-            assert_eq!(chain_height, indexer_height);
+            Ok(_) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
         }
+
+        // // TODO: This block could probably be removed
+        // {
+        //     let chain_height =
+        //         Height::try_from(json_service.get_blockchain_info().await.unwrap().blocks.0)
+        //             .unwrap();
+        //     let indexer_height = indexer.snapshot_nonfinalized_state().best_tip.height;
+        //     assert_eq!(chain_height, indexer_height);
+        // }
 
         test_manager.generate_blocks_with_delay(150).await;
 
-        tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+        // tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+
+        // let node_tip: zebra_chain::block::Height =
+        //     dbg!(json_service.get_block_count().await.unwrap().into());
+
+        // match indexer
+        //     .wait_for_height(
+        //         Height::try_from(node_tip).unwrap(),
+        //         Duration::from_secs(600),
+        //     )
+        //     .await
+        // {
+        //     Ok(()) => (),
+        //     Err(e) => panic!("wait_for_height failed: {}", e),
+        // }
+
+        let latest_block_hash: zebra_chain::block::Hash =
+            json_service.get_best_blockhash().await.unwrap().0;
+
+        match indexer
+            // .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .wait_for_hash(latest_block_hash.into(), Duration::from_secs(300))
+            .await
+        {
+            Ok(_) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
+        }
 
         let snapshot = indexer.snapshot_nonfinalized_state();
         let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;

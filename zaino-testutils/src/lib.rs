@@ -606,10 +606,11 @@ impl TestManager {
     /// Generates `blocks` regtest blocks.
     /// Adds a delay between blocks to allow zaino / zebra to catch up with test.
     pub async fn generate_blocks_with_delay(&self, blocks: u32) {
-        for _ in 0..blocks {
-            self.local_net.generate_blocks(1).await.unwrap();
-            // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        self.local_net.generate_blocks(blocks).await.unwrap();
+        // for _ in 0..blocks {
+        //     self.local_net.generate_blocks(1).await.unwrap();
+        //     // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // }
     }
 
     /// Closes the TestManager.
