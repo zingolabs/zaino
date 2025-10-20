@@ -239,6 +239,47 @@ mod chain_query_interface {
         }
     }
 
+    // Copied over from `get_block_range`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repro_flake_zcashd() {
+        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zcashd,
+                None,
+                false,
+                false,
+                false,
+                false,
+            )
+            .await;
+
+        // this delay had to increase. Maybe we tweak sync loop rerun time?
+        test_manager.generate_blocks_with_delay(5).await;
+        let snapshot = indexer.snapshot_nonfinalized_state();
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
+    }
+
+    // Copied over from `get_block_range`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repro_flake_zebrad() {
+        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                false,
+                false,
+            )
+            .await;
+
+        // this delay had to increase. Maybe we tweak sync loop rerun time?
+        test_manager.generate_blocks_with_delay(5).await;
+        // indexer.
+        let snapshot = indexer.snapshot_nonfinalized_state();
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_block_range_zebrad() {
         get_block_range(&ValidatorKind::Zebrad).await
