@@ -22,13 +22,15 @@ use std::{sync::Arc, time::Duration};
 use futures::{FutureExt, Stream};
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
-use tokio::time::{timeout, Interval, MissedTickBehavior};
+use tokio::time::{timeout, Instant, Interval, MissedTickBehavior};
 use tokio_stream::StreamExt;
 use tracing::info;
+use zebra_chain::block::Height;
+use zebra_chain::chain_tip::ChainTip;
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
-use zebra_state::HashOrHeight;
+use zebra_state::{ChainTipChange, HashOrHeight, LatestChainTip, TipAction};
 
 pub mod encoding;
 /// All state at least 100 blocks old
@@ -687,6 +689,40 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             message: "timeout waiting for block hash to appear".into(),
             source: None,
         })?
+    }
+
+    /// Wait until Zebra’s *best tip* (non-finalized if available, else finalized)
+    /// reaches at least `target`. Handles both Grow and Reset actions and skipped blocks.
+    pub async fn wait_for_tip_at_least(
+        target: Height,
+        mut changes: ChainTipChange,
+        latest: LatestChainTip,
+        max_wait: Duration,
+    ) -> Result<(), ChainIndexError> {
+        let deadline = Instant::now() + max_wait;
+
+        if latest.best_tip_height().map_or(false, |h| h >= target) {
+            return Ok(());
+        }
+
+        loop {
+            let remain = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            if remain.is_zero() {
+                panic!("timeout waiting for height >= {0}", target.0);
+            }
+
+            let action: TipAction = timeout(remain, changes.wait_for_tip_change())
+                .await
+                .unwrap()
+                .unwrap();
+
+            // TipAction can be Grow{..} or Reset{..}. Both expose the new best height:
+            if action.best_tip_height() >= target {
+                return Ok(());
+            }
+        }
     }
 }
 

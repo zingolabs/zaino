@@ -296,8 +296,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .fetch_main_chain_blocks(&initial_state, &mut nonbest_blocks)
             .await?;
 
-        dbg!(&new_blocks.len());
-
         // Stage and update new blocks
         self.stage_new_blocks(new_blocks, &finalized_db).await?;
 

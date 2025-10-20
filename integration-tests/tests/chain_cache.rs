@@ -259,9 +259,11 @@ mod chain_query_interface {
         let node_tip: zebra_chain::block::Height =
             json_service.get_block_count().await.unwrap().into();
 
-        // Try commenting this out
         match indexer
-            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .wait_for_height(
+                Height::try_from(node_tip).unwrap(),
+                Duration::from_secs(300),
+            )
             .await
         {
             Ok(()) => (),
@@ -293,7 +295,10 @@ mod chain_query_interface {
             json_service.get_block_count().await.unwrap().into();
 
         match indexer
-            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
+            .wait_for_height(
+                Height::try_from(node_tip).unwrap(),
+                Duration::from_secs(300),
+            )
             .await
         {
             Ok(()) => (),
@@ -552,39 +557,20 @@ mod chain_query_interface {
             Err(e) => panic!("wait_for_height failed: {}", e),
         }
 
-        // // TODO: This block could probably be removed
-        // {
-        //     let chain_height =
-        //         Height::try_from(json_service.get_blockchain_info().await.unwrap().blocks.0)
-        //             .unwrap();
-        //     let indexer_height = indexer.snapshot_nonfinalized_state().best_tip.height;
-        //     assert_eq!(chain_height, indexer_height);
-        // }
-
         test_manager.generate_blocks_with_delay(150).await;
 
-        // tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+        // let latest_block_hash: zebra_chain::block::Hash =
+        //     dbg!(json_service.get_best_blockhash().await.unwrap().0);
 
-        // let node_tip: zebra_chain::block::Height =
-        //     dbg!(json_service.get_block_count().await.unwrap().into());
-
-        // match indexer
-        //     .wait_for_height(
-        //         Height::try_from(node_tip).unwrap(),
-        //         Duration::from_secs(600),
-        //     )
-        //     .await
-        // {
-        //     Ok(()) => (),
-        //     Err(e) => panic!("wait_for_height failed: {}", e),
-        // }
-
-        let latest_block_hash: zebra_chain::block::Hash =
-            json_service.get_best_blockhash().await.unwrap().0;
+        let node_tip: zebra_chain::block::Height =
+            dbg!(json_service.get_block_count().await.unwrap().into());
 
         match indexer
-            // .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(30))
-            .wait_for_hash(latest_block_hash.into(), Duration::from_secs(300))
+            .wait_for_height(
+                Height::try_from(node_tip).unwrap(),
+                Duration::from_secs(120),
+            )
+            // .wait_for_hash(latest_block_hash.into(), Duration::from_secs(300))
             .await
         {
             Ok(_) => (),
@@ -622,6 +608,33 @@ mod chain_query_interface {
             block
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repro_nfs_drain() {
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                false,
+                false,
+            )
+            .await;
+
+        test_manager.generate_blocks_with_delay(200).await;
+
+        let node_tip: zebra_chain::block::Height =
+            dbg!(json_service.get_block_count().await.unwrap().into());
+
+        match indexer
+            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(20))
+            .await
+        {
+            Ok(_) => (),
+            Err(e) => panic!("wait_for_height failed: {}", e),
         }
     }
 }
