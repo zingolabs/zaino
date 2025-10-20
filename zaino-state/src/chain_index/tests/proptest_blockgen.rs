@@ -1,42 +1,61 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use proptest::{
     prelude::{Arbitrary as _, BoxedStrategy, Just},
     strategy::Strategy,
 };
 use tonic::async_trait;
+use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
     fmt::SummaryDebug,
-    parameters::GENESIS_PREVIOUS_BLOCK_HASH,
     LedgerState,
 };
 use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
-    chain_index::source::BlockchainSourceResult, BlockHash, BlockchainSource, TransactionHash,
+    chain_index::{source::BlockchainSourceResult, tests::init_tracing, NonFinalizedSnapshot},
+    BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
+    TransactionHash,
 };
 
 #[test]
 fn make_chain() {
+    init_tracing();
     proptest::proptest!(|(segments in make_branching_chain(2, 12))| {
-        let (genesis_segment, branch_segments) = segments;
-        let mut prev_hash = GENESIS_PREVIOUS_BLOCK_HASH;
-        for block in genesis_segment {
-            assert_eq!(block.header.previous_block_hash, prev_hash);
-            println!("pre-divergence: {:?}", block.coinbase_height());
-            prev_hash = block.hash();
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
+        runtime.block_on(async {
+            let (genesis_segment, branching_segments) = segments;
+            let mockchain = ProptestMockchain {
+                genesis_segment,
+                branching_segments,
+            };
+            let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
+            let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
 
-        }
-        let hash_atop_shared_chain = prev_hash;
-        for branch_segment in branch_segments {
-            for block in branch_segment {
-            assert_eq!(block.header.previous_block_hash, prev_hash);
-                println!("post-divergence: {:?}", block.coinbase_height());
-            prev_hash = block.hash();
-            }
-            prev_hash = hash_atop_shared_chain;
-        }
+            let config = BlockCacheConfig {
+                storage: StorageConfig {
+                    database: DatabaseConfig {
+                        path: db_path,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                db_version: 1,
+                network: Network::Regtest(ActivationHeights::default()),
+
+                no_sync: false,
+                no_db: false,
+            };
+
+            let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let index_reader = indexer.subscriber().await;
+            let snapshot = index_reader.snapshot_nonfinalized_state();
+            dbg!(snapshot.best_chaintip());
+        });
     });
 }
 
@@ -222,7 +241,7 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_mempool_txids(
         &self,
     ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>> {
-        Ok(None)
+        Ok(Some(Vec::new()))
     }
 
     /// Returns the transaction by txid
