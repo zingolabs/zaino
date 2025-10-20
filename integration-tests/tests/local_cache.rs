@@ -1,7 +1,7 @@
 use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::{
-    bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
+    test_dependencies::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
     BackendType,
 };
 use zaino_testutils::{TestManager, ValidatorKind};
