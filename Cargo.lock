@@ -8516,6 +8516,7 @@ dependencies = [
  "derive_more",
  "futures",
  "hex",
+ "incrementalmerkletree",
  "indexmap 2.11.4",
  "lmdb",
  "lmdb-sys",

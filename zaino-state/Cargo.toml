@@ -68,6 +68,7 @@ tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
+incrementalmerkletree = "*"
 
 [build-dependencies]
 whoami = { workspace = true }
