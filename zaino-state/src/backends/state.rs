@@ -31,8 +31,8 @@ use zaino_fetch::{
             block_subsidy::GetBlockSubsidy,
             peer_info::GetPeerInfo,
             z_validate_address::{
-                InvalidZcashdZValidateAddress, ValidZcashdZValidateAddress, ZValidateAddress,
-                ZcashdZValidateAddress,
+                InvalidZValidateAddress, KnownZValidateAddress, ValidZValidateAddress,
+                ZValidateAddress,
             },
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
@@ -1244,8 +1244,8 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error> {
         let Ok(address) = address.parse::<zcash_address::ZcashAddress>() else {
-            return Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Invalid(
-                InvalidZcashdZValidateAddress::new(),
+            return Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+                InvalidZValidateAddress::new(),
             )));
         };
 
@@ -1260,8 +1260,8 @@ impl ZcashIndexer for StateServiceSubscriber {
             Ok(address) => address,
             Err(err) => {
                 tracing::debug!(?err, "conversion error");
-                return Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Invalid(
-                    InvalidZcashdZValidateAddress::new(),
+                return Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+                    InvalidZValidateAddress::new(),
                 )));
             }
         };
@@ -1273,18 +1273,18 @@ impl ZcashIndexer for StateServiceSubscriber {
                 //     ValidZcashdZValidateAddress::
                 // )))
             }
-            Address::Unified(u) => Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Valid(
-                ValidZcashdZValidateAddress::unified(u.encode(&self.network().to_zebra_network())),
+            Address::Unified(u) => Ok(ZValidateAddress::Known(KnownZValidateAddress::Valid(
+                ValidZValidateAddress::unified(u.encode(&self.network().to_zebra_network())),
             ))),
-            Address::Sapling(s) => Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Valid(
-                ValidZcashdZValidateAddress::sapling(
+            Address::Sapling(s) => Ok(ZValidateAddress::Known(KnownZValidateAddress::Valid(
+                ValidZValidateAddress::sapling(
                     s.encode(&self.network().to_zebra_network()),
                     String::from_utf8(s.diversifier().0.to_vec()).unwrap(),
                     s.pk_d().inner().to_string(),
                 ),
             ))),
-            _ => Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Invalid(
-                InvalidZcashdZValidateAddress::new(),
+            _ => Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+                InvalidZValidateAddress::new(),
             ))),
         }
     }

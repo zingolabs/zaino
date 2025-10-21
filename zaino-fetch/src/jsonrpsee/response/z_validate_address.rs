@@ -3,7 +3,6 @@
 use std::convert::Infallible;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
-use zebra_rpc::client::ZValidateAddressResponse;
 
 use crate::jsonrpsee::connector::ResponseToError;
 
@@ -11,11 +10,8 @@ use crate::jsonrpsee::connector::ResponseToError;
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub enum ZValidateAddress {
-    /// The `zcashd` typed response.
-    Zcashd(ZcashdZValidateAddress),
-
-    /// The `zebrad` typed response.
-    Zebrad(ZValidateAddressResponse),
+    /// Known response.
+    Known(KnownZValidateAddress),
 
     /// Unknown response.
     Unknown,
@@ -28,29 +24,29 @@ impl ResponseToError for ZValidateAddress {
 /// Response type for the `z_validateaddress` RPC for zcashd.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ZcashdZValidateAddress {
+pub enum KnownZValidateAddress {
     /// Valid response.
-    Valid(ValidZcashdZValidateAddress),
+    Valid(ValidZValidateAddress),
 
     /// Invalid response.
-    Invalid(InvalidZcashdZValidateAddress),
+    Invalid(InvalidZValidateAddress),
 }
 
 /// The "invalid" shape is just `{ "isvalid": false }`
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct InvalidZcashdZValidateAddress {
+pub struct InvalidZValidateAddress {
     #[serde(rename = "isvalid")]
     is_valid: bool,
 }
 
-impl InvalidZcashdZValidateAddress {
+impl InvalidZValidateAddress {
     /// Create a new invalid response.
     pub fn new() -> Self {
         Self { is_valid: false }
     }
 }
 
-impl<'de> Deserialize<'de> for InvalidZcashdZValidateAddress {
+impl<'de> Deserialize<'de> for InvalidZValidateAddress {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Raw {
@@ -61,7 +57,7 @@ impl<'de> Deserialize<'de> for InvalidZcashdZValidateAddress {
         if is_valid {
             return Err(de::Error::custom("invalid branch must have isvalid=false"));
         }
-        Ok(InvalidZcashdZValidateAddress { is_valid })
+        Ok(InvalidZValidateAddress { is_valid })
     }
 }
 
@@ -69,23 +65,23 @@ impl<'de> Deserialize<'de> for InvalidZcashdZValidateAddress {
 /// `#[serde(transparent)]` lets it serialize like the inner enum.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct ValidZcashdZValidateAddress(ValidInner);
+pub struct ValidZValidateAddress(AddressData);
 
-impl<'de> Deserialize<'de> for ValidZcashdZValidateAddress {
+impl<'de> Deserialize<'de> for ValidZValidateAddress {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let inner = ValidInner::deserialize(d)?;
+        let inner = AddressData::deserialize(d)?;
         if !inner.common().is_valid {
             return Err(de::Error::custom("valid branch must have isvalid=true"));
         }
-        Ok(ValidZcashdZValidateAddress(inner))
+        Ok(ValidZValidateAddress(inner))
     }
 }
 
 /// The "valid" response. Can be P2PKH, P2SH, Sprout, Sapling, or Unified.
-impl ValidZcashdZValidateAddress {
+impl ValidZValidateAddress {
     /// Creates a response for a P2PKH address.
     pub fn p2pkh(address: impl Into<String>) -> Self {
-        Self(ValidInner::P2pkh {
+        Self(AddressData::P2pkh {
             common: CommonValidFields::valid(address),
             is_mine: IsMine::Unknown,
         })
@@ -93,7 +89,7 @@ impl ValidZcashdZValidateAddress {
 
     /// Creates a response for a P2SH address.
     pub fn p2sh(address: impl Into<String>) -> Self {
-        Self(ValidInner::P2sh {
+        Self(AddressData::P2sh {
             common: CommonValidFields::valid(address),
             is_mine: IsMine::Unknown,
         })
@@ -105,7 +101,7 @@ impl ValidZcashdZValidateAddress {
         paying_key: impl Into<String>,
         transmission_key: impl Into<String>,
     ) -> Self {
-        Self(ValidInner::Sprout {
+        Self(AddressData::Sprout {
             common: CommonValidFields::valid(address),
             paying_key: paying_key.into(),
             transmission_key: transmission_key.into(),
@@ -119,7 +115,7 @@ impl ValidZcashdZValidateAddress {
         diversifier: impl Into<String>,
         diversified_transmission_key: impl Into<String>,
     ) -> Self {
-        Self(ValidInner::Sapling {
+        Self(AddressData::Sapling {
             common: CommonValidFields::valid(address),
             diversifier: diversifier.into(),
             diversified_transmission_key: diversified_transmission_key.into(),
@@ -129,7 +125,7 @@ impl ValidZcashdZValidateAddress {
 
     /// Creates a response for a Unified address.
     pub fn unified(address: impl Into<String>) -> Self {
-        Self(ValidInner::Unified {
+        Self(AddressData::Unified {
             common: CommonValidFields::valid(address),
         })
     }
@@ -143,11 +139,11 @@ impl ValidZcashdZValidateAddress {
     /// Adds an `ismine` field.
     pub fn with_is_mine(mut self, v: IsMine) -> Self {
         match &mut self.0 {
-            ValidInner::P2pkh { is_mine, .. }
-            | ValidInner::P2sh { is_mine, .. }
-            | ValidInner::Sprout { is_mine, .. }
-            | ValidInner::Sapling { is_mine, .. } => *is_mine = v,
-            ValidInner::Unified { .. } => { /* UA has no `ismine` in zcashd */ }
+            AddressData::P2pkh { is_mine, .. }
+            | AddressData::P2sh { is_mine, .. }
+            | AddressData::Sprout { is_mine, .. }
+            | AddressData::Sapling { is_mine, .. } => *is_mine = v,
+            AddressData::Unified { .. } => { /* UA has no `ismine` in zcashd */ }
         }
         self
     }
@@ -160,11 +156,11 @@ impl ValidZcashdZValidateAddress {
     /// Returns the address type.
     pub fn address_type(&self) -> ZValidateAddressType {
         match &self.0 {
-            ValidInner::P2pkh { .. } => ZValidateAddressType::P2pkh,
-            ValidInner::P2sh { .. } => ZValidateAddressType::P2sh,
-            ValidInner::Sprout { .. } => ZValidateAddressType::Sprout,
-            ValidInner::Sapling { .. } => ZValidateAddressType::Sapling,
-            ValidInner::Unified { .. } => ZValidateAddressType::Unified,
+            AddressData::P2pkh { .. } => ZValidateAddressType::P2pkh,
+            AddressData::P2sh { .. } => ZValidateAddressType::P2sh,
+            AddressData::Sprout { .. } => ZValidateAddressType::Sprout,
+            AddressData::Sapling { .. } => ZValidateAddressType::Sapling,
+            AddressData::Unified { .. } => ZValidateAddressType::Unified,
         }
     }
 
@@ -176,17 +172,17 @@ impl ValidZcashdZValidateAddress {
     /// Returns the `ismine` field.
     pub fn is_mine(&self) -> IsMine {
         match &self.0 {
-            ValidInner::P2pkh { is_mine, .. }
-            | ValidInner::P2sh { is_mine, .. }
-            | ValidInner::Sprout { is_mine, .. }
-            | ValidInner::Sapling { is_mine, .. } => is_mine.clone(),
-            ValidInner::Unified { .. } => IsMine::Unknown,
+            AddressData::P2pkh { is_mine, .. }
+            | AddressData::P2sh { is_mine, .. }
+            | AddressData::Sprout { is_mine, .. }
+            | AddressData::Sapling { is_mine, .. } => is_mine.clone(),
+            AddressData::Unified { .. } => IsMine::Unknown,
         }
     }
 
     /// Returns the `payingkey` and `transmissionkey` fields.
     pub fn sprout_keys(&self) -> Option<(&str, &str)> {
-        if let ValidInner::Sprout {
+        if let AddressData::Sprout {
             paying_key,
             transmission_key,
             ..
@@ -200,7 +196,7 @@ impl ValidZcashdZValidateAddress {
 
     /// Returns the `diversifier` and `diversifiedtransmissionkey` fields.
     pub fn sapling_keys(&self) -> Option<(&str, &str)> {
-        if let ValidInner::Sapling {
+        if let AddressData::Sapling {
             diversifier,
             diversified_transmission_key,
             ..
@@ -214,20 +210,20 @@ impl ValidZcashdZValidateAddress {
 
     fn common(&self) -> &CommonValidFields {
         match &self.0 {
-            ValidInner::P2pkh { common, .. }
-            | ValidInner::P2sh { common, .. }
-            | ValidInner::Sprout { common, .. }
-            | ValidInner::Sapling { common, .. }
-            | ValidInner::Unified { common, .. } => common,
+            AddressData::P2pkh { common, .. }
+            | AddressData::P2sh { common, .. }
+            | AddressData::Sprout { common, .. }
+            | AddressData::Sapling { common, .. }
+            | AddressData::Unified { common, .. } => common,
         }
     }
     fn common_mut(&mut self) -> &mut CommonValidFields {
         match &mut self.0 {
-            ValidInner::P2pkh { common, .. }
-            | ValidInner::P2sh { common, .. }
-            | ValidInner::Sprout { common, .. }
-            | ValidInner::Sapling { common, .. }
-            | ValidInner::Unified { common, .. } => common,
+            AddressData::P2pkh { common, .. }
+            | AddressData::P2sh { common, .. }
+            | AddressData::Sprout { common, .. }
+            | AddressData::Sapling { common, .. }
+            | AddressData::Unified { common, .. } => common,
         }
     }
 }
@@ -301,7 +297,7 @@ impl From<IsMine> for Option<bool> {
 /// Note that the `ismine` field is only present for `zcashd`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "address_type", rename_all = "lowercase")]
-enum ValidInner {
+enum AddressData {
     /// Transparent P2PKH
     P2pkh {
         #[serde(flatten)]
@@ -350,14 +346,14 @@ enum ValidInner {
     },
 }
 
-impl ValidInner {
+impl AddressData {
     fn common(&self) -> &CommonValidFields {
         match self {
-            ValidInner::P2pkh { common, .. }
-            | ValidInner::P2sh { common, .. }
-            | ValidInner::Sprout { common, .. }
-            | ValidInner::Sapling { common, .. }
-            | ValidInner::Unified { common, .. } => common,
+            AddressData::P2pkh { common, .. }
+            | AddressData::P2sh { common, .. }
+            | AddressData::Sprout { common, .. }
+            | AddressData::Sapling { common, .. }
+            | AddressData::Unified { common, .. } => common,
         }
     }
 }
