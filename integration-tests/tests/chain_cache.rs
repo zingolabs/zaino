@@ -612,7 +612,7 @@ mod chain_query_interface {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn repro_nfs_drain() {
+    async fn repro_nonfinalstate_drain_states() {
         let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(
                 &ValidatorKind::Zebrad,
@@ -624,8 +624,9 @@ mod chain_query_interface {
             )
             .await;
 
-        test_manager.generate_blocks_with_delay(200).await;
+        test_manager.generate_blocks_with_delay(110).await;
 
+        dbg!("BLOCK GENERATION COMPLETE");
         let node_tip: zebra_chain::block::Height =
             dbg!(json_service.get_block_count().await.unwrap().into());
 
