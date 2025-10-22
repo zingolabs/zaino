@@ -18,7 +18,7 @@ use crate::{
     CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactSize, CompactTxData,
     FixedEncodedLen as _, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
     SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
-    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerialise as _,
+    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde as _,
 };
 
 use zebra_chain::parameters::NetworkKind;

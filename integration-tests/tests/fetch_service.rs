@@ -612,6 +612,31 @@ async fn assert_fetch_service_difficulty_matches_rpc(validator: &ValidatorKind) 
     assert_eq!(fetch_service_get_difficulty, rpc_difficulty_response.0);
 }
 
+async fn assert_fetch_service_mininginfo_matches_rpc(validator: &ValidatorKind) {
+    let (test_manager, _fetch_service, fetch_service_subscriber) =
+        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+
+    let fetch_service_mining_info = fetch_service_subscriber.get_mining_info().await.unwrap();
+
+    let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+        test_node_and_return_url(
+            test_manager.zebrad_rpc_listen_address,
+            false,
+            None,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap(),
+        "xxxxxx".to_string(),
+        "xxxxxx".to_string(),
+    )
+    .unwrap();
+
+    let rpc_mining_info_response = jsonrpc_client.get_mining_info().await.unwrap();
+    assert_eq!(fetch_service_mining_info, rpc_mining_info_response);
+}
+
 async fn assert_fetch_service_peerinfo_matches_rpc(validator: &ValidatorKind) {
     let (test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
@@ -1549,6 +1574,11 @@ mod zcashd {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn mining_info() {
+            assert_fetch_service_mininginfo_matches_rpc(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn peer_info() {
             assert_fetch_service_peerinfo_matches_rpc(&ValidatorKind::Zcashd).await;
         }
@@ -1756,6 +1786,11 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn difficulty() {
             assert_fetch_service_difficulty_matches_rpc(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn mining_info() {
+            assert_fetch_service_mininginfo_matches_rpc(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -25,12 +25,12 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetBalanceError,
-        GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
-        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
-        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
-        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
-        TxidsResponse,
+        block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire, peer_info::GetPeerInfo,
+        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
+        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
+        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
+        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
+        SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
@@ -721,6 +721,13 @@ impl JsonRpSeeConnector {
     ) -> Result<Vec<GetUtxosResponse>, RpcRequestError<GetUtxosError>> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressutxos", params).await
+    }
+
+    /// Returns a json object containing mining-related information.
+    ///
+    /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
+    pub async fn get_mining_info(&self) -> Result<GetMiningInfoWire, RpcRequestError<Infallible>> {
+        self.send_request("getmininginfo", ()).await
     }
 
     /// Returns the estimated network solutions per second based on the last n blocks.

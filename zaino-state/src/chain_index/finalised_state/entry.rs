@@ -1,7 +1,7 @@
 //! DB stored data wrappers structs.
 
 use crate::{
-    read_fixed_le, version, write_fixed_le, CompactSize, FixedEncodedLen, ZainoVersionedSerialise,
+    read_fixed_le, version, write_fixed_le, CompactSize, FixedEncodedLen, ZainoVersionedSerde,
 };
 
 use blake2::{
@@ -20,14 +20,14 @@ use core2::io::{self, Read, Write};
 /// │ StoredEntry version  │  Record version  │             Body              │ B2B256 hash     │
 /// └──────────────────────┴──────────────────┴───────────────────────────────┴─────────────────┘
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StoredEntryFixed<T: ZainoVersionedSerialise + FixedEncodedLen> {
+pub(crate) struct StoredEntryFixed<T: ZainoVersionedSerde + FixedEncodedLen> {
     /// Inner record
     pub(crate) item: T,
     /// Entry checksum
     pub(crate) checksum: [u8; 32],
 }
 
-impl<T: ZainoVersionedSerialise + FixedEncodedLen> StoredEntryFixed<T> {
+impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     /// Create a new entry, hashing `key || encoded_item`.
     pub(crate) fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
         let body = {
@@ -68,7 +68,7 @@ impl<T: ZainoVersionedSerialise + FixedEncodedLen> StoredEntryFixed<T> {
     }
 }
 
-impl<T: ZainoVersionedSerialise + FixedEncodedLen> ZainoVersionedSerialise for StoredEntryFixed<T> {
+impl<T: ZainoVersionedSerde + FixedEncodedLen> ZainoVersionedSerde for StoredEntryFixed<T> {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -90,7 +90,7 @@ impl<T: ZainoVersionedSerialise + FixedEncodedLen> ZainoVersionedSerialise for S
     }
 }
 
-impl<T: ZainoVersionedSerialise + FixedEncodedLen> FixedEncodedLen for StoredEntryFixed<T> {
+impl<T: ZainoVersionedSerde + FixedEncodedLen> FixedEncodedLen for StoredEntryFixed<T> {
     const ENCODED_LEN: usize = T::VERSIONED_LEN + 32;
 }
 
@@ -101,14 +101,14 @@ impl<T: ZainoVersionedSerialise + FixedEncodedLen> FixedEncodedLen for StoredEnt
 /// │ StoredEntry version │ (length of item.serialize()) │ Record version │        Body        │    Hash    │
 /// └─────────────────────┴──────────────────────────────┴────────────────┴────────────────────┴────────────┘
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StoredEntryVar<T: ZainoVersionedSerialise> {
+pub(crate) struct StoredEntryVar<T: ZainoVersionedSerde> {
     /// Inner record
     pub(crate) item: T,
     /// Entry checksum
     pub(crate) checksum: [u8; 32],
 }
 
-impl<T: ZainoVersionedSerialise> StoredEntryVar<T> {
+impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
     /// Create a new entry, hashing `encoded_key || encoded_item`.
     pub(crate) fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
         let body = {
@@ -146,7 +146,7 @@ impl<T: ZainoVersionedSerialise> StoredEntryVar<T> {
     }
 }
 
-impl<T: ZainoVersionedSerialise> ZainoVersionedSerialise for StoredEntryVar<T> {
+impl<T: ZainoVersionedSerde> ZainoVersionedSerde for StoredEntryVar<T> {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {

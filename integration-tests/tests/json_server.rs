@@ -727,6 +727,30 @@ mod zcashd {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_mining_info() {
+            let (
+                mut test_manager,
+                _zcashd_service,
+                zcashd_subscriber,
+                _zaino_service,
+                zaino_subscriber,
+            ) = create_test_manager_and_fetch_services(false, false).await;
+
+            const BLOCK_LIMIT: i32 = 10;
+
+            for _ in 0..BLOCK_LIMIT {
+                let zcashd_mining_info = zcashd_subscriber.get_mining_info().await.unwrap();
+                let zaino_mining_info = zaino_subscriber.get_mining_info().await.unwrap();
+
+                assert_eq!(zcashd_mining_info, zaino_mining_info);
+
+                test_manager.local_net.generate_blocks(1).await.unwrap();
+            }
+
+            test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn get_peer_info() {
             let (
                 mut test_manager,

@@ -131,15 +131,9 @@ jobs:
           - "integration-tests::state_service"
           - "integration-tests::test_vectors"
           - "integration-tests::wallet_to_validator"
-          - "zaino-fetch"
-          - "zaino-proto"
-          - "zaino-serve"
+          - "zainod::config"
           - "zaino-state"
           - "zaino-testutils"
-          - "zainod"
-          - "zainod::config"
-          - "zainod::bin/zainod"
-
     steps:
       - uses: actions/checkout@v4
 
@@ -175,7 +169,7 @@ jobs:
         env:
           TEST_BINARIES_DIR: ${{ github.workspace }}/test_binaries/bins
         run: |
-          cargo nextest run --verbose --profile ci --retries 2 --no-tests warn --archive-file nextest-archive.tar.zst \
+          cargo nextest run --verbose --profile ci --retries 2 --no-tests fail --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}
 
       - name: Test Summary

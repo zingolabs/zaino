@@ -2,7 +2,7 @@
 //!
 //! This module contains non-database types used for in-memory operations,
 //! conversions, and coordination between database types. These types do NOT
-//! implement `ZainoVersionedSerialise` and are not persisted to disk.
+//! implement `ZainoVersionedSerde` and are not persisted to disk.
 //!
 //! Types in this module:
 //! - BestChainLocation - Transaction location in best chain
