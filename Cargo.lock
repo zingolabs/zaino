@@ -4077,7 +4077,7 @@ dependencies = [
 [[package]]
 name = "pepper-sync"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=f88e1d76ea244d6cc48d7fd4c3a609c6598318dc#f88e1d76ea244d6cc48d7fd4c3a609c6598318dc"
+source = "git+https://github.com/Oscar-Pepper/zingolib.git?branch=debug_chain_index_failures#259e86967aef8db521cd7ee54e766d39331e0171"
 dependencies = [
  "bip32",
  "byteorder",
@@ -9530,7 +9530,7 @@ dependencies = [
 [[package]]
 name = "zingo-memo"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=f88e1d76ea244d6cc48d7fd4c3a609c6598318dc#f88e1d76ea244d6cc48d7fd4c3a609c6598318dc"
+source = "git+https://github.com/Oscar-Pepper/zingolib.git?branch=debug_chain_index_failures#259e86967aef8db521cd7ee54e766d39331e0171"
 dependencies = [
  "zcash_address 0.9.0 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zcash_client_backend 0.19.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
@@ -9542,7 +9542,7 @@ dependencies = [
 [[package]]
 name = "zingo-price"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=f88e1d76ea244d6cc48d7fd4c3a609c6598318dc#f88e1d76ea244d6cc48d7fd4c3a609c6598318dc"
+source = "git+https://github.com/Oscar-Pepper/zingolib.git?branch=debug_chain_index_failures#259e86967aef8db521cd7ee54e766d39331e0171"
 dependencies = [
  "byteorder",
  "reqwest",
@@ -9558,7 +9558,7 @@ dependencies = [
 [[package]]
 name = "zingo-status"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=f88e1d76ea244d6cc48d7fd4c3a609c6598318dc#f88e1d76ea244d6cc48d7fd4c3a609c6598318dc"
+source = "git+https://github.com/Oscar-Pepper/zingolib.git?branch=debug_chain_index_failures#259e86967aef8db521cd7ee54e766d39331e0171"
 dependencies = [
  "byteorder",
  "zcash_primitives 0.24.0",
@@ -9639,7 +9639,7 @@ dependencies = [
 [[package]]
 name = "zingolib"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=f88e1d76ea244d6cc48d7fd4c3a609c6598318dc#f88e1d76ea244d6cc48d7fd4c3a609c6598318dc"
+source = "git+https://github.com/Oscar-Pepper/zingolib.git?branch=debug_chain_index_failures#259e86967aef8db521cd7ee54e766d39331e0171"
 dependencies = [
  "append-only-vec",
  "bech32",

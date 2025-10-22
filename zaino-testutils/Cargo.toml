@@ -33,7 +33,7 @@ zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", 
 zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [ "for_test" ]}
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "f88e1d76ea244d6cc48d7fd4c3a609c6598318dc", features = [
+zingolib = { git = "https://github.com/Oscar-Pepper/zingolib.git", branch = "debug_chain_index_failures", features = [
     "testutils",
 ] }
 
