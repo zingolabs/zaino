@@ -55,14 +55,14 @@ mod chain_query_interface {
         network::ActivationHeights, CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig,
     };
     use zaino_state::{
-        bench::{
-            chain_index::{self, ChainIndex},
-            BlockCacheConfig,
-        },
         chain_index::{
             source::ValidatorConnector,
             types::{BestChainLocation, TransactionHash},
             NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+        },
+        test_dependencies::{
+            chain_index::{self, ChainIndex},
+            BlockCacheConfig,
         },
         Height, StateService, StateServiceConfig, ZcashService as _,
     };

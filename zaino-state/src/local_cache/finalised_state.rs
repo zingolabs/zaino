@@ -680,7 +680,7 @@ impl Drop for FinalisedState {
     }
 }
 
-/// A subscriber to a [`crate::bench::chain_index::non_finalised_state::NonFinalizedState`].
+/// A subscriber to a [`crate::test_dependencies::chain_index::non_finalised_state::NonFinalizedState`].
 #[derive(Debug, Clone)]
 pub struct FinalisedStateSubscriber {
     request_sender: tokio::sync::mpsc::Sender<DbRequest>,

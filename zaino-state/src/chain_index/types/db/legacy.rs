@@ -37,7 +37,7 @@ use std::{fmt, io::Cursor};
 use crate::chain_index::encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
-    write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerialise,
+    write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
 };
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
@@ -142,7 +142,7 @@ impl From<zcash_primitives::block::BlockHash> for BlockHash {
     }
 }
 
-impl ZainoVersionedSerialise for BlockHash {
+impl ZainoVersionedSerde for BlockHash {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -259,7 +259,7 @@ impl From<zcash_primitives::transaction::TxId> for TransactionHash {
     }
 }
 
-impl ZainoVersionedSerialise for TransactionHash {
+impl ZainoVersionedSerde for TransactionHash {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -371,7 +371,7 @@ impl TryFrom<zcash_protocol::consensus::BlockHeight> for Height {
     }
 }
 
-impl ZainoVersionedSerialise for Height {
+impl ZainoVersionedSerde for Height {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -403,7 +403,7 @@ impl FixedEncodedLen for Height {
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct ShardIndex(pub u32);
 
-impl ZainoVersionedSerialise for ShardIndex {
+impl ZainoVersionedSerde for ShardIndex {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -523,7 +523,7 @@ impl From<AddrScript> for [u8; 21] {
     }
 }
 
-impl ZainoVersionedSerialise for AddrScript {
+impl ZainoVersionedSerde for AddrScript {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -588,7 +588,7 @@ impl Outpoint {
     }
 }
 
-impl ZainoVersionedSerialise for Outpoint {
+impl ZainoVersionedSerde for Outpoint {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -668,7 +668,7 @@ impl BlockIndex {
     }
 }
 
-impl ZainoVersionedSerialise for BlockIndex {
+impl ZainoVersionedSerde for BlockIndex {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -748,7 +748,7 @@ impl fmt::Display for ChainWork {
     }
 }
 
-impl ZainoVersionedSerialise for ChainWork {
+impl ZainoVersionedSerde for ChainWork {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -914,7 +914,7 @@ impl BlockData {
     }
 }
 
-impl ZainoVersionedSerialise for BlockData {
+impl ZainoVersionedSerde for BlockData {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -1023,7 +1023,7 @@ impl<'a> TryFrom<&'a [u8]> for EquihashSolution {
     }
 }
 
-impl ZainoVersionedSerialise for EquihashSolution {
+impl ZainoVersionedSerde for EquihashSolution {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -1182,7 +1182,7 @@ impl IndexedBlock {
     }
 }
 
-impl ZainoVersionedSerialise for IndexedBlock {
+impl ZainoVersionedSerde for IndexedBlock {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
@@ -1583,7 +1583,7 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
     }
 }
 
-impl ZainoVersionedSerialise for CompactTxData {
+impl ZainoVersionedSerde for CompactTxData {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
@@ -1628,7 +1628,7 @@ pub struct TransparentCompactTx {
     vout: Vec<TxOutCompact>,
 }
 
-impl ZainoVersionedSerialise for TransparentCompactTx {
+impl ZainoVersionedSerde for TransparentCompactTx {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -1713,7 +1713,7 @@ impl TxInCompact {
     }
 }
 
-impl ZainoVersionedSerialise for TxInCompact {
+impl ZainoVersionedSerde for TxInCompact {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -1776,7 +1776,7 @@ impl ScriptType {
     }
 }
 
-impl ZainoVersionedSerialise for ScriptType {
+impl ZainoVersionedSerde for ScriptType {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -1927,7 +1927,7 @@ impl<T: AsRef<[u8]>> TryFrom<(u64, T)> for TxOutCompact {
     }
 }
 
-impl ZainoVersionedSerialise for TxOutCompact {
+impl ZainoVersionedSerde for TxOutCompact {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2001,7 +2001,7 @@ impl SaplingCompactTx {
     }
 }
 
-impl ZainoVersionedSerialise for SaplingCompactTx {
+impl ZainoVersionedSerde for SaplingCompactTx {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2054,7 +2054,7 @@ impl CompactSaplingSpend {
     }
 }
 
-impl ZainoVersionedSerialise for CompactSaplingSpend {
+impl ZainoVersionedSerde for CompactSaplingSpend {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2124,7 +2124,7 @@ impl CompactSaplingOutput {
     }
 }
 
-impl ZainoVersionedSerialise for CompactSaplingOutput {
+impl ZainoVersionedSerde for CompactSaplingOutput {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2180,7 +2180,7 @@ impl OrchardCompactTx {
     }
 }
 
-impl ZainoVersionedSerialise for OrchardCompactTx {
+impl ZainoVersionedSerde for OrchardCompactTx {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2266,7 +2266,7 @@ impl CompactOrchardAction {
     }
 }
 
-impl ZainoVersionedSerialise for CompactOrchardAction {
+impl ZainoVersionedSerde for CompactOrchardAction {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2327,7 +2327,7 @@ impl TxLocation {
     }
 }
 
-impl ZainoVersionedSerialise for TxLocation {
+impl ZainoVersionedSerde for TxLocation {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2421,7 +2421,7 @@ impl AddrHistRecord {
     }
 }
 
-impl ZainoVersionedSerialise for AddrHistRecord {
+impl ZainoVersionedSerde for AddrHistRecord {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2523,7 +2523,7 @@ impl AddrEventBytes {
     }
 }
 
-impl ZainoVersionedSerialise for AddrEventBytes {
+impl ZainoVersionedSerde for AddrEventBytes {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2592,7 +2592,7 @@ impl ShardRoot {
     }
 }
 
-impl ZainoVersionedSerialise for ShardRoot {
+impl ZainoVersionedSerde for ShardRoot {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2651,7 +2651,7 @@ impl BlockHeaderData {
     }
 }
 
-impl ZainoVersionedSerialise for BlockHeaderData {
+impl ZainoVersionedSerde for BlockHeaderData {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2690,7 +2690,7 @@ impl TxidList {
     }
 }
 
-impl ZainoVersionedSerialise for TxidList {
+impl ZainoVersionedSerde for TxidList {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2715,7 +2715,7 @@ impl ZainoVersionedSerialise for TxidList {
 /// This ensures 1-to-1 indexing with `TxidList`: element *i* matches txid *i*.
 /// `None` keeps the index when the tx lacks this pool.
 ///
-/// **Serialization layout for `TransparentTxList` (implements `ZainoVersionedSerialise`)**
+/// **Serialization layout for `TransparentTxList` (implements `ZainoVersionedSerde`)**
 ///
 /// ┌──────────── byte 0 ─────────────┬────────── CompactSize ─────────────┬──────────── entries ───────────────┐
 /// │ TransparentTxList version tag   │ num_txs (CompactSize) = N          │ [`Option<TransparentCompactTx>`; N]│
@@ -2761,7 +2761,7 @@ impl TransparentTxList {
     }
 }
 
-impl ZainoVersionedSerialise for TransparentTxList {
+impl ZainoVersionedSerde for TransparentTxList {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2790,7 +2790,7 @@ impl ZainoVersionedSerialise for TransparentTxList {
 /// This ensures 1-to-1 indexing with `TxidList`: element *i* matches txid *i*.
 /// `None` keeps the index when the tx lacks this pool.
 ///
-/// **Serialization layout for `SaplingTxList` (implements `ZainoVersionedSerialise`)**
+/// **Serialization layout for `SaplingTxList` (implements `ZainoVersionedSerde`)**
 ///
 /// ┌──────────── byte 0 ─────────────┬────────── CompactSize ─────────────┬──────────── entries ───────────────┐
 /// │ SaplingTxList version tag = 1   │ num_txs (CompactSize) = N          │ [`Option<SaplingCompactTx>`; N]    │
@@ -2840,7 +2840,7 @@ impl SaplingTxList {
     }
 }
 
-impl ZainoVersionedSerialise for SaplingTxList {
+impl ZainoVersionedSerde for SaplingTxList {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2867,7 +2867,7 @@ impl ZainoVersionedSerialise for SaplingTxList {
 /// This ensures 1-to-1 indexing with `TxidList`: element *i* matches txid *i*.
 /// `None` keeps the index when the tx lacks this pool.
 ///
-/// **Serialization layout for `OrchardTxList` (implements `ZainoVersionedSerialise`)**
+/// **Serialization layout for `OrchardTxList` (implements `ZainoVersionedSerde`)**
 ///
 /// ┌──────────── byte 0 ─────────────┬────────── CompactSize ─────────────┬──────────── entries ───────────────┐
 /// │ OrchardTxList version tag = 1   │ num_txs (CompactSize) = N          │ [`Option<OrchardCompactTx>`; N]    │
@@ -2911,7 +2911,7 @@ impl OrchardTxList {
     }
 }
 
-impl ZainoVersionedSerialise for OrchardTxList {
+impl ZainoVersionedSerde for OrchardTxList {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {

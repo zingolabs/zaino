@@ -29,6 +29,7 @@ use zaino_fetch::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
             block_subsidy::GetBlockSubsidy,
+            mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             z_validate_address::{
                 InvalidZValidateAddress, KnownZValidateAddress, ValidZValidateAddress,
@@ -151,7 +152,7 @@ impl StateService {
         .await
     }
 
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "test_dependencies")]
     /// Helper for tests
     pub fn read_state_service(&self) -> &ReadStateService {
         &self.read_state_service
@@ -1177,6 +1178,10 @@ impl ZcashIndexer for StateServiceSubscriber {
         ))
     }
 
+    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+        Ok(self.rpc_client.get_mining_info().await?)
+    }
+
     // No request parameters.
     /// Return the hex encoded hash of the best (tip) block, in the longest block chain.
     /// The Zcash source code is considered canonical:
@@ -1269,6 +1274,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         match address {
             Address::Transparent(t) => {
                 todo!("Differentiate between P2PKH and P2SH")
+                // TODO
                 // Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Valid(
                 //     ValidZcashdZValidateAddress::
                 // )))

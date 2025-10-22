@@ -2,7 +2,7 @@
 //!
 //! WARNING: This is a legacy development database and should not be used in production environments.
 //!
-//! NOTE: This database version was implemented before zaino's `ZainoVersionedSerialised` was defined,
+//! NOTE: This database version was implemented before zaino's `ZainoVersionedSerde` was defined,
 //! for this reason ZainoDB-V0 does not use the standard serialisation schema used elswhere in Zaino.
 
 use crate::{
