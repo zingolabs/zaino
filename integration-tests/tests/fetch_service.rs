@@ -815,43 +815,62 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+/// This test only runs validation for regtest addresses.
+/// The following addresses were generated with `zcashd` on regtest:
+///
+/// - P2PKH: `tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx`
+/// - P2SH: `t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u`
+/// - Sprout: `ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ`
+/// - Sapling: `zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca`
+/// - unified: `uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36`
 async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
 
-    // unified address mainnet: u1l8xunezsvhq8fgzfl7404m450nwnd76zshscn6nfys7vyz2ywyh4cc5daaq0c7q2su5lqfh23sp7fkf3kt27ve5948mzpfdvckzaect2jtte308mkwlycj2u0eac077wu70vqcetkxf
-    // unified address testnet: utest10c5kutapazdnf8ztl3pu43nkfsjx89fy3uuff8tsmxm6s86j37pe7uz94z5jhkl49pqe8yz75rlsaygexk6jpaxwx0esjr8wm5ut7d5s
-    // unified address regtest: uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36
+    let expected_p2pkh = ZValidateAddress::p2pkh("tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx".to_string());
 
-    let expected_validation = AddressData::Unified {
-        common: CommonFields {
-            is_valid: true,
-            address: "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string(), 
-            legacy_type: Some(ZValidateAddressType::Unified)
-        }
-    };
+    let fs_p2pkh = fetch_service_subscriber
+        .z_validate_address("tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx".to_string())
+        .await
+        .unwrap();
 
-    let fetch_service_validate_address = fetch_service_subscriber
+    assert_eq!(fs_p2pkh, expected_p2pkh);
+
+    let expected_p2sh = ZValidateAddress::p2sh("t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u".to_string());
+
+    let fs_p2sh = fetch_service_subscriber
+        .z_validate_address("t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u".to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(fs_p2sh, expected_p2sh);
+
+    let expected_sprout = ZValidateAddress::sprout("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string(), "c8e8797f1fb5e9cf6b2d000177c5994119279a2629970a4f669aed1362a4cca5".to_string(), "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c".to_string());
+
+    let fs_sprout = fetch_service_subscriber
+        .z_validate_address("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(fs_sprout, expected_sprout);
+
+    let expected_sapling = ZValidateAddress::sapling("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string(), "977e0b930ee6c11e4d26f8".to_string(), "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88".to_string());
+
+    let fs_sapling = fetch_service_subscriber
+        .z_validate_address("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(fs_sapling, expected_sapling);
+
+    let expected_unified = ZValidateAddress::unified("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string());
+
+    let fs_unified = fetch_service_subscriber
         .z_validate_address("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string())
         .await
     .unwrap();
 
-    dbg!(&fetch_service_validate_address);
-
-    let fs_inner_validate_address: AddressData = match &fetch_service_validate_address {
-        ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress(common))) => {
-            common.clone()
-        }
-        ZValidateAddress::Known(KnownZValidateAddress::Invalid(_)) => {
-            panic!("expected Valid variant")
-        }
-        ZValidateAddress::Unknown => panic!("expected Known variant"),
-    };
-
-    dbg!(&fs_inner_validate_address);
-    dbg!(&expected_validation);
-
-    assert_eq!(fs_inner_validate_address, expected_validation);
+    assert_eq!(expected_unified, fs_unified);
 
     test_manager.close().await;
 }

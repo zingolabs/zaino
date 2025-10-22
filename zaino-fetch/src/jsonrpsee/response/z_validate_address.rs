@@ -22,6 +22,65 @@ pub enum ZValidateAddress {
     Unknown,
 }
 
+impl ZValidateAddress {
+    /// Constructs an unknown response.
+    pub fn unknown() -> Self {
+        ZValidateAddress::Unknown
+    }
+
+    /// Constructs an invalid response.
+    pub fn invalid() -> Self {
+        ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+            InvalidZValidateAddress::new(),
+        ))
+    }
+
+    /// Constructs a valid response for a P2PKH address.
+    pub fn p2pkh(address: impl Into<String>) -> Self {
+        ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2pkh(
+            address,
+        )))
+    }
+
+    /// Constructs a valid response for a P2SH address.
+    pub fn p2sh(address: impl Into<String>) -> Self {
+        ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2sh(
+            address,
+        )))
+    }
+
+    /// Constructs a valid response for a Sapling address.
+    pub fn sapling(
+        address: impl Into<String>,
+        diversifier: impl Into<String>,
+        diversified_transmission_key: impl Into<String>,
+    ) -> Self {
+        ZValidateAddress::Known(KnownZValidateAddress::Valid(
+            ValidZValidateAddress::sapling(address, diversifier, diversified_transmission_key),
+        ))
+    }
+
+    /// Constructs a valid response for a Sprout address.
+    pub fn sprout(
+        address: impl Into<String>,
+        paying_key: impl Into<String>,
+        transmission_key: impl Into<String>,
+    ) -> Self {
+        ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::sprout(
+            address,
+            paying_key,
+            transmission_key,
+        )))
+    }
+
+    /// Constructs a valid response for a Unified address.
+    pub fn unified(address: impl Into<String>) -> Self {
+        ZValidateAddress::Known(KnownZValidateAddress::Valid(
+            ValidZValidateAddress::unified(address),
+        ))
+    }
+}
+
 impl ResponseToError for ZValidateAddress {
     type RpcError = Infallible;
 }
@@ -95,7 +154,7 @@ impl ValidZValidateAddress {
     pub fn p2pkh(address: impl Into<String>) -> Self {
         Self(AddressData::P2pkh {
             common: CommonFields::valid(address, ZValidateAddressType::P2pkh),
-            is_mine: IsMine::Unknown,
+            is_mine: IsMine::NotMine,
         })
     }
 
@@ -103,7 +162,7 @@ impl ValidZValidateAddress {
     pub fn p2sh(address: impl Into<String>) -> Self {
         Self(AddressData::P2sh {
             common: CommonFields::valid(address, ZValidateAddressType::P2sh),
-            is_mine: IsMine::Unknown,
+            is_mine: IsMine::NotMine,
         })
     }
 
@@ -117,7 +176,7 @@ impl ValidZValidateAddress {
             common: CommonFields::valid(address, ZValidateAddressType::Sprout),
             paying_key: paying_key.into(),
             transmission_key: transmission_key.into(),
-            is_mine: IsMine::Unknown,
+            is_mine: IsMine::NotMine,
         })
     }
 
@@ -131,7 +190,7 @@ impl ValidZValidateAddress {
             common: CommonFields::valid(address, ZValidateAddressType::Sapling),
             diversifier: diversifier.into(),
             diversified_transmission_key: diversified_transmission_key.into(),
-            is_mine: IsMine::Unknown,
+            is_mine: IsMine::NotMine,
         })
     }
 
@@ -241,17 +300,14 @@ impl ValidZValidateAddress {
 }
 
 /// Common fields that appear for all valid responses.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CommonFields {
-    /// Always `true`.
-    #[serde(rename = "isvalid")]
-    pub is_valid: bool,
+    is_valid: bool,
 
     /// The address original provided.
     pub address: String,
 
     /// Deprecated alias for the type. Only present if the node exposes it.
-    #[serde(rename = "type")]
     pub legacy_type: Option<ZValidateAddressType>,
 }
 
@@ -262,6 +318,10 @@ impl CommonFields {
             address: address.into(),
             legacy_type: Some(legacy_type),
         }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        true
     }
 }
 
@@ -393,7 +453,7 @@ impl Serialize for AddressData {
 
         // Common
         let c = self.common();
-        map.serialize_entry("isvalid", &c.is_valid)?;
+        map.serialize_entry("isvalid", &true)?;
         map.serialize_entry("address", &c.address)?;
 
         // Different variants
@@ -475,6 +535,7 @@ impl<'de> Deserialize<'de> for AddressData {
         if !is_valid {
             return Err(de::Error::custom("valid branch must have isvalid=true"));
         }
+
         let address = obj
             .get("address")
             .and_then(|s| s.as_str())
@@ -496,7 +557,7 @@ impl<'de> Deserialize<'de> for AddressData {
         };
 
         let common = CommonFields {
-            is_valid,
+            is_valid: true,
             address,
             legacy_type: Some(tag),
         };
@@ -792,7 +853,7 @@ mod tests {
             ValidZValidateAddress::p2pkh("t1omitted"),
         ));
         let json_value = serde_json::to_value(&v).unwrap();
-        assert!(json_value.get("ismine").is_none());
+        assert_eq!(json_value.get("ismine"), Some(&Value::Bool(false)));
 
         // True/false encoded when set
         let v_true = ZValidateAddress::Known(KnownZValidateAddress::Valid(
