@@ -598,7 +598,9 @@ impl JsonRpSeeConnector {
         address: String,
     ) -> Result<ZValidateAddress, RpcRequestError<Infallible>> {
         let params = vec![serde_json::to_value(address).map_err(RpcRequestError::JsonRpc)?];
-        self.send_request("z_validateaddress", params).await
+        let result = dbg!(self.send_request("z_validateaddress", params).await);
+
+        result
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

@@ -4,6 +4,9 @@ use futures::StreamExt as _;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
+use zaino_fetch::jsonrpsee::response::z_validate_address::{
+    AddressData, CommonFields, KnownZValidateAddress, ValidZValidateAddress, ZValidateAddress, ZValidateAddressType
+};
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
@@ -786,6 +789,53 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
+    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
+        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+
+    // unified address mainnet: u1l8xunezsvhq8fgzfl7404m450nwnd76zshscn6nfys7vyz2ywyh4cc5daaq0c7q2su5lqfh23sp7fkf3kt27ve5948mzpfdvckzaect2jtte308mkwlycj2u0eac077wu70vqcetkxf
+    // unified address testnet: utest10c5kutapazdnf8ztl3pu43nkfsjx89fy3uuff8tsmxm6s86j37pe7uz94z5jhkl49pqe8yz75rlsaygexk6jpaxwx0esjr8wm5ut7d5s
+    // unified address regtest: uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36
+
+
+    let expected_validation = AddressData::Unified {
+        common: CommonFields { 
+            is_valid: true, 
+            address: "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string(), 
+            legacy_type: Some(ZValidateAddressType::Unified) 
+        }
+    };
+
+    let fetch_service_validate_address = fetch_service_subscriber
+        .z_validate_address("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string())
+        .await
+    .unwrap();
+
+
+    dbg!(&fetch_service_validate_address);
+
+    let fs_inner_validate_address: AddressData = match &fetch_service_validate_address {
+        ZValidateAddress::Known(
+            KnownZValidateAddress::Valid(
+                ValidZValidateAddress(common)
+            )
+        ) => common.clone(),
+        ZValidateAddress::Known(
+            KnownZValidateAddress::Invalid(_)
+        ) => {
+            panic!("expected Valid variant")
+        },
+        ZValidateAddress::Unknown => panic!("expected Known variant"),
+    };
+
+    dbg!(&fs_inner_validate_address);
+    dbg!(&expected_validation);
+
+    assert_eq!(fs_inner_validate_address, expected_validation);
+
+    test_manager.close().await;
+}
+
 async fn fetch_service_get_block_nullifiers(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
@@ -1472,6 +1522,11 @@ mod zcashd {
         pub(crate) async fn validate_address() {
             fetch_service_validate_address(&ValidatorKind::Zcashd).await;
         }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn z_validate_address() {
+            fetch_service_z_validate_address(&ValidatorKind::Zcashd).await;
+        }
     }
 
     mod get {
@@ -1681,6 +1736,11 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn validate_address() {
             fetch_service_validate_address(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn z_validate_address() {
+            fetch_service_z_validate_address(&ValidatorKind::Zcashd).await;
         }
     }
 
