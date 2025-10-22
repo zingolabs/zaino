@@ -477,10 +477,15 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 if status.load() == StatusType::Closing {
                     break;
                 }
+                let handle_error = |e| {
+                    tracing::error!("Sync failure: {e:?}. Shutting down.");
+                    status.store(StatusType::CriticalError);
+                    e
+                };
 
                 status.store(StatusType::Syncing);
                 // Sync nfs to chain tip, trimming blocks to finalized tip.
-                nfs.sync(fs.clone()).await?;
+                nfs.sync(fs.clone()).await.map_err(handle_error)?;
 
                 // Sync fs to chain tip - 100.
                 {
@@ -490,7 +495,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             .to_reader()
                             .db_height()
                             .await
-                            .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                            .map_err(|_e| handle_error(SyncError::CannotReadFinalizedState))?
                             .unwrap_or(types::Height(0))
                             .0
                             + 100)
@@ -499,7 +504,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             .to_reader()
                             .db_height()
                             .await
-                            .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                            .map_err(|_e| handle_error(SyncError::CannotReadFinalizedState))?
                             .map(|height| height + 1)
                             .unwrap_or(types::Height(0));
                         let next_finalized_block = snapshot
@@ -510,11 +515,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                     .get(&(next_finalized_height))
                                     .ok_or(SyncError::CompetingSyncProcess)?,
                             )
-                            .ok_or(SyncError::CompetingSyncProcess)?;
+                            .ok_or_else(|| handle_error(SyncError::CompetingSyncProcess))?;
                         // TODO: Handle write errors better (fix db and continue)
                         fs.write_block(next_finalized_block.clone())
                             .await
-                            .map_err(|_e| SyncError::CompetingSyncProcess)?;
+                            .map_err(|_e| handle_error(SyncError::CompetingSyncProcess))?;
                     }
                 }
                 status.store(StatusType::Ready);
