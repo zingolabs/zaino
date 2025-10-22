@@ -53,6 +53,7 @@ fn make_chain() {
                 .unwrap();
             tokio::time::sleep(Duration::from_secs(10)).await;
             let index_reader = indexer.subscriber().await;
+            dbg!(index_reader.status());
             let snapshot = index_reader.snapshot_nonfinalized_state();
             dbg!(snapshot.best_chaintip());
         });
@@ -301,7 +302,7 @@ fn make_branching_chain(
                 ledger,
                 chain_size,
                 arbitrary::allow_all_transparent_coinbase_spends,
-                false,
+                true,
             )
         })
         .prop_flat_map(|segment| {
@@ -325,7 +326,7 @@ fn make_branching_chain(
                         ledger.clone(),
                         chain_size,
                         arbitrary::allow_all_transparent_coinbase_spends,
-                        false,
+                        true,
                     )
                 })
                 .take(num_branches)
