@@ -8,13 +8,17 @@ use tonic::async_trait;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
-    fmt::SummaryDebug,
+    fmt::{HexDebug, SummaryDebug},
+    parameters::{NetworkUpgrade, GENESIS_PREVIOUS_BLOCK_HASH},
     LedgerState,
 };
 use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
-    chain_index::{source::BlockchainSourceResult, tests::init_tracing, NonFinalizedSnapshot},
+    chain_index::{
+        source::BlockchainSourceResult, tests::init_tracing, types::GENESIS_HEIGHT,
+        NonFinalizedSnapshot,
+    },
     BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
     TransactionHash,
 };
@@ -22,10 +26,16 @@ use crate::{
 #[test]
 fn make_chain() {
     init_tracing();
-    proptest::proptest!(|(segments in make_branching_chain(2, 12))| {
+    // default is 256. As each case takes multiple seconds, this seems too many.
+    proptest::proptest!(proptest::test_runner::Config::with_cases(32), |(segments in make_branching_chain(2, 12))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
             let (genesis_segment, branching_segments) = segments;
+            for block in genesis_segment.clone() {
+                dbg!(block.coinbase_height());
+                dbg!(block.commitment(&Network::Regtest(ActivationHeights::default()).to_zebra_network()));
+
+            }
             let mockchain = ProptestMockchain {
                 genesis_segment,
                 branching_segments,
@@ -51,7 +61,7 @@ fn make_chain() {
             let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             let index_reader = indexer.subscriber().await;
             dbg!(index_reader.status());
             let snapshot = index_reader.snapshot_nonfinalized_state();
@@ -282,6 +292,8 @@ impl BlockchainSource for ProptestMockchain {
             for block in self_clone.all_blocks_arb_branch_order() {
                 sender.send((block.hash(), block.clone())).await.unwrap()
             }
+            // don't drop the sender
+            std::mem::forget(sender);
         })())
         .await
         .unwrap();
@@ -296,42 +308,105 @@ fn make_branching_chain(
     SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>,
     Vec<SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>>,
 )> {
-    arbitrary::LedgerState::genesis_strategy(None, None, true)
-        .prop_flat_map(move |ledger| {
+    arbitrary::LedgerState::arbitrary_with(LedgerStateOverride {
+        height_override: Some(GENESIS_HEIGHT.into()),
+        previous_block_hash_override: Some(GENESIS_PREVIOUS_BLOCK_HASH),
+        network_upgrade_override: Some(NetworkUpgrade::Genesis),
+        transaction_version_override: None,
+        transaction_has_valid_network_upgrade: true,
+        always_has_coinbase: true,
+    })
+    .prop_flat_map(move |ledger| {
+        zebra_chain::block::Block::partial_chain_strategy(
+            ledger,
+            1,
+            arbitrary::allow_all_transparent_coinbase_spends,
+            true,
+        )
+    })
+    .prop_flat_map(|segment| {
+        (
+            Just(segment.clone()),
+            LedgerState::arbitrary_with(LedgerStateOverride {
+                height_override: segment.last().unwrap().coinbase_height().unwrap() + 1,
+                previous_block_hash_override: Some(segment.last().unwrap().hash()),
+                network_upgrade_override: Some(NetworkUpgrade::Canopy),
+                transaction_version_override: None,
+                transaction_has_valid_network_upgrade: true,
+                always_has_coinbase: true,
+            }),
+        )
+    })
+    .prop_flat_map(move |(segment, ledger)| {
+        (
+            Just(segment),
+            zebra_chain::block::Block::partial_chain_strategy(
+                ledger,
+                1,
+                arbitrary::allow_all_transparent_coinbase_spends,
+                true,
+            ),
+        )
+    })
+    .prop_flat_map(|(mut segment, mut segment2)| {
+        // We need to manually set the commitment to ChainHistoryActivationReserved
+        // as arbitrary block generation doesn'r enforce this
+        Arc::get_mut(&mut Arc::get_mut(segment2.first_mut().unwrap()).unwrap().header)
+            .unwrap()
+            .commitment_bytes = HexDebug([0; 32]);
+
+        segment.extend_from_slice(&segment2);
+        (
+            Just(segment.clone()),
+            LedgerState::arbitrary_with(LedgerStateOverride {
+                height_override: segment.last().unwrap().coinbase_height().unwrap() + 1,
+                previous_block_hash_override: Some(segment.last().unwrap().hash()),
+                network_upgrade_override: Some(NetworkUpgrade::Nu6),
+                transaction_version_override: None,
+                transaction_has_valid_network_upgrade: true,
+                always_has_coinbase: true,
+            }),
+        )
+    })
+    .prop_flat_map(move |(segment, ledger)| {
+        (
+            Just(segment),
             zebra_chain::block::Block::partial_chain_strategy(
                 ledger,
                 chain_size,
                 arbitrary::allow_all_transparent_coinbase_spends,
                 true,
-            )
-        })
-        .prop_flat_map(|segment| {
-            (
-                Just(segment.clone()),
-                LedgerState::arbitrary_with(LedgerStateOverride {
-                    height_override: segment.last().unwrap().coinbase_height().unwrap() + 1,
-                    previous_block_hash_override: Some(segment.last().unwrap().hash()),
-                    network_upgrade_override: None,
-                    transaction_version_override: None,
-                    transaction_has_valid_network_upgrade: true,
-                    always_has_coinbase: true,
-                }),
-            )
-        })
-        .prop_flat_map(move |(segment, ledger)| {
-            (
-                Just(segment),
-                std::iter::repeat_with(|| {
-                    zebra_chain::block::Block::partial_chain_strategy(
-                        ledger.clone(),
-                        chain_size,
-                        arbitrary::allow_all_transparent_coinbase_spends,
-                        true,
-                    )
-                })
-                .take(num_branches)
-                .collect::<Vec<_>>(),
-            )
-        })
-        .boxed()
+            ),
+        )
+    })
+    .prop_flat_map(|(mut segment1, segment2)| {
+        segment1.extend_from_slice(&segment2);
+        (
+            Just(segment1.clone()),
+            LedgerState::arbitrary_with(LedgerStateOverride {
+                height_override: segment1.last().unwrap().coinbase_height().unwrap() + 1,
+                previous_block_hash_override: Some(segment1.last().unwrap().hash()),
+                network_upgrade_override: Some(NetworkUpgrade::Nu6),
+                transaction_version_override: None,
+                transaction_has_valid_network_upgrade: true,
+                always_has_coinbase: true,
+            }),
+        )
+    })
+    .prop_flat_map(move |(segment, ledger)| {
+        (
+            Just(segment),
+            std::iter::repeat_with(|| {
+                zebra_chain::block::Block::partial_chain_strategy(
+                    ledger.clone(),
+                    chain_size,
+                    arbitrary::allow_all_transparent_coinbase_spends,
+                    true,
+                )
+            })
+            .take(num_branches)
+            .collect::<Vec<_>>(),
+        )
+    })
+    .boxed()
 }

@@ -342,11 +342,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 )))
             })?
         {
-            dbg!("got block", block.coinbase_height().unwrap());
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == best_tip.blockhash {
                 // Normal chain progression
-                dbg!("normal chain");
                 let prev_block = match new_blocks.last() {
                     Some(block) => block,
                     None => initial_state
@@ -365,7 +363,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         })?,
                 };
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
-                dbg!("created chainblock");
                 info!(
                     "syncing block {} at height {}",
                     &chainblock.index().hash(),
@@ -706,7 +703,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 )))
             })?;
 
-        dbg!("making block");
         Self::create_indexed_block_with_optional_roots(
             block,
             &tree_roots,
@@ -728,7 +724,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<TreeRootData, super::source::BlockchainSourceError> {
         let (sapling_root_and_len, orchard_root_and_len) =
             self.source.get_commitment_tree_roots(block_hash).await?;
-        dbg!("got roots");
 
         Ok(TreeRootData {
             sapling: sapling_root_and_len,
