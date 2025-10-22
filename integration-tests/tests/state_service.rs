@@ -1375,7 +1375,80 @@ mod zebrad {
             }
         }
 
+        mod validation {
+            use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
+            use zaino_state::ZcashIndexer;
+            use zaino_testutils::ValidatorKind;
+
+            use crate::create_test_manager_and_services;
+
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            pub(crate) async fn z_validate_address() {
+                let (
+                    mut test_manager,
+                    _fetch_service,
+                    _fetch_service_subscriber,
+                    _state_service,
+                    state_service_subscriber,
+                ) = create_test_manager_and_services(
+                    &ValidatorKind::Zebrad,
+                    None,
+                    true,
+                    true,
+                    None,
+                )
+                .await;
+
+                let expected_p2pkh =
+                    ZValidateAddress::p2pkh("tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx".to_string());
+
+                let fs_p2pkh = state_service_subscriber
+                    .z_validate_address("tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx".to_string())
+                    .await
+                    .unwrap();
+
+                assert_eq!(fs_p2pkh, expected_p2pkh);
+
+                let expected_p2sh =
+                    ZValidateAddress::p2sh("t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u".to_string());
+
+                let fs_p2sh = state_service_subscriber
+                    .z_validate_address("t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u".to_string())
+                    .await
+                    .unwrap();
+
+                assert_eq!(fs_p2sh, expected_p2sh);
+
+                let expected_sprout = ZValidateAddress::sprout("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string(), "c8e8797f1fb5e9cf6b2d000177c5994119279a2629970a4f669aed1362a4cca5".to_string(), "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c".to_string());
+
+                let fs_sprout = state_service_subscriber.z_validate_address("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string()).await.unwrap();
+
+                // assert_eq!(fs_sprout, expected_sprout);
+
+                let expected_sapling = ZValidateAddress::sapling("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string(), "977e0b930ee6c11e4d26f8".to_string(), "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88".to_string());
+
+                let fs_sapling = state_service_subscriber
+        .z_validate_address("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string())
+        .await
+        .unwrap();
+
+                assert_eq!(fs_sapling, expected_sapling);
+
+                let expected_unified = ZValidateAddress::unified("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string());
+
+                let fs_unified = state_service_subscriber
+        .z_validate_address("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string())
+        .await
+    .unwrap();
+
+                assert_eq!(expected_unified, fs_unified);
+
+                test_manager.close().await;
+            }
+        }
+
         mod z {
+
             use super::*;
 
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

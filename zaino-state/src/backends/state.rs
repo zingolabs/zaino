@@ -32,8 +32,7 @@ use zaino_fetch::{
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             z_validate_address::{
-                InvalidZValidateAddress, KnownZValidateAddress, ValidZValidateAddress,
-                ZValidateAddress,
+                InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddress,
             },
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
@@ -48,6 +47,7 @@ use zaino_proto::proto::{
     },
 };
 
+use zcash_primitives::legacy::TransparentAddress;
 use zcash_protocol::consensus::NetworkType;
 use zebra_chain::{
     block::{Header, Height, SerializedBlock},
@@ -1248,18 +1248,17 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error> {
-        let Ok(address) = address.parse::<zcash_address::ZcashAddress>() else {
+        let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
             return Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
                 InvalidZValidateAddress::new(),
             )));
         };
 
-        let address = match address.convert_if_network::<Address>(
+        let converted_address = match parsed_address.convert_if_network::<Address>(
             match self.config.network.to_zebra_network().kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
-                // As regtest does not have a specified HRP, we use the same HRP as testnet
-                NetworkKind::Regtest => NetworkType::Test,
+                NetworkKind::Regtest => NetworkType::Regtest,
             },
         ) {
             Ok(address) => address,
@@ -1271,24 +1270,25 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        match address {
-            Address::Transparent(t) => {
-                todo!("Differentiate between P2PKH and P2SH")
-                // TODO
-                // Ok(ZValidateAddress::Zcashd(ZcashdZValidateAddress::Valid(
-                //     ValidZcashdZValidateAddress::
-                // )))
-            }
-            Address::Unified(u) => Ok(ZValidateAddress::Known(KnownZValidateAddress::Valid(
-                ValidZValidateAddress::unified(u.encode(&self.network().to_zebra_network())),
-            ))),
-            Address::Sapling(s) => Ok(ZValidateAddress::Known(KnownZValidateAddress::Valid(
-                ValidZValidateAddress::sapling(
+        match converted_address {
+            Address::Transparent(t) => match t {
+                TransparentAddress::PublicKeyHash(_) => Ok(ZValidateAddress::p2pkh(address)),
+                TransparentAddress::ScriptHash(_) => Ok(ZValidateAddress::p2sh(address)),
+            },
+            Address::Unified(u) => Ok(ZValidateAddress::unified(
+                u.encode(&self.network().to_zebra_network()),
+            )),
+            Address::Sapling(s) => {
+                let bytes = s.to_bytes();
+                let mut pk_d = bytes[11..].to_vec(); // TODO: See if in a newer version this is no longer needed
+                pk_d.reverse();
+
+                Ok(ZValidateAddress::sapling(
                     s.encode(&self.network().to_zebra_network()),
-                    String::from_utf8(s.diversifier().0.to_vec()).unwrap(),
-                    s.pk_d().inner().to_string(),
-                ),
-            ))),
+                    hex::encode(s.diversifier().0),
+                    hex::encode(pk_d),
+                ))
+            }
             _ => Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
                 InvalidZValidateAddress::new(),
             ))),

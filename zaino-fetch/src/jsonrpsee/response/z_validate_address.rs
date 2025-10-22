@@ -133,6 +133,7 @@ impl<'de> Deserialize<'de> for InvalidZValidateAddress {
 }
 
 // TODO: `AddressData` should probably be private and exposed through an `inner` accessor.
+/// Represents the "valid" response. The other fields are part of [`AddressData`].
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct ValidZValidateAddress(pub AddressData);
@@ -320,6 +321,7 @@ impl CommonFields {
         }
     }
 
+    /// Returns whether the address is valid.
     pub fn is_valid(&self) -> bool {
         true
     }

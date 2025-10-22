@@ -4,10 +4,7 @@ use futures::StreamExt as _;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
-use zaino_fetch::jsonrpsee::response::z_validate_address::{
-    AddressData, CommonFields, KnownZValidateAddress, ValidZValidateAddress, ZValidateAddress,
-    ZValidateAddressType,
-};
+use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,

@@ -294,12 +294,20 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
-    /// tags: blockchain
+    /// tags: util
     async fn validate_address(
         &self,
         address: String,
     ) -> Result<ValidateAddressResponse, Self::Error>;
 
+    /// Return information about the given address.
+    ///
+    /// # Parameters
+    /// - `address`: (string, required) The address to validate.
+    ///
+    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
+    /// method: post
+    /// tags: util
     async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error>;
 
     /// Returns the hash of the best block (tip) of the longest chain.

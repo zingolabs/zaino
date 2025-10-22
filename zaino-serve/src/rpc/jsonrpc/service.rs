@@ -139,6 +139,14 @@ pub trait ZcashIndexerRpc {
         address: String,
     ) -> Result<ValidateAddressResponse, ErrorObjectOwned>;
 
+    /// Return information about the given address.
+    ///
+    /// # Parameters
+    /// - `address`: (string, required) The address to validate.
+    ///
+    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
+    /// method: post
+    /// tags: util
     #[method(name = "z_validateaddress")]
     async fn z_validate_address(
         &self,

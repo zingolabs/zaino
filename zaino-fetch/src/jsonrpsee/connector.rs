@@ -593,6 +593,14 @@ impl JsonRpSeeConnector {
         self.send_request("validateaddress", params).await
     }
 
+    /// Return information about the given address.
+    ///
+    /// # Parameters
+    /// - `address`: (string, required) The address to validate.
+    ///
+    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
+    /// method: post
+    /// tags: util
     pub async fn z_validate_address(
         &self,
         address: String,
