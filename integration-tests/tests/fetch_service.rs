@@ -1781,7 +1781,7 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn z_validate_address() {
-            fetch_service_z_validate_address(&ValidatorKind::Zcashd).await;
+            fetch_service_z_validate_address(&ValidatorKind::Zebrad).await;
         }
     }
 
