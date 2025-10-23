@@ -215,7 +215,7 @@ impl ValidZValidateAddress {
             | AddressData::P2sh { is_mine, .. }
             | AddressData::Sprout { is_mine, .. }
             | AddressData::Sapling { is_mine, .. } => *is_mine = v,
-            AddressData::Unified { .. } => { /* UA has no `ismine` in zcashd */ }
+            AddressData::Unified { .. } => {}
         }
         self
     }
@@ -635,6 +635,9 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
+    /// Verifies that a type can be serialized and deserialized with the same shape.
+    ///
+    /// If the type does not have the same shape after serialization and deserialization, this function will panic.
     fn roundtrip<T>(value: &T)
     where
         T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + PartialEq,
@@ -646,13 +649,11 @@ mod tests {
 
     #[test]
     fn invalid_roundtrip_and_shape() {
-        let v = ZValidateAddress::Known(KnownZValidateAddress::Invalid(
-            InvalidZValidateAddress::new(),
-        ));
-        roundtrip(&v);
+        let invalid_response = ZValidateAddress::invalid();
+        roundtrip(&invalid_response);
 
-        let j = serde_json::to_value(&v).unwrap();
-        assert_eq!(j, json!({ "isvalid": false }));
+        let json_value = serde_json::to_value(&invalid_response).unwrap();
+        assert_eq!(json_value, json!({ "isvalid": false }));
 
         // Invalid must reject isvalid=true when deserialized directly
         let bad = r#"{ "isvalid": true }"#;
@@ -838,23 +839,23 @@ mod tests {
     #[test]
     fn top_level_unknown_on_null() {
         // Untagged enum with a unit variant means `null` maps to `Unknown`.
-        let v: ZValidateAddress = serde_json::from_str("null").unwrap();
-        match v {
+        let null_value: ZValidateAddress = serde_json::from_str("null").unwrap();
+        match null_value {
             ZValidateAddress::Unknown => {}
             _ => panic!("expected Unknown"),
         }
 
         // Serializing Unknown produces `null`.
-        let s = serde_json::to_string(&ZValidateAddress::Unknown).unwrap();
-        assert_eq!(s, "null");
+        let null_serialized = serde_json::to_string(&ZValidateAddress::Unknown).unwrap();
+        assert_eq!(null_serialized, "null");
     }
 
     #[test]
-    fn ismine_tri_state_json_behavior() {
-        let v = ZValidateAddress::Known(KnownZValidateAddress::Valid(
+    fn ismine_state_json_behavior() {
+        let valid_p2pkh = ZValidateAddress::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::p2pkh("t1omitted"),
         ));
-        let json_value = serde_json::to_value(&v).unwrap();
+        let json_value = serde_json::to_value(&valid_p2pkh).unwrap();
         assert_eq!(json_value.get("ismine"), Some(&Value::Bool(false)));
 
         // True/false encoded when set
@@ -872,13 +873,19 @@ mod tests {
 
     #[test]
     fn helpers_return_expected_values() {
-        let v =
+        let sapling_with_ismine =
             ValidZValidateAddress::sapling("zs1addr", "dhex", "pkdhex").with_is_mine(IsMine::Mine);
-        assert_eq!(v.address(), "zs1addr");
-        assert_eq!(v.address_type(), ZValidateAddressType::Sapling);
-        assert_eq!(v.legacy_type(), Some(ZValidateAddressType::Sapling));
-        assert_eq!(v.is_mine(), IsMine::Mine);
-        assert_eq!(v.sapling_keys(), Some(("dhex", "pkdhex")));
-        assert!(v.sprout_keys().is_none());
+        assert_eq!(sapling_with_ismine.address(), "zs1addr");
+        assert_eq!(
+            sapling_with_ismine.address_type(),
+            ZValidateAddressType::Sapling
+        );
+        assert_eq!(
+            sapling_with_ismine.legacy_type(),
+            Some(ZValidateAddressType::Sapling)
+        );
+        assert_eq!(sapling_with_ismine.is_mine(), IsMine::Mine);
+        assert_eq!(sapling_with_ismine.sapling_keys(), Some(("dhex", "pkdhex")));
+        assert!(sapling_with_ismine.sprout_keys().is_none());
     }
 }
