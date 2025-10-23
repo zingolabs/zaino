@@ -1270,6 +1270,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
+        // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
         match converted_address {
             Address::Transparent(t) => match t {
                 TransparentAddress::PublicKeyHash(_) => Ok(ZValidateAddress::p2pkh(address)),
