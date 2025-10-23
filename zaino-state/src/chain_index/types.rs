@@ -1703,7 +1703,8 @@ impl CompactTxData {
 
         zaino_proto::proto::compact_formats::CompactTx {
             index: self.index(),
-            hash: self.txid().bytes_in_display_order().to_vec(),
+            hash: self.txid().0.to_vec(),
+            // hash: self.txid().bytes_in_display_order().to_vec(),
             fee,
             spends,
             outputs,
