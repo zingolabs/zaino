@@ -25,13 +25,15 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire, peer_info::GetPeerInfo,
-        z_validate_address::ZValidateAddress, GetBalanceError, GetBalanceResponse,
-        GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
-        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
-        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
-        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
-        TxidsResponse,
+        block_subsidy::GetBlockSubsidy,
+        mining_info::GetMiningInfoWire,
+        peer_info::GetPeerInfo,
+        z_validate_address::{ZValidateAddress, ZValidateAddressError},
+        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
+        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
+        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
+        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
+        SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
@@ -604,11 +606,9 @@ impl JsonRpSeeConnector {
     pub async fn z_validate_address(
         &self,
         address: String,
-    ) -> Result<ZValidateAddress, RpcRequestError<Infallible>> {
+    ) -> Result<ZValidateAddress, RpcRequestError<ZValidateAddressError>> {
         let params = vec![serde_json::to_value(address).map_err(RpcRequestError::JsonRpc)?];
-        let result = dbg!(self.send_request("z_validateaddress", params).await);
-
-        result
+        self.send_request("z_validateaddress", params).await
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

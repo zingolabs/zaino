@@ -1,7 +1,5 @@
 //! Types associated with the `z_validateaddress` RPC request.
 
-use std::convert::Infallible;
-
 use serde::{
     de,
     ser::{SerializeMap, SerializeStruct},
@@ -9,7 +7,15 @@ use serde::{
 };
 use serde_json::Value;
 
-use crate::jsonrpsee::connector::ResponseToError;
+use crate::jsonrpsee::connector::{ResponseToError, RpcError};
+
+/// Error type for the `z_validateaddress` RPC.
+#[derive(Debug, thiserror::Error)]
+pub enum ZValidateAddressError {
+    /// Invalid address encoding
+    #[error("Invalid encoding: {0}")]
+    InvalidEncoding(String),
+}
 
 /// Response type for the `z_validateaddress` RPC.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -82,7 +88,15 @@ impl ZValidateAddress {
 }
 
 impl ResponseToError for ZValidateAddress {
-    type RpcError = Infallible;
+    type RpcError = ZValidateAddressError;
+}
+
+impl TryFrom<RpcError> for ZValidateAddressError {
+    type Error = RpcError;
+
+    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
+        Err(value)
+    }
 }
 
 /// Response type for the `z_validateaddress` RPC for zcashd.
