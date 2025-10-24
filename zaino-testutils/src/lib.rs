@@ -632,7 +632,8 @@ impl Drop for TestManager {
     }
 }
 
-async fn create_fetch_service(
+/// Creates a fetch service and subscriber.
+pub async fn create_fetch_service(
     test_manager: &TestManager,
 ) -> (FetchService, FetchServiceSubscriber) {
     // TODO: to be cleaned
@@ -687,7 +688,8 @@ async fn create_fetch_service(
     (fetch_service, fetch_subscriber)
 }
 
-async fn create_state_service(
+/// Creates a state service and subscriber.
+pub async fn create_state_service(
     test_manager: TestManager,
     chain_cache: Option<PathBuf>,
 ) -> (StateService, StateServiceSubscriber) {

@@ -4,6 +4,7 @@
 
 use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_state::BackendType;
+use zaino_testutils::create_fetch_service;
 use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
 use zaino_testutils::ValidatorKind;
@@ -32,6 +33,7 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
     )
     .await
     .unwrap();
+    let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
     let mut clients = test_manager
         .clients
         .take()
@@ -40,10 +42,10 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -51,7 +53,7 @@ async fn send_to_orchard(validator: &ValidatorKind, backend: &BackendType) {
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -75,6 +77,7 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
     )
     .await
     .unwrap();
+    let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
     let mut clients = test_manager
         .clients
         .take()
@@ -83,10 +86,10 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -94,7 +97,7 @@ async fn send_to_sapling(validator: &ValidatorKind, backend: &BackendType) {
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -118,6 +121,7 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
     )
     .await
     .unwrap();
+    let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
     let mut clients = test_manager
         .clients
         .take()
@@ -126,10 +130,10 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -138,7 +142,7 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
         .await
         .unwrap();
 
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
 
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
@@ -178,7 +182,7 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
     //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
     for height in 1..=99 {
         dbg!("Generating block at height: {}", height);
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -222,26 +226,27 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
     )
     .await
     .unwrap();
+    let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
     let mut clients = test_manager
         .clients
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.generate_blocks_and_poll(2).await;
+    test_manager.generate_blocks_and_poll(2, &fetch_service_subscriber).await;
     clients.faucet.sync_and_await().await.unwrap();
 
     // "Create" 3 orchard notes in faucet.
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -264,7 +269,7 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
     //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
     for height in 1..=100 {
         dbg!("Generating block at height: {}", height);
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -313,6 +318,7 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
     )
     .await
     .unwrap();
+    let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
     let mut clients = test_manager
         .clients
         .take()
@@ -321,10 +327,10 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -339,7 +345,7 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
     //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
     for height in 1..=100 {
         dbg!("Generating block at height: {}", height);
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     }
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -362,7 +368,7 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
         .quick_shield(AccountId::ZERO)
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -389,22 +395,23 @@ async fn monitor_unverified_mempool_for_validator(
     )
     .await
     .unwrap();
+    let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
     let mut clients = test_manager
         .clients
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -493,7 +500,7 @@ async fn monitor_unverified_mempool_for_validator(
         250_000
     );
 
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
 
     println!("\n\nFetching Mined Tx 1!\n");
     let _transaction_1 = dbg!(
