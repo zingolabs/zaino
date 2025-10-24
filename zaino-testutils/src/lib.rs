@@ -18,7 +18,10 @@ use tracing_subscriber::EnvFilter;
 use zaino_common::{
     network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
-use zaino_state::BackendType;
+use zaino_state::{
+    BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer,
+    StateService, StateServiceConfig, StateServiceSubscriber, ZcashService,
+};
 use zainodlib::config::default_ephemeral_cookie_path;
 pub use zcash_local_net as services;
 pub use zcash_local_net::validator::Validator;
@@ -563,7 +566,7 @@ impl TestManager {
 
         // Generate an extra block to turn on NU5 and NU6,
         // as they currently must be turned on at block height = 2.
-        test_manager.generate_blocks_with_delay(1).await;
+        test_manager.local_net.generate_blocks(1).await.unwrap();
 
         Ok(test_manager)
     }
@@ -603,12 +606,13 @@ impl TestManager {
         .await
     }
 
-    /// Generates `blocks` regtest blocks.
-    /// Adds a delay between blocks to allow zaino / zebra to catch up with test.
-    pub async fn generate_blocks_with_delay(&self, blocks: u32) {
-        for _ in 0..blocks {
-            self.local_net.generate_blocks(1).await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    /// Generate `n` blocks for the local network and poll zaino until the chain index is synced to the target height.
+    pub async fn generate_blocks_and_poll(&self, n: u32, indexer: &impl LightWalletIndexer) {
+        let chain_height = self.local_net.get_chain_height().await;
+        self.local_net.generate_blocks(n).await.unwrap();
+        while indexer.get_latest_block().await.unwrap().height < u64::from(chain_height) + n as u64
+        {
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
@@ -626,6 +630,129 @@ impl Drop for TestManager {
             handle.abort();
         };
     }
+}
+
+async fn create_fetch_service(
+    test_manager: &TestManager,
+) -> (FetchService, FetchServiceSubscriber) {
+    // TODO: to be cleaned
+    let (network_type, zaino_sync_bool) = match test_manager.network {
+        NetworkKind::Mainnet => {
+            println!("Waiting for validator to spawn..");
+            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+            (zaino_common::Network::Mainnet, false)
+        }
+        NetworkKind::Testnet => {
+            println!("Waiting for validator to spawn..");
+            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+            (zaino_common::Network::Testnet, false)
+        }
+        NetworkKind::Regtest => (
+            zaino_common::Network::Regtest(test_manager.local_net.get_activation_heights().into()),
+            true,
+        ),
+    };
+
+    let fetch_service = FetchService::spawn(FetchServiceConfig::new(
+        test_manager.zebrad_rpc_listen_address,
+        false,
+        None,
+        None,
+        None,
+        ServiceConfig::default(),
+        StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        network_type,
+        zaino_sync_bool,
+        true,
+    ))
+    .await
+    .unwrap();
+
+    let fetch_subscriber = fetch_service.get_subscriber().inner();
+
+    // TODO: is this necessary?
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    (fetch_service, fetch_subscriber)
+}
+
+async fn create_state_service(
+    test_manager: TestManager,
+    chain_cache: Option<PathBuf>,
+) -> (StateService, StateServiceSubscriber) {
+    // TODO: to be cleaned
+    let network_type = match test_manager.network {
+        NetworkKind::Mainnet => {
+            println!("Waiting for validator to spawn..");
+            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+            zaino_common::Network::Mainnet
+        }
+        NetworkKind::Testnet => {
+            println!("Waiting for validator to spawn..");
+            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+            zaino_common::Network::Testnet
+        }
+        NetworkKind::Regtest => {
+            zaino_common::Network::Regtest(test_manager.local_net.get_activation_heights().into())
+        }
+    };
+
+    let state_chain_cache_dir = match chain_cache {
+        Some(dir) => dir,
+        None => test_manager.data_dir.clone(),
+    };
+
+    let state_service = StateService::spawn(StateServiceConfig::new(
+        zebra_state::Config {
+            cache_dir: state_chain_cache_dir,
+            ephemeral: false,
+            delete_old_database: true,
+            debug_stop_at_height: None,
+            debug_validity_check_interval: None,
+        },
+        test_manager.zebrad_rpc_listen_address,
+        test_manager.zebrad_grpc_listen_address,
+        false,
+        None,
+        None,
+        None,
+        ServiceConfig::default(),
+        StorageConfig {
+            database: DatabaseConfig {
+                path: test_manager
+                    .local_net
+                    .data_dir()
+                    .path()
+                    .to_path_buf()
+                    .join("zaino"),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        network_type,
+        true,
+        true,
+    ))
+    .await
+    .unwrap();
+
+    let state_subscriber = state_service.get_subscriber().inner();
+
+    // TODO: is this necessary?
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    (state_service, state_subscriber)
 }
 
 #[cfg(test)]
@@ -1181,7 +1308,7 @@ mod launch_testmanager {
                     2,
                     u32::from(test_manager.local_net.get_chain_height().await)
                 );
-                test_manager.generate_blocks_with_delay(1).await;
+                test_manager.local_net.generate_blocks(1).await.unwrap();
                 assert_eq!(
                     3,
                     u32::from(test_manager.local_net.get_chain_height().await)
@@ -1284,6 +1411,8 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
+                let (_fetch_service, fetch_service_subscriber) =
+                    create_fetch_service(&test_manager).await;
 
                 let mut clients = test_manager
                     .clients
@@ -1297,7 +1426,9 @@ mod launch_testmanager {
                     .await
                     .unwrap());
 
-                test_manager.generate_blocks_with_delay(100).await;
+                test_manager
+                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1338,7 +1469,12 @@ mod launch_testmanager {
                     .take()
                     .expect("Clients are not initialized");
 
-                test_manager.generate_blocks_with_delay(100).await;
+                let (_fetch_service, fetch_service_subscriber) =
+                    create_fetch_service(&test_manager).await;
+
+                test_manager
+                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1369,7 +1505,9 @@ mod launch_testmanager {
 
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-                test_manager.generate_blocks_with_delay(1).await;
+                test_manager
+                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1392,7 +1530,9 @@ mod launch_testmanager {
                 .await
                 .unwrap();
 
-                test_manager.generate_blocks_with_delay(1).await;
+                test_manager
+                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .await;
                 clients.recipient.sync_and_await().await.unwrap();
                 dbg!(clients
                     .recipient
