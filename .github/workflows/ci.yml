@@ -1,6 +1,7 @@
 name: CI - PR
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     tags:
@@ -19,22 +20,7 @@ env:
 
 jobs:
   compute-tag:
-    name: Compute Docker Image Tag
-    runs-on: ubuntu-latest
-    outputs:
-      image-tag: ${{ steps.taggen.outputs.tag }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Compute version-based image tag
-        id: taggen
-        run: |
-          source .env.testing-artifacts
-          export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DOCKER_DIR_HASH
-          TAG=$(./utils/get-ci-image-tag.sh)
-          echo "TAG= $TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+    uses: ./.github/workflows/compute-tag.yml
 
   build-test-artifacts:
     name: Build test artifacts
@@ -274,6 +260,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check trailing whitespace
+        run: ./utils/trailing-whitespace.sh reject
+        working-directory: .
+
+  cargo-hack-check:
+    name: Cargo Hack Check
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
         with:
@@ -287,11 +287,14 @@ jobs:
             ~/.cargo
             target
 
-      - name: Check trailing whitespace
-        run: ./utils/trailing-whitespace.sh reject
-        working-directory: .
-        
-  cargo-hack-check:
-    uses: zingolabs/infrastructure/.github/workflows/cargo-hack.yaml@867b6501f3e6145ddce9c84b64fdda961e31e24b
-    with:
-      hack-subcommand: check
+      - name: Install protoc
+        run: |
+          if ! command -v protoc; then
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
+          fi
+
+      - name: Run cargo-hack
+        uses: zingolabs/infrastructure/.github/actions/cargo-hack@20485fed7a080e381130ed8120419dc81acae641
+        with:
+          hack-subcommand: check
