@@ -20,21 +20,26 @@ zainod = { workspace = true }
 zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = [
   "local-consensus",
 ] }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = ["lightwalletd-tonic"] }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = [
+  "lightwalletd-tonic",
+] }
 
 # Zebra
 zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
 
 # Zingo-infra
 zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0"  }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
 
 # Zingo-common
-zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [ "for_test" ]}
+zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [
+  "for_test",
+] }
 
 # ZingoLib
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "f88e1d76ea244d6cc48d7fd4c3a609c6598318dc", features = [
-    "testutils",
+  "testutils",
 ] }
 
 # Miscellaneous
@@ -45,9 +50,9 @@ tokio = { workspace = true }
 tonic = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
-    "fmt",
-    "env-filter",
-    "time",
+  "fmt",
+  "env-filter",
+  "time",
 ] }
 
 # We don't need this as a direct dependency.
@@ -60,7 +65,7 @@ tracing-subscriber = { workspace = true, features = [
 # its rand version update.
 proptest = { workspace = true }
 lazy_static = { workspace = true }
-zip32 = {workspace = true}
+zip32 = { workspace = true }
 
 [dev-dependencies]
-zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0"  }
+zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0" }

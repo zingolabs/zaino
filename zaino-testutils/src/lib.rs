@@ -10,10 +10,13 @@ pub mod test_vectors {
 
 use once_cell::sync::Lazy;
 use std::{
+    io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
+    time::Duration,
 };
 use tempfile::TempDir;
+use tokio::time::{timeout, Instant};
 use tracing_subscriber::EnvFilter;
 use zaino_common::{
     network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
@@ -23,7 +26,9 @@ use zainodlib::config::default_ephemeral_cookie_path;
 pub use zcash_local_net as services;
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::{ZcashdConfig, ZebradConfig};
-use zebra_chain::parameters::NetworkKind;
+use zebra_chain::chain_tip::ChainTip;
+use zebra_chain::{block::Height, parameters::NetworkKind};
+use zebra_state::{ChainTipChange, LatestChainTip};
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
@@ -371,6 +376,8 @@ pub struct TestManager {
     pub json_server_cookie_dir: Option<PathBuf>,
     /// Zingolib lightclients.
     pub clients: Option<Clients>,
+    pub latest_chain_tip: Option<LatestChainTip>,
+    pub chain_tip_change: Option<ChainTipChange>,
 }
 
 impl TestManager {
@@ -559,6 +566,8 @@ impl TestManager {
             zaino_grpc_listen_address,
             json_server_cookie_dir: zaino_json_server_cookie_dir,
             clients,
+            latest_chain_tip: None,
+            chain_tip_change: None,
         };
 
         // Generate an extra block to turn on NU5 and NU6,

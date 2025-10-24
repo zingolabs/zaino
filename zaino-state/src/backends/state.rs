@@ -120,7 +120,7 @@ pub struct StateService {
     /// Thread-safe status indicator.
     status: AtomicStatus,
     /// Listener for when the chain tip changes
-    chain_tip_change: zebra_state::ChainTipChange,
+    pub chain_tip_change: zebra_state::ChainTipChange,
 }
 
 impl StateService {

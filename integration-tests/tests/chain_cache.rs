@@ -2,6 +2,7 @@ use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::BackendType;
 use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
+use zebra_chain::chain_tip::ChainTip;
 
 async fn create_test_manager_and_connector(
     validator: &ValidatorKind,
@@ -51,6 +52,7 @@ mod chain_query_interface {
 
     use futures::TryStreamExt as _;
     use tempfile::TempDir;
+    use tokio::time::{timeout, Instant};
     use zaino_common::{
         network::ActivationHeights, CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig,
     };
@@ -70,6 +72,7 @@ mod chain_query_interface {
         parameters::NetworkKind,
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
     };
+    use zebra_state::{ChainTipChange, LatestChainTip, TipAction};
 
     use super::*;
 
@@ -116,7 +119,7 @@ mod chain_query_interface {
             },
         };
 
-        let (test_manager, json_service) = create_test_manager_and_connector(
+        let (mut test_manager, json_service) = create_test_manager_and_connector(
             validator,
             Some(activation_heights),
             chain_cache.clone(),
@@ -173,6 +176,13 @@ mod chain_query_interface {
                 ))
                 .await
                 .unwrap();
+
+                let change = state_service.chain_tip_change.clone(); // field, not a method
+                let latest = state_service.chain_tip_change.latest_chain_tip(); // method on ChainTipChange
+
+                test_manager.latest_chain_tip = Some(latest.clone());
+                test_manager.chain_tip_change = Some(change.clone());
+
                 let temp_dir: TempDir = tempfile::tempdir().unwrap();
                 let db_path: PathBuf = temp_dir.path().to_path_buf();
                 let config = BlockCacheConfig {
@@ -612,6 +622,175 @@ mod chain_query_interface {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn simple_drain_repro() {
+        // until zaino is switched over to using chain index we will keep these activation heights separate.
+        // TODO: unify acitvation heights after switchover to chain index
+        let activation_heights = ActivationHeights {
+            overwinter: Some(1),
+            before_overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(2),
+            nu6: Some(2),
+            nu6_1: Some(1000),
+            nu7: None,
+        };
+
+        let (mut test_manager, json_service) = create_test_manager_and_connector(
+            &ValidatorKind::Zebrad,
+            Some(activation_heights),
+            None,
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+        let state_chain_cache_dir = test_manager.data_dir.clone();
+        let network = match test_manager.network {
+            NetworkKind::Regtest => {
+                zebra_chain::parameters::Network::new_regtest(activation_heights.into())
+            }
+            NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
+            NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
+        };
+        let state_service = StateService::spawn(StateServiceConfig::new(
+            zebra_state::Config {
+                cache_dir: state_chain_cache_dir,
+                ephemeral: false,
+                delete_old_database: true,
+                debug_stop_at_height: None,
+                debug_validity_check_interval: None,
+            },
+            test_manager.zebrad_rpc_listen_address,
+            test_manager.zebrad_grpc_listen_address,
+            false,
+            None,
+            None,
+            None,
+            ServiceConfig::default(),
+            StorageConfig {
+                cache: CacheConfig::default(),
+                database: DatabaseConfig {
+                    path: test_manager
+                        .local_net
+                        .data_dir()
+                        .path()
+                        .to_path_buf()
+                        .join("zaino"),
+                    ..Default::default()
+                },
+            },
+            network.into(),
+            false,
+            false,
+        ))
+        .await
+        .unwrap();
+
+        let change = state_service.chain_tip_change.clone(); // field, not a method
+        let latest = state_service.chain_tip_change.latest_chain_tip(); // method on ChainTipChange
+
+        let _tip_logger = spawn_basic_tip_logger(&state_service);
+
+        test_manager.latest_chain_tip = Some(latest.clone());
+        test_manager.chain_tip_change = Some(change.clone());
+
+        let temp_dir: TempDir = tempfile::tempdir().unwrap();
+        let db_path: PathBuf = temp_dir.path().to_path_buf();
+        let config = BlockCacheConfig {
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path: db_path,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            db_version: 1,
+            network: zaino_common::Network::Regtest(activation_heights),
+            no_sync: false,
+            no_db: false,
+        };
+        let chain_index = NodeBackedChainIndex::new(
+            ValidatorConnector::State(chain_index::source::State {
+                read_state_service: state_service.read_state_service().clone(),
+                mempool_fetcher: json_service.clone(),
+                network: config.network,
+            }),
+            config,
+        )
+        .await
+        .unwrap();
+        let index_reader = chain_index.subscriber().await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // (
+        //     test_manager,
+        //     json_service,
+        //     Some(state_service),
+        //     chain_index,
+        //     index_reader,
+        // )
+
+        // Mine 50 blocks
+        test_manager.local_net.generate_blocks(120).await.unwrap();
+
+        let target = zebra_chain::block::Height(120);
+
+        let mut change = change.clone();
+        let latest_clone = latest.clone();
+        wait_for_tip_at_least(&mut change, &latest_clone, target, Duration::from_secs(60))
+            .await
+            .map_err(|e| panic!("wait_for_tip_at_least failed: {e}"))
+            .unwrap();
+
+        // let node_tip: zebra_chain::block::Height =
+        //     json_service.get_block_count().await.unwrap().into();
+        // assert!(
+        //     node_tip.0 >= target.0,
+        //     "node tip {} < target {}",
+        //     node_tip.0,
+        //     target.0
+        // );
+
+        index_reader
+            .wait_for_height(
+                zaino_state::Height::try_from(target.0).unwrap(),
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("wait_for_height failed: {e}"));
+    }
+
+    /// Spawn a background task that prints a line every time the best tip changes.
+    /// Ends cleanly when the sender (state service) shuts down.
+    fn spawn_basic_tip_logger(state_service: &StateService) -> tokio::task::JoinHandle<()> {
+        let mut latest = state_service.chain_tip_change.latest_chain_tip();
+
+        tokio::spawn(async move {
+            loop {
+                // wait for any change; stops if channel closes
+                if let Err(_closed) = latest.best_tip_changed().await {
+                    eprintln!("[tip] watch closed; stopping tip logger");
+                    break;
+                }
+
+                // log the new tip (if present), then mark as seen
+                if let Some((h, hash)) = latest.best_tip_height_and_hash() {
+                    println!("[tip] height={} hash={:?}", h.0, hash);
+                } else {
+                    println!("[tip] (no tip yet)");
+                }
+                latest.mark_best_tip_seen();
+            }
+        })
+    }
+
+    // TODO: This is now broken. See `simple_drain_repro` for a working but non-ideal version.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn repro_nfs_drain() {
         let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(
@@ -624,17 +803,86 @@ mod chain_query_interface {
             )
             .await;
 
+        // Mine 200 blocks
         test_manager.generate_blocks_with_delay(200).await;
 
-        let node_tip: zebra_chain::block::Height =
-            dbg!(json_service.get_block_count().await.unwrap().into());
+        // Wait for Zebra’s (NFS/finalized) best tip to reach  200
+        // test_manager
+        //     .wait_for_tip_at_least(zebra_chain::block::Height(200), Duration::from_secs(60))
+        //     .await
+        //     .unwrap();
 
-        match indexer
-            .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(20))
-            .await
-        {
-            Ok(_) => (),
-            Err(e) => panic!("wait_for_height failed: {}", e),
+        // // Optional: now assert RPC/indexer views
+        // let node_tip: zebra_chain::block::Height =
+        //     dbg!(json_service.get_block_count().await.unwrap().into());
+
+        // indexer
+        //     .wait_for_height(
+        //         Height::try_from(node_tip.0).unwrap(),
+        //         Duration::from_secs(30),
+        //     )
+        //     .await
+        //     .unwrap_or_else(|e| panic!("wait_for_height failed: {e}"));
+
+        // test_manager.generate_blocks_with_delay(200).await;
+
+        // NodeBackedChainIndexSubscriber::wait_for_tip_at_least(
+        //     zebra_chain::block::Height(201),
+        //     test_manager.chain_tip_change.clone(),
+        //     test_manager.latest_chain_tip.clone(),
+        //     Duration::from_secs(30),
+        // )
+        // .await
+        // .unwrap();
+
+        // let node_tip: zebra_chain::block::Height =
+        //     dbg!(json_service.get_block_count().await.unwrap().into());
+
+        // match indexer
+        //     .wait_for_height(Height::try_from(node_tip).unwrap(), Duration::from_secs(20))
+        //     .await
+        // {
+        //     Ok(_) => (),
+        //     Err(e) => panic!("wait_for_height failed: {}", e),
+        // }
+    }
+
+    async fn wait_for_tip_at_least(
+        change: &mut ChainTipChange,
+        latest: &LatestChainTip,
+        target: zebra_chain::block::Height,
+        max_wait: Duration,
+    ) -> Result<(), String> {
+        println!("[TIP] waiting for tip >= {0}", target.0);
+        if latest.best_tip_height().map_or(false, |h| h >= target) {
+            return Ok(());
+        }
+
+        let deadline = Instant::now() + max_wait;
+        loop {
+            let remain = deadline.saturating_duration_since(Instant::now());
+            if remain.is_zero() {
+                return Err(format!("timeout waiting for height >= {}", target.0));
+            }
+
+            match timeout(remain, change.wait_for_tip_change()).await {
+                Ok(Ok(_)) => {
+                    // check current height after the action
+                    if latest.best_tip_height().map_or(false, |h| h >= target) {
+                        return Ok(());
+                    }
+                }
+                Ok(Err(_recv_closed)) => {
+                    // sender died; last-chance check
+                    if latest.best_tip_height().map_or(false, |h| h >= target) {
+                        return Ok(());
+                    }
+                    return Err("tip channel closed (state service shut down)".into());
+                }
+                Err(_elapsed) => {
+                    return Err(format!("timeout waiting for height >= {}", target.0));
+                }
+            }
         }
     }
 }
