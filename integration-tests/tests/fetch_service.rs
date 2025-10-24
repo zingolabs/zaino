@@ -377,8 +377,6 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
 async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
-    let (_fetch_service, fetch_service_subscriber) =
-        create_fetch_service(&test_manager).await;
 
     let mut clients = test_manager
         .clients
