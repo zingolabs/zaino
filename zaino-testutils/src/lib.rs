@@ -1102,6 +1102,8 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
+                let (_fetch_service, fetch_service_subscriber) =
+                    create_fetch_service(&test_manager).await;
                 let mut clients = test_manager
                     .clients
                     .take()
@@ -1114,7 +1116,7 @@ mod launch_testmanager {
                     .await
                     .unwrap());
 
-                test_manager.local_net.generate_blocks(100).await.unwrap();
+                test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await.unwrap();
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet

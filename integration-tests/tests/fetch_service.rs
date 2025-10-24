@@ -12,7 +12,7 @@ use zaino_state::{
     BackendType, ChainIndex as _, FetchService, FetchServiceConfig, FetchServiceSubscriber,
     LightWalletIndexer, StatusType, ZcashIndexer, ZcashService as _,
 };
-use zaino_testutils::Validator as _;
+use zaino_testutils::{create_fetch_service, Validator as _};
 use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
@@ -377,6 +377,8 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
 async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let (_fetch_service, fetch_service_subscriber) =
+        create_fetch_service(&test_manager).await;
 
     let mut clients = test_manager
         .clients
@@ -385,11 +387,11 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(5_000)).await;
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await.unwrap();
+        // tokio::time::sleep(std::time::Duration::from_millis(5_000)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -402,8 +404,8 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     .await
     .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await.unwrap();
+    // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     dbg!(fetch_service_subscriber
         .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
