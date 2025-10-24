@@ -387,11 +387,11 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await.unwrap();
+        test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
         // tokio::time::sleep(std::time::Duration::from_millis(5_000)).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await.unwrap();
+        test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -404,7 +404,7 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     .await
     .unwrap();
 
-    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await.unwrap();
+    test_manager.generate_blocks_and_poll(1, &fetch_service_subscriber).await;
     // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     dbg!(fetch_service_subscriber

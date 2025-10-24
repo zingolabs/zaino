@@ -1116,7 +1116,7 @@ mod launch_testmanager {
                     .await
                     .unwrap());
 
-                test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await.unwrap();
+                test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
