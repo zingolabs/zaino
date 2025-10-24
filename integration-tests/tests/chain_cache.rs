@@ -254,7 +254,7 @@ mod chain_query_interface {
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
-        test_manager.generate_blocks_with_delay(5).await;
+        test_manager.generate_blocks_and_poll(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         let range = indexer
@@ -296,7 +296,7 @@ mod chain_query_interface {
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
-        test_manager.generate_blocks_with_delay(5).await;
+        test_manager.generate_blocks_and_poll(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for block_hash in snapshot.heights_to_hashes.values() {
@@ -328,7 +328,7 @@ mod chain_query_interface {
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
-        test_manager.generate_blocks_with_delay(5).await;
+        test_manager.generate_blocks_and_poll(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height) in snapshot.blocks.values().flat_map(|block| {
@@ -386,7 +386,7 @@ mod chain_query_interface {
         assert_eq!(snapshot.as_ref().blocks.len(), 3);
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
-        test_manager.generate_blocks_with_delay(5).await;
+        test_manager.generate_blocks_and_poll(5).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height, block_hash) in snapshot.blocks.values().flat_map(|block| {
@@ -422,7 +422,7 @@ mod chain_query_interface {
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
-        test_manager.generate_blocks_with_delay(5).await;
+        test_manager.generate_blocks_and_poll(5).await;
         {
             let chain_height =
                 Height::try_from(json_service.get_blockchain_info().await.unwrap().blocks.0)
@@ -431,7 +431,7 @@ mod chain_query_interface {
             assert_eq!(chain_height, indexer_height);
         }
 
-        test_manager.generate_blocks_with_delay(150).await;
+        test_manager.generate_blocks_and_poll(150).await;
 
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
