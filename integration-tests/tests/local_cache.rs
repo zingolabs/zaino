@@ -5,7 +5,7 @@ use zaino_state::{
     BackendType,
 };
 use zaino_testutils::{create_fetch_service, TestManager, ValidatorKind};
-use zaino_testutils::{Validator as _, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
+use zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS;
 use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
 
