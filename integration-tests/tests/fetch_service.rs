@@ -358,7 +358,7 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
-            .generate_blocks_and_poll(100, &fetch_service_subscriber)
+            .generate_blocks_and_poll(101, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
