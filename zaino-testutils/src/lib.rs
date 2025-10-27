@@ -610,10 +610,13 @@ impl TestManager {
     pub async fn generate_blocks_and_poll(&self, n: u32, indexer: &impl LightWalletIndexer) {
         let chain_height = self.local_net.get_chain_height().await;
         self.local_net.generate_blocks(n).await.unwrap();
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        interval.tick().await;
         while indexer.get_latest_block().await.unwrap().height < u64::from(chain_height) + n as u64
         {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            interval.tick().await;
         }
+        interval.tick().await;
     }
 
     /// Closes the TestManager.
