@@ -1116,7 +1116,9 @@ mod launch_testmanager {
                     .await
                     .unwrap());
 
-                test_manager.generate_blocks_and_poll(100, &fetch_service_subscriber).await;
+                test_manager
+                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1151,13 +1153,16 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
+                let (_fetch_service, fetch_service_subscriber) =
+                    create_fetch_service(&test_manager).await;
                 let mut clients = test_manager
                     .clients
                     .take()
                     .expect("Clients are not initialized");
 
-                test_manager.local_net.generate_blocks(100).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                test_manager
+                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1188,8 +1193,9 @@ mod launch_testmanager {
 
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-                test_manager.local_net.generate_blocks(1).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                test_manager
+                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1212,7 +1218,9 @@ mod launch_testmanager {
                 .await
                 .unwrap();
 
-                test_manager.local_net.generate_blocks(1).await.unwrap();
+                test_manager
+                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .await;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.recipient.sync_and_await().await.unwrap();
                 dbg!(clients

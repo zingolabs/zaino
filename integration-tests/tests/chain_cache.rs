@@ -255,7 +255,9 @@ mod chain_query_interface {
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
         let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
-        test_manager.generate_blocks_and_poll(5, &fetch_service_subscriber).await;
+        test_manager
+            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         let range = indexer
@@ -297,7 +299,9 @@ mod chain_query_interface {
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
         let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
-        test_manager.generate_blocks_and_poll(5, &fetch_service_subscriber).await;
+        test_manager
+            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for block_hash in snapshot.heights_to_hashes.values() {
@@ -330,7 +334,9 @@ mod chain_query_interface {
         let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
         // this delay had to increase. Maybe we tweak sync loop rerun time?
-        test_manager.generate_blocks_and_poll(5, &fetch_service_subscriber).await;
+        test_manager
+            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height) in snapshot.blocks.values().flat_map(|block| {
@@ -388,7 +394,9 @@ mod chain_query_interface {
         // guts of create_test_manager_and_chain_index
         assert_eq!(snapshot.as_ref().blocks.len(), 3);
 
-        test_manager.generate_blocks_and_poll(5, &fetch_service_subscriber).await;
+        test_manager
+            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
         for (txid, height, block_hash) in snapshot.blocks.values().flat_map(|block| {
@@ -424,7 +432,9 @@ mod chain_query_interface {
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
         let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
-        test_manager.generate_blocks_and_poll(5, &fetch_service_subscriber).await;
+        test_manager
+            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .await;
         {
             let chain_height =
                 Height::try_from(json_service.get_blockchain_info().await.unwrap().blocks.0)
@@ -433,7 +443,9 @@ mod chain_query_interface {
             assert_eq!(chain_height, indexer_height);
         }
 
-        test_manager.generate_blocks_and_poll(150, &fetch_service_subscriber).await;
+        test_manager
+            .generate_blocks_and_poll(150, &fetch_service_subscriber)
+            .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
