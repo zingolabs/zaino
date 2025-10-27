@@ -611,12 +611,12 @@ impl TestManager {
         let chain_height = self.local_net.get_chain_height().await;
         self.local_net.generate_blocks(n).await.unwrap();
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
         while indexer.get_latest_block().await.unwrap().height < u64::from(chain_height) + n as u64
         {
             interval.tick().await;
         }
-        interval.tick().await;
     }
 
     /// Closes the TestManager.
