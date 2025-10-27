@@ -612,7 +612,7 @@ impl TestManager {
         self.local_net.generate_blocks(n).await.unwrap();
         while indexer.get_latest_block().await.unwrap().height < u64::from(chain_height) + n as u64
         {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
 

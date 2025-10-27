@@ -4,7 +4,7 @@ use zaino_state::{
     bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
     BackendType,
 };
-use zaino_testutils::{TestManager, ValidatorKind};
+use zaino_testutils::{create_fetch_service, TestManager, ValidatorKind};
 use zaino_testutils::{Validator as _, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
 use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
@@ -105,23 +105,15 @@ async fn launch_local_cache(validator: &ValidatorKind, no_db: bool) {
 async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, batches: u32) {
     let (test_manager, json_service, mut block_cache, mut block_cache_subscriber) =
         create_test_manager_and_block_cache(validator, None, false, true, false, false).await;
+    let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
     let finalised_state = block_cache.finalised_state.take().unwrap();
     let finalised_state_subscriber = block_cache_subscriber.finalised_state.take().unwrap();
 
     for _ in 1..=batches {
-        // Generate blocks
-        //
-        // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
-        //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
-        // TODO: revisit this thread blocking issue and replace with `generate_blocks_and_poll`
-        for height in 1..=100 {
-            println!("Generating block at height: {height}");
-            test_manager.local_net.generate_blocks(1).await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        test_manager
+            .generate_blocks_and_poll(100, &fetch_service_subscriber)
+            .await;
 
         // Check chain height in validator, non-finalised state and finalised state.
         let validator_height = dbg!(json_service.get_blockchain_info().await.unwrap().blocks.0);

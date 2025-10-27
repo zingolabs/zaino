@@ -193,19 +193,9 @@ async fn send_to_transparent(validator: &ValidatorKind, backend: &BackendType) {
         .unwrap();
 
     dbg!(unfinalised_transactions.clone());
-
-    // Generate blocks
-    //
-    // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
-    //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
-    for height in 1..=99 {
-        dbg!("Generating block at height: {}", height);
-        test_manager
-            .generate_blocks_and_poll(1, &fetch_service_subscriber)
-            .await;
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    test_manager
+        .generate_blocks_and_poll(100, &fetch_service_subscriber)
+        .await;
 
     println!("\n\nFetching Tx From Finalized Chain!\n");
 
@@ -292,19 +282,9 @@ async fn send_to_all(validator: &ValidatorKind, backend: &BackendType) {
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-
-    // Generate blocks
-    //
-    // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
-    //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
-    for height in 1..=100 {
-        dbg!("Generating block at height: {}", height);
-        test_manager
-            .generate_blocks_and_poll(1, &fetch_service_subscriber)
-            .await;
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    test_manager
+        .generate_blocks_and_poll(100, &fetch_service_subscriber)
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -374,19 +354,9 @@ async fn shield_for_validator(validator: &ValidatorKind, backend: &BackendType) 
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-
-    // Generate blocks
-    //
-    // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
-    //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
-    for height in 1..=100 {
-        dbg!("Generating block at height: {}", height);
-        test_manager
-            .generate_blocks_and_poll(1, &fetch_service_subscriber)
-            .await;
-    }
-
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll(100, &fetch_service_subscriber)
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
