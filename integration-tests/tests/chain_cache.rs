@@ -253,10 +253,9 @@ mod chain_query_interface {
     async fn get_block_range(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
-        let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
         test_manager
-            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
@@ -297,10 +296,9 @@ mod chain_query_interface {
     async fn find_fork_point(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
-        let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
         test_manager
-            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         for block in snapshot.blocks.values() {
@@ -334,11 +332,9 @@ mod chain_query_interface {
     async fn get_raw_transaction(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
-        let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
-        // this delay had to increase. Maybe we tweak sync loop rerun time?
         test_manager
-            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
@@ -391,14 +387,11 @@ mod chain_query_interface {
     async fn get_transaction_status(validator: &ValidatorKind) {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
-        let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
-        // I don't know where this second block is generated. Somewhere in the
-        // guts of create_test_manager_and_chain_index
         assert_eq!(snapshot.as_ref().blocks.len(), 3);
 
         test_manager
-            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 8);
@@ -433,10 +426,9 @@ mod chain_query_interface {
     async fn sync_large_chain(validator: &ValidatorKind) {
         let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index(validator, None, false, false, false, false).await;
-        let (_fetch_service, fetch_service_subscriber) = create_fetch_service(&test_manager).await;
 
         test_manager
-            .generate_blocks_and_poll(5, &fetch_service_subscriber)
+            .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
         {
             let chain_height =
@@ -447,7 +439,7 @@ mod chain_query_interface {
         }
 
         test_manager
-            .generate_blocks_and_poll(150, &fetch_service_subscriber)
+            .generate_blocks_and_poll_chain_index(150, &indexer)
             .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;

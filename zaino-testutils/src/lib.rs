@@ -19,8 +19,7 @@ use zaino_common::{
     network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
 use zaino_state::{
-    BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer,
-    StateService, StateServiceConfig, StateServiceSubscriber, ZcashService,
+    chain_index::NonFinalizedSnapshot, BackendType, ChainIndex, FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer, NodeBackedChainIndexSubscriber, StateService, StateServiceConfig, StateServiceSubscriber, ZcashService
 };
 use zainodlib::config::default_ephemeral_cookie_path;
 pub use zcash_local_net as services;
@@ -614,6 +613,21 @@ impl TestManager {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
         while indexer.get_latest_block().await.unwrap().height < u64::from(chain_height) + n as u64
+        {
+            interval.tick().await;
+        }
+    }
+
+    /// Temporary function until test initialization fns are untangled.
+    /// Generate `n` blocks for the local network and poll zaino until the chain index is synced to the target height.
+    // TODO: untangle test_manager_and_*** fns
+    pub async fn generate_blocks_and_poll_chain_index(&self, n: u32, chain_index: &NodeBackedChainIndexSubscriber) {
+        let chain_height = self.local_net.get_chain_height().await;
+        self.local_net.generate_blocks(n).await.unwrap();
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        while u32::from(chain_index.snapshot_nonfinalized_state().best_chaintip().height) < u32::from(chain_height) + n
         {
             interval.tick().await;
         }

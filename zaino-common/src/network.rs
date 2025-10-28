@@ -85,7 +85,7 @@ impl Default for ActivationHeights {
             canopy: Some(1),
             nu5: Some(2),
             nu6: Some(2),
-            nu6_1: Some(1000),
+            nu6_1: Some(2),
             nu7: None,
         }
     }
