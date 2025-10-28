@@ -31,6 +31,9 @@ pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
 pub use zingolib::testutils::lightclient::from_inputs;
 use zingolib::testutils::scenarios::ClientBuilder;
+use zingo_netutils::{GetClientError, GrpcConnector, UnderlyingService};
+
+use zcash_client_backend::proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, ChainSpec};
 
 // TODO: update zebra to allow full nu6.1 test support
 /// Temporary default zebrad activation height until zaino is updated to next zebra release (or latest main).
@@ -605,8 +608,31 @@ impl TestManager {
         .await
     }
 
-    /// Generate `n` blocks for the local network and poll zaino until the chain index is synced to the target height.
-    pub async fn generate_blocks_and_poll(&self, n: u32, indexer: &impl LightWalletIndexer) {
+    /// Generate `n` blocks for the local network and poll zaino via gRPC until the chain index is synced to the target height.
+    pub async fn generate_blocks_and_poll(&self, n: u32) {
+            let mut grpc_client = build_client(services::network::localhost_uri(
+                self
+                    .zaino_grpc_listen_address
+                    .expect("Zaino listen port is not available but zaino is active.")
+                    .port(),
+            ))
+            .await
+            .unwrap();
+        let chain_height = self.local_net.get_chain_height().await;
+        self.local_net.generate_blocks(n).await.unwrap();
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        while grpc_client.get_latest_block(tonic::Request::new(ChainSpec {})).await.unwrap().into_inner().height < u64::from(chain_height) + n as u64
+        {
+            interval.tick().await;
+        }
+    }
+
+    /// Temporary function until test initialization fns are untangled.
+    /// Generate `n` blocks for the local network and poll zaino fetch/state subscriber until the chain index is synced to the target height.
+    // TODO: untangle test_manager_and_*** fns
+    pub async fn generate_blocks_and_poll_indexer(&self, n: u32, indexer: &impl LightWalletIndexer) {
         let chain_height = self.local_net.get_chain_height().await;
         self.local_net.generate_blocks(n).await.unwrap();
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
@@ -617,6 +643,7 @@ impl TestManager {
             interval.tick().await;
         }
     }
+
 
     /// Temporary function until test initialization fns are untangled.
     /// Generate `n` blocks for the local network and poll zaino until the chain index is synced to the target height.
@@ -774,20 +801,17 @@ pub async fn create_state_service(
     (state_service, state_subscriber)
 }
 
+/// Builds a client for creating RPC requests to the indexer/light-node
+async fn build_client(
+    uri: http::Uri,
+) -> Result<CompactTxStreamerClient<UnderlyingService>, GetClientError> {
+    GrpcConnector::new(uri).get_client().await
+}
+
+
 #[cfg(test)]
 mod launch_testmanager {
-
-    use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-    use zingo_netutils::{GetClientError, GrpcConnector, UnderlyingService};
-
     use super::*;
-
-    /// Builds a client for creating RPC requests to the indexer/light-node
-    async fn build_client(
-        uri: http::Uri,
-    ) -> Result<CompactTxStreamerClient<UnderlyingService>, GetClientError> {
-        GrpcConnector::new(uri).get_client().await
-    }
 
     mod zcashd {
 
@@ -1119,8 +1143,6 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let (_fetch_service, fetch_service_subscriber) =
-                    create_fetch_service(&test_manager).await;
                 let mut clients = test_manager
                     .clients
                     .take()
@@ -1134,7 +1156,7 @@ mod launch_testmanager {
                     .unwrap());
 
                 test_manager
-                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(100)
                     .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
@@ -1170,15 +1192,13 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let (_fetch_service, fetch_service_subscriber) =
-                    create_fetch_service(&test_manager).await;
                 let mut clients = test_manager
                     .clients
                     .take()
                     .expect("Clients are not initialized");
 
                 test_manager
-                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(100)
                     .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
@@ -1211,7 +1231,7 @@ mod launch_testmanager {
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
                 test_manager
-                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(1)
                     .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
@@ -1236,7 +1256,7 @@ mod launch_testmanager {
                 .unwrap();
 
                 test_manager
-                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(1)
                     .await;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.recipient.sync_and_await().await.unwrap();
@@ -1440,8 +1460,6 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let (_fetch_service, fetch_service_subscriber) =
-                    create_fetch_service(&test_manager).await;
 
                 let mut clients = test_manager
                     .clients
@@ -1456,7 +1474,7 @@ mod launch_testmanager {
                     .unwrap());
 
                 test_manager
-                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(100)
                     .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
@@ -1498,11 +1516,9 @@ mod launch_testmanager {
                     .take()
                     .expect("Clients are not initialized");
 
-                let (_fetch_service, fetch_service_subscriber) =
-                    create_fetch_service(&test_manager).await;
 
                 test_manager
-                    .generate_blocks_and_poll(100, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(100)
                     .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
@@ -1535,7 +1551,7 @@ mod launch_testmanager {
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
                 test_manager
-                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(1)
                     .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
@@ -1560,7 +1576,7 @@ mod launch_testmanager {
                 .unwrap();
 
                 test_manager
-                    .generate_blocks_and_poll(1, &fetch_service_subscriber)
+                    .generate_blocks_and_poll(1)
                     .await;
                 clients.recipient.sync_and_await().await.unwrap();
                 dbg!(clients
