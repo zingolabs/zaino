@@ -66,7 +66,6 @@ mod chain_query_interface {
         },
         Height, StateService, StateServiceConfig, ZcashService as _,
     };
-    use zaino_testutils::create_fetch_service;
     use zebra_chain::{
         parameters::NetworkKind,
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
