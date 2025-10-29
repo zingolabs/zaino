@@ -336,6 +336,8 @@ impl JsonRpSeeConnector {
                 )),
                 // Success
                 200..300 => {
+                    // TODO:  TransportError seems very wrong here.
+                    // <https://github.com/zingolabs/zaino/issues/630>
                     let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
                         .map_err(|e| TransportError::BadNodeData(Box::new(e), type_name::<R>()))?;
 
