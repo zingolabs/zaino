@@ -30,7 +30,7 @@ use crate::{
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
-    },
+    }, BackendType,
 };
 
 /// Wrapper Struct for a ZainoState chain-fetch service (StateService, FetchService)
@@ -72,6 +72,9 @@ where
 /// Zcash Service functionality.
 #[async_trait]
 pub trait ZcashService: Sized {
+    /// Backend type. Read state and fetch service.
+    const BACKEND_TYPE: BackendType;
+    
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer;
 

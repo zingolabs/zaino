@@ -4,20 +4,12 @@ use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
-    },
-    config::StateServiceConfig,
-    error::{BlockCacheError, StateServiceError},
-    indexer::{
+    }, config::StateServiceConfig, error::{BlockCacheError, StateServiceError}, indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
-    },
-    local_cache::{compact_block_to_nullifiers, BlockCache, BlockCacheSubscriber},
-    status::{AtomicStatus, StatusType},
-    stream::{
+    }, local_cache::{compact_block_to_nullifiers, BlockCache, BlockCacheSubscriber}, status::{AtomicStatus, StatusType}, stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
-    },
-    utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
-    MempoolKey,
+    }, utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata}, BackendType, MempoolKey
 };
 
 use nonempty::NonEmpty;
@@ -154,6 +146,8 @@ impl StateService {
 
 #[async_trait]
 impl ZcashService for StateService {
+    const BACKEND_TYPE: BackendType = BackendType::State;
+
     type Subscriber = StateServiceSubscriber;
     type Config = StateServiceConfig;
 

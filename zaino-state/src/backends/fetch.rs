@@ -40,21 +40,14 @@ use zaino_proto::proto::{
 };
 
 use crate::{
-    chain_index::{source::ValidatorConnector, types},
-    config::FetchServiceConfig,
-    error::FetchServiceError,
-    indexer::{
+    chain_index::{source::ValidatorConnector, types}, config::FetchServiceConfig, error::FetchServiceError, indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
-    },
-    status::StatusType,
-    stream::{
+    }, status::StatusType, stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
-    },
-    utils::{
+    }, utils::{
         blockid_to_hashorheight, compact_block_to_nullifiers, get_build_info, ServiceMetadata,
-    },
-    ChainIndex as _, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    }, BackendType, ChainIndex as _, NodeBackedChainIndex, NodeBackedChainIndexSubscriber
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -79,8 +72,11 @@ pub struct FetchService {
 
 #[async_trait]
 impl ZcashService for FetchService {
+    const BACKEND_TYPE: BackendType = BackendType::Fetch;
+    
     type Subscriber = FetchServiceSubscriber;
     type Config = FetchServiceConfig;
+
     /// Initializes a new StateService instance and starts sync process.
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!("Launching Chain Fetch Service..");
