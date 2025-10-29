@@ -20,13 +20,13 @@ async fn create_test_manager_and_services(
     enable_clients: bool,
     network: Option<NetworkKind>,
 ) -> (
-    TestManager,
+    TestManager<FetchService>,
     FetchService,
     FetchServiceSubscriber,
     StateService,
     StateServiceSubscriber,
 ) {
-    let test_manager = TestManager::launch_with_default_activation_heights(
+    let test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
         network,

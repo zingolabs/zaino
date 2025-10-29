@@ -3,6 +3,7 @@
 use anyhow::Context;
 use core2::io::{self, Read, Write};
 use futures::TryFutureExt as _;
+use zaino_state::FetchService;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
@@ -53,8 +54,8 @@ async fn create_test_manager_and_services(
     enable_zaino: bool,
     enable_clients: bool,
     network: Option<NetworkKind>,
-) -> (TestManager, StateService, StateServiceSubscriber) {
-    let test_manager = TestManager::launch_with_default_activation_heights(
+) -> (TestManager<FetchService>, StateService, StateServiceSubscriber) {
+    let test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
         network,

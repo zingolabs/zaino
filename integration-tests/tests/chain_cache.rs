@@ -1,6 +1,6 @@
 use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
-use zaino_state::BackendType;
+use zaino_state::{BackendType, FetchService};
 use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
 
 async fn create_test_manager_and_connector(
@@ -11,8 +11,8 @@ async fn create_test_manager_and_connector(
     zaino_no_sync: bool,
     zaino_no_db: bool,
     enable_clients: bool,
-) -> (TestManager, JsonRpSeeConnector) {
-    let test_manager = TestManager::launch(
+) -> (TestManager<FetchService>, JsonRpSeeConnector) {
+    let test_manager = TestManager::<FetchService>::launch(
         validator,
         &BackendType::Fetch,
         None,
@@ -81,7 +81,7 @@ mod chain_query_interface {
         zaino_no_db: bool,
         enable_clients: bool,
     ) -> (
-        TestManager,
+        TestManager<FetchService>,
         JsonRpSeeConnector,
         Option<StateService>,
         NodeBackedChainIndex,

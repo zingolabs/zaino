@@ -15,14 +15,14 @@ async fn create_test_manager_and_fetch_services(
     enable_cookie_auth: bool,
     clients: bool,
 ) -> (
-    TestManager,
+    TestManager<FetchService>,
     FetchService,
     FetchServiceSubscriber,
     FetchService,
     FetchServiceSubscriber,
 ) {
     println!("Launching test manager..");
-    let test_manager = TestManager::launch_with_default_activation_heights(
+    let test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
         &ValidatorKind::Zcashd,
         &BackendType::Fetch,
         None,

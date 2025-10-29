@@ -383,7 +383,8 @@ pub struct TestManager<Service: LightWalletService + Send + Sync + 'static> {
 }
 
 impl<Service: LightWalletService + Send + Sync + 'static> TestManager<Service>
-where Service::Config: From<IndexerConfig> {
+// where Service::Config: From<IndexerConfig>
+ {
     /// Launches zcash-local-net<Empty, Validator>.
     ///
     /// Possible validators: Zcashd, Zebrad.
@@ -527,13 +528,14 @@ where Service::Config: From<IndexerConfig> {
             //     };
 
 
-                // zainodlib::indexer::spawn_indexer(indexer_config)
+                // let handle = zainodlib::indexer::spawn_indexer(indexer_config)
                 // .await
                 // .unwrap();
 
             // NOTE: This is required to give the server time to launch, this is not used in production code but could be rewritten to improve testing efficiency.
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
+                // (Some(handle), None, Some(zaino_grpc_listen_address), Some(zaino_json_listen_address), Some(zaino_json_server_cookie_dir))
                 (Some(handle), Some(service_subscriber), Some(zaino_grpc_listen_address), Some(zaino_json_listen_address), Some(zaino_json_server_cookie_dir))
         } else {
             (None, None, None, None, None)

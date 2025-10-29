@@ -2,7 +2,7 @@ use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::{
     bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
-    BackendType,
+    BackendType, FetchService,
 };
 use zaino_testutils::{TestManager, ValidatorKind};
 use zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS;
@@ -17,7 +17,7 @@ async fn create_test_manager_and_block_cache(
     zaino_no_db: bool,
     enable_clients: bool,
 ) -> (
-    TestManager,
+    TestManager<FetchService>,
     JsonRpSeeConnector,
     BlockCache,
     BlockCacheSubscriber,
@@ -27,7 +27,7 @@ async fn create_test_manager_and_block_cache(
         ValidatorKind::Zcashd => ActivationHeights::default(),
     };
 
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::<FetchService>::launch(
         validator,
         &BackendType::Fetch,
         None,
