@@ -111,7 +111,6 @@ pub enum KnownZValidateAddress {
 }
 
 /// The "invalid" shape is just `{ "isvalid": false }`.
-/// Represent it as a unit-like struct so you *cannot* construct a "true" state.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct InvalidZValidateAddress;
 
