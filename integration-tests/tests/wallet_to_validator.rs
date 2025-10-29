@@ -6,15 +6,15 @@ use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_state::BackendType;
 use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
-use zaino_testutils::Validator;
 use zaino_testutils::ValidatorKind;
+use zcash_local_net::validator::Validator;
 use zip32::AccountId;
 
-async fn connect_to_node_get_info_for_validator<T: Validator>(
+async fn connect_to_node_get_info_for_validator<V: Validator>(
     validator: &ValidatorKind,
     backend: &BackendType,
 ) {
-    let mut test_manager = TestManager::launch_with_default_activation_heights::<T>(
+    let mut test_manager = TestManager::launch_with_default_activation_heights::<V>(
         validator, backend, None, None, true, false, false, true, true, true,
     )
     .await
@@ -30,8 +30,8 @@ async fn connect_to_node_get_info_for_validator<T: Validator>(
     test_manager.close().await;
 }
 
-async fn send_to_orchard<T: Validator>(validator: &ValidatorKind, backend: &BackendType) {
-    let mut test_manager = TestManager::launch_with_default_activation_heights::<T>(
+async fn send_to_orchard<V: Validator>(validator: &ValidatorKind, backend: &BackendType) {
+    let mut test_manager = TestManager::launch_with_default_activation_heights::<V>(
         validator, backend, None, None, true, false, false, true, true, true,
     )
     .await

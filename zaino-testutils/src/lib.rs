@@ -21,8 +21,7 @@ use zaino_common::{
 use zaino_state::BackendType;
 use zainodlib::config::default_ephemeral_cookie_path;
 pub use zcash_local_net as services;
-pub use zcash_local_net::validator::Validator;
-use zcash_local_net::validator::{ZcashdConfig, ZebradConfig};
+use zcash_local_net::validator::{Validator, ZcashdConfig, ZebradConfig};
 use zebra_chain::parameters::NetworkKind;
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
@@ -165,7 +164,7 @@ pub enum LocalNet {
     ),
 }
 
-impl zcash_local_net::validator::Validator for LocalNet {
+impl Validator for LocalNet {
     const CONFIG_FILENAME: &str = "";
     const PROCESS: zcash_local_net::Process = zcash_local_net::Process::Empty; // todo
 
@@ -384,7 +383,7 @@ impl TestManager {
     ///
     /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
     #[allow(clippy::too_many_arguments)]
-    pub async fn launch<T: zcash_local_net::validator::Validator>(
+    pub async fn launch<T: Validator>(
         validator: &ValidatorKind,
         backend: &BackendType,
         network: Option<NetworkKind>,
@@ -570,9 +569,7 @@ impl TestManager {
 
     /// Helper function to support default test case.
     #[allow(clippy::too_many_arguments)]
-    pub async fn launch_with_default_activation_heights<
-        T: zcash_local_net::validator::Validator,
-    >(
+    pub async fn launch_with_default_activation_heights<T: Validator>(
         validator: &ValidatorKind,
         backend: &BackendType,
         network: Option<NetworkKind>,

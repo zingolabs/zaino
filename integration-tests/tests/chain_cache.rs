@@ -66,8 +66,7 @@ mod chain_query_interface {
         },
         Height, StateService, StateServiceConfig, ZcashService as _,
     };
-    use zaino_testutils::Validator;
-    use zcash_local_net::validator::{Zcashd, Zebrad};
+    use zcash_local_net::validator::{Validator, Zcashd, Zebrad};
     use zebra_chain::{
         parameters::NetworkKind,
         serialization::{ZcashDeserialize, ZcashDeserializeInto},

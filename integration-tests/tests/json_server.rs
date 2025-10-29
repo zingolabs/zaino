@@ -6,8 +6,9 @@ use zaino_state::{
     BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, ZcashIndexer,
     ZcashService as _,
 };
-use zaino_testutils::{from_inputs, Validator as _};
+use zaino_testutils::from_inputs;
 use zaino_testutils::{TestManager, ValidatorKind};
+use zcash_local_net::validator::Validator as _;
 use zcash_local_net::validator::Zcashd;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
