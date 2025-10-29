@@ -15,3 +15,108 @@ default-filter = """
 
 [profile.ci.junit]  # this can be some other profile, too
 path = "junit.xml"
+
+[profile.quick]
+# Use this profile for a fast check verifying the absence of regressions. Our best assurance against
+# false negatives is to run the entire test suite.
+test-threads = "num-cpus"
+fail-fast = true # If a test fails against this profile, that's a surprise to be investigated
+# Excludes tests that fail in low-resource environments. Flakey test are listed at the beginning
+# of the expression, slow at the end.  If a slow and flakey test is discovered it should be included
+# in the flakey category.
+#  On a developer laptop:
+#  flakey 54 ==  tests fail at least once
+#  slow   32 ==  >60s runtime
+default-filter = """
+    not (
+        test(/^chain_query_interface::find_fork_point_zcashd$/) |
+        test(/^chain_query_interface::get_block_range_zcashd$/) |
+        test(/^chain_query_interface::get_raw_transaction_zcashd$/) |
+        test(/^chain_query_interface::get_transaction_status_zcashd$/) |
+        test(/^chain_query_interface::repro_flake_zcashd$/) |
+        test(/^chain_query_interface::repro_nfs_drain$/) |
+        test(/^chain_query_interface::sync_large_chain_zcashd$/) |
+        test(/^chain_query_interface::sync_large_chain_zebrad$/) |
+        test(/^zebrad::get::mempool_info$/) |
+        test(/^zebrad::get::mempool_stream$/) |
+        test(/^zebrad::get::mempool_tx$/) |
+        test(/^zebrad::get::raw_mempool$/) |
+        test(/^zebrad::get::raw_transaction$/) |
+        test(/^zebrad::get::taddress_balance$/) |
+        test(/^zebrad::get::taddress_txids$/) |
+        test(/^zebrad::get::taddress_utxos$/) |
+        test(/^zebrad::get::taddress_utxos_stream$/) |
+        test(/^zebrad::get::transaction_mempool$/) |
+        test(/^zebrad::get::transaction_mined$/) |
+        test(/^zebrad::get::z::subtrees_by_index$/) |
+        test(/^zebrad::get::z::treestate$/) |
+        test(/^zcashd::get::tree_state$/) |
+        test(/^zcashd::zcash_indexer::check_info_no_cookie$/) |
+        test(/^zebrad::get::get_mempool_info$/) |
+        test(/^zebrad::get::raw_mempool_regtest$/) |
+        test(/^zebrad::get::raw_transaction_regtest$/) |
+        test(/^zebrad::get::address_balance_regtest$/) |
+        test(/^zebrad::get::address_balance$/) |
+        test(/^zebrad::get::address_tx_ids$/) |
+        test(/^zebrad::get::address_utxos$/) |
+        test(/^zebrad::get::block$/) |
+        test(/^zebrad::lightwallet_indexer::get_taddress_balance$/) |
+        test(/^zebrad::lightwallet_indexer::get_transaction$/) |
+        test(/^zcashd::monitor_unverified_mempool$/) |
+        test(/^zcashd::sent_to::orchard$/) |
+        test(/^zcashd::sent_to::sapling$/) |
+        test(/^zebrad::fetch_service::monitor_unverified_mempool$/) |
+        test(/^zebrad::fetch_service::send_to::all$/) |
+        test(/^zebrad::fetch_service::send_to::orchard$/) |
+        test(/^zebrad::fetch_service::send_to::sapling$/) |
+        test(/^zebrad::fetch_service::send_to::transparent$/) |
+        test(/^zebrad::fetch_service::shield$/) |
+        test(/^zebrad::state_service::monitor_unverified_mempool$/) |
+        test(/^zebrad::state_service::send_to::all$/) |
+        test(/^zebrad::state_service::send_to::orchard$/) |
+        test(/^zebrad::state_service::send_to::sapling$/) |
+        test(/^zebrad::state_service::send_to::transparent$/) |
+        test(/^zebrad::state_service::shield$/) |
+        test(/^launch_testmanager::zcashd::zaino_clients_receive_mining_reward$/) |
+        test(/^launch_testmanager::zebrad::state_service::zaino_clients_receive_mining_reward_and_send$/) |
+        test(/^zebrad::get::block_raw$/) |
+        test(/^zebrad::lightwallet_indexer::get_subtree_roots$/) |
+        test(/^launch_testmanager::zcashd::zaino_clients$/) |
+        test(/^zcashd::zcash_indexer::get_block_subsidy$/)
+    )
+    &
+    not (
+        test(/^zcashd::process_100_blocks$/) |
+        test(/^zcashd::process_200_blocks$/) |
+        test(/^launch_testmanager::zebrad::fetch_service::zaino_clients_receive_mining_reward_and_send$/) |
+        test(/^zcashd::sent_to::transparent$/) |
+        test(/^zcashd::shield$/) |
+        test(/^zcashd::sent_to::all$/) |
+        test(/^zcashd::get::best_blockhash$/) |
+        test(/^zcashd::get::block_count$/) |
+        test(/^zcashd::get::block_range$/) |
+        test(/^zcashd::get::block_range_nullifiers$/) |
+        test(/^zcashd::get::block_subsidy$/) |
+        test(/^zcashd::get::mempool_info$/) |
+        test(/^zcashd::get::mempool_stream$/) |
+        test(/^zcashd::get::mempool_tx$/) |
+        test(/^zcashd::get::raw_mempool$/) |
+        test(/^zcashd::get::raw_transaction$/) |
+        test(/^zcashd::get::taddress_balance$/) |
+        test(/^zcashd::get::taddress_txids$/) |
+        test(/^zcashd::get::taddress_utxos$/) |
+        test(/^zcashd::get::taddress_utxos_stream$/) |
+        test(/^zcashd::get::transaction_mempool$/) |
+        test(/^zcashd::get::transaction_mined$/) |
+        test(/^zcashd::get::z::get_treestate$/) |
+        test(/^zcashd::get::z::subtrees_by_index$/) |
+        test(/^zcashd::zcash_indexer::get_difficulty$/) |
+        test(/^zcashd::zcash_indexer::get_mempool_info$/) |
+        test(/^zcashd::zcash_indexer::get_raw_mempool$/) |
+        test(/^zcashd::zcash_indexer::get_raw_transaction$/) |
+        test(/^zcashd::zcash_indexer::z_get_subtrees_by_index$/) |
+        test(/^zcashd::zcash_indexer::z_get_treestate$/) |
+        test(/^launch_testmanager::zebrad::state_service::zaino_clients_receive_mining_reward$/) |
+        test(/^zebrad::get::peer_info$/)
+    )
+"""
