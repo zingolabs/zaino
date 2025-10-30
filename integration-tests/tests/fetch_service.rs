@@ -1,43 +1,27 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
 use futures::StreamExt as _;
-use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
 };
 use zaino_state::{
-    BackendType, ChainIndex as _, FetchService, FetchServiceConfig, FetchServiceSubscriber,
-    LightWalletIndexer, StatusType, ZcashIndexer, ZcashService as _,
+    BackendType, ChainIndex as _, FetchService, LightWalletIndexer, StatusType, ZcashIndexer,
 };
-use zaino_testutils::{local_network_from_activation_heights, make_uri, Clients, Validator as _};
 use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlock, GetBlockHash};
-use zingo_test_vectors::seeds;
-use zingolib::testutils::scenarios::ClientBuilder;
 use zip32::AccountId;
 
-async fn create_test_manager_and_fetch_service(
-    validator: &ValidatorKind,
-    chain_cache: Option<std::path::PathBuf>,
-    zaino_no_sync: bool,
-    zaino_no_db: bool,
-    enable_clients: bool,
-) -> (
-    TestManager<FetchService>,
-    FetchService,
-    FetchServiceSubscriber,
-) {
+async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std::path::PathBuf>) {
     let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
         None,
         chain_cache,
-        false,
+        true,
         false,
         false,
         false,
@@ -47,75 +31,8 @@ async fn create_test_manager_and_fetch_service(
     .await
     .unwrap();
 
-    let fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.zebrad_rpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        ServiceConfig::default(),
-        StorageConfig {
-            database: DatabaseConfig {
-                path: test_manager
-                    .local_net
-                    .data_dir()
-                    .path()
-                    .to_path_buf()
-                    .join("zaino"),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        Network::Regtest(ActivationHeights::default()),
-        zaino_no_sync,
-        zaino_no_db,
-    ))
-    .await
-    .unwrap();
-    let subscriber = fetch_service.get_subscriber().inner();
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
-    // TODO: this is copied from test manager launch and should be cleaned up when the hangs due to chain index duplication are fixed
-    // activation heights will also be cleaned up ASAP
-    // Launch Zingolib Lightclients:
-    test_manager.clients = if enable_clients {
-        let mut client_builder = ClientBuilder::new(
-            make_uri(
-                test_manager
-                    .zaino_grpc_listen_address
-                    .expect("Error launching zingo lightclients. `enable_zaino` is None.")
-                    .port(),
-            ),
-            tempfile::tempdir().unwrap(),
-        );
-        let faucet = client_builder.build_faucet(
-            true,
-            local_network_from_activation_heights(
-                test_manager.local_net.get_activation_heights().into(),
-            ),
-        );
-        let recipient = client_builder.build_client(
-            seeds::HOSPITAL_MUSEUM_SEED.to_string(),
-            1,
-            true,
-            local_network_from_activation_heights(
-                test_manager.local_net.get_activation_heights().into(),
-            ),
-        );
-        Some(Clients {
-            client_builder,
-            faucet,
-            recipient,
-        })
-    } else {
-        None
-    };
-
-    (test_manager, fetch_service, subscriber)
-}
-
-async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std::path::PathBuf>) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, chain_cache, true, true, false).await;
     assert_eq!(fetch_service_subscriber.status(), StatusType::Ready);
     dbg!(fetch_service_subscriber.data.clone());
     dbg!(fetch_service_subscriber.get_info().await.unwrap());
@@ -129,8 +46,22 @@ async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std
 }
 
 async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -196,8 +127,22 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block_raw(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, false).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber
         .z_get_block("1".to_string(), Some(0))
@@ -208,8 +153,22 @@ async fn fetch_service_get_block_raw(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block_object(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, false).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber
         .z_get_block("1".to_string(), Some(1))
@@ -220,8 +179,23 @@ async fn fetch_service_get_block_object(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
     let mut clients = test_manager
         .clients
         .take()
@@ -296,8 +270,22 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
 
 // `getmempoolinfo` computed from local Broadcast state for all validators
 pub async fn test_get_mempool_info(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -388,8 +376,22 @@ pub async fn test_get_mempool_info(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -430,8 +432,22 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -473,8 +489,22 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -515,8 +545,22 @@ async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -573,8 +617,22 @@ async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -621,8 +679,23 @@ async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
     test_manager
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
@@ -662,8 +735,22 @@ async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
 }
 
 async fn assert_fetch_service_difficulty_matches_rpc(validator: &ValidatorKind) {
-    let (test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let fetch_service_get_difficulty = fetch_service_subscriber.get_difficulty().await.unwrap();
 
@@ -687,8 +774,22 @@ async fn assert_fetch_service_difficulty_matches_rpc(validator: &ValidatorKind) 
 }
 
 async fn assert_fetch_service_peerinfo_matches_rpc(validator: &ValidatorKind) {
-    let (test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let fetch_service_get_peer_info = fetch_service_subscriber.get_peer_info().await.unwrap();
 
@@ -715,8 +816,22 @@ async fn assert_fetch_service_peerinfo_matches_rpc(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block_subsidy(validator: &ValidatorKind) {
-    let (test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     const BLOCK_LIMIT: u32 = 10;
 
@@ -748,8 +863,22 @@ async fn fetch_service_get_block_subsidy(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let block_id = BlockId {
         height: 1,
@@ -776,8 +905,22 @@ async fn fetch_service_get_block(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     test_manager
         .generate_blocks_and_poll_indexer(5, &fetch_service_subscriber)
@@ -806,8 +949,22 @@ async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block_count(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     test_manager
         .generate_blocks_and_poll_indexer(5, &fetch_service_subscriber)
@@ -827,8 +984,22 @@ async fn fetch_service_get_block_count(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_validate_address(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     // scriptpubkey: "76a914000000000000000000000000000000000000000088ac"
     let expected_validation = ValidateAddressResponse::new(
@@ -864,8 +1035,22 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block_nullifiers(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let block_id = BlockId {
         height: 1,
@@ -883,8 +1068,23 @@ async fn fetch_service_get_block_nullifiers(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block_range(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
     test_manager
         .generate_blocks_and_poll_indexer(10, &fetch_service_subscriber)
         .await;
@@ -917,8 +1117,23 @@ async fn fetch_service_get_block_range(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_block_range_nullifiers(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
     test_manager
         .generate_blocks_and_poll_indexer(10, &fetch_service_subscriber)
         .await;
@@ -951,8 +1166,22 @@ async fn fetch_service_get_block_range_nullifiers(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1000,8 +1229,22 @@ async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1048,8 +1291,22 @@ async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1121,8 +1378,22 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1179,8 +1450,22 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1276,8 +1561,22 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1351,8 +1650,22 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_tree_state(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let block_id = BlockId {
         height: 1,
@@ -1370,8 +1683,22 @@ async fn fetch_service_get_tree_state(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_latest_tree_state(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber
         .get_latest_tree_state()
@@ -1382,8 +1709,22 @@ async fn fetch_service_get_latest_tree_state(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_subtree_roots(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let subtree_roots_arg = GetSubtreeRootsArg {
         start_index: 0,
@@ -1408,8 +1749,22 @@ async fn fetch_service_get_subtree_roots(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1526,8 +1881,22 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_lightd_info(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber.get_lightd_info().await.unwrap());
 
