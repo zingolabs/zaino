@@ -10,10 +10,6 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::sync::Arc;
 use tower::{Service, ServiceExt as _};
-use zaino_common::network::ActivationHeights;
-use zaino_common::DatabaseConfig;
-use zaino_common::ServiceConfig;
-use zaino_common::StorageConfig;
 use zaino_fetch::chain::transaction::FullTransaction;
 use zaino_fetch::chain::utils::ParseFromSlice;
 use zaino_state::read_u32_le;
@@ -21,16 +17,14 @@ use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
 use zaino_state::write_u64_le;
 use zaino_state::CompactSize;
-use zaino_state::FetchService;
 use zaino_state::{BackendType, ChainWork, IndexedBlock};
 use zaino_state::{
-    StateService, StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
+    StateService, ZcashIndexer,
 };
 use zaino_testutils::from_inputs;
 use zaino_testutils::test_vectors::transactions::get_test_vectors;
 use zaino_testutils::Validator as _;
 use zaino_testutils::{TestManager, ValidatorKind};
-use zebra_chain::parameters::NetworkKind;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlockTransaction};
