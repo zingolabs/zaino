@@ -14,6 +14,7 @@ version = { workspace = true }
 anyhow = { workspace = true }
 
 # Test utility
+zainod = { workspace = true }
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
 zaino-proto.workspace = true

@@ -3,7 +3,6 @@
 use anyhow::Context;
 use core2::io::{self, Read, Write};
 use futures::TryFutureExt as _;
-use zaino_state::FetchService;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
@@ -22,6 +21,7 @@ use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
 use zaino_state::write_u64_le;
 use zaino_state::CompactSize;
+use zaino_state::FetchService;
 use zaino_state::{BackendType, ChainWork, IndexedBlock};
 use zaino_state::{
     StateService, StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
@@ -54,7 +54,11 @@ async fn create_test_manager_and_services(
     enable_zaino: bool,
     enable_clients: bool,
     network: Option<NetworkKind>,
-) -> (TestManager<FetchService>, StateService, StateServiceSubscriber) {
+) -> (
+    TestManager<FetchService>,
+    StateService,
+    StateServiceSubscriber,
+) {
     let test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,

@@ -4,8 +4,8 @@ use zaino_state::{
     bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
     BackendType, FetchService,
 };
-use zaino_testutils::{TestManager, ValidatorKind};
 use zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS;
+use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
 
@@ -110,9 +110,7 @@ async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, b
     let finalised_state_subscriber = block_cache_subscriber.finalised_state.take().unwrap();
 
     for _ in 1..=batches {
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
 
         // Check chain height in validator, non-finalised state and finalised state.
         let validator_height = dbg!(json_service.get_blockchain_info().await.unwrap().blocks.0);

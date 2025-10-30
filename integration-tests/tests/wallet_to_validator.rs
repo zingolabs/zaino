@@ -5,13 +5,24 @@
 use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_state::BackendType;
 use zaino_state::LightWalletService;
+use zaino_state::ZcashIndexer;
 use zaino_state::ZcashService;
 use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
 use zaino_testutils::ValidatorKind;
+use zainodlib::config::IndexerConfig;
+use zainodlib::error::IndexerError;
 use zip32::AccountId;
 
-async fn connect_to_node_get_info_for_validator<Service: LightWalletService + Send + Sync + 'static>(validator: &ValidatorKind, backend: &BackendType) {
+async fn connect_to_node_get_info_for_validator<
+    Service: LightWalletService + Send + Sync + 'static,
+>(
+    validator: &ValidatorKind,
+    backend: &BackendType,
+) where
+    Service::Config: From<IndexerConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     let mut test_manager = TestManager::<Service>::launch_with_default_activation_heights(
         validator, backend, None, None, true, false, false, true, true, true,
     )
@@ -28,7 +39,13 @@ async fn connect_to_node_get_info_for_validator<Service: LightWalletService + Se
     test_manager.close().await;
 }
 
-async fn send_to_orchard<Service: LightWalletService + Send + Sync + 'static>(validator: &ValidatorKind, backend: &BackendType) {
+async fn send_to_orchard<Service: LightWalletService + Send + Sync + 'static>(
+    validator: &ValidatorKind,
+    backend: &BackendType,
+) where
+    Service::Config: From<IndexerConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     let mut test_manager = TestManager::<Service>::launch_with_default_activation_heights(
         validator, backend, None, None, true, false, false, true, true, true,
     )
@@ -42,14 +59,10 @@ async fn send_to_orchard<Service: LightWalletService + Send + Sync + 'static>(va
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(1)
-            .await;
+        test_manager.generate_blocks_and_poll(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -57,9 +70,7 @@ async fn send_to_orchard<Service: LightWalletService + Send + Sync + 'static>(va
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
         .await
         .unwrap();
-    test_manager
-        .generate_blocks_and_poll(1)
-        .await;
+    test_manager.generate_blocks_and_poll(1).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -77,7 +88,13 @@ async fn send_to_orchard<Service: LightWalletService + Send + Sync + 'static>(va
     test_manager.close().await;
 }
 
-async fn send_to_sapling<Service: LightWalletService + Send + Sync + 'static>(validator: &ValidatorKind, backend: &BackendType) {
+async fn send_to_sapling<Service: LightWalletService + Send + Sync + 'static>(
+    validator: &ValidatorKind,
+    backend: &BackendType,
+) where
+    Service::Config: From<IndexerConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     let mut test_manager = TestManager::<Service>::launch_with_default_activation_heights(
         validator, backend, None, None, true, false, false, true, true, true,
     )
@@ -91,14 +108,10 @@ async fn send_to_sapling<Service: LightWalletService + Send + Sync + 'static>(va
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(1)
-            .await;
+        test_manager.generate_blocks_and_poll(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -106,9 +119,7 @@ async fn send_to_sapling<Service: LightWalletService + Send + Sync + 'static>(va
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager
-        .generate_blocks_and_poll(1)
-        .await;
+    test_manager.generate_blocks_and_poll(1).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -126,7 +137,13 @@ async fn send_to_sapling<Service: LightWalletService + Send + Sync + 'static>(va
     test_manager.close().await;
 }
 
-async fn send_to_transparent<Service: LightWalletService + Send + Sync + 'static>(validator: &ValidatorKind, backend: &BackendType) {
+async fn send_to_transparent<Service: LightWalletService + Send + Sync + 'static>(
+    validator: &ValidatorKind,
+    backend: &BackendType,
+) where
+    Service::Config: From<IndexerConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     let mut test_manager = TestManager::<Service>::launch_with_default_activation_heights(
         validator, backend, None, None, true, false, false, true, true, true,
     )
@@ -140,14 +157,10 @@ async fn send_to_transparent<Service: LightWalletService + Send + Sync + 'static
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(1)
-            .await;
+        test_manager.generate_blocks_and_poll(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -156,9 +169,7 @@ async fn send_to_transparent<Service: LightWalletService + Send + Sync + 'static
         .await
         .unwrap();
 
-    test_manager
-        .generate_blocks_and_poll(1)
-        .await;
+    test_manager.generate_blocks_and_poll(1).await;
 
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
@@ -191,9 +202,7 @@ async fn send_to_transparent<Service: LightWalletService + Send + Sync + 'static
         .unwrap();
 
     dbg!(unfinalised_transactions.clone());
-    test_manager
-        .generate_blocks_and_poll(100)
-        .await;
+    test_manager.generate_blocks_and_poll(100).await;
 
     println!("\n\nFetching Tx From Finalized Chain!\n");
 
@@ -228,7 +237,13 @@ async fn send_to_transparent<Service: LightWalletService + Send + Sync + 'static
     test_manager.close().await;
 }
 
-async fn send_to_all<Service: LightWalletService + Send + Sync + 'static>(validator: &ValidatorKind, backend: &BackendType) {
+async fn send_to_all<Service: LightWalletService + Send + Sync + 'static>(
+    validator: &ValidatorKind,
+    backend: &BackendType,
+) where
+    Service::Config: From<IndexerConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     let mut test_manager = TestManager::<Service>::launch_with_default_activation_heights(
         validator, backend, None, None, true, false, false, true, true, true,
     )
@@ -239,31 +254,21 @@ async fn send_to_all<Service: LightWalletService + Send + Sync + 'static>(valida
         .take()
         .expect("Clients are not initialized");
 
-    test_manager
-        .generate_blocks_and_poll(2)
-        .await;
+    test_manager.generate_blocks_and_poll(2).await;
     clients.faucet.sync_and_await().await.unwrap();
 
     // "Create" 3 orchard notes in faucet.
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(1)
-            .await;
+        test_manager.generate_blocks_and_poll(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -279,9 +284,7 @@ async fn send_to_all<Service: LightWalletService + Send + Sync + 'static>(valida
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager
-        .generate_blocks_and_poll(100)
-        .await;
+    test_manager.generate_blocks_and_poll(100).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -321,7 +324,13 @@ async fn send_to_all<Service: LightWalletService + Send + Sync + 'static>(valida
     test_manager.close().await;
 }
 
-async fn shield_for_validator<Service: LightWalletService + Send + Sync + 'static>(validator: &ValidatorKind, backend: &BackendType) {
+async fn shield_for_validator<Service: LightWalletService + Send + Sync + 'static>(
+    validator: &ValidatorKind,
+    backend: &BackendType,
+) where
+    Service::Config: From<IndexerConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     let mut test_manager = TestManager::<Service>::launch_with_default_activation_heights(
         validator, backend, None, None, true, false, false, true, true, true,
     )
@@ -335,14 +344,10 @@ async fn shield_for_validator<Service: LightWalletService + Send + Sync + 'stati
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(1)
-            .await;
+        test_manager.generate_blocks_and_poll(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -350,9 +355,7 @@ async fn shield_for_validator<Service: LightWalletService + Send + Sync + 'stati
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager
-        .generate_blocks_and_poll(100)
-        .await;
+    test_manager.generate_blocks_and_poll(100).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -372,9 +375,7 @@ async fn shield_for_validator<Service: LightWalletService + Send + Sync + 'stati
         .quick_shield(AccountId::ZERO)
         .await
         .unwrap();
-    test_manager
-        .generate_blocks_and_poll(1)
-        .await;
+    test_manager.generate_blocks_and_poll(1).await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -392,10 +393,15 @@ async fn shield_for_validator<Service: LightWalletService + Send + Sync + 'stati
     test_manager.close().await;
 }
 
-async fn monitor_unverified_mempool_for_validator<Service: LightWalletService + Send + Sync + 'static>(
+async fn monitor_unverified_mempool_for_validator<
+    Service: LightWalletService + Send + Sync + 'static,
+>(
     validator: &ValidatorKind,
     backend: &BackendType,
-) {
+) where
+    Service::Config: From<IndexerConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     let mut test_manager = TestManager::<Service>::launch_with_default_activation_heights(
         validator, backend, None, None, true, false, false, true, true, true,
     )
@@ -406,25 +412,17 @@ async fn monitor_unverified_mempool_for_validator<Service: LightWalletService + 
         .take()
         .expect("Clients are not initialized");
 
-    test_manager
-        .generate_blocks_and_poll(1)
-        .await;
+    test_manager.generate_blocks_and_poll(1).await;
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(100)
-            .await;
+        test_manager.generate_blocks_and_poll(100).await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_poll(1)
-            .await;
+        test_manager.generate_blocks_and_poll(1).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -513,9 +511,7 @@ async fn monitor_unverified_mempool_for_validator<Service: LightWalletService + 
         250_000
     );
 
-    test_manager
-        .generate_blocks_and_poll(1)
-        .await;
+    test_manager.generate_blocks_and_poll(1).await;
 
     println!("\n\nFetching Mined Tx 1!\n");
     let _transaction_1 = dbg!(
@@ -566,7 +562,11 @@ mod zcashd {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn connect_to_node_get_info() {
-        connect_to_node_get_info_for_validator::<FetchService>(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
+        connect_to_node_get_info_for_validator::<FetchService>(
+            &ValidatorKind::Zcashd,
+            &BackendType::Fetch,
+        )
+        .await;
     }
 
     mod sent_to {
@@ -600,7 +600,11 @@ mod zcashd {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn monitor_unverified_mempool() {
-        monitor_unverified_mempool_for_validator::<FetchService>(&ValidatorKind::Zcashd, &BackendType::Fetch).await;
+        monitor_unverified_mempool_for_validator::<FetchService>(
+            &ValidatorKind::Zcashd,
+            &BackendType::Fetch,
+        )
+        .await;
     }
 }
 
@@ -614,8 +618,11 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn connect_to_node_get_info() {
-            connect_to_node_get_info_for_validator::<FetchService>(&ValidatorKind::Zebrad, &BackendType::Fetch)
-                .await;
+            connect_to_node_get_info_for_validator::<FetchService>(
+                &ValidatorKind::Zebrad,
+                &BackendType::Fetch,
+            )
+            .await;
         }
         mod send_to {
             use zaino_state::FetchService;
@@ -635,7 +642,8 @@ mod zebrad {
             /// Bug documented in https://github.com/zingolabs/zaino/issues/145.
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn transparent() {
-                send_to_transparent::<FetchService>(&ValidatorKind::Zebrad, &BackendType::Fetch).await;
+                send_to_transparent::<FetchService>(&ValidatorKind::Zebrad, &BackendType::Fetch)
+                    .await;
             }
 
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -650,8 +658,11 @@ mod zebrad {
         /// Bug documented in https://github.com/zingolabs/zaino/issues/144.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn monitor_unverified_mempool() {
-            monitor_unverified_mempool_for_validator::<FetchService>(&ValidatorKind::Zebrad, &BackendType::Fetch)
-                .await;
+            monitor_unverified_mempool_for_validator::<FetchService>(
+                &ValidatorKind::Zebrad,
+                &BackendType::Fetch,
+            )
+            .await;
         }
     }
 
@@ -662,8 +673,11 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn connect_to_node_get_info() {
-            connect_to_node_get_info_for_validator::<StateService>(&ValidatorKind::Zebrad, &BackendType::State)
-                .await;
+            connect_to_node_get_info_for_validator::<StateService>(
+                &ValidatorKind::Zebrad,
+                &BackendType::State,
+            )
+            .await;
         }
         mod send_to {
             use zaino_state::FetchService;
@@ -682,7 +696,8 @@ mod zebrad {
 
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn transparent() {
-                send_to_transparent::<StateService>(&ValidatorKind::Zebrad, &BackendType::State).await;
+                send_to_transparent::<StateService>(&ValidatorKind::Zebrad, &BackendType::State)
+                    .await;
             }
 
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -698,8 +713,11 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn monitor_unverified_mempool() {
-            monitor_unverified_mempool_for_validator::<StateService>(&ValidatorKind::Zebrad, &BackendType::State)
-                .await;
+            monitor_unverified_mempool_for_validator::<StateService>(
+                &ValidatorKind::Zebrad,
+                &BackendType::State,
+            )
+            .await;
         }
     }
 }

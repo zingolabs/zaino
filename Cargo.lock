@@ -2967,6 +2967,7 @@ dependencies = [
  "zaino-proto",
  "zaino-state",
  "zaino-testutils",
+ "zainod",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",

@@ -27,7 +27,11 @@ async fn create_test_manager_and_fetch_service(
     zaino_no_sync: bool,
     zaino_no_db: bool,
     enable_clients: bool,
-) -> (TestManager<FetchService>, FetchService, FetchServiceSubscriber) {
+) -> (
+    TestManager<FetchService>,
+    FetchService,
+    FetchServiceSubscriber,
+) {
     let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
         validator,
         &BackendType::Fetch,
@@ -76,7 +80,8 @@ async fn create_test_manager_and_fetch_service(
     test_manager.clients = if enable_clients {
         let mut client_builder = ClientBuilder::new(
             make_uri(
-                test_manager.zaino_grpc_listen_address
+                test_manager
+                    .zaino_grpc_listen_address
                     .expect("Error launching zingo lightclients. `enable_zaino` is None.")
                     .port(),
             ),
@@ -84,13 +89,17 @@ async fn create_test_manager_and_fetch_service(
         );
         let faucet = client_builder.build_faucet(
             true,
-            local_network_from_activation_heights(test_manager.local_net.get_activation_heights().into()),
+            local_network_from_activation_heights(
+                test_manager.local_net.get_activation_heights().into(),
+            ),
         );
         let recipient = client_builder.build_client(
             seeds::HOSPITAL_MUSEUM_SEED.to_string(),
             1,
             true,
-            local_network_from_activation_heights(test_manager.local_net.get_activation_heights().into()),
+            local_network_from_activation_heights(
+                test_manager.local_net.get_activation_heights().into(),
+            ),
         );
         Some(Clients {
             client_builder,
@@ -106,8 +115,7 @@ async fn create_test_manager_and_fetch_service(
 
 async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std::path::PathBuf>) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, chain_cache, true, true, false)
-            .await;
+        create_test_manager_and_fetch_service(validator, chain_cache, true, true, false).await;
     assert_eq!(fetch_service_subscriber.status(), StatusType::Ready);
     dbg!(fetch_service_subscriber.data.clone());
     dbg!(fetch_service_subscriber.get_info().await.unwrap());

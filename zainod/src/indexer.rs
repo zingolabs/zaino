@@ -10,7 +10,8 @@ use zaino_serve::server::{
     jsonrpc::JsonRpcServer,
 };
 use zaino_state::{
-    BackendConfig, FetchService, IndexerService, IndexerSubscriber, LightWalletIndexer, LightWalletService, StateService, StatusType, ZcashIndexer, ZcashService
+    BackendConfig, FetchService, IndexerService, IndexerSubscriber, LightWalletIndexer,
+    LightWalletService, StateService, StatusType, ZcashIndexer, ZcashService,
 };
 
 use crate::{config::IndexerConfig, error::IndexerError};
@@ -59,10 +60,14 @@ pub async fn spawn_indexer(
     );
     match BackendConfig::try_from(config.clone()) {
         Ok(BackendConfig::State(state_service_config)) => {
-            Indexer::<StateService>::spawn_inner(state_service_config, config).await.map(|res| res.0)
+            Indexer::<StateService>::spawn_inner(state_service_config, config)
+                .await
+                .map(|res| res.0)
         }
         Ok(BackendConfig::Fetch(fetch_service_config)) => {
-            Indexer::<FetchService>::spawn_inner(fetch_service_config, config).await.map(|res| res.0)
+            Indexer::<FetchService>::spawn_inner(fetch_service_config, config)
+                .await
+                .map(|res| res.0)
         }
         Err(e) => Err(e),
     }
@@ -73,13 +78,17 @@ where
     IndexerError: From<<Service::Subscriber as ZcashIndexer>::Error>,
 {
     /// Spawns a new Indexer server.
-    // TODO: returning the subscriber may not be necessary once zingolib supports the read state service instead of relying on gRPC,
-    // zingolib is used for integration testing and the indexer must support gRPC to interact with the lightclient but also give access
-    // to the service subscriber for testing correct functionality.
+    // TODO: revise whether returning the subscriber here is the best way to access the service after the indexer is spawned.
     pub async fn spawn_inner(
         service_config: Service::Config,
         indexer_config: IndexerConfig,
-    ) -> Result<(tokio::task::JoinHandle<Result<(), IndexerError>>, Service::Subscriber), IndexerError> {
+    ) -> Result<
+        (
+            tokio::task::JoinHandle<Result<(), IndexerError>>,
+            Service::Subscriber,
+        ),
+        IndexerError,
+    > {
         let service = IndexerService::<Service>::spawn(service_config).await?;
         let service_subscriber = service.inner_ref().get_subscriber();
 
