@@ -800,7 +800,7 @@ mod zcashd {
                 zcashd_subscriber,
                 _zaino_service,
                 _zaino_subscriber,
-            ) = create_test_manager_and_fetch_services(false, false).await;
+            ) = create_test_manager_and_fetch_services(false).await;
 
             let expected_p2pkh = ZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
 
