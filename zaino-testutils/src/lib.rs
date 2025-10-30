@@ -19,10 +19,8 @@ use zaino_common::{
     network::ActivationHeights, CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
 use zaino_state::{
-    chain_index::NonFinalizedSnapshot, BackendConfig, BackendType, ChainIndex, FetchService,
-    FetchServiceConfig, FetchServiceSubscriber, IndexerSubscriber, LightWalletIndexer,
-    LightWalletService, NodeBackedChainIndexSubscriber, StateService, StateServiceConfig,
-    StateServiceSubscriber, ZcashIndexer, ZcashService,
+    chain_index::NonFinalizedSnapshot, BackendType, ChainIndex, LightWalletIndexer,
+    LightWalletService, NodeBackedChainIndexSubscriber, ZcashIndexer, ZcashService,
 };
 use zainodlib::{
     config::{default_ephemeral_cookie_path, IndexerConfig},
@@ -744,6 +742,7 @@ async fn build_client(
 #[cfg(test)]
 mod launch_testmanager {
     use super::*;
+    use zaino_state::FetchService;
 
     mod zcashd {
 
@@ -926,7 +925,6 @@ mod launch_testmanager {
     }
 
     mod zebrad {
-
         use super::*;
 
         mod fetch_service {
@@ -1247,10 +1245,9 @@ mod launch_testmanager {
         }
 
         mod state_service {
-
-            use zip32::AccountId;
-
             use super::*;
+            use zaino_state::StateService;
+            use zip32::AccountId;
 
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn basic() {

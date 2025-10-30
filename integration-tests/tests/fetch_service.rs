@@ -1458,9 +1458,22 @@ async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
 }
 
 async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, false, false, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
 
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
     let mut clients = test_manager
         .clients
         .take()

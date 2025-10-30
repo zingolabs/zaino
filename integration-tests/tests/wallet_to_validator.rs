@@ -667,7 +667,7 @@ mod zebrad {
     }
 
     mod state_service {
-        use zaino_state::{FetchService, StateService};
+        use zaino_state::StateService;
 
         use super::*;
 
@@ -680,8 +680,6 @@ mod zebrad {
             .await;
         }
         mod send_to {
-            use zaino_state::FetchService;
-
             use super::*;
 
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

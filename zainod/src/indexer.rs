@@ -10,8 +10,8 @@ use zaino_serve::server::{
     jsonrpc::JsonRpcServer,
 };
 use zaino_state::{
-    BackendConfig, FetchService, IndexerService, IndexerSubscriber, LightWalletIndexer,
-    LightWalletService, StateService, StatusType, ZcashIndexer, ZcashService,
+    BackendConfig, FetchService, IndexerService, LightWalletService, StateService, StatusType,
+    ZcashIndexer, ZcashService,
 };
 
 use crate::{config::IndexerConfig, error::IndexerError};
