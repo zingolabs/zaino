@@ -1376,6 +1376,10 @@ mod zebrad {
         }
 
         mod validation {
+            use integration_tests::rpc::json_rpc::{
+                VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS,
+                VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
+            };
             use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
             use zaino_state::ZcashIndexer;
             use zaino_testutils::ValidatorKind;
@@ -1384,6 +1388,21 @@ mod zebrad {
 
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn z_validate_address() {
+                // const VALID_P2PKH_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
+                // const VALID_P2SH_ADDRESS: &str = "t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u";
+
+                // const VALID_SPROUT_ADDRESS: &str = "ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ";
+                // const VALID_PAYING_KEY: &str = "VALID_SPROUT_ADDRESS";
+                // const VALID_TRANSMISSION_KEY: &str =
+                //     "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c";
+
+                // const VALID_SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
+                // const VALID_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
+                // const VALID_DIVERSIFIED_TRANSMISSION_KEY: &str =
+                //     "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88";
+
+                // const VALID_UNIFIED_ADDRESS: &str = "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36";
+
                 let (
                     mut test_manager,
                     _fetch_service,
@@ -1399,21 +1418,19 @@ mod zebrad {
                 )
                 .await;
 
-                let expected_p2pkh =
-                    ZValidateAddress::p2pkh("tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx".to_string());
+                let expected_p2pkh = ZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
 
                 let fs_p2pkh = state_service_subscriber
-                    .z_validate_address("tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx".to_string())
+                    .z_validate_address(VALID_P2PKH_ADDRESS.to_string())
                     .await
                     .unwrap();
 
                 assert_eq!(fs_p2pkh, expected_p2pkh);
 
-                let expected_p2sh =
-                    ZValidateAddress::p2sh("t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u".to_string());
+                let expected_p2sh = ZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string());
 
                 let fs_p2sh = state_service_subscriber
-                    .z_validate_address("t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u".to_string())
+                    .z_validate_address(VALID_P2SH_ADDRESS.to_string())
                     .await
                     .unwrap();
 
@@ -1426,21 +1443,25 @@ mod zebrad {
 
                 // assert_eq!(fs_sprout, expected_sprout);
 
-                let expected_sapling = ZValidateAddress::sapling("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string(), Some("977e0b930ee6c11e4d26f8".to_string()), Some("553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88".to_string()));
+                let expected_sapling = ZValidateAddress::sapling(
+                    VALID_SAPLING_ADDRESS.to_string(),
+                    Some(VALID_DIVERSIFIER.to_string()),
+                    Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
+                );
 
                 let fs_sapling = state_service_subscriber
-                    .z_validate_address("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string())
+                    .z_validate_address(VALID_SAPLING_ADDRESS.to_string())
                     .await
                     .unwrap();
 
                 assert_eq!(fs_sapling, expected_sapling);
 
-                let expected_unified = ZValidateAddress::unified("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string());
+                let expected_unified = ZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string());
 
                 let fs_unified = state_service_subscriber
-                    .z_validate_address("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string())
+                    .z_validate_address(VALID_UNIFIED_ADDRESS.to_string())
                     .await
-                .unwrap();
+                    .unwrap();
 
                 assert_eq!(expected_unified, fs_unified);
 
