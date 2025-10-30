@@ -1,5 +1,7 @@
 //! Types associated with the `z_validateaddress` RPC request.
 
+use std::collections::BTreeMap;
+
 use serde::{
     de,
     ser::{SerializeMap, SerializeStruct},
@@ -25,13 +27,13 @@ pub enum ZValidateAddress {
     Known(KnownZValidateAddress),
 
     /// Unknown response.
-    Unknown,
+    Unknown(BTreeMap<String, Value>),
 }
 
 impl ZValidateAddress {
     /// Constructs an unknown response.
     pub fn unknown() -> Self {
-        ZValidateAddress::Unknown
+        ZValidateAddress::Unknown(BTreeMap::new())
     }
 
     /// Constructs an invalid response.
@@ -58,8 +60,8 @@ impl ZValidateAddress {
     /// Constructs a valid response for a Sapling address.
     pub fn sapling(
         address: impl Into<String>,
-        diversifier: impl Into<String>,
-        diversified_transmission_key: impl Into<String>,
+        diversifier: Option<String>,
+        diversified_transmission_key: Option<String>,
     ) -> Self {
         ZValidateAddress::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::sapling(address, diversifier, diversified_transmission_key),
@@ -69,8 +71,8 @@ impl ZValidateAddress {
     /// Constructs a valid response for a Sprout address.
     pub fn sprout(
         address: impl Into<String>,
-        paying_key: impl Into<String>,
-        transmission_key: impl Into<String>,
+        paying_key: Option<String>,
+        transmission_key: Option<String>,
     ) -> Self {
         ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::sprout(
             address,
@@ -181,29 +183,29 @@ impl ValidZValidateAddress {
     }
 
     /// Creates a response for a Sprout address.
-    pub fn sprout(
+    pub fn sprout<T: Into<String>>(
         address: impl Into<String>,
-        paying_key: impl Into<String>,
-        transmission_key: impl Into<String>,
+        paying_key: Option<T>,
+        transmission_key: Option<T>,
     ) -> Self {
         Self(AddressData::Sprout {
             common: CommonFields::valid(address, ZValidateAddressType::Sprout),
-            paying_key: paying_key.into(),
-            transmission_key: transmission_key.into(),
+            paying_key: paying_key.map(|x| x.into()),
+            transmission_key: transmission_key.map(|x| x.into()),
             is_mine: IsMine::NotMine,
         })
     }
 
     /// Creates a response for a Sapling address.
-    pub fn sapling(
+    pub fn sapling<T: Into<String>>(
         address: impl Into<String>,
-        diversifier: impl Into<String>,
-        diversified_transmission_key: impl Into<String>,
+        diversifier: Option<T>,
+        diversified_transmission_key: Option<T>,
     ) -> Self {
         Self(AddressData::Sapling {
             common: CommonFields::valid(address, ZValidateAddressType::Sapling),
-            diversifier: diversifier.into(),
-            diversified_transmission_key: diversified_transmission_key.into(),
+            diversifier: diversifier.map(|x| x.into()),
+            diversified_transmission_key: diversified_transmission_key.map(|x| x.into()),
             is_mine: IsMine::NotMine,
         })
     }
@@ -268,8 +270,8 @@ impl ValidZValidateAddress {
     /// Returns the `payingkey` and `transmissionkey` fields.
     pub fn sprout_keys(&self) -> Option<(&str, &str)> {
         if let AddressData::Sprout {
-            paying_key,
-            transmission_key,
+            paying_key: Some(paying_key),
+            transmission_key: Some(transmission_key),
             ..
         } = &self.0
         {
@@ -282,8 +284,8 @@ impl ValidZValidateAddress {
     /// Returns the `diversifier` and `diversifiedtransmissionkey` fields.
     pub fn sapling_keys(&self) -> Option<(&str, &str)> {
         if let AddressData::Sapling {
-            diversifier,
-            diversified_transmission_key,
+            diversifier: Some(diversifier),
+            diversified_transmission_key: Some(diversified_transmission_key),
             ..
         } = &self.0
         {
@@ -404,10 +406,10 @@ pub enum AddressData {
         common: CommonFields,
 
         /// Hex of `a_pk`
-        paying_key: String,
+        paying_key: Option<String>,
 
         /// The hex value of the transmission key, pk_enc
-        transmission_key: String,
+        transmission_key: Option<String>,
 
         /// Whether the address is in the wallet or not.
         is_mine: IsMine,
@@ -419,10 +421,10 @@ pub enum AddressData {
         common: CommonFields,
 
         /// Hex of the diversifier `d`
-        diversifier: String,
+        diversifier: Option<String>,
 
         /// Hex of `pk_d`
-        diversified_transmission_key: String,
+        diversified_transmission_key: Option<String>,
 
         /// Whether the address is in the wallet or not.
         is_mine: IsMine,
@@ -484,8 +486,12 @@ impl Serialize for AddressData {
                 is_mine,
                 ..
             } => {
-                map.serialize_entry("payingkey", paying_key)?;
-                map.serialize_entry("transmissionkey", transmission_key)?;
+                if let Some(pk) = paying_key {
+                    map.serialize_entry("payingkey", pk)?;
+                }
+                if let Some(tk) = transmission_key {
+                    map.serialize_entry("transmissionkey", tk)?;
+                }
                 if let Some(b) = Option::<bool>::from(is_mine.clone()) {
                     map.serialize_entry("ismine", &b)?;
                 }
@@ -496,8 +502,14 @@ impl Serialize for AddressData {
                 is_mine,
                 ..
             } => {
-                map.serialize_entry("diversifier", diversifier)?;
-                map.serialize_entry("diversifiedtransmissionkey", diversified_transmission_key)?;
+                dbg!(&diversifier);
+                dbg!(&diversified_transmission_key);
+                if let Some(d) = diversifier {
+                    map.serialize_entry("diversifier", d)?;
+                }
+                if let Some(dtk) = diversified_transmission_key {
+                    map.serialize_entry("diversifiedtransmissionkey", dtk)?;
+                }
                 if let Some(b) = Option::<bool>::from(is_mine.clone()) {
                     map.serialize_entry("ismine", &b)?;
                 }
@@ -515,6 +527,8 @@ impl<'de> Deserialize<'de> for AddressData {
         let obj = v
             .as_object_mut()
             .ok_or_else(|| de::Error::custom("expected object"))?;
+
+        dbg!(&obj);
 
         let address_type: Option<String> = obj
             .get("address_type")
@@ -586,13 +600,11 @@ impl<'de> Deserialize<'de> for AddressData {
                 let paying_key = obj
                     .get("payingkey")
                     .and_then(|s| s.as_str())
-                    .ok_or_else(|| de::Error::custom("missing `payingkey`"))?
-                    .to_owned();
+                    .map(str::to_owned);
                 let transmission_key = obj
                     .get("transmissionkey")
                     .and_then(|s| s.as_str())
-                    .ok_or_else(|| de::Error::custom("missing `transmissionkey`"))?
-                    .to_owned();
+                    .map(str::to_owned);
                 AddressData::Sprout {
                     common,
                     paying_key,
@@ -604,13 +616,14 @@ impl<'de> Deserialize<'de> for AddressData {
                 let diversifier = obj
                     .get("diversifier")
                     .and_then(|s| s.as_str())
-                    .ok_or_else(|| de::Error::custom("missing `diversifier`"))?
-                    .to_owned();
+                    .map(str::to_owned);
                 let diversified_transmission_key = obj
                     .get("diversifiedtransmissionkey")
                     .and_then(|s| s.as_str())
-                    .ok_or_else(|| de::Error::custom("missing `diversifiedtransmissionkey`"))?
-                    .to_owned();
+                    .map(str::to_owned);
+
+                dbg!(&diversifier);
+                dbg!(&diversified_transmission_key);
                 AddressData::Sapling {
                     common,
                     diversifier,
@@ -735,8 +748,8 @@ mod tests {
 
     #[test]
     fn valid_sprout_roundtrip_and_fields() {
-        let valid =
-            ValidZValidateAddress::sprout("zc1qq", "apkhex", "pkenc").with_is_mine(IsMine::Mine);
+        let valid = ValidZValidateAddress::sprout("zc1qq", Some("apkhex"), Some("pkenc"))
+            .with_is_mine(IsMine::Mine);
         let top = ZValidateAddress::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
@@ -764,7 +777,7 @@ mod tests {
 
     #[test]
     fn valid_sapling_roundtrip_and_fields() {
-        let valid = ValidZValidateAddress::sapling("zs1xx", "dhex", "pkdhex")
+        let valid = ValidZValidateAddress::sapling("zs1xx", Some("dhex"), Some("pkdhex"))
             .with_is_mine(IsMine::NotMine)
             .with_legacy_type(ZValidateAddressType::Sapling);
         let top = ZValidateAddress::Known(KnownZValidateAddress::Valid(valid.clone()));
@@ -852,15 +865,16 @@ mod tests {
     #[test]
     fn top_level_unknown_on_null() {
         // Untagged enum with a unit variant means `null` maps to `Unknown`.
-        let null_value: ZValidateAddress = serde_json::from_str("null").unwrap();
+        let null_value: ZValidateAddress = serde_json::from_str("{}").unwrap();
         match null_value {
-            ZValidateAddress::Unknown => {}
+            ZValidateAddress::Unknown(_) => {}
             _ => panic!("expected Unknown"),
         }
 
         // Serializing Unknown produces `null`.
-        let null_serialized = serde_json::to_string(&ZValidateAddress::Unknown).unwrap();
-        assert_eq!(null_serialized, "null");
+        let null_serialized =
+            serde_json::to_string(&ZValidateAddress::Unknown(BTreeMap::new())).unwrap();
+        assert_eq!(null_serialized, "{}");
     }
 
     #[test]
@@ -887,7 +901,8 @@ mod tests {
     #[test]
     fn helpers_return_expected_values() {
         let sapling_with_ismine =
-            ValidZValidateAddress::sapling("zs1addr", "dhex", "pkdhex").with_is_mine(IsMine::Mine);
+            ValidZValidateAddress::sapling("zs1addr", Some("dhex"), Some("pkdhex"))
+                .with_is_mine(IsMine::Mine);
         assert_eq!(sapling_with_ismine.address(), "zs1addr");
         assert_eq!(
             sapling_with_ismine.address_type(),

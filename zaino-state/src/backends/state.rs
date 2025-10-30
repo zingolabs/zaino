@@ -1286,8 +1286,8 @@ impl ZcashIndexer for StateServiceSubscriber {
 
                 Ok(ZValidateAddress::sapling(
                     s.encode(&self.network().to_zebra_network()),
-                    hex::encode(s.diversifier().0),
-                    hex::encode(pk_d),
+                    Some(hex::encode(s.diversifier().0)),
+                    Some(hex::encode(pk_d)),
                 ))
             }
             _ => Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(

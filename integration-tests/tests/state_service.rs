@@ -1426,21 +1426,21 @@ mod zebrad {
 
                 // assert_eq!(fs_sprout, expected_sprout);
 
-                let expected_sapling = ZValidateAddress::sapling("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string(), "977e0b930ee6c11e4d26f8".to_string(), "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88".to_string());
+                let expected_sapling = ZValidateAddress::sapling("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string(), Some("977e0b930ee6c11e4d26f8".to_string()), Some("553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88".to_string()));
 
                 let fs_sapling = state_service_subscriber
-        .z_validate_address("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string())
-        .await
-        .unwrap();
+                    .z_validate_address("zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca".to_string())
+                    .await
+                    .unwrap();
 
                 assert_eq!(fs_sapling, expected_sapling);
 
                 let expected_unified = ZValidateAddress::unified("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string());
 
                 let fs_unified = state_service_subscriber
-        .z_validate_address("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string())
-        .await
-    .unwrap();
+                    .z_validate_address("uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36".to_string())
+                    .await
+                .unwrap();
 
                 assert_eq!(expected_unified, fs_unified);
 
