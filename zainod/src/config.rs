@@ -1,16 +1,14 @@
 //! Zaino config.
-
-use std::{
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
-    path::PathBuf,
-};
-
 use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
 };
-
+use std::{
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    path::PathBuf,
+};
 // Added for Serde deserialization helpers
+use crate::error::IndexerError;
 use serde::{
     de::{self, Deserializer},
     Deserialize, Serialize,
@@ -20,21 +18,12 @@ use tracing::warn;
 use tracing::{error, info};
 use zaino_common::{
     CacheConfig, DatabaseConfig, DatabaseSize, Network, ServiceConfig, StorageConfig,
+    ValidatorConfig,
 };
+use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
+
+#[allow(deprecated)]
 use zaino_state::{BackendConfig, FetchServiceConfig, StateServiceConfig};
-
-use crate::error::IndexerError;
-
-/// Custom deserialization function for `SocketAddr` from a String.
-/// Used by Serde's `deserialize_with`.
-fn deserialize_socketaddr_from_string<'de, D>(deserializer: D) -> Result<SocketAddr, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    fetch_socket_addr_from_hostname(&s)
-        .map_err(|e| de::Error::custom(format!("Invalid socket address string '{s}': {e}")))
-}
 
 /// Custom deserialization function for `BackendType` from a String.
 /// Used by Serde's `deserialize_with`.
@@ -57,43 +46,18 @@ where
 /// Config information required for Zaino.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-pub struct IndexerConfig {
+pub struct ZainodConfig {
     /// Type of backend to be used.
     #[serde(deserialize_with = "deserialize_backendtype_from_string")]
     #[serde(serialize_with = "serialize_backendtype_to_string")]
     pub backend: zaino_state::BackendType,
-    /// Enable JsonRPC server.
-    pub enable_json_server: bool,
-    /// Server bind addr.
-    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
-    pub json_rpc_listen_address: SocketAddr,
-    /// Enable cookie-based authentication.
-    pub enable_cookie_auth: bool,
-    /// Directory to store authentication cookie file.
-    pub cookie_dir: Option<PathBuf>,
-    /// gRPC server bind addr.
-    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
-    pub grpc_listen_address: SocketAddr,
-    /// Enables TLS.
-    pub grpc_tls: bool,
-    /// Path to the TLS certificate file.
-    pub tls_cert_path: Option<String>,
-    /// Path to the TLS private key file.
-    pub tls_key_path: Option<String>,
-    /// Full node / validator listen port.
-    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
-    pub validator_listen_address: SocketAddr,
-    /// Full node / validator gprc listen port.
-    #[serde(deserialize_with = "deserialize_socketaddr_from_string")]
-    pub validator_grpc_listen_address: SocketAddr,
-    /// Enable validator rpc cookie authentification.
-    pub validator_cookie_auth: bool,
-    /// Path to the validator cookie file.
-    pub validator_cookie_path: Option<String>,
-    /// Full node / validator Username.
-    pub validator_user: Option<String>,
-    /// full node / validator Password.
-    pub validator_password: Option<String>,
+    /// Enable JsonRPC server with a valid Some value.
+    #[serde(default)]
+    pub json_server_settings: Option<JsonRpcServerConfig>,
+    /// gRPC server settings including listen addr, tls status, key and cert.
+    pub grpc_settings: GrpcServerConfig,
+    /// Full node / validator configuration settings.
+    pub validator_settings: ValidatorConfig,
     /// Service-level configuration (timeout, channel size).
     pub service: ServiceConfig,
     /// Storage configuration (cache and database).
@@ -104,56 +68,48 @@ pub struct IndexerConfig {
     pub zebra_db_path: PathBuf,
     /// Network chain type.
     pub network: Network,
-    /// Disables internal sync and stops zaino waiting on server sync.
-    /// Used for testing.
-    pub no_sync: bool,
-    /// Disables FinalisedState.
-    /// Used for testing.
-    pub no_db: bool,
-    /// When enabled Zaino syncs it DB in the background, fetching data from the validator.
-    ///
-    /// NOTE: Unimplemented.
-    pub slow_sync: bool,
 }
 
-impl IndexerConfig {
+impl ZainodConfig {
     /// Performs checks on config data.
     pub(crate) fn check_config(&self) -> Result<(), IndexerError> {
         // Network type is validated at the type level via Network enum.
-
         // Check TLS settings.
-        if self.grpc_tls {
-            if let Some(ref cert_path) = self.tls_cert_path {
-                if !std::path::Path::new(cert_path).exists() {
-                    return Err(IndexerError::ConfigError(format!(
-                        "TLS is enabled, but certificate path '{cert_path}' does not exist."
-                    )));
-                }
-            } else {
-                return Err(IndexerError::ConfigError(
-                    "TLS is enabled, but no certificate path is provided.".to_string(),
-                ));
+        if self.grpc_settings.tls.is_some() {
+            // then check if cert path exists or return error
+            let c_path = &self
+                .grpc_settings
+                .tls
+                .as_ref()
+                .expect("to be Some")
+                .cert_path;
+            if !std::path::Path::new(&c_path).exists() {
+                return Err(IndexerError::ConfigError(format!(
+                    "TLS is enabled, but certificate path {:?} does not exist.",
+                    c_path
+                )));
             }
 
-            if let Some(ref key_path) = self.tls_key_path {
-                if !std::path::Path::new(key_path).exists() {
-                    return Err(IndexerError::ConfigError(format!(
-                        "TLS is enabled, but key path '{key_path}' does not exist."
-                    )));
-                }
-            } else {
-                return Err(IndexerError::ConfigError(
-                    "TLS is enabled, but no key path is provided.".to_string(),
-                ));
+            let k_path = &self
+                .grpc_settings
+                .tls
+                .as_ref()
+                .expect("to be Some")
+                .key_path;
+            if !std::path::Path::new(&k_path).exists() {
+                return Err(IndexerError::ConfigError(format!(
+                    "TLS is enabled, but key path {:?} does not exist.",
+                    k_path
+                )));
             }
         }
 
         // Check validator cookie authentication settings
-        if self.validator_cookie_auth {
-            if let Some(ref cookie_path) = self.validator_cookie_path {
+        if self.validator_settings.validator_cookie_path.is_some() {
+            if let Some(ref cookie_path) = self.validator_settings.validator_cookie_path {
                 if !std::path::Path::new(cookie_path).exists() {
                     return Err(IndexerError::ConfigError(
-                        format!("Validator cookie authentication is enabled, but cookie path '{cookie_path}' does not exist."),
+                        format!("Validator cookie authentication is enabled, but cookie path '{:?}' does not exist.", cookie_path),
                     ));
                 }
             } else {
@@ -165,12 +121,15 @@ impl IndexerConfig {
         }
 
         #[cfg(not(feature = "no_tls_use_unencrypted_traffic"))]
-        let grpc_addr = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
-        #[cfg(feature = "no_tls_use_unencrypted_traffic")]
-        let _ = fetch_socket_addr_from_hostname(&self.grpc_listen_address.to_string())?;
+        let grpc_addr =
+            fetch_socket_addr_from_hostname(&self.grpc_settings.listen_address.to_string())?;
 
-        let validator_addr =
-            fetch_socket_addr_from_hostname(&self.validator_listen_address.to_string())?;
+        let validator_addr = fetch_socket_addr_from_hostname(
+            &self
+                .validator_settings
+                .validator_jsonrpc_listen_address
+                .to_string(),
+        )?;
 
         // Ensure validator listen address is private.
         if !is_private_listen_addr(&validator_addr) {
@@ -182,20 +141,23 @@ impl IndexerConfig {
         #[cfg(not(feature = "no_tls_use_unencrypted_traffic"))]
         {
             // Ensure TLS is used when connecting to external addresses.
-            if !is_private_listen_addr(&grpc_addr) && !self.grpc_tls {
+            if !is_private_listen_addr(&grpc_addr) && self.grpc_settings.tls.is_none() {
                 return Err(IndexerError::ConfigError(
                     "TLS required when connecting to external addresses.".to_string(),
                 ));
             }
 
             // Ensure validator rpc cookie authentication is used when connecting to non-loopback addresses.
-            if !is_loopback_listen_addr(&validator_addr) && !self.validator_cookie_auth {
+            if !is_loopback_listen_addr(&validator_addr)
+                && self.validator_settings.validator_cookie_path.is_none()
+            {
                 return Err(IndexerError::ConfigError(
                 "Validator listen address is not loopback, so cookie authentication must be enabled."
                     .to_string(),
             ));
             }
         }
+
         #[cfg(feature = "no_tls_use_unencrypted_traffic")]
         {
             warn!(
@@ -204,7 +166,14 @@ impl IndexerConfig {
         }
 
         // Check gRPC and JsonRPC server are not listening on the same address.
-        if self.json_rpc_listen_address == self.grpc_listen_address {
+        if self.json_server_settings.is_some()
+            && self
+                .json_server_settings
+                .as_ref()
+                .expect("json_server_settings to be Some")
+                .json_rpc_listen_address
+                == self.grpc_settings.listen_address
+        {
             return Err(IndexerError::ConfigError(
                 "gRPC server and JsonRPC server must listen on different addresses.".to_string(),
             ));
@@ -217,39 +186,24 @@ impl IndexerConfig {
     pub fn get_network(&self) -> Result<zebra_chain::parameters::Network, IndexerError> {
         Ok(self.network.to_zebra_network())
     }
-
-    /// Finalizes the configuration after initial parsing, applying conditional defaults.
-    fn finalize_config_logic(mut self) -> Self {
-        if self.enable_cookie_auth {
-            if self.cookie_dir.is_none() {
-                self.cookie_dir = Some(default_ephemeral_cookie_path());
-            }
-        } else {
-            // If auth is not enabled, cookie_dir should be None, regardless of what was in the config.
-            self.cookie_dir = None;
-        }
-        self
-    }
 }
 
-impl Default for IndexerConfig {
+impl Default for ZainodConfig {
     fn default() -> Self {
         Self {
             backend: zaino_state::BackendType::Fetch,
-            enable_json_server: false,
-            json_rpc_listen_address: "127.0.0.1:8237".parse().unwrap(),
-            enable_cookie_auth: false,
-            cookie_dir: None,
-            grpc_listen_address: "127.0.0.1:8137".parse().unwrap(),
-            grpc_tls: false,
-            tls_cert_path: None,
-            tls_key_path: None,
-            validator_listen_address: "127.0.0.1:18232".parse().unwrap(),
-            validator_grpc_listen_address: "127.0.0.1:18230".parse().unwrap(),
-            validator_cookie_auth: false,
-            validator_cookie_path: None,
-            validator_user: Some("xxxxxx".to_string()),
-            validator_password: Some("xxxxxx".to_string()),
+            json_server_settings: None,
+            grpc_settings: GrpcServerConfig {
+                listen_address: "127.0.0.1:8137".parse().unwrap(),
+                tls: None,
+            },
+            validator_settings: ValidatorConfig {
+                validator_grpc_listen_address: "127.0.0.1:18230".parse().unwrap(),
+                validator_jsonrpc_listen_address: "127.0.0.1:18232".parse().unwrap(),
+                validator_cookie_path: None,
+                validator_user: Some("xxxxxx".to_string()),
+                validator_password: Some("xxxxxx".to_string()),
+            },
             service: ServiceConfig::default(),
             storage: StorageConfig {
                 cache: CacheConfig::default(),
@@ -260,9 +214,6 @@ impl Default for IndexerConfig {
             },
             zebra_db_path: default_zebra_db_path().unwrap(),
             network: Network::Testnet,
-            no_sync: false,
-            no_db: false,
-            slow_sync: false,
         }
     }
 }
@@ -340,78 +291,103 @@ pub(crate) fn is_loopback_listen_addr(addr: &SocketAddr) -> bool {
 ///
 /// If the file cannot be read, or if its contents cannot be parsed into `IndexerConfig`,
 /// a warning is logged, and a default configuration is returned.
+/// Finally, there is an override of the config using environmental variables.
 /// The loaded or default configuration undergoes further checks and finalization.
-pub fn load_config(file_path: &PathBuf) -> Result<IndexerConfig, IndexerError> {
+pub fn load_config(file_path: &PathBuf) -> Result<ZainodConfig, IndexerError> {
     // Configuration sources are layered: Env > TOML > Defaults.
     let figment = Figment::new()
         // 1. Base defaults from `IndexerConfig::default()`.
-        .merge(Serialized::defaults(IndexerConfig::default()))
+        .merge(Serialized::defaults(ZainodConfig::default()))
         // 2. Override with values from the TOML configuration file.
         .merge(Toml::file(file_path))
         // 3. Override with values from environment variables prefixed with "ZAINO_".
-        .merge(figment::providers::Env::prefixed("ZAINO_"));
+        .merge(figment::providers::Env::prefixed("ZAINO_").split("-"));
 
-    match figment.extract::<IndexerConfig>() {
-        Ok(parsed_config) => {
-            let finalized_config = parsed_config.finalize_config_logic();
-            finalized_config.check_config()?;
+    match figment.extract::<ZainodConfig>() {
+        Ok(mut parsed_config) => {
+            if parsed_config
+                .json_server_settings
+                .clone()
+                .is_some_and(|json_settings| {
+                    json_settings.cookie_dir.is_some()
+                        && json_settings
+                            .cookie_dir
+                            .expect("cookie_dir to be Some")
+                            .as_os_str()
+                            // if the assigned pathbuf is empty (cookies enabled but no path defined).
+                            .is_empty()
+                })
+            {
+                if let Some(ref mut json_config) = parsed_config.json_server_settings {
+                    json_config.cookie_dir = Some(default_ephemeral_cookie_path());
+                }
+            };
+
+            parsed_config.check_config()?;
             info!(
                 "Successfully loaded and validated config. Base TOML file checked: '{}'",
                 file_path.display()
             );
-            Ok(finalized_config)
+            Ok(parsed_config)
         }
         Err(figment_error) => {
-            error!("Failed to extract configuration: {}", figment_error);
+            error!(
+                "Failed to extract configuration using figment: {}",
+                figment_error
+            );
             Err(IndexerError::ConfigError(format!(
-                "Configuration loading failed for TOML file '{}' (or environment variables). Details: {}",
+                "Zaino configuration loading failed during figment extract '{}' (could be TOML file or environment variables). Details: {}",
                 file_path.display(), figment_error
             )))
         }
     }
 }
 
-impl TryFrom<IndexerConfig> for BackendConfig {
+impl TryFrom<ZainodConfig> for BackendConfig {
     type Error = IndexerError;
 
-    fn try_from(cfg: IndexerConfig) -> Result<Self, Self::Error> {
+    #[allow(deprecated)]
+    fn try_from(cfg: ZainodConfig) -> Result<Self, Self::Error> {
         match cfg.backend {
             zaino_state::BackendType::State => Ok(BackendConfig::State(StateServiceConfig {
-                validator_config: zebra_state::Config {
+                validator_state_config: zebra_state::Config {
                     cache_dir: cfg.zebra_db_path.clone(),
                     ephemeral: false,
                     delete_old_database: true,
                     debug_stop_at_height: None,
                     debug_validity_check_interval: None,
                 },
-                validator_rpc_address: cfg.validator_listen_address,
-                validator_indexer_rpc_address: cfg.validator_grpc_listen_address,
-                validator_cookie_auth: cfg.validator_cookie_auth,
-                validator_cookie_path: cfg.validator_cookie_path,
-                validator_rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
+                validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
+                validator_grpc_address: cfg.validator_settings.validator_grpc_listen_address,
+                validator_cookie_auth: cfg.validator_settings.validator_cookie_path.is_some(),
+                validator_cookie_path: cfg.validator_settings.validator_cookie_path,
+                validator_rpc_user: cfg
+                    .validator_settings
+                    .validator_user
+                    .unwrap_or_else(|| "xxxxxx".to_string()),
                 validator_rpc_password: cfg
+                    .validator_settings
                     .validator_password
                     .unwrap_or_else(|| "xxxxxx".to_string()),
                 service: cfg.service,
                 storage: cfg.storage,
                 network: cfg.network,
-                no_sync: cfg.no_sync,
-                no_db: cfg.no_db,
             })),
 
             zaino_state::BackendType::Fetch => Ok(BackendConfig::Fetch(FetchServiceConfig {
-                validator_rpc_address: cfg.validator_listen_address,
-                validator_cookie_auth: cfg.validator_cookie_auth,
-                validator_cookie_path: cfg.validator_cookie_path,
-                validator_rpc_user: cfg.validator_user.unwrap_or_else(|| "xxxxxx".to_string()),
+                validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
+                validator_cookie_path: cfg.validator_settings.validator_cookie_path,
+                validator_rpc_user: cfg
+                    .validator_settings
+                    .validator_user
+                    .unwrap_or_else(|| "xxxxxx".to_string()),
                 validator_rpc_password: cfg
+                    .validator_settings
                     .validator_password
                     .unwrap_or_else(|| "xxxxxx".to_string()),
                 service: cfg.service,
                 storage: cfg.storage,
                 network: cfg.network,
-                no_sync: cfg.no_sync,
-                no_db: cfg.no_db,
             })),
         }
     }

@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 # Zaino
 zaino-state = { workspace = true, features = ["test_dependencies"] }
+zaino-serve.workspace = true
 zaino-testvectors.workspace = true
 zaino-common.workspace = true
 zainod = { workspace = true }
