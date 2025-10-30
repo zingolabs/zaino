@@ -48,102 +48,25 @@ macro_rules! expected_read_response {
     };
 }
 
-async fn create_test_manager_and_services(
-    validator: &ValidatorKind,
-    chain_cache: Option<std::path::PathBuf>,
-    enable_zaino: bool,
-    enable_clients: bool,
-    network: Option<NetworkKind>,
-) -> (
-    TestManager<FetchService>,
-    StateService,
-    StateServiceSubscriber,
-) {
-    let test_manager = TestManager::<FetchService>::launch_with_default_activation_heights(
-        validator,
-        &BackendType::Fetch,
-        network,
-        chain_cache.clone(),
-        enable_zaino,
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Not a test! Used to build test vector data for zaino_state::chain_index unit tests."]
+async fn create_200_block_regtest_chain_vectors() {
+    let mut test_manager = TestManager::<StateService>::launch_with_default_activation_heights(
+        &ValidatorKind::Zebrad,
+        &BackendType::State,
+        None,
+        None,
+        true,
+        false,
+        false,
         false,
         false,
         true,
-        true,
-        enable_clients,
     )
     .await
     .unwrap();
 
-    let (network_type, zaino_sync_bool) = match network {
-        Some(NetworkKind::Mainnet) => {
-            println!("Waiting for validator to spawn..");
-            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zaino_common::Network::Mainnet, false)
-        }
-        Some(NetworkKind::Testnet) => {
-            println!("Waiting for validator to spawn..");
-            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            (zaino_common::Network::Testnet, false)
-        }
-        _ => (
-            zaino_common::Network::Regtest(ActivationHeights::default()),
-            true,
-        ),
-    };
-
-    test_manager.local_net.print_stdout();
-
-    let state_chain_cache_dir = match chain_cache {
-        Some(dir) => dir,
-        None => test_manager.data_dir.clone(),
-    };
-
-    let state_service = StateService::spawn(StateServiceConfig::new(
-        zebra_state::Config {
-            cache_dir: state_chain_cache_dir,
-            ephemeral: false,
-            delete_old_database: true,
-            debug_stop_at_height: None,
-            debug_validity_check_interval: None,
-        },
-        test_manager.zebrad_rpc_listen_address,
-        test_manager.zebrad_grpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        ServiceConfig::default(),
-        StorageConfig {
-            database: DatabaseConfig {
-                path: test_manager
-                    .local_net
-                    .data_dir()
-                    .path()
-                    .to_path_buf()
-                    .join("zaino"),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        network_type,
-        zaino_sync_bool,
-        true,
-    ))
-    .await
-    .unwrap();
-
-    let state_subscriber = state_service.get_subscriber().inner();
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    (test_manager, state_service, state_subscriber)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Not a test! Used to build test vector data for zaino_state::chain_index unit tests."]
-async fn create_200_block_regtest_chain_vectors() {
-    let (mut test_manager, _state_service, state_service_subscriber) =
-        create_test_manager_and_services(&ValidatorKind::Zebrad, None, true, true, None).await;
+    let state_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients

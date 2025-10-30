@@ -673,16 +673,16 @@ where
         }
     }
 
-    /// Temporary function until test initialization fns are untangled.
-    /// Generate `n` blocks for the local network and poll zaino fetch/state subscriber until the chain index is synced to the target height.
-    // TODO: untangle test_manager_and_*** fns
+    /// Generate `n` blocks for the local network and poll zaino's fetch/state subscriber until the chain index is synced to the target height.
     pub async fn generate_blocks_and_poll_indexer(
         &self,
         n: u32,
         indexer: &impl LightWalletIndexer,
     ) {
         let chain_height = self.local_net.get_chain_height().await;
-        self.local_net.generate_blocks(n).await.unwrap();
+        if n != 0 {
+            self.local_net.generate_blocks(n).await.unwrap();
+        }
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
@@ -692,9 +692,7 @@ where
         }
     }
 
-    /// Temporary function until test initialization fns are untangled.
-    /// Generate `n` blocks for the local network and poll zaino until the chain index is synced to the target height.
-    // TODO: untangle test_manager_and_*** fns
+    /// Generate `n` blocks for the local network and poll zaino's chain index until the chain index is synced to the target height.
     pub async fn generate_blocks_and_poll_chain_index(
         &self,
         n: u32,
