@@ -31,7 +31,7 @@ pub enum ZValidateAddressResponse {
 }
 
 impl ZValidateAddressResponse {
-    /// Constructs a response with a [`ZValidateAddress::Unknown`] schema.
+    /// Constructs a response with a [`ZValidateAddressResponse::Unknown`] schema.
     pub fn unknown() -> Self {
         ZValidateAddressResponse::Unknown(BTreeMap::new())
     }
