@@ -23,41 +23,41 @@ pub enum ZValidateAddressError {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub enum ZValidateAddress {
-    /// Known response.
+    /// A response containing a known JSON schema.
     Known(KnownZValidateAddress),
 
-    /// Unknown response.
+    /// A response containing an unknown JSON schema.
     Unknown(BTreeMap<String, Value>),
 }
 
 impl ZValidateAddress {
-    /// Constructs an unknown response.
+    /// Constructs a response with a [`ZValidateAddress::Unknown`] schema.
     pub fn unknown() -> Self {
         ZValidateAddress::Unknown(BTreeMap::new())
     }
 
-    /// Constructs an invalid response.
+    /// Constructs an invalid address object.
     pub fn invalid() -> Self {
         ZValidateAddress::Known(KnownZValidateAddress::Invalid(
             InvalidZValidateAddress::new(),
         ))
     }
 
-    /// Constructs a valid response for a P2PKH address.
+    /// Constructs a response for a valid P2PKH address.
     pub fn p2pkh(address: impl Into<String>) -> Self {
         ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2pkh(
             address,
         )))
     }
 
-    /// Constructs a valid response for a P2SH address.
+    /// Constructs a response for a valid P2SH address.
     pub fn p2sh(address: impl Into<String>) -> Self {
         ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2sh(
             address,
         )))
     }
 
-    /// Constructs a valid response for a Sapling address.
+    /// Constructs a response for a valid Sapling address.
     pub fn sapling(
         address: impl Into<String>,
         diversifier: Option<String>,
@@ -68,7 +68,7 @@ impl ZValidateAddress {
         ))
     }
 
-    /// Constructs a valid response for a Sprout address.
+    /// Constructs a response for a valid Sprout address.
     pub fn sprout(
         address: impl Into<String>,
         paying_key: Option<String>,
@@ -81,7 +81,7 @@ impl ZValidateAddress {
         )))
     }
 
-    /// Constructs a valid response for a Unified address.
+    /// Constructs a response for a valid Unified address.
     pub fn unified(address: impl Into<String>) -> Self {
         ZValidateAddress::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::unified(address),
@@ -101,7 +101,7 @@ impl TryFrom<RpcError> for ZValidateAddressError {
     }
 }
 
-/// Response type for the `z_validateaddress` RPC for zcashd.
+/// An enum that represents the known JSON schema for the `z_validateaddress` RPC.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum KnownZValidateAddress {
@@ -151,7 +151,7 @@ impl<'de> Deserialize<'de> for InvalidZValidateAddress {
 /// Represents the "valid" response. The other fields are part of [`AddressData`].
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct ValidZValidateAddress(pub AddressData);
+pub struct ValidZValidateAddress(AddressData);
 
 impl<'de> Deserialize<'de> for ValidZValidateAddress {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -313,6 +313,11 @@ impl ValidZValidateAddress {
             | AddressData::Unified { common, .. } => common,
         }
     }
+
+    /// Returns the address data.
+    pub fn inner(&self) -> &AddressData {
+        &self.0
+    }
 }
 
 /// Common fields that appear for all valid responses.
@@ -320,7 +325,7 @@ impl ValidZValidateAddress {
 pub struct CommonFields {
     is_valid: bool,
 
-    /// The address original provided.
+    /// The address originally provided.
     pub address: String,
 
     /// Deprecated alias for the type. Only present if the node exposes it.
