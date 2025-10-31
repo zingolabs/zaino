@@ -665,7 +665,7 @@ mod zcashd {
             VALID_P2SH_ADDRESS, VALID_PAYING_KEY, VALID_SAPLING_ADDRESS, VALID_SPROUT_ADDRESS,
             VALID_TRANSMISSION_KEY, VALID_UNIFIED_ADDRESS,
         };
-        use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
+        use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddressResponse;
 
         use super::*;
 
@@ -802,7 +802,7 @@ mod zcashd {
                 _zaino_subscriber,
             ) = create_test_manager_and_fetch_services(false).await;
 
-            let expected_p2pkh = ZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
+            let expected_p2pkh = ZValidateAddressResponse::p2pkh(VALID_P2PKH_ADDRESS.to_string());
 
             let fs_p2pkh = zcashd_subscriber
                 .z_validate_address(VALID_P2PKH_ADDRESS.to_string())
@@ -811,7 +811,7 @@ mod zcashd {
 
             assert_eq!(fs_p2pkh, expected_p2pkh);
 
-            let expected_p2sh = ZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string());
+            let expected_p2sh = ZValidateAddressResponse::p2sh(VALID_P2SH_ADDRESS.to_string());
 
             let fs_p2sh = zcashd_subscriber
                 .z_validate_address(VALID_P2SH_ADDRESS.to_string())
@@ -820,7 +820,7 @@ mod zcashd {
 
             assert_eq!(fs_p2sh, expected_p2sh);
 
-            let expected_sprout = ZValidateAddress::sprout(
+            let expected_sprout = ZValidateAddressResponse::sprout(
                 VALID_SPROUT_ADDRESS.to_string(),
                 Some(VALID_PAYING_KEY.to_string()),
                 Some(VALID_TRANSMISSION_KEY.to_string()),
@@ -833,7 +833,7 @@ mod zcashd {
 
             assert_eq!(fs_sprout, expected_sprout);
 
-            let expected_sapling = ZValidateAddress::sapling(
+            let expected_sapling = ZValidateAddressResponse::sapling(
                 VALID_SAPLING_ADDRESS.to_string(),
                 Some(VALID_DIVERSIFIER.to_string()),
                 Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
@@ -846,7 +846,7 @@ mod zcashd {
 
             assert_eq!(fs_sapling, expected_sapling);
 
-            let expected_unified = ZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string());
+            let expected_unified = ZValidateAddressResponse::unified(VALID_UNIFIED_ADDRESS.to_string());
 
             let fs_unified = zcashd_subscriber
                 .z_validate_address(VALID_UNIFIED_ADDRESS.to_string())

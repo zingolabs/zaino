@@ -33,7 +33,7 @@ use zaino_fetch::{
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             z_validate_address::{
-                InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddress,
+                InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
             },
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
@@ -1271,9 +1271,9 @@ impl ZcashIndexer for StateServiceSubscriber {
         })
     }
 
-    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error> {
+    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddressResponse, Self::Error> {
         let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
-            return Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+            return Ok(ZValidateAddressResponse::Known(KnownZValidateAddress::Invalid(
                 InvalidZValidateAddress::new(),
             )));
         };
@@ -1288,7 +1288,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             Ok(address) => address,
             Err(err) => {
                 tracing::debug!(?err, "conversion error");
-                return Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+                return Ok(ZValidateAddressResponse::Known(KnownZValidateAddress::Invalid(
                     InvalidZValidateAddress::new(),
                 )));
             }
@@ -1297,10 +1297,10 @@ impl ZcashIndexer for StateServiceSubscriber {
         // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
         match converted_address {
             Address::Transparent(t) => match t {
-                TransparentAddress::PublicKeyHash(_) => Ok(ZValidateAddress::p2pkh(address)),
-                TransparentAddress::ScriptHash(_) => Ok(ZValidateAddress::p2sh(address)),
+                TransparentAddress::PublicKeyHash(_) => Ok(ZValidateAddressResponse::p2pkh(address)),
+                TransparentAddress::ScriptHash(_) => Ok(ZValidateAddressResponse::p2sh(address)),
             },
-            Address::Unified(u) => Ok(ZValidateAddress::unified(
+            Address::Unified(u) => Ok(ZValidateAddressResponse::unified(
                 u.encode(&self.network().to_zebra_network()),
             )),
             Address::Sapling(s) => {
@@ -1308,13 +1308,13 @@ impl ZcashIndexer for StateServiceSubscriber {
                 let mut pk_d = bytes[11..].to_vec(); // TODO: See if in a newer version this is no longer needed
                 pk_d.reverse();
 
-                Ok(ZValidateAddress::sapling(
+                Ok(ZValidateAddressResponse::sapling(
                     s.encode(&self.network().to_zebra_network()),
                     Some(hex::encode(s.diversifier().0)),
                     Some(hex::encode(pk_d)),
                 ))
             }
-            _ => Ok(ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+            _ => Ok(ZValidateAddressResponse::Known(KnownZValidateAddress::Invalid(
                 InvalidZValidateAddress::new(),
             ))),
         }

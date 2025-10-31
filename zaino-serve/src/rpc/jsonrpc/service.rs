@@ -3,7 +3,7 @@
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
-use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
+use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddressResponse;
 use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -151,7 +151,7 @@ pub trait ZcashIndexerRpc {
     async fn z_validate_address(
         &self,
         address: String,
-    ) -> Result<ZValidateAddress, ErrorObjectOwned>;
+    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -525,7 +525,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
     async fn z_validate_address(
         &self,
         address: String,
-    ) -> Result<ZValidateAddress, ErrorObjectOwned> {
+    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .z_validate_address(address)

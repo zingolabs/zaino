@@ -22,7 +22,7 @@ pub enum ZValidateAddressError {
 /// Response type for the `z_validateaddress` RPC.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
-pub enum ZValidateAddress {
+pub enum ZValidateAddressResponse {
     /// A response containing a known JSON schema.
     Known(KnownZValidateAddress),
 
@@ -30,29 +30,29 @@ pub enum ZValidateAddress {
     Unknown(BTreeMap<String, Value>),
 }
 
-impl ZValidateAddress {
+impl ZValidateAddressResponse {
     /// Constructs a response with a [`ZValidateAddress::Unknown`] schema.
     pub fn unknown() -> Self {
-        ZValidateAddress::Unknown(BTreeMap::new())
+        ZValidateAddressResponse::Unknown(BTreeMap::new())
     }
 
     /// Constructs an invalid address object.
     pub fn invalid() -> Self {
-        ZValidateAddress::Known(KnownZValidateAddress::Invalid(
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Invalid(
             InvalidZValidateAddress::new(),
         ))
     }
 
     /// Constructs a response for a valid P2PKH address.
     pub fn p2pkh(address: impl Into<String>) -> Self {
-        ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2pkh(
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2pkh(
             address,
         )))
     }
 
     /// Constructs a response for a valid P2SH address.
     pub fn p2sh(address: impl Into<String>) -> Self {
-        ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2sh(
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::p2sh(
             address,
         )))
     }
@@ -63,7 +63,7 @@ impl ZValidateAddress {
         diversifier: Option<String>,
         diversified_transmission_key: Option<String>,
     ) -> Self {
-        ZValidateAddress::Known(KnownZValidateAddress::Valid(
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::sapling(address, diversifier, diversified_transmission_key),
         ))
     }
@@ -74,7 +74,7 @@ impl ZValidateAddress {
         paying_key: Option<String>,
         transmission_key: Option<String>,
     ) -> Self {
-        ZValidateAddress::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::sprout(
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::sprout(
             address,
             paying_key,
             transmission_key,
@@ -83,13 +83,13 @@ impl ZValidateAddress {
 
     /// Constructs a response for a valid Unified address.
     pub fn unified(address: impl Into<String>) -> Self {
-        ZValidateAddress::Known(KnownZValidateAddress::Valid(
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::unified(address),
         ))
     }
 }
 
-impl ResponseToError for ZValidateAddress {
+impl ResponseToError for ZValidateAddressResponse {
     type RpcError = ZValidateAddressError;
 }
 
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn invalid_roundtrip_and_shape() {
-        let invalid_response = ZValidateAddress::invalid();
+        let invalid_response = ZValidateAddressResponse::invalid();
         roundtrip(&invalid_response);
 
         let json_value = serde_json::to_value(&invalid_response).unwrap();
@@ -698,7 +698,7 @@ mod tests {
             .with_is_mine(IsMine::Mine)
             .with_legacy_type(ZValidateAddressType::P2pkh);
 
-        let top = ZValidateAddress::Known(KnownZValidateAddress::Valid(valid.clone()));
+        let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
         let json_value = serde_json::to_value(&top).unwrap();
@@ -715,7 +715,7 @@ mod tests {
             })
         );
 
-        if let ZValidateAddress::Known(KnownZValidateAddress::Valid(v)) = top {
+        if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address(), "t1abc");
             assert_eq!(v.address_type(), ZValidateAddressType::P2pkh);
             assert_eq!(v.legacy_type(), Some(ZValidateAddressType::P2pkh));
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn valid_p2sh_with_notmine() {
         let valid = ValidZValidateAddress::p2sh("t3zzz").with_is_mine(IsMine::NotMine);
-        let top = ZValidateAddress::Known(KnownZValidateAddress::Valid(valid.clone()));
+        let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
         let json_value = serde_json::to_value(&top).unwrap();
@@ -745,7 +745,7 @@ mod tests {
             })
         );
 
-        if let ZValidateAddress::Known(KnownZValidateAddress::Valid(v)) = top {
+        if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::P2sh);
             assert_eq!(v.is_mine(), IsMine::NotMine);
         }
@@ -755,7 +755,7 @@ mod tests {
     fn valid_sprout_roundtrip_and_fields() {
         let valid = ValidZValidateAddress::sprout("zc1qq", Some("apkhex"), Some("pkenc"))
             .with_is_mine(IsMine::Mine);
-        let top = ZValidateAddress::Known(KnownZValidateAddress::Valid(valid.clone()));
+        let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
         let json_value = serde_json::to_value(&top).unwrap();
@@ -772,7 +772,7 @@ mod tests {
             })
         );
 
-        if let ZValidateAddress::Known(KnownZValidateAddress::Valid(v)) = top {
+        if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::Sprout);
             assert_eq!(v.is_mine(), IsMine::Mine);
             assert_eq!(v.sprout_keys(), Some(("apkhex", "pkenc")));
@@ -785,7 +785,7 @@ mod tests {
         let valid = ValidZValidateAddress::sapling("zs1xx", Some("dhex"), Some("pkdhex"))
             .with_is_mine(IsMine::NotMine)
             .with_legacy_type(ZValidateAddressType::Sapling);
-        let top = ZValidateAddress::Known(KnownZValidateAddress::Valid(valid.clone()));
+        let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
         let json_value = serde_json::to_value(&top).unwrap();
@@ -802,7 +802,7 @@ mod tests {
             })
         );
 
-        if let ZValidateAddress::Known(KnownZValidateAddress::Valid(v)) = top {
+        if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::Sapling);
             assert_eq!(v.is_mine(), IsMine::NotMine);
             assert_eq!(v.sapling_keys(), Some(("dhex", "pkdhex")));
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn valid_unified_has_no_ismine_and_no_legacy_type() {
         let valid = ValidZValidateAddress::unified("u1blah");
-        let top = ZValidateAddress::Known(KnownZValidateAddress::Valid(valid.clone()));
+        let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
         // Assert that "ismine" is absent
@@ -828,7 +828,7 @@ mod tests {
             })
         );
 
-        if let ZValidateAddress::Known(KnownZValidateAddress::Valid(v)) = top {
+        if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::Unified);
             assert_eq!(v.is_mine(), IsMine::Unknown);
             assert_eq!(v.legacy_type(), Some(ZValidateAddressType::Unified));
@@ -870,31 +870,31 @@ mod tests {
     #[test]
     fn top_level_unknown_on_null() {
         // Untagged enum with a unit variant means `null` maps to `Unknown`.
-        let null_value: ZValidateAddress = serde_json::from_str("{}").unwrap();
+        let null_value: ZValidateAddressResponse = serde_json::from_str("{}").unwrap();
         match null_value {
-            ZValidateAddress::Unknown(_) => {}
+            ZValidateAddressResponse::Unknown(_) => {}
             _ => panic!("expected Unknown"),
         }
 
         // Serializing Unknown produces `null`.
         let null_serialized =
-            serde_json::to_string(&ZValidateAddress::Unknown(BTreeMap::new())).unwrap();
+            serde_json::to_string(&ZValidateAddressResponse::Unknown(BTreeMap::new())).unwrap();
         assert_eq!(null_serialized, "{}");
     }
 
     #[test]
     fn ismine_state_json_behavior() {
-        let valid_p2pkh = ZValidateAddress::Known(KnownZValidateAddress::Valid(
+        let valid_p2pkh = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::p2pkh("t1omitted"),
         ));
         let json_value = serde_json::to_value(&valid_p2pkh).unwrap();
         assert_eq!(json_value.get("ismine"), Some(&Value::Bool(false)));
 
         // True/false encoded when set
-        let v_true = ZValidateAddress::Known(KnownZValidateAddress::Valid(
+        let v_true = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::p2pkh("t1mine").with_is_mine(IsMine::Mine),
         ));
-        let v_false = ZValidateAddress::Known(KnownZValidateAddress::Valid(
+        let v_false = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
             ValidZValidateAddress::p2pkh("t1not").with_is_mine(IsMine::NotMine),
         ));
         let j_true = serde_json::to_value(&v_true).unwrap();

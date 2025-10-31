@@ -28,7 +28,7 @@ use crate::jsonrpsee::{
         block_subsidy::GetBlockSubsidy,
         mining_info::GetMiningInfoWire,
         peer_info::GetPeerInfo,
-        z_validate_address::{ZValidateAddress, ZValidateAddressError},
+        z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
         GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
@@ -601,7 +601,7 @@ impl JsonRpSeeConnector {
     pub async fn z_validate_address(
         &self,
         address: String,
-    ) -> Result<ZValidateAddress, RpcRequestError<ZValidateAddressError>> {
+    ) -> Result<ZValidateAddressResponse, RpcRequestError<ZValidateAddressError>> {
         let params = vec![serde_json::to_value(address).map_err(RpcRequestError::JsonRpc)?];
         self.send_request("z_validateaddress", params).await
     }

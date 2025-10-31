@@ -8,7 +8,7 @@ use integration_tests::rpc::json_rpc::{
 use zaino_common::network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
 use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
-use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
+use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddressResponse;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
@@ -820,7 +820,7 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true).await;
 
-    let expected_p2pkh = ZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
+    let expected_p2pkh = ZValidateAddressResponse::p2pkh(VALID_P2PKH_ADDRESS.to_string());
 
     let fs_p2pkh = fetch_service_subscriber
         .z_validate_address(VALID_P2PKH_ADDRESS.to_string())
@@ -829,7 +829,7 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
 
     assert_eq!(fs_p2pkh, expected_p2pkh);
 
-    let expected_p2sh = ZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string());
+    let expected_p2sh = ZValidateAddressResponse::p2sh(VALID_P2SH_ADDRESS.to_string());
 
     let fs_p2sh = fetch_service_subscriber
         .z_validate_address(VALID_P2SH_ADDRESS.to_string())
@@ -854,9 +854,9 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
 
     let expected_sapling = match validator {
         ValidatorKind::Zebrad => {
-            ZValidateAddress::sapling(VALID_SAPLING_ADDRESS.to_string(), None, None)
+            ZValidateAddressResponse::sapling(VALID_SAPLING_ADDRESS.to_string(), None, None)
         }
-        ValidatorKind::Zcashd => ZValidateAddress::sapling(
+        ValidatorKind::Zcashd => ZValidateAddressResponse::sapling(
             VALID_SAPLING_ADDRESS.to_string(),
             Some(VALID_DIVERSIFIER.to_string()),
             Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
@@ -872,7 +872,7 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
 
     assert_eq!(fs_sapling, expected_sapling);
 
-    let expected_unified = ZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string());
+    let expected_unified = ZValidateAddressResponse::unified(VALID_UNIFIED_ADDRESS.to_string());
 
     let fs_unified = fetch_service_subscriber
         .z_validate_address(VALID_UNIFIED_ADDRESS.to_string())
@@ -891,8 +891,8 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
         .await
         .unwrap();
 
-    assert_eq!(fs_invalid_by_len, ZValidateAddress::invalid());
-    assert_eq!(fs_invalid_all_zeroes, ZValidateAddress::invalid());
+    assert_eq!(fs_invalid_by_len, ZValidateAddressResponse::invalid());
+    assert_eq!(fs_invalid_all_zeroes, ZValidateAddressResponse::invalid());
 
     test_manager.close().await;
 }

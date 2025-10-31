@@ -24,7 +24,7 @@ use zaino_fetch::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
             block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire, peer_info::GetPeerInfo,
-            z_validate_address::ZValidateAddress, GetMempoolInfoResponse, GetNetworkSolPsResponse,
+            z_validate_address::ZValidateAddressResponse, GetMempoolInfoResponse, GetNetworkSolPsResponse,
         },
     },
 };
@@ -438,7 +438,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.validate_address(address).await?)
     }
 
-    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error> {
+    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddressResponse, Self::Error> {
         Ok(self.fetcher.z_validate_address(address).await?)
     }
 

@@ -1373,7 +1373,7 @@ mod zebrad {
                 VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS,
                 VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
             };
-            use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddress;
+            use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddressResponse;
             use zaino_state::ZcashIndexer;
             use zaino_testutils::ValidatorKind;
 
@@ -1411,7 +1411,8 @@ mod zebrad {
                 )
                 .await;
 
-                let expected_p2pkh = ZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
+                let expected_p2pkh =
+                    ZValidateAddressResponse::p2pkh(VALID_P2PKH_ADDRESS.to_string());
 
                 let fs_p2pkh = state_service_subscriber
                     .z_validate_address(VALID_P2PKH_ADDRESS.to_string())
@@ -1420,7 +1421,7 @@ mod zebrad {
 
                 assert_eq!(fs_p2pkh, expected_p2pkh);
 
-                let expected_p2sh = ZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string());
+                let expected_p2sh = ZValidateAddressResponse::p2sh(VALID_P2SH_ADDRESS.to_string());
 
                 let fs_p2sh = state_service_subscriber
                     .z_validate_address(VALID_P2SH_ADDRESS.to_string())
@@ -1436,7 +1437,7 @@ mod zebrad {
 
                 // assert_eq!(fs_sprout, expected_sprout);
 
-                let expected_sapling = ZValidateAddress::sapling(
+                let expected_sapling = ZValidateAddressResponse::sapling(
                     VALID_SAPLING_ADDRESS.to_string(),
                     Some(VALID_DIVERSIFIER.to_string()),
                     Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
@@ -1449,7 +1450,8 @@ mod zebrad {
 
                 assert_eq!(fs_sapling, expected_sapling);
 
-                let expected_unified = ZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string());
+                let expected_unified =
+                    ZValidateAddressResponse::unified(VALID_UNIFIED_ADDRESS.to_string());
 
                 let fs_unified = state_service_subscriber
                     .z_validate_address(VALID_UNIFIED_ADDRESS.to_string())

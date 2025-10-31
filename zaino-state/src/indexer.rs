@@ -6,7 +6,7 @@ use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_fetch::jsonrpsee::response::{
     block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire, peer_info::GetPeerInfo,
-    z_validate_address::ZValidateAddress, GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    z_validate_address::ZValidateAddressResponse, GetMempoolInfoResponse, GetNetworkSolPsResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -308,7 +308,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
-    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddress, Self::Error>;
+    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddressResponse, Self::Error>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
     /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
