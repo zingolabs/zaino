@@ -1,6 +1,10 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
 use futures::StreamExt as _;
+use integration_tests::rpc::json_rpc::{
+    VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS, VALID_P2SH_ADDRESS,
+    VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
+};
 use zaino_common::network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
 use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
@@ -813,16 +817,6 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
 /// - invalid (length shorter than expected by 1 char): `t1123456789ABCDEFGHJKLMNPQRSTUVWXY`
 /// - invalid (all zeroes): `t1000000000000000000000000000000000`
 async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
-    const VALID_P2PKH_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
-    const VALID_P2SH_ADDRESS: &str = "t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u";
-
-    const VALID_SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
-    const VALID_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
-    const VALID_DIVERSIFIED_TRANSMISSION_KEY: &str =
-        "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88";
-
-    const VALID_UNIFIED_ADDRESS: &str = "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36";
-
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true).await;
 
