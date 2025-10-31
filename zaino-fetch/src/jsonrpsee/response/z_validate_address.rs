@@ -74,11 +74,9 @@ impl ZValidateAddressResponse {
         paying_key: Option<String>,
         transmission_key: Option<String>,
     ) -> Self {
-        ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(ValidZValidateAddress::sprout(
-            address,
-            paying_key,
-            transmission_key,
-        )))
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
+            ValidZValidateAddress::sprout(address, paying_key, transmission_key),
+        ))
     }
 
     /// Constructs a response for a valid Unified address.
@@ -134,6 +132,7 @@ impl Serialize for InvalidZValidateAddress {
 impl<'de> Deserialize<'de> for InvalidZValidateAddress {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Raw {
             #[serde(rename = "isvalid")]
             is_valid: bool,
@@ -836,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_branch_enforces_isvalid_true() {
+    fn invalid_branch_enforces_isvalid_false_no_other() {
         // This JSON looks like sapling but has isvalid=false, so it must fail for ValidZValidateAddress
         let bad = r#"
         {
@@ -850,13 +849,9 @@ mod tests {
         let err = serde_json::from_str::<ValidZValidateAddress>(bad).unwrap_err();
         assert!(err.to_string().contains("isvalid=true"));
 
-        // However, as a KnownZValidateAddress the same JSON should deserialize
-        // into the Invalid branch (since our Invalid only checks `isvalid`).
-        let ok: KnownZValidateAddress = serde_json::from_str(bad).unwrap();
-        match ok {
-            KnownZValidateAddress::Invalid(InvalidZValidateAddress { .. }) => {}
-            _ => panic!("expected Invalid branch"),
-        }
+        // It will also fail for the Invalid branch, as it must ONLY contain isvalid=false
+        let bad_invalid = serde_json::from_str::<ValidZValidateAddress>(bad);
+        assert!(bad_invalid.is_err());
     }
 
     #[test]

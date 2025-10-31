@@ -308,7 +308,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
-    async fn z_validate_address(&self, address: String) -> Result<ZValidateAddressResponse, Self::Error>;
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, Self::Error>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
     /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)

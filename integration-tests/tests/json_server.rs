@@ -846,7 +846,8 @@ mod zcashd {
 
             assert_eq!(fs_sapling, expected_sapling);
 
-            let expected_unified = ZValidateAddressResponse::unified(VALID_UNIFIED_ADDRESS.to_string());
+            let expected_unified =
+                ZValidateAddressResponse::unified(VALID_UNIFIED_ADDRESS.to_string());
 
             let fs_unified = zcashd_subscriber
                 .z_validate_address(VALID_UNIFIED_ADDRESS.to_string())
