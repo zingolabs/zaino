@@ -201,8 +201,8 @@ where
             None => StatusType::Offline,
         };
 
-        let json_server_status = match &self.server {
-            Some(server) => server.status(),
+        let json_server_status = match &self.json_server {
+            Some(json_server) => json_server.status(),
             None => StatusType::Offline,
         };
 
