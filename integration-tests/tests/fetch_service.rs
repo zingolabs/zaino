@@ -824,12 +824,8 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
 
     // P2PKH
 
-    let expected_p2pkh = match validator {
-        ValidatorKind::Zcashd => ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
-            .with_is_mine(IsMine::NotMine),
-        ValidatorKind::Zebrad => ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
-            .with_is_mine(IsMine::Unknown),
-    };
+    let expected_p2pkh =
+        ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string()).with_is_mine(IsMine::NotMine);
 
     let fs_p2pkh = fetch_service_subscriber
         .z_validate_address(VALID_P2PKH_ADDRESS.to_string())
@@ -846,12 +842,8 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
 
     // P2SH
 
-    let expected_p2sh = match validator {
-        ValidatorKind::Zcashd => ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
-            .with_is_mine(IsMine::NotMine),
-        ValidatorKind::Zebrad => ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
-            .with_is_mine(IsMine::Unknown),
-    };
+    let expected_p2sh =
+        ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string()).with_is_mine(IsMine::NotMine);
 
     let fs_p2sh = fetch_service_subscriber
         .z_validate_address(VALID_P2SH_ADDRESS.to_string())
@@ -889,12 +881,10 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
             Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
         )
         .with_is_mine(IsMine::NotMine),
-        ValidatorKind::Zebrad => ValidZValidateAddress::sapling(
-            VALID_SAPLING_ADDRESS.to_string(),
-            Some(VALID_DIVERSIFIER.to_string()),
-            Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-        )
-        .with_is_mine(IsMine::Unknown),
+        ValidatorKind::Zebrad => {
+            ValidZValidateAddress::sapling(VALID_SAPLING_ADDRESS.to_string(), None::<String>, None)
+                .with_is_mine(IsMine::NotMine)
+        }
     };
 
     let fs_sapling = fetch_service_subscriber
