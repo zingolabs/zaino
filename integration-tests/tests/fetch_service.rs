@@ -8,7 +8,9 @@ use integration_tests::rpc::json_rpc::{
 use zaino_common::network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
 use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
-use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddressResponse;
+use zaino_fetch::jsonrpsee::response::z_validate_address::{
+    IsMine, KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
+};
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
@@ -820,23 +822,49 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true).await;
 
-    let expected_p2pkh = ZValidateAddressResponse::p2pkh(VALID_P2PKH_ADDRESS.to_string());
+    // P2PKH
+
+    let expected_p2pkh = match validator {
+        ValidatorKind::Zcashd => ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
+            .with_is_mine(IsMine::NotMine),
+        ValidatorKind::Zebrad => ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
+            .with_is_mine(IsMine::Unknown),
+    };
 
     let fs_p2pkh = fetch_service_subscriber
         .z_validate_address(VALID_P2PKH_ADDRESS.to_string())
         .await
         .unwrap();
 
-    assert_eq!(fs_p2pkh, expected_p2pkh);
+    if let ZValidateAddressResponse::Known(fs_valid_p2pkh) = fs_p2pkh {
+        if let KnownZValidateAddress::Valid(valid_p2pkh) = fs_valid_p2pkh {
+            assert_eq!(valid_p2pkh, expected_p2pkh);
+        }
+    } else {
+        panic!("Unexpected ZValidateAddressResponse: {:#?}", fs_p2pkh);
+    }
 
-    let expected_p2sh = ZValidateAddressResponse::p2sh(VALID_P2SH_ADDRESS.to_string());
+    // P2SH
+
+    let expected_p2sh = match validator {
+        ValidatorKind::Zcashd => ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
+            .with_is_mine(IsMine::NotMine),
+        ValidatorKind::Zebrad => ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
+            .with_is_mine(IsMine::Unknown),
+    };
 
     let fs_p2sh = fetch_service_subscriber
         .z_validate_address(VALID_P2SH_ADDRESS.to_string())
         .await
         .unwrap();
 
-    assert_eq!(fs_p2sh, expected_p2sh);
+    if let ZValidateAddressResponse::Known(fs_valid_p2sh) = fs_p2sh {
+        if let KnownZValidateAddress::Valid(valid_p2sh) = fs_valid_p2sh {
+            assert_eq!(valid_p2sh, expected_p2sh);
+        }
+    } else {
+        panic!("Unexpected ZValidateAddressResponse: {:#?}", fs_p2sh);
+    }
 
     // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
 
@@ -852,34 +880,57 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
     // Note: once we upgrade to zebra 3, we'll get this working: https://github.com/ZcashFoundation/zebra/pull/10022
     // For now, we expect this to be invalid.
 
+    // Sapling
+
     let expected_sapling = match validator {
-        ValidatorKind::Zebrad => {
-            ZValidateAddressResponse::sapling(VALID_SAPLING_ADDRESS.to_string(), None, None)
-        }
-        ValidatorKind::Zcashd => ZValidateAddressResponse::sapling(
+        ValidatorKind::Zcashd => ValidZValidateAddress::sapling(
             VALID_SAPLING_ADDRESS.to_string(),
             Some(VALID_DIVERSIFIER.to_string()),
             Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-        ),
+        )
+        .with_is_mine(IsMine::NotMine),
+        ValidatorKind::Zebrad => ValidZValidateAddress::sapling(
+            VALID_SAPLING_ADDRESS.to_string(),
+            Some(VALID_DIVERSIFIER.to_string()),
+            Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
+        )
+        .with_is_mine(IsMine::Unknown),
     };
-
-    // let expected_sapling = ZValidateAddress::invalid();
 
     let fs_sapling = fetch_service_subscriber
         .z_validate_address(VALID_SAPLING_ADDRESS.to_string())
         .await
         .unwrap();
 
-    assert_eq!(fs_sapling, expected_sapling);
+    if let ZValidateAddressResponse::Known(fs_valid_sapling) = fs_sapling {
+        if let KnownZValidateAddress::Valid(valid_sapling) = fs_valid_sapling {
+            assert_eq!(valid_sapling, expected_sapling);
+        }
+    } else {
+        panic!("Unexpected ZValidateAddressResponse: {:#?}", fs_sapling);
+    }
 
-    let expected_unified = ZValidateAddressResponse::unified(VALID_UNIFIED_ADDRESS.to_string());
+    // Unified
+
+    let expected_unified = match validator {
+        ValidatorKind::Zcashd => ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
+            .with_is_mine(IsMine::NotMine),
+        ValidatorKind::Zebrad => ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
+            .with_is_mine(IsMine::Unknown),
+    };
 
     let fs_unified = fetch_service_subscriber
         .z_validate_address(VALID_UNIFIED_ADDRESS.to_string())
         .await
         .unwrap();
 
-    assert_eq!(expected_unified, fs_unified);
+    if let ZValidateAddressResponse::Known(fs_valid_unified) = fs_unified {
+        if let KnownZValidateAddress::Valid(valid_unified) = fs_valid_unified {
+            assert_eq!(valid_unified, expected_unified);
+        }
+    } else {
+        panic!("Unexpected ZValidateAddressResponse: {:#?}", fs_unified);
+    }
 
     let fs_invalid_by_len = fetch_service_subscriber
         .z_validate_address("t1123456789ABCDEFGHJKLMNPQRSTUVWXY".to_string())

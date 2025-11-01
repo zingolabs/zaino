@@ -169,7 +169,7 @@ impl ValidZValidateAddress {
     pub fn p2pkh(address: impl Into<String>) -> Self {
         Self(AddressData::P2pkh {
             common: CommonFields::valid(address, ZValidateAddressType::P2pkh),
-            is_mine: IsMine::NotMine,
+            is_mine: IsMine::Unknown,
         })
     }
 
@@ -177,7 +177,7 @@ impl ValidZValidateAddress {
     pub fn p2sh(address: impl Into<String>) -> Self {
         Self(AddressData::P2sh {
             common: CommonFields::valid(address, ZValidateAddressType::P2sh),
-            is_mine: IsMine::NotMine,
+            is_mine: IsMine::Unknown,
         })
     }
 
@@ -191,7 +191,7 @@ impl ValidZValidateAddress {
             common: CommonFields::valid(address, ZValidateAddressType::Sprout),
             paying_key: paying_key.map(|x| x.into()),
             transmission_key: transmission_key.map(|x| x.into()),
-            is_mine: IsMine::NotMine,
+            is_mine: IsMine::Unknown,
         })
     }
 
@@ -205,7 +205,7 @@ impl ValidZValidateAddress {
             common: CommonFields::valid(address, ZValidateAddressType::Sapling),
             diversifier: diversifier.map(|x| x.into()),
             diversified_transmission_key: diversified_transmission_key.map(|x| x.into()),
-            is_mine: IsMine::NotMine,
+            is_mine: IsMine::Unknown,
         })
     }
 
@@ -883,7 +883,7 @@ mod tests {
             ValidZValidateAddress::p2pkh("t1omitted"),
         ));
         let json_value = serde_json::to_value(&valid_p2pkh).unwrap();
-        assert_eq!(json_value.get("ismine"), Some(&Value::Bool(false)));
+        assert_eq!(json_value.get("ismine"), None);
 
         // True/false encoded when set
         let v_true = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
