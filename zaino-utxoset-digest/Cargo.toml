@@ -1,0 +1,10 @@
+[package]
+name = "zaino-utxoset-digest"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]

@@ -8544,6 +8544,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-utxoset-digest"
+version = "0.1.2"
+
+[[package]]
 name = "zainod"
 version = "0.1.2"
 dependencies = [
