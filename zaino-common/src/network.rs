@@ -3,6 +3,19 @@
 use serde::{Deserialize, Serialize};
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
+pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
+    overwinter: Some(1),
+    before_overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(1000),
+    nu7: None,
+};
+
 /// Network type for Zaino configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(from = "NetworkDeserialize")]
@@ -31,7 +44,7 @@ impl From<NetworkDeserialize> for Network {
         match value {
             NetworkDeserialize::Mainnet => Network::Mainnet,
             NetworkDeserialize::Testnet => Network::Testnet,
-            NetworkDeserialize::Regtest => Network::Regtest(ActivationHeights::default()),
+            NetworkDeserialize::Regtest => Network::Regtest(ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
         }
     }
 }
@@ -76,18 +89,7 @@ pub struct ActivationHeights {
 
 impl Default for ActivationHeights {
     fn default() -> Self {
-        ActivationHeights {
-            before_overwinter: Some(1),
-            overwinter: Some(1),
-            sapling: Some(1),
-            blossom: Some(1),
-            heartwood: Some(1),
-            canopy: Some(1),
-            nu5: Some(2),
-            nu6: Some(2),
-            nu6_1: Some(1000),
-            nu7: None,
-        }
+        ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS
     }
 }
 

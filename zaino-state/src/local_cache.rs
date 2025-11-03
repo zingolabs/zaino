@@ -2,6 +2,7 @@
 
 use std::any::type_name;
 
+#[allow(deprecated)]
 use crate::{
     config::BlockCacheConfig, error::BlockCacheError, status::StatusType, StateServiceSubscriber,
 };
@@ -57,10 +58,12 @@ impl BlockCache {
         info!("Launching Local Block Cache..");
         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(100);
 
-        let finalised_state = if !config.no_db {
-            Some(FinalisedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
-        } else {
-            None
+        let db_size = config.storage.database.size;
+        let finalised_state = match db_size {
+            zaino_common::DatabaseSize::Gb(0) => None,
+            zaino_common::DatabaseSize::Gb(_) => {
+                Some(FinalisedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
+            }
         };
 
         let non_finalised_state =
@@ -93,9 +96,9 @@ impl BlockCache {
     /// Returns the status of the block cache.
     pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.no_db {
-            true => StatusType::Ready,
-            false => match &self.finalised_state {
+        let finalised_state_status = match self.config.storage.database.size {
+            zaino_common::DatabaseSize::Gb(0) => StatusType::Ready,
+            zaino_common::DatabaseSize::Gb(_) => match &self.finalised_state {
                 Some(finalised_state) => finalised_state.status(),
                 None => return StatusType::Offline,
             },
@@ -194,9 +197,9 @@ impl BlockCacheSubscriber {
     /// Returns the status of the [`BlockCache`]..
     pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.no_db {
-            true => StatusType::Ready,
-            false => match &self.finalised_state {
+        let finalised_state_status = match self.config.storage.database.size {
+            zaino_common::DatabaseSize::Gb(0) => StatusType::Ready,
+            zaino_common::DatabaseSize::Gb(_) => match &self.finalised_state {
                 Some(finalised_state) => finalised_state.status(),
                 None => return StatusType::Offline,
             },
@@ -226,6 +229,7 @@ pub(crate) async fn fetch_block_from_node(
     try_fetcher_path(fetcher, hash_or_height).await
 }
 
+#[allow(deprecated)]
 async fn try_state_path(
     state: &ReadStateService,
     network: &Network,

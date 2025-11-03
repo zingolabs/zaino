@@ -1,5 +1,8 @@
 //! Holds error types for Zaino-state.
 
+// Needs to be module level due to the thiserror::Error macro
+#![allow(deprecated)]
+
 use crate::BlockHash;
 
 use std::{any::type_name, fmt::Display};
@@ -28,6 +31,7 @@ impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
 }
 
 /// Errors related to the `StateService`.
+#[deprecated]
 #[derive(Debug, thiserror::Error)]
 pub enum StateServiceError {
     /// An rpc-specific error we haven't accounted for
@@ -162,6 +166,7 @@ impl<T: ToString> From<RpcRequestError<T>> for FetchServiceError {
 }
 
 /// Errors related to the `FetchService`.
+#[deprecated]
 #[derive(Debug, thiserror::Error)]
 pub enum FetchServiceError {
     /// Critical Errors, Restart Zaino.

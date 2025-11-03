@@ -2,7 +2,7 @@
 
 use crate::{
     rpc::{jsonrpc::service::ZcashIndexerRpcServer as _, JsonRpcClient},
-    server::{config::JsonRpcConfig, error::ServerError},
+    server::{config::JsonRpcServerConfig, error::ServerError},
 };
 
 use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusType, ZcashIndexer};
@@ -36,7 +36,7 @@ impl JsonRpcServer {
     /// - Checks for shutdown signal, shutting down server if received.
     pub async fn spawn<Service: ZcashIndexer + LightWalletIndexer + Clone>(
         service_subscriber: IndexerSubscriber<Service>,
-        server_config: JsonRpcConfig,
+        server_config: JsonRpcServerConfig,
     ) -> Result<Self, ServerError> {
         let status = AtomicStatus::new(StatusType::Spawning);
 
@@ -45,7 +45,7 @@ impl JsonRpcServer {
         };
 
         // Initialize Zebra-compatible cookie-based authentication if enabled.
-        let (cookie, cookie_dir) = if server_config.enable_cookie_auth {
+        let (cookie, cookie_dir) = if server_config.cookie_dir.is_some() {
             let cookie = Cookie::default();
             if let Some(dir) = &server_config.cookie_dir {
                 write_to_disk(&cookie, dir).map_err(|e| {

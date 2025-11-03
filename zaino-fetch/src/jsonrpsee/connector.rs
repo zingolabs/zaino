@@ -2,11 +2,11 @@
 //!
 //! TODO: - Add option for http connector.
 //!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [<https://github.com/zingolabs/zaino/issues/67>].
-
 use base64::{engine::general_purpose, Engine};
 use http::Uri;
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::{
     any::type_name,
     convert::Infallible,
@@ -25,12 +25,13 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, txout_set_info::GetTxOutSetInfo,
-        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire, peer_info::GetPeerInfo,
+        txout_set_info::GetTxOutSetInfo, GetBalanceError, GetBalanceResponse,
+        GetBlockCountResponse, GetBlockError, GetBlockHash, GetBlockResponse,
+        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
+        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
+        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
+        TxidsResponse,
     },
 };
 
@@ -223,20 +224,17 @@ impl JsonRpSeeConnector {
         })
     }
 
-    /// Helper function to create from parts of a StateServiceConfig or
-    /// FetchServiceConfig
+    /// Helper function to create from parts of a StateServiceConfig or FetchServiceConfig
     pub async fn new_from_config_parts(
-        validator_cookie_auth: bool,
         validator_rpc_address: SocketAddr,
         validator_rpc_user: String,
         validator_rpc_password: String,
-        validator_cookie_path: Option<String>,
+        validator_cookie_path: Option<PathBuf>,
     ) -> Result<Self, TransportError> {
-        match validator_cookie_auth {
+        match validator_cookie_path.is_some() {
             true => JsonRpSeeConnector::new_with_cookie_auth(
                 test_node_and_return_url(
                     validator_rpc_address,
-                    validator_cookie_auth,
                     validator_cookie_path.clone(),
                     None,
                     None,
@@ -251,7 +249,6 @@ impl JsonRpSeeConnector {
             false => JsonRpSeeConnector::new_with_basic_auth(
                 test_node_and_return_url(
                     validator_rpc_address,
-                    false,
                     None,
                     Some(validator_rpc_user.clone()),
                     Some(validator_rpc_password.clone()),
@@ -274,7 +271,6 @@ impl JsonRpSeeConnector {
     }
 
     /// Sends a jsonRPC request and returns the response.
-    ///
     /// NOTE: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     ///       This is because the node's queue can become overloaded and stop servicing RPCs.
     async fn send_request<
@@ -738,6 +734,13 @@ impl JsonRpSeeConnector {
         self.send_request("getaddressutxos", params).await
     }
 
+    /// Returns a json object containing mining-related information.
+    ///
+    /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
+    pub async fn get_mining_info(&self) -> Result<GetMiningInfoWire, RpcRequestError<Infallible>> {
+        self.send_request("getmininginfo", ()).await
+    }
+
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
     /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
@@ -822,12 +825,11 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
 /// Tries to connect to zebrad/zcashd using the provided SocketAddr and returns the correct URL.
 pub async fn test_node_and_return_url(
     addr: SocketAddr,
-    rpc_cookie_auth: bool,
-    cookie_path: Option<String>,
+    cookie_path: Option<PathBuf>,
     user: Option<String>,
     password: Option<String>,
 ) -> Result<Url, TransportError> {
-    let auth_method = match rpc_cookie_auth {
+    let auth_method = match cookie_path.is_some() {
         true => {
             let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
             let cookie_password = read_and_parse_cookie_token(Path::new(&cookie_file_path_str))?;

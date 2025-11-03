@@ -21,6 +21,7 @@ pub use indexer::{
 
 pub(crate) mod backends;
 
+#[allow(deprecated)]
 pub use backends::{
     fetch::{FetchService, FetchServiceSubscriber},
     state::{StateService, StateServiceSubscriber},
@@ -66,12 +67,14 @@ pub mod test_dependencies {
 
 pub(crate) mod config;
 
+#[allow(deprecated)]
 pub use config::{
     BackendConfig, BackendType, BlockCacheConfig, FetchServiceConfig, StateServiceConfig,
 };
 
 pub(crate) mod error;
 
+#[allow(deprecated)]
 pub use error::{FetchServiceError, StateServiceError};
 
 pub(crate) mod status;
