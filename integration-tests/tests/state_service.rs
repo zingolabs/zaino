@@ -1628,7 +1628,7 @@ mod zebrad {
         use zaino_proto::proto::service::{
             AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetSubtreeRootsArg, TxFilter,
         };
-        use zebra_rpc::methods::GetAddressTxIdsRequest;
+        use zebra_rpc::methods::{GetAddressTxIdsRequest, GetBlock};
 
         use super::*;
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1702,6 +1702,55 @@ mod zebrad {
                 .unwrap());
             assert_eq!(fetch_service_block_by_hash, state_service_block_by_hash);
             assert_eq!(state_service_block_by_hash, state_service_block_by_height)
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_block_header() {
+            let (
+                test_manager,
+                _fetch_service,
+                fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services(
+                &ValidatorKind::Zebrad,
+                None,
+                false,
+                false,
+                Some(NetworkKind::Regtest),
+            )
+            .await;
+
+            const BLOCK_LIMIT: u32 = 10;
+
+            for i in 0..BLOCK_LIMIT {
+                test_manager.local_net.generate_blocks(1).await.unwrap();
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                let block = fetch_service_subscriber
+                    .z_get_block(i.to_string(), Some(1))
+                    .await
+                    .unwrap();
+
+                let block_hash = match block {
+                    GetBlock::Object(block) => block.hash(),
+                    GetBlock::Raw(_) => panic!("Expected block object"),
+                };
+
+                let fetch_service_get_block_header = fetch_service_subscriber
+                    .get_block_header(block_hash.to_string(), false)
+                    .await
+                    .unwrap();
+
+                let state_service_block_header_response = state_service_subscriber
+                    .get_block_header(block_hash.to_string(), false)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fetch_service_get_block_header,
+                    state_service_block_header_response
+                );
+            }
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

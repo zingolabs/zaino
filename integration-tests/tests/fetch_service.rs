@@ -722,6 +722,68 @@ async fn fetch_service_get_block(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+async fn fetch_service_get_block_header(validator: &ValidatorKind) {
+    let (test_manager, _fetch_service, fetch_service_subscriber) =
+        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+
+    const BLOCK_LIMIT: u32 = 10;
+
+    for i in 0..BLOCK_LIMIT {
+        test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        let block = fetch_service_subscriber
+            .z_get_block(i.to_string(), Some(1))
+            .await
+            .unwrap();
+
+        let block_hash = match block {
+            GetBlock::Object(block) => block.hash(),
+            GetBlock::Raw(_) => panic!("Expected block object"),
+        };
+
+        let fetch_service_get_block_header = fetch_service_subscriber
+            .get_block_header(block_hash.to_string(), false)
+            .await
+            .unwrap();
+
+        let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+            test_node_and_return_url(
+                test_manager.full_node_rpc_listen_address,
+                None,
+                Some("xxxxxx".to_string()),
+                Some("xxxxxx".to_string()),
+            )
+            .await
+            .unwrap(),
+            "xxxxxx".to_string(),
+            "xxxxxx".to_string(),
+        )
+        .unwrap();
+
+        let rpc_block_header_response = jsonrpc_client
+            .get_block_header(block_hash.to_string(), false)
+            .await
+            .unwrap();
+
+        let fetch_service_get_block_header_verbose = fetch_service_subscriber
+            .get_block_header(block_hash.to_string(), true)
+            .await
+            .unwrap();
+
+        let rpc_block_header_response_verbose = jsonrpc_client
+            .get_block_header(block_hash.to_string(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(fetch_service_get_block_header, rpc_block_header_response);
+        assert_eq!(
+            fetch_service_get_block_header_verbose,
+            rpc_block_header_response_verbose
+        );
+    }
+}
+
 async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true).await;
@@ -1700,6 +1762,11 @@ mod zcashd {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn block_header() {
+            fetch_service_get_block_header(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn difficulty() {
             assert_fetch_service_difficulty_matches_rpc(&ValidatorKind::Zcashd).await;
         }
@@ -1917,6 +1984,11 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn block() {
             fetch_service_get_block(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn block_header() {
+            fetch_service_get_block_header(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

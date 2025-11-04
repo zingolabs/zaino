@@ -3,8 +3,9 @@
 //! These types are redefined rather than imported from zebra_rpc
 //! to prevent locking consumers into a zebra_rpc version
 
+pub mod block_header;
 pub mod block_subsidy;
-mod common;
+pub mod common;
 pub mod mining_info;
 pub mod peer_info;
 pub mod z_validate_address;

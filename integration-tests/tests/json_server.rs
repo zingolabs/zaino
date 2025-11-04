@@ -667,6 +667,7 @@ mod zcashd {
         use zaino_fetch::jsonrpsee::response::z_validate_address::{
             IsMine, KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
         };
+        use zebra_rpc::methods::GetBlock;
 
         use super::*;
 
@@ -913,6 +914,45 @@ mod zcashd {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_get_block() {
             z_get_block_inner().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn get_block_header() {
+            let (
+                test_manager,
+                _zcashd_service,
+                zcashd_subscriber,
+                _zaino_service,
+                zaino_subscriber,
+            ) = create_test_manager_and_fetch_services(false).await;
+
+            const BLOCK_LIMIT: u32 = 10;
+
+            for i in 0..BLOCK_LIMIT {
+                test_manager.local_net.generate_blocks(1).await.unwrap();
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                let block = zcashd_subscriber
+                    .z_get_block(i.to_string(), Some(1))
+                    .await
+                    .unwrap();
+
+                let block_hash = match block {
+                    GetBlock::Object(block) => block.hash(),
+                    GetBlock::Raw(_) => panic!("Expected block object"),
+                };
+
+                let zcashd_get_block_header = zcashd_subscriber
+                    .get_block_header(block_hash.to_string(), false)
+                    .await
+                    .unwrap();
+
+                let zainod_block_header_response = zaino_subscriber
+                    .get_block_header(block_hash.to_string(), false)
+                    .await
+                    .unwrap();
+                assert_eq!(zcashd_get_block_header, zainod_block_header_response);
+            }
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

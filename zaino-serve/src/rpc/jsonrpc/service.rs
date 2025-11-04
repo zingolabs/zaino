@@ -1,5 +1,6 @@
 //! Zcash RPC implementations.
 
+use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
@@ -232,6 +233,26 @@ pub trait ZcashIndexerRpc {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, ErrorObjectOwned>;
+
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
+    /// If verbose is true, returns an Object with information about blockheader `hash`.
+    ///
+    /// # Parameters
+    ///
+    /// - hash: (string, required) The block hash
+    /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// zcashd implementation [here](https://github.com/zcash/zcash/blob/16ac743764a513e41dafb2cd79c2417c5bb41e81/src/rpc/blockchain.cpp#L668)
+    ///
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "getblockheader")]
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, ErrorObjectOwned>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
@@ -581,6 +602,24 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .z_get_block(hash_or_height, verbosity)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_block_header(hash, verbose)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

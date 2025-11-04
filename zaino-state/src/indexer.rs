@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_fetch::jsonrpsee::response::{
-    block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire, peer_info::GetPeerInfo,
-    z_validate_address::ZValidateAddressResponse, GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    block_header::GetBlockHeader, block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire,
+    peer_info::GetPeerInfo, z_validate_address::ZValidateAddressResponse, GetMempoolInfoResponse,
+    GetNetworkSolPsResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -249,6 +250,23 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error>;
+
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
+    /// If verbose is true, returns an Object with information about blockheader `hash`.
+    ///
+    /// # Parameters
+    ///
+    /// - hash: (string, required) The block hash
+    /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, Self::Error>;
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
     /// If the block is not in Zebra's state, returns
