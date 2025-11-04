@@ -20,4 +20,114 @@ pub mod rpc {
 
         pub const VALID_UNIFIED_ADDRESS: &str = "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36";
     }
+
+    pub mod z_validate_address {
+        use std::future::Future;
+
+        use zaino_fetch::jsonrpsee::response::z_validate_address::{
+            IsMine, KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
+        };
+        use zaino_testutils::ValidatorKind;
+
+        use crate::rpc::json_rpc::{
+            VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS,
+            VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
+        };
+
+        pub fn assert_known_valid_eq(
+            resp: ZValidateAddressResponse,
+            expected: ValidZValidateAddress,
+            label: &str,
+        ) {
+            match resp {
+                ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(actual)) => {
+                    assert_eq!(actual, expected, "mismatch for {label}")
+                }
+                other => panic!(
+                    "Unexpected ZValidateAddressResponse for {label}: {:#?}",
+                    other
+                ),
+            }
+        }
+
+        pub async fn run_z_validate_suite<F, Fut>(call: &F, validator: ValidatorKind)
+        where
+            // Any callable that takes an address and returns the response (you can unwrap inside)
+            F: Fn(String) -> Fut,
+            Fut: Future<Output = ZValidateAddressResponse>,
+        {
+            // P2PKH
+            let expected_p2pkh = ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
+                .with_is_mine(IsMine::NotMine);
+            assert_known_valid_eq(
+                call(VALID_P2PKH_ADDRESS.to_string()).await,
+                expected_p2pkh,
+                "P2PKH",
+            );
+
+            // P2SH
+            let expected_p2sh = ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
+                .with_is_mine(IsMine::NotMine);
+            assert_known_valid_eq(
+                call(VALID_P2SH_ADDRESS.to_string()).await,
+                expected_p2sh,
+                "P2SH",
+            );
+
+            // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
+
+            // let expected_sprout = ZValidateAddress::sprout("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string(), "c8e8797f1fb5e9cf6b2d000177c5994119279a2629970a4f669aed1362a4cca5".to_string(), "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c".to_string());
+
+            // let fs_sprout = zcashd_subscriber
+            //     .z_validate_address("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string())
+            //     .await
+            //     .unwrap();
+
+            // assert_eq!(fs_sprout, expected_sprout);
+
+            // Sapling (differs by validator)
+            let expected_sapling = match validator {
+                ValidatorKind::Zcashd => ValidZValidateAddress::sapling(
+                    VALID_SAPLING_ADDRESS.to_string(),
+                    Some(VALID_DIVERSIFIER.to_string()),
+                    Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
+                )
+                .with_is_mine(IsMine::NotMine),
+                ValidatorKind::Zebrad => ValidZValidateAddress::sapling(
+                    VALID_SAPLING_ADDRESS.to_string(),
+                    None::<String>,
+                    None,
+                )
+                .with_is_mine(IsMine::NotMine),
+            };
+            assert_known_valid_eq(
+                call(VALID_SAPLING_ADDRESS.to_string()).await,
+                expected_sapling,
+                "Sapling",
+            );
+
+            // Unified (differs by validator)
+            let expected_unified = match validator {
+                ValidatorKind::Zcashd => {
+                    ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
+                        .with_is_mine(IsMine::NotMine)
+                }
+                ValidatorKind::Zebrad => {
+                    ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
+                        .with_is_mine(IsMine::Unknown)
+                }
+            };
+            assert_known_valid_eq(
+                call(VALID_UNIFIED_ADDRESS.to_string()).await,
+                expected_unified,
+                "Unified",
+            );
+
+            // Invalids
+            let by_len = call("t1123456789ABCDEFGHJKLMNPQRSTUVWXY".to_string()).await;
+            let all_zeroes = call("t1000000000000000000000000000000000".to_string()).await;
+            assert_eq!(by_len, ZValidateAddressResponse::invalid());
+            assert_eq!(all_zeroes, ZValidateAddressResponse::invalid());
+        }
+    }
 }

@@ -10,19 +10,21 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
+[dependencies]
+zaino-fetch = { workspace = true }
+zaino-testutils = { workspace = true }
+
 [dev-dependencies]
 anyhow = { workspace = true }
 
 # Test utility
-zaino-testutils = { workspace = true }
-zaino-fetch = { workspace = true }
 zaino-proto.workspace = true
 zaino-common.workspace = true
 zaino-state = { workspace = true, features = ["test_dependencies"] }
 zebra-chain.workspace = true
 zebra-state.workspace = true
 zebra-rpc.workspace = true
-zip32 = {workspace = true}
+zip32 = { workspace = true }
 
 core2 = { workspace = true }
 prost = { workspace = true }
