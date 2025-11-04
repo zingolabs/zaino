@@ -878,12 +878,12 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true).await;
 
-    let call = |addr: String| {
+    let rpc_call = |addr: String| {
         let subscriber = &fetch_service_subscriber;
         async move { subscriber.z_validate_address(addr).await.unwrap() }
     };
 
-    run_z_validate_suite(&call, *validator).await;
+    run_z_validate_suite(&rpc_call, *validator).await;
 
     test_manager.close().await;
 }

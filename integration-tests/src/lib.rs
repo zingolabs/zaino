@@ -50,7 +50,7 @@ pub mod rpc {
             }
         }
 
-        pub async fn run_z_validate_suite<F, Fut>(call: &F, validator: ValidatorKind)
+        pub async fn run_z_validate_suite<F, Fut>(rpc_call: &F, validator: ValidatorKind)
         where
             // Any callable that takes an address and returns the response (you can unwrap inside)
             F: Fn(String) -> Fut,
@@ -60,7 +60,7 @@ pub mod rpc {
             let expected_p2pkh = ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
                 .with_is_mine(IsMine::NotMine);
             assert_known_valid_eq(
-                call(VALID_P2PKH_ADDRESS.to_string()).await,
+                rpc_call(VALID_P2PKH_ADDRESS.to_string()).await,
                 expected_p2pkh,
                 "P2PKH",
             );
@@ -69,7 +69,7 @@ pub mod rpc {
             let expected_p2sh = ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
                 .with_is_mine(IsMine::NotMine);
             assert_known_valid_eq(
-                call(VALID_P2SH_ADDRESS.to_string()).await,
+                rpc_call(VALID_P2SH_ADDRESS.to_string()).await,
                 expected_p2sh,
                 "P2SH",
             );
@@ -101,7 +101,7 @@ pub mod rpc {
                 .with_is_mine(IsMine::NotMine),
             };
             assert_known_valid_eq(
-                call(VALID_SAPLING_ADDRESS.to_string()).await,
+                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
                 expected_sapling,
                 "Sapling",
             );
@@ -118,14 +118,14 @@ pub mod rpc {
                 }
             };
             assert_known_valid_eq(
-                call(VALID_UNIFIED_ADDRESS.to_string()).await,
+                rpc_call(VALID_UNIFIED_ADDRESS.to_string()).await,
                 expected_unified,
                 "Unified",
             );
 
             // Invalids
-            let by_len = call("t1123456789ABCDEFGHJKLMNPQRSTUVWXY".to_string()).await;
-            let all_zeroes = call("t1000000000000000000000000000000000".to_string()).await;
+            let by_len = rpc_call("t1123456789ABCDEFGHJKLMNPQRSTUVWXY".to_string()).await;
+            let all_zeroes = rpc_call("t1000000000000000000000000000000000".to_string()).await;
             assert_eq!(by_len, ZValidateAddressResponse::invalid());
             assert_eq!(all_zeroes, ZValidateAddressResponse::invalid());
         }

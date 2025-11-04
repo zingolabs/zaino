@@ -661,7 +661,7 @@ mod zcashd {
 
     pub(crate) mod zcash_indexer {
         use integration_tests::rpc::z_validate_address::run_z_validate_suite;
-        
+
         use zebra_rpc::methods::GetBlock;
 
         use super::*;
@@ -794,12 +794,12 @@ mod zcashd {
             let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, _zaino_sub) =
                 create_test_manager_and_fetch_services(false).await;
 
-            let call = |addr: String| {
+            let rpc_call = |addr: String| {
                 let subscriber = &zcashd_subscriber;
                 async move { subscriber.z_validate_address(addr).await.unwrap() }
             };
 
-            run_z_validate_suite(&call, ValidatorKind::Zcashd).await;
+            run_z_validate_suite(&rpc_call, ValidatorKind::Zcashd).await;
 
             test_manager.close().await;
         }
