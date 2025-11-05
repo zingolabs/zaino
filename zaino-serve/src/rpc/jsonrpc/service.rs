@@ -547,6 +547,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, ErrorObjectOwned> {
+        tracing::debug!("Sending ZValidateAddress to jsonRPC inner Indexer.");
         self.service_subscriber
             .inner_ref()
             .z_validate_address(address)

@@ -481,6 +481,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
+        tracing::debug!("Triggering fetch service fetcher z_validate_address.");
         Ok(self.fetcher.z_validate_address(address).await?)
     }
 

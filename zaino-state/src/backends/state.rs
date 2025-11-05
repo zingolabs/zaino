@@ -1426,6 +1426,8 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
+        tracing::debug!("State service backend z_validate_address.");
+
         let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
             return Ok(ZValidateAddressResponse::Known(
                 KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),

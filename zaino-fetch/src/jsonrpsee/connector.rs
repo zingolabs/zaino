@@ -651,6 +651,7 @@ impl JsonRpSeeConnector {
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, RpcRequestError<ZValidateAddressError>> {
+        tracing::debug!("Sending jsonrpsee connecter z_validate_address.");
         let params = vec![serde_json::to_value(address).map_err(RpcRequestError::JsonRpc)?];
         self.send_request("z_validateaddress", params).await
     }
