@@ -1436,11 +1436,8 @@ mod zebra {
         }
 
         mod validation {
-            use integration_tests::rpc::json_rpc::{
-                VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS,
-                VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
-            };
-            use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddressResponse;
+            
+            
             use zaino_state::ZcashIndexer;
             use zaino_testutils::ValidatorKind;
 
