@@ -29,6 +29,7 @@ use zaino_fetch::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
             address_deltas::{BlockInfo, GetAddressDeltasParams, GetAddressDeltasResponse},
+            block_hash::BlockSelector,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
@@ -1372,6 +1373,24 @@ impl ZcashIndexer for StateServiceSubscriber {
                 Ok(self.rpc_client.get_best_blockhash().await?.into())
             }
         }
+    }
+
+    async fn get_blockhash(&self, block_index: BlockSelector) -> Result<GetBlockHash, Self::Error> {
+        let (tip, _hash) = self.read_state_service.best_tip().unwrap();
+
+        let selected_block_height = block_index.resolve(tip);
+
+        let block = self
+            .z_get_block(selected_block_height.0.to_string(), Some(1))
+            .await
+            .unwrap();
+
+        let block_hash = match block {
+            GetBlock::Raw(serialized_block) => todo!(),
+            GetBlock::Object(block_object) => block_object.hash(),
+        };
+
+        Ok(GetBlockHash::new(block_hash))
     }
 
     /// Returns the current block count in the best valid block chain.

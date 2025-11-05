@@ -6,6 +6,7 @@ use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    block_hash::BlockSelector,
     block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
     mining_info::GetMiningInfoWire,
@@ -21,7 +22,10 @@ use zaino_proto::proto::{
         TxFilter,
     },
 };
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::{
+    block::{Height, TryIntoHeight},
+    subtree::NoteCommitmentSubtreeIndex,
+};
 use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
@@ -351,6 +355,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339) returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error>;
+
+    async fn get_blockhash(&self, block_index: BlockSelector) -> Result<GetBlockHash, Self::Error>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///

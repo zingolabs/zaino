@@ -24,11 +24,12 @@ use zaino_fetch::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+            block_hash::BlockSelector,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            GetMempoolInfoResponse, GetNetworkSolPsResponse,
+            GetBlockHash, GetMempoolInfoResponse, GetNetworkSolPsResponse,
         },
     },
 };
@@ -450,6 +451,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error> {
         Ok(self.fetcher.get_best_blockhash().await?.into())
+    }
+
+    async fn get_blockhash(&self, block_index: BlockSelector) -> Result<GetBlockHash, Self::Error> {
+        Ok(self.fetcher.get_blockhash(block_index).await?.into())
     }
 
     /// Returns the current block count in the best valid block chain.

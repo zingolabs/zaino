@@ -23,6 +23,7 @@ use tracing::error;
 use zebra_rpc::client::ValidateAddressResponse;
 
 use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
+use crate::jsonrpsee::response::block_hash::BlockSelector;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
@@ -607,6 +608,15 @@ impl JsonRpSeeConnector {
     pub async fn get_best_blockhash(&self) -> Result<GetBlockHash, RpcRequestError<Infallible>> {
         self.send_request::<(), GetBlockHash>("getbestblockhash", ())
             .await
+    }
+
+    // TODO: use correct error
+    pub async fn get_blockhash(
+        &self,
+        block_index: BlockSelector,
+    ) -> Result<zebra_rpc::methods::GetBlockHash, RpcRequestError<Infallible>> {
+        let params = [serde_json::to_value(block_index).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getblockhash", params).await
     }
 
     /// Returns the height of the most recent block in the best valid block chain
