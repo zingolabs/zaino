@@ -93,20 +93,12 @@ pub mod rpc {
             // assert_eq!(fs_sprout, expected_sprout);
 
             // Sapling (differs by validator)
-            let expected_sapling = match validator {
-                ValidatorKind::Zcashd => ValidZValidateAddress::sapling(
-                    VALID_SAPLING_ADDRESS.to_string(),
-                    Some(VALID_DIVERSIFIER.to_string()),
-                    Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-                )
-                .with_is_mine(IsMine::NotMine),
-                ValidatorKind::Zebrad => ValidZValidateAddress::sapling(
-                    VALID_SAPLING_ADDRESS.to_string(),
-                    None::<String>,
-                    None,
-                )
-                .with_is_mine(IsMine::NotMine),
-            };
+            let expected_sapling = ValidZValidateAddress::sapling(
+                VALID_SAPLING_ADDRESS.to_string(),
+                Some(VALID_DIVERSIFIER.to_string()),
+                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
+            )
+            .with_is_mine(expected_is_mine.clone());
             assert_known_valid_eq(
                 rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
                 expected_sapling,
