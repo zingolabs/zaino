@@ -56,9 +56,14 @@ pub mod rpc {
             F: Fn(String) -> Fut,
             Fut: Future<Output = ZValidateAddressResponse>,
         {
+            let expected_is_mine = match validator {
+                ValidatorKind::Zcashd => IsMine::NotMine,
+                ValidatorKind::Zebrad => IsMine::Unknown,
+            };
+
             // P2PKH
             let expected_p2pkh = ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
-                .with_is_mine(IsMine::NotMine);
+                .with_is_mine(expected_is_mine.clone());
             assert_known_valid_eq(
                 rpc_call(VALID_P2PKH_ADDRESS.to_string()).await,
                 expected_p2pkh,
@@ -67,7 +72,7 @@ pub mod rpc {
 
             // P2SH
             let expected_p2sh = ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
-                .with_is_mine(IsMine::NotMine);
+                .with_is_mine(expected_is_mine.clone());
             assert_known_valid_eq(
                 rpc_call(VALID_P2SH_ADDRESS.to_string()).await,
                 expected_p2sh,
@@ -107,16 +112,9 @@ pub mod rpc {
             );
 
             // Unified (differs by validator)
-            let expected_unified = match validator {
-                ValidatorKind::Zcashd => {
-                    ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
-                        .with_is_mine(IsMine::NotMine)
-                }
-                ValidatorKind::Zebrad => {
-                    ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
-                        .with_is_mine(IsMine::Unknown)
-                }
-            };
+            let expected_unified =
+                ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
+                    .with_is_mine(expected_is_mine.clone());
             assert_known_valid_eq(
                 rpc_call(VALID_UNIFIED_ADDRESS.to_string()).await,
                 expected_unified,

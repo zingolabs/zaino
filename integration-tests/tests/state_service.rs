@@ -1478,54 +1478,16 @@ mod zebra {
                 )
                 .await;
 
-                let expected_p2pkh =
-                    ZValidateAddressResponse::p2pkh(VALID_P2PKH_ADDRESS.to_string());
+                let rpc_call = |addr: String| {
+                    let subscriber = &state_service_subscriber;
+                    async move { subscriber.z_validate_address(addr).await.unwrap() }
+                };
 
-                let fs_p2pkh = state_service_subscriber
-                    .z_validate_address(VALID_P2PKH_ADDRESS.to_string())
-                    .await
-                    .unwrap();
-
-                assert_eq!(fs_p2pkh, expected_p2pkh);
-
-                let expected_p2sh = ZValidateAddressResponse::p2sh(VALID_P2SH_ADDRESS.to_string());
-
-                let fs_p2sh = state_service_subscriber
-                    .z_validate_address(VALID_P2SH_ADDRESS.to_string())
-                    .await
-                    .unwrap();
-
-                assert_eq!(fs_p2sh, expected_p2sh);
-
-                // Commented out due to Sprout not being supported.
-
-                // let expected_sprout = ZValidateAddress::sprout("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string(), "c8e8797f1fb5e9cf6b2d000177c5994119279a2629970a4f669aed1362a4cca5".to_string(), "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c".to_string());
-                // let fs_sprout = state_service_subscriber.z_validate_address("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string()).await.unwrap();
-
-                // assert_eq!(fs_sprout, expected_sprout);
-
-                let expected_sapling = ZValidateAddressResponse::sapling(
-                    VALID_SAPLING_ADDRESS.to_string(),
-                    Some(VALID_DIVERSIFIER.to_string()),
-                    Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-                );
-
-                let fs_sapling = state_service_subscriber
-                    .z_validate_address(VALID_SAPLING_ADDRESS.to_string())
-                    .await
-                    .unwrap();
-
-                assert_eq!(fs_sapling, expected_sapling);
-
-                let expected_unified =
-                    ZValidateAddressResponse::unified(VALID_UNIFIED_ADDRESS.to_string());
-
-                let fs_unified = state_service_subscriber
-                    .z_validate_address(VALID_UNIFIED_ADDRESS.to_string())
-                    .await
-                    .unwrap();
-
-                assert_eq!(expected_unified, fs_unified);
+                integration_tests::rpc::z_validate_address::run_z_validate_suite(
+                    &rpc_call,
+                    ValidatorKind::Zebrad,
+                )
+                .await;
 
                 test_manager.close().await;
             }
