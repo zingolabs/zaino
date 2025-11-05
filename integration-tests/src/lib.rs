@@ -56,6 +56,8 @@ pub mod rpc {
             F: Fn(String) -> Fut,
             Fut: Future<Output = ZValidateAddressResponse>,
         {
+            tracing::debug!("Testing expected ValidateAddresses with ValidatorKind {validator:?}.");
+
             let expected_is_mine = match validator {
                 ValidatorKind::Zcashd => IsMine::NotMine,
                 ValidatorKind::Zebrad => IsMine::Unknown,

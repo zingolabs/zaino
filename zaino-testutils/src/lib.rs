@@ -112,7 +112,7 @@ pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     Some(home_path.join(".cache/zebra"))
 });
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 /// Represents the type of validator to launch.
 pub enum ValidatorKind {
     /// Zcashd.
