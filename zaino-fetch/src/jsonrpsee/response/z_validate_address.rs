@@ -532,8 +532,6 @@ impl<'de> Deserialize<'de> for AddressData {
             .as_object_mut()
             .ok_or_else(|| de::Error::custom("expected object"))?;
 
-        dbg!(&obj);
-
         let address_type: Option<String> = obj
             .get("address_type")
             .and_then(|x| x.as_str())
