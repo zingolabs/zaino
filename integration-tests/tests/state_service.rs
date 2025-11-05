@@ -1436,8 +1436,8 @@ mod zebra {
         }
 
         mod validation {
-            
-            
+
+
             use zaino_state::ZcashIndexer;
             use zaino_testutils::ValidatorKind;
 
