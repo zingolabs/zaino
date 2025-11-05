@@ -22,9 +22,11 @@ use std::{
 use tracing::error;
 use zebra_rpc::client::ValidateAddressResponse;
 
+use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
+        address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
         block_header::{GetBlockHeader, GetBlockHeaderError},
         block_subsidy::GetBlockSubsidy,
         mining_info::GetMiningInfoWire,
@@ -396,6 +398,29 @@ impl JsonRpSeeConnector {
         request_builder = request_builder.body(request_body);
 
         Ok(request_builder)
+    }
+
+    /// Returns all changes for an address.
+    ///
+    /// Returns information about all changes to the given transparent addresses within the given block range (inclusive)
+    ///
+    /// block height range, default is the full blockchain.
+    /// If start or end are not specified, they default to zero.
+    /// If start is greater than the latest block height, it's interpreted as that height.
+    ///
+    /// If end is zero, it's interpreted as the latest block height.
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    pub async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, RpcRequestError<GetAddressDeltasError>> {
+        let params = vec![serde_json::to_value(params).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getaddressdeltas", params).await
     }
 
     /// Returns software information from the RPC server, as a [`crate::jsonrpsee::connector::GetInfoResponse`] JSON struct.

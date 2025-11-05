@@ -29,6 +29,7 @@ use zaino_fetch::{
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
+            address_deltas::{BlockInfo, GetAddressDeltasParams, GetAddressDeltasResponse},
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
@@ -883,6 +884,82 @@ impl StateServiceSubscriber {
         }
     }
 
+    /// Fetches transaction objects for addresses within a given block range.
+    /// This method takes addresses and a block range and returns full transaction objects.
+    /// Uses parallel async calls for efficient transaction fetching.
+    ///
+    /// If `fail_fast` is true, fails immediately when any transaction fetch fails.
+    /// Otherwise, it continues and returns partial results, filtering out failed fetches.
+    async fn get_taddress_txs(
+        &self,
+        addresses: Vec<String>,
+        start: u32,
+        end: u32,
+        fail_fast: bool,
+    ) -> Result<Vec<Box<TransactionObject>>, StateServiceError> {
+        // Convert to GetAddressTxIdsRequest for compatibility with existing helper
+        let tx_ids_request = GetAddressTxIdsRequest::new(addresses, Some(start), Some(end));
+
+        // Get transaction IDs using existing method
+        let txids = self.get_address_tx_ids(tx_ids_request).await?;
+
+        // Fetch all transactions in parallel
+        let results = futures::future::join_all(
+            txids
+                .into_iter()
+                .map(|txid| async { self.clone().get_raw_transaction(txid, Some(1)).await }),
+        )
+        .await;
+
+        let transactions = results
+            .into_iter()
+            .filter_map(|result| {
+                match (fail_fast, result) {
+                    // Fail-fast mode: propagate errors
+                    (true, Err(e)) => Some(Err(e)),
+                    (true, Ok(tx)) => Some(Ok(tx)),
+                    // Filter mode: skip errors
+                    (false, Err(_)) => None,
+                    (false, Ok(tx)) => Some(Ok(tx)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|tx| match tx {
+                GetRawTransaction::Object(transaction_obj) => Some(transaction_obj),
+                GetRawTransaction::Raw(_) => None,
+            })
+            .collect();
+
+        Ok(transactions)
+    }
+
+    /// Creates a BlockInfo from a block height using direct state service calls.
+    async fn block_info_from_height(&self, height: Height) -> Result<BlockInfo, StateServiceError> {
+        use zebra_state::{HashOrHeight, ReadRequest};
+
+        let hash_or_height = HashOrHeight::Height(height);
+
+        let response = self
+            .read_state_service
+            .clone()
+            .ready()
+            .await?
+            .call(ReadRequest::BlockHeader(hash_or_height))
+            .await?;
+
+        match response {
+            ReadResponse::BlockHeader { hash, .. } => Ok(BlockInfo::new(
+                hex::encode(hash.bytes_in_display_order()),
+                height.0,
+            )),
+            _ => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                LegacyCode::InvalidParameter,
+                format!("Block not found at height {}", height.0),
+            ))),
+        }
+    }
+
     /// Returns the network type running.
     #[allow(deprecated)]
     pub fn network(&self) -> zaino_common::Network {
@@ -903,6 +980,68 @@ impl ZcashIndexer for StateServiceSubscriber {
             .await
             .map(GetInfo::from)
             .map_err(|e| StateServiceError::Custom(e.to_string()))
+    }
+
+    /// Returns all changes for an address.
+    ///
+    /// Returns information about all changes to the given transparent addresses within the given (inclusive)
+    ///
+    /// block height range, default is the full blockchain.
+    /// If start or end are not specified, they default to zero.
+    /// If start is greater than the latest block height, it's interpreted as that height.
+    ///
+    /// If end is zero, it's interpreted as the latest block height.
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        let (addresses, start_raw, end_raw, chain_info) = match &params {
+            GetAddressDeltasParams::Filtered {
+                addresses,
+                start,
+                end,
+                chain_info,
+            } => (addresses.clone(), *start, *end, *chain_info),
+            GetAddressDeltasParams::Address(a) => (vec![a.clone()], 0, 0, false),
+        };
+
+        let tip = self.chain_height().await?;
+        let mut start = Height(start_raw);
+        let mut end = Height(end_raw);
+        if end == Height(0) || end > tip {
+            end = tip;
+        }
+        if start > tip {
+            start = tip;
+        }
+
+        let transactions = self
+            .get_taddress_txs(addresses.clone(), start.0, end.0, true)
+            .await?;
+
+        // Ordered deltas
+        let deltas =
+            GetAddressDeltasResponse::process_transactions_to_deltas(&transactions, &addresses);
+
+        if chain_info && start > Height(0) && end > Height(0) {
+            let start_info = self.block_info_from_height(start).await?;
+            let end_info = self.block_info_from_height(end).await?;
+
+            Ok(GetAddressDeltasResponse::WithChainInfo {
+                deltas,
+                start: start_info,
+                end: end_info,
+            })
+        } else {
+            // Otherwise return the array form
+            Ok(GetAddressDeltasResponse::Simple(deltas))
+        }
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
