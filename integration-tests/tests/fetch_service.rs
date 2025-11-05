@@ -1,7 +1,6 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
 use futures::StreamExt as _;
-use integration_tests::rpc::z_validate_address::run_z_validate_suite;
 use zaino_common::network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
 use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
@@ -883,7 +882,7 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
         async move { subscriber.z_validate_address(addr).await.unwrap() }
     };
 
-    run_z_validate_suite(&rpc_call, *validator).await;
+    integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call, *validator).await;
 
     test_manager.close().await;
 }

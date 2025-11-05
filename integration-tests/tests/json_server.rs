@@ -660,8 +660,6 @@ mod zcashd {
     use super::*;
 
     pub(crate) mod zcash_indexer {
-        use integration_tests::rpc::z_validate_address::run_z_validate_suite;
-
         use zebra_rpc::methods::GetBlock;
 
         use super::*;
@@ -799,7 +797,11 @@ mod zcashd {
                 async move { subscriber.z_validate_address(addr).await.unwrap() }
             };
 
-            run_z_validate_suite(&rpc_call, ValidatorKind::Zcashd).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(
+                &rpc_call,
+                ValidatorKind::Zcashd,
+            )
+            .await;
 
             test_manager.close().await;
         }
