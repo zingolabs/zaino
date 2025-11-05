@@ -1659,6 +1659,53 @@ mod zcashd {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn block_deltas() {
+            let (test_manager, _fetch_service, fetch_service_subscriber) =
+                create_test_manager_and_fetch_service(
+                    &ValidatorKind::Zcashd,
+                    None,
+                    true,
+                    true,
+                    true,
+                )
+                .await;
+
+            let current_block = fetch_service_subscriber.get_latest_block().await.unwrap();
+
+            let block_hash_bytes: [u8; 32] = current_block.hash.as_slice().try_into().unwrap();
+
+            let block_hash = zebra_chain::block::Hash::from(block_hash_bytes);
+
+            // Note: we need an 'expected' block hash in order to query its deltas.
+            // Having a predictable or test vector chain is the way to go here.
+            let fetch_service_block_deltas = fetch_service_subscriber
+                .get_block_deltas(block_hash.to_string())
+                .await
+                .unwrap();
+
+            let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+                test_node_and_return_url(
+                    test_manager.full_node_rpc_listen_address,
+                    None,
+                    Some("xxxxxx".to_string()),
+                    Some("xxxxxx".to_string()),
+                )
+                .await
+                .unwrap(),
+                "xxxxxx".to_string(),
+                "xxxxxx".to_string(),
+            )
+            .unwrap();
+
+            let rpc_block_deltas = jsonrpc_client
+                .get_block_deltas(block_hash.to_string())
+                .await
+                .unwrap();
+
+            assert_eq!(fetch_service_block_deltas, rpc_block_deltas);
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn mining_info() {
             assert_fetch_service_mininginfo_matches_rpc(&ValidatorKind::Zcashd).await;
         }

@@ -6,6 +6,7 @@ use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
     mining_info::GetMiningInfoWire,
@@ -321,6 +322,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error>;
+
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error>;
 
     /// Returns the current block count in the best valid block chain.
     ///

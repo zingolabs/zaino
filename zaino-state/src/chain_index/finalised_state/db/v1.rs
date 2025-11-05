@@ -3083,7 +3083,7 @@ impl DbV1 {
 
                     Some(zaino_proto::proto::compact_formats::CompactTx {
                         index: i as u64,
-                        hash: txid.bytes_in_display_order().to_vec().to_vec(),
+                        hash: txid.0.to_vec(),
                         fee: 0,
                         spends,
                         outputs,

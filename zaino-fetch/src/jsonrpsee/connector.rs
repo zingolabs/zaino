@@ -27,6 +27,7 @@ use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
         address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+        block_deltas::{BlockDeltas, BlockDeltasError},
         block_header::{GetBlockHeader, GetBlockHeaderError},
         block_subsidy::GetBlockSubsidy,
         mining_info::GetMiningInfoWire,
@@ -568,6 +569,19 @@ impl JsonRpSeeConnector {
                 .await
                 .map(GetBlockResponse::Object)
         }
+    }
+
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_block_deltas(
+        &self,
+        hash: String,
+    ) -> Result<BlockDeltas, RpcRequestError<BlockDeltasError>> {
+        let params = vec![serde_json::to_value(hash).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getblockdeltas", params).await
     }
 
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.

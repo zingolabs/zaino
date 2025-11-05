@@ -30,6 +30,7 @@ use zaino_fetch::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
             address_deltas::{BlockInfo, GetAddressDeltasParams, GetAddressDeltasResponse},
+            block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
@@ -53,6 +54,7 @@ use zaino_proto::proto::{
 use zcash_primitives::legacy::TransparentAddress;
 use zcash_protocol::consensus::NetworkType;
 use zebra_chain::{
+    amount::{Amount, NonNegative},
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
@@ -61,7 +63,7 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{
-        GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData,
+        GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData, Input,
         SubtreeRpcData, TransactionObject, ValidateAddressResponse,
     },
     methods::{
@@ -83,7 +85,7 @@ use chrono::{DateTime, Utc};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashSet, future::poll_fn, str::FromStr, sync::Arc};
+use std::{collections::HashSet, error::Error, fmt, future::poll_fn, str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -965,6 +967,56 @@ impl StateServiceSubscriber {
     pub fn network(&self) -> zaino_common::Network {
         self.config.network
     }
+
+    /// Returns the median time of the last 11 blocks.
+    async fn median_time_past(
+        &self,
+        start: &zebra_rpc::client::BlockObject,
+    ) -> Result<i64, MedianTimePast> {
+        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
+
+        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
+
+        let start_hash = start.hash().to_string();
+        let time_0 = start
+            .time()
+            .ok_or_else(|| MedianTimePast::StartMissingTime {
+                hash: start_hash.clone(),
+            })?;
+        times.push(time_0);
+
+        let mut prev = start.previous_block_hash();
+
+        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
+            let hash = match prev {
+                Some(h) => h.to_string(),
+                None => break, // genesis
+            };
+
+            match self.z_get_block(hash.clone(), Some(1)).await {
+                Ok(GetBlock::Object(obj)) => {
+                    if let Some(t) = obj.time() {
+                        times.push(t);
+                    }
+                    prev = obj.previous_block_hash();
+                }
+                Ok(GetBlock::Raw(_)) => {
+                    return Err(MedianTimePast::UnexpectedRaw { hash });
+                }
+                Err(_e) => {
+                    // Use values up to this point
+                    break;
+                }
+            }
+        }
+
+        if times.is_empty() {
+            return Err(MedianTimePast::EmptyWindow);
+        }
+
+        times.sort_unstable();
+        Ok(times[times.len() / 2])
+    }
 }
 
 #[async_trait]
@@ -1281,6 +1333,135 @@ impl ZcashIndexer for StateServiceSubscriber {
             verbosity,
         )
         .await
+    }
+
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
+        // Get the block WITH the transaction data
+        let zblock = self.z_get_block(hash, Some(2)).await?;
+
+        match zblock {
+            GetBlock::Object(boxed_block) => {
+                let deltas = boxed_block
+                    .tx()
+                    .iter()
+                    .enumerate()
+                    .map(|(tx_index, tx)| match tx {
+                        GetBlockTransaction::Object(txo) => {
+                            let txid = txo.txid().to_string();
+
+                            let inputs: Vec<InputDelta> = txo
+                                .inputs()
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, vin)| match vin {
+                                    Input::Coinbase { .. } => None,
+                                    Input::NonCoinbase {
+                                        txid: prevtxid,
+                                        vout: prevout,
+                                        value,
+                                        value_zat,
+                                        address,
+                                        ..
+                                    } => {
+                                        let zats = if let Some(z) = value_zat {
+                                            *z
+                                        } else if let Some(v) = value {
+                                            (v * 100_000_000.0).round() as i64
+                                        } else {
+                                            return None;
+                                        };
+
+                                        let addr = match address {
+                                            Some(a) => a.clone(),
+                                            None => return None,
+                                        };
+
+                                        let input_amt: Amount = match (-zats).try_into() {
+                                            Ok(a) => a,
+                                            Err(_) => return None,
+                                        };
+
+                                        Some(InputDelta {
+                                            address: addr,
+                                            satoshis: input_amt,
+                                            index: i as u32,
+                                            prevtxid: prevtxid.clone(),
+                                            prevout: *prevout,
+                                        })
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+
+                            let outputs: Vec<OutputDelta> =
+                                txo.outputs()
+                                    .iter()
+                                    .filter_map(|vout| {
+                                        let addr_opt =
+                                            vout.script_pub_key().addresses().as_ref().and_then(
+                                                |v| if v.len() == 1 { v.first() } else { None },
+                                            );
+
+                                        let addr = addr_opt?.clone();
+
+                                        let output_amt: Amount<NonNegative> =
+                                            match vout.value_zat().try_into() {
+                                                Ok(a) => a,
+                                                Err(_) => return None,
+                                            };
+
+                                        Some(OutputDelta {
+                                            address: addr,
+                                            satoshis: output_amt,
+                                            index: vout.n(),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>();
+
+                            Ok::<_, Self::Error>(BlockDelta {
+                                txid,
+                                index: tx_index as u32,
+                                inputs,
+                                outputs,
+                            })
+                        }
+                        GetBlockTransaction::Hash(_) => Err(StateServiceError::Custom(
+                            "Unexpected hash when expecting object".to_string(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(BlockDeltas {
+                    hash: boxed_block.hash().to_string(),
+                    confirmations: boxed_block.confirmations(),
+                    size: boxed_block.size().expect("size should be present"),
+                    height: boxed_block.height().expect("height should be present").0,
+                    version: boxed_block.version().expect("version should be present"),
+                    merkle_root: boxed_block
+                        .merkle_root()
+                        .expect("merkle root should be present")
+                        .encode_hex::<String>(),
+                    deltas,
+                    time: boxed_block.time().expect("time should be present"),
+
+                    median_time: self.median_time_past(&boxed_block).await.unwrap(),
+                    nonce: hex::encode(boxed_block.nonce().unwrap()),
+                    bits: boxed_block
+                        .bits()
+                        .expect("bits should be present")
+                        .to_string(),
+                    difficulty: boxed_block
+                        .difficulty()
+                        .expect("difficulty should be present"),
+                    previous_block_hash: boxed_block
+                        .previous_block_hash()
+                        .map(|hash| hash.to_string()),
+                    next_block_hash: boxed_block.next_block_hash().map(|h| h.to_string()),
+                })
+            }
+            GetBlock::Raw(_serialized_block) => Err(StateServiceError::Custom(
+                "Unexpected raw block".to_string(),
+            )),
+        }
     }
 
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
@@ -2462,3 +2643,34 @@ fn header_to_block_commitments(
     };
     Ok(hash)
 }
+
+/// An error type for median time past calculation errors
+#[derive(Debug, Clone)]
+pub enum MedianTimePast {
+    /// The start block has no `time`.
+    StartMissingTime { hash: String },
+
+    /// Ignored verbosity.
+    UnexpectedRaw { hash: String },
+
+    /// No timestamps collected at all.
+    EmptyWindow,
+}
+
+impl fmt::Display for MedianTimePast {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MedianTimePast::StartMissingTime { hash } => {
+                write!(f, "start block {hash} is missing `time`")
+            }
+            MedianTimePast::UnexpectedRaw { hash } => {
+                write!(f, "unexpected raw payload for block {hash}")
+            }
+            MedianTimePast::EmptyWindow => {
+                write!(f, "no timestamps collected (empty MTP window)")
+            }
+        }
+    }
+}
+
+impl Error for MedianTimePast {}
