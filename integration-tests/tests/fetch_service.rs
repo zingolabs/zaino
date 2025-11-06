@@ -25,7 +25,6 @@ async fn create_test_manager_and_fetch_service(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
-    // _zaino_no_sync: bool,
     enable_clients: bool,
 ) -> (TestManager, FetchService, FetchServiceSubscriber) {
     let test_manager = TestManager::launch(
@@ -1029,7 +1028,6 @@ async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    // TODO does this make sense to have here?
     let fetch_service_get_transaction = dbg!(fetch_service_subscriber
         .get_transaction(tx_filter.clone())
         .await
@@ -1316,7 +1314,6 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
 
     let fetch_mempool_tx = fetch_service_handle.await.unwrap();
 
-    // TODO similar
     let mut sorted_fetch_mempool_tx = fetch_mempool_tx.clone();
     sorted_fetch_mempool_tx.sort_by_key(|tx| tx.data.clone());
 
