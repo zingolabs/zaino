@@ -7,27 +7,21 @@ pub mod address_deltas;
 pub mod block_deltas;
 pub mod block_header;
 pub mod block_subsidy;
+pub mod blockchain_info;
 pub mod common;
+pub mod info;
 pub mod mining_info;
 pub mod peer_info;
 
-use std::{convert::Infallible, num::ParseIntError};
+use std::convert::Infallible;
 
 use hex::FromHex;
-use serde::{de::Error as DeserError, Deserialize, Deserializer, Serialize};
+use serde::de::Error as DeserError;
 
-use zebra_chain::{
-    amount::{Amount, NonNegative},
-    block::Height,
-    value_balance::ValueBalance,
-    work::difficulty::CompactDifficulty,
-};
-use zebra_rpc::{
-    client::{GetBlockchainInfoBalance, ValidateAddressResponse},
-    methods::opthex,
-};
+use zebra_chain::{block::Height, work::difficulty::CompactDifficulty};
+use zebra_rpc::{client::ValidateAddressResponse, methods::opthex};
 
-use crate::jsonrpsee::connector::ResponseToError;
+use crate::jsonrpsee::{connector::ResponseToError, response::common::balance::ChainBalance};
 
 use super::connector::RpcError;
 
@@ -37,68 +31,6 @@ impl TryFrom<RpcError> for Infallible {
     fn try_from(err: RpcError) -> Result<Self, Self::Error> {
         Err(err)
     }
-}
-
-/// Response to a `getinfo` RPC request.
-///
-/// This is used for the output parameter of [`crate::jsonrpsee::connector::JsonRpSeeConnector::get_info`].
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct GetInfoResponse {
-    /// The node version
-    #[serde(default)]
-    version: u64,
-    /// The node version build number
-    pub build: String,
-    /// The server sub-version identifier, used as the network protocol user-agent
-    pub subversion: String,
-    /// The protocol version
-    #[serde(default)]
-    #[serde(rename = "protocolversion")]
-    protocol_version: u32,
-
-    /// The current number of blocks processed in the server
-    #[serde(default)]
-    blocks: u32,
-
-    /// The total (inbound and outbound) number of connections the node has
-    #[serde(default)]
-    connections: usize,
-
-    /// The proxy (if any) used by the server. Currently always `None` in Zebra.
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    proxy: Option<String>,
-
-    /// The current network difficulty
-    #[serde(default)]
-    difficulty: f64,
-
-    /// True if the server is running in testnet mode, false otherwise
-    #[serde(default)]
-    testnet: bool,
-
-    /// The minimum transaction fee in ZEC/kB
-    #[serde(default)]
-    #[serde(rename = "paytxfee")]
-    pay_tx_fee: f64,
-
-    /// The minimum relay fee for non-free transactions in ZEC/kB
-    #[serde(default)]
-    #[serde(rename = "relayfee")]
-    relay_fee: f64,
-
-    /// The last error or warning message, or "no errors" if there are no errors
-    #[serde(default)]
-    errors: String,
-
-    /// The time of the last error or warning message, or "no errors timestamp" if there are no errors
-    #[serde(default)]
-    #[serde(rename = "errorstimestamp")]
-    errors_timestamp: ErrorsTimestamp,
-}
-
-impl ResponseToError for GetInfoResponse {
-    type RpcError = Infallible;
 }
 
 impl ResponseToError for GetDifficultyResponse {
@@ -133,101 +65,6 @@ impl Default for ErrorsTimestamp {
     }
 }
 
-impl From<GetInfoResponse> for zebra_rpc::methods::GetInfo {
-    fn from(response: GetInfoResponse) -> Self {
-        zebra_rpc::methods::GetInfo::new(
-            response.version,
-            response.build,
-            response.subversion,
-            response.protocol_version,
-            response.blocks,
-            response.connections,
-            response.proxy,
-            response.difficulty,
-            response.testnet,
-            response.pay_tx_fee,
-            response.relay_fee,
-            response.errors,
-            response.errors_timestamp.to_string(),
-        )
-    }
-}
-
-/// Response to a `getblockchaininfo` RPC request.
-///
-/// This is used for the output parameter of [`crate::jsonrpsee::connector::JsonRpSeeConnector::get_blockchain_info`].
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct GetBlockchainInfoResponse {
-    /// Current network name as defined in BIP70 (main, test, regtest)
-    pub chain: String,
-
-    /// The current number of blocks processed in the server, numeric
-    pub blocks: zebra_chain::block::Height,
-
-    /// The hash of the currently best block, in big-endian order, hex-encoded
-    #[serde(rename = "bestblockhash", with = "hex")]
-    pub best_block_hash: zebra_chain::block::Hash,
-
-    /// If syncing, the estimated height of the chain, else the current best height, numeric.
-    ///
-    /// In Zebra, this is always the height estimate, so it might be a little inaccurate.
-    #[serde(rename = "estimatedheight")]
-    pub estimated_height: zebra_chain::block::Height,
-
-    /// Chain supply balance
-    #[serde(default)]
-    #[serde(rename = "chainSupply")]
-    chain_supply: ChainBalance,
-
-    /// Status of network upgrades
-    pub upgrades: indexmap::IndexMap<
-        zebra_rpc::methods::ConsensusBranchIdHex,
-        zebra_rpc::methods::NetworkUpgradeInfo,
-    >,
-
-    /// Value pool balances
-    #[serde(rename = "valuePools")]
-    value_pools: [ChainBalance; 5],
-
-    /// Branch IDs of the current and upcoming consensus rules
-    pub consensus: zebra_rpc::methods::TipConsensusBranch,
-
-    /// The current number of headers we have validated in the best chain, that is,
-    /// the height of the best chain.
-    #[serde(default = "default_header")]
-    headers: Height,
-
-    /// The estimated network solution rate in Sol/s.
-    #[serde(default)]
-    difficulty: f64,
-
-    /// The verification progress relative to the estimated network chain tip.
-    #[serde(default)]
-    #[serde(rename = "verificationprogress")]
-    verification_progress: f64,
-
-    /// The total amount of work in the best chain, hex-encoded.
-    #[serde(default)]
-    #[serde(rename = "chainwork")]
-    chain_work: ChainWork,
-
-    /// Whether this node is pruned, currently always false in Zebra.
-    #[serde(default)]
-    pruned: bool,
-
-    /// The estimated size of the block and undo files on disk
-    #[serde(default)]
-    size_on_disk: u64,
-
-    /// The current number of note commitments in the commitment tree
-    #[serde(default)]
-    commitments: u64,
-}
-
-impl ResponseToError for GetBlockchainInfoResponse {
-    type RpcError = Infallible;
-}
-
 /// Response to a `getdifficulty` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetDifficultyResponse(pub f64);
@@ -238,147 +75,6 @@ pub struct GetNetworkSolPsResponse(pub u64);
 
 impl ResponseToError for GetNetworkSolPsResponse {
     type RpcError = Infallible;
-}
-
-fn default_header() -> Height {
-    Height(0)
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(untagged)]
-/// A wrapper type to allow both kinds of ChainWork
-pub enum ChainWork {
-    /// Returned from zcashd, a chainwork is a String representing a
-    /// base-16 integer
-    Str(String),
-    /// Returned from zebrad, a chainwork is an integer
-    Num(u64),
-}
-
-/// Error type used for the `chainwork` field of the `getblockchaininfo` RPC request.
-#[derive(Debug, thiserror::Error)]
-pub enum ChainWorkError {}
-
-impl ResponseToError for ChainWork {
-    type RpcError = ChainWorkError;
-}
-impl TryFrom<RpcError> for ChainWorkError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
-impl TryFrom<ChainWork> for u64 {
-    type Error = ParseIntError;
-
-    fn try_from(value: ChainWork) -> Result<Self, Self::Error> {
-        match value {
-            ChainWork::Str(s) => u64::from_str_radix(&s, 16),
-            ChainWork::Num(u) => Ok(u),
-        }
-    }
-}
-
-impl Default for ChainWork {
-    fn default() -> Self {
-        ChainWork::Num(0)
-    }
-}
-
-/// Wrapper struct for a Zebra [`GetBlockchainInfoBalance`], enabling custom
-/// deserialisation logic to handle both zebrad and zcashd.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ChainBalance(GetBlockchainInfoBalance);
-
-impl ResponseToError for ChainBalance {
-    type RpcError = Infallible;
-}
-
-impl<'de> Deserialize<'de> for ChainBalance {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize, Debug)]
-        struct TempBalance {
-            #[serde(default)]
-            id: String,
-            #[serde(rename = "chainValue")]
-            chain_value: f64,
-            #[serde(rename = "chainValueZat")]
-            chain_value_zat: u64,
-            #[allow(dead_code)]
-            #[serde(default)]
-            monitored: bool,
-        }
-        let temp = TempBalance::deserialize(deserializer)?;
-        let computed_zat = (temp.chain_value * 100_000_000.0).round() as u64;
-        if computed_zat != temp.chain_value_zat {
-            return Err(D::Error::custom(format!(
-                "chainValue and chainValueZat mismatch: computed {} but got {}",
-                computed_zat, temp.chain_value_zat
-            )));
-        }
-        let amount = Amount::<NonNegative>::from_bytes(temp.chain_value_zat.to_le_bytes())
-            .map_err(|e| DeserError::custom(e.to_string()))?;
-        match temp.id.as_str() {
-            "transparent" => Ok(ChainBalance(GetBlockchainInfoBalance::transparent(
-                amount, None, /*TODO: handle optional delta*/
-            ))),
-            "sprout" => Ok(ChainBalance(GetBlockchainInfoBalance::sprout(
-                amount, None, /*TODO: handle optional delta*/
-            ))),
-            "sapling" => Ok(ChainBalance(GetBlockchainInfoBalance::sapling(
-                amount, None, /*TODO: handle optional delta*/
-            ))),
-            "orchard" => Ok(ChainBalance(GetBlockchainInfoBalance::orchard(
-                amount, None, /*TODO: handle optional delta*/
-            ))),
-            // TODO: Investigate source of undocument 'lockbox' value
-            // that likely is intended to be 'deferred'
-            "lockbox" | "deferred" => Ok(ChainBalance(GetBlockchainInfoBalance::deferred(
-                amount, None,
-            ))),
-            "" => Ok(ChainBalance(GetBlockchainInfoBalance::chain_supply(
-                // The pools are immediately summed internally, which pool we pick doesn't matter here
-                ValueBalance::from_transparent_amount(amount),
-            ))),
-            otherwise => todo!("error: invalid chain id deser {otherwise}"),
-        }
-    }
-}
-
-impl Default for ChainBalance {
-    fn default() -> Self {
-        Self(GetBlockchainInfoBalance::chain_supply(ValueBalance::zero()))
-    }
-}
-
-impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockchainInfoResponse {
-    fn try_from(response: GetBlockchainInfoResponse) -> Result<Self, ParseIntError> {
-        Ok(zebra_rpc::methods::GetBlockchainInfoResponse::new(
-            response.chain,
-            response.blocks,
-            response.best_block_hash,
-            response.estimated_height,
-            response.chain_supply.0,
-            response.value_pools.map(|pool| pool.0),
-            response.upgrades,
-            response.consensus,
-            response.headers,
-            response.difficulty,
-            response.verification_progress,
-            response.chain_work.try_into()?,
-            response.pruned,
-            response.size_on_disk,
-            response.commitments,
-        ))
-    }
-
-    type Error = ParseIntError;
 }
 
 /// The transparent balance of a set of addresses.
@@ -878,10 +574,16 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.solution.map(Into::into),
                         block.bits,
                         block.difficulty,
-                        block.chain_supply.map(|supply| supply.0),
+                        block.chain_supply.map(|supply| supply.into_inner()),
                         block.value_pools.map(
                             |[transparent, sprout, sapling, orchard, deferred]| {
-                                [transparent.0, sprout.0, sapling.0, orchard.0, deferred.0]
+                                [
+                                    transparent.into_inner(),
+                                    sprout.into_inner(),
+                                    sapling.into_inner(),
+                                    orchard.into_inner(),
+                                    deferred.into_inner(),
+                                ]
                             },
                         ),
                         block.trees.into(),

@@ -1,6 +1,7 @@
 //! Common types used across jsonrpsee responses
 
 pub mod amount;
+pub mod balance;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

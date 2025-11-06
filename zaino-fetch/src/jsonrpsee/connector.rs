@@ -24,6 +24,7 @@ use tracing::error;
 use zebra_rpc::client::ValidateAddressResponse;
 
 use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
+use crate::jsonrpsee::response::info::GetInfoResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
@@ -31,13 +32,13 @@ use crate::jsonrpsee::{
         block_deltas::{BlockDeltas, BlockDeltasError},
         block_header::{GetBlockHeader, GetBlockHeaderError},
         block_subsidy::GetBlockSubsidy,
+        blockchain_info::GetBlockchainInfoResponse,
         mining_info::GetMiningInfoWire,
         peer_info::GetPeerInfo,
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        GetBlockResponse, GetMempoolInfoResponse, GetSubtreesError, GetSubtreesResponse,
+        GetTransactionResponse, GetTreestateError, GetTreestateResponse, GetUtxosError,
+        GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
