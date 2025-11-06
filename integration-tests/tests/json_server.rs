@@ -659,8 +659,10 @@ async fn z_get_address_utxos_inner() {
 mod zcashd {
     use super::*;
 
+    #[allow(deprecated)]
     pub(crate) mod zcash_indexer {
-        use zaino_state::LightWalletIndexer;
+        use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeaderError;
+        use zaino_state::{FetchServiceError, LightWalletIndexer};
         use zebra_rpc::methods::GetBlock;
 
         use super::*;
@@ -864,6 +866,23 @@ mod zcashd {
                     .await
                     .unwrap();
                 assert_eq!(zcashd_get_block_header, zainod_block_header_response);
+            }
+
+            // Try to fetch a non-existent block header
+            match zcashd_subscriber
+                .get_block_header(
+                    "00000000008b4fdc4bae2868208f752526abfa441121cc0ac6526ddcb827befe".into(),
+                    false,
+                )
+                .await
+            {
+                Err(FetchServiceError::RpcError(rpc_error)) => {
+                    match GetBlockHeaderError::try_from(rpc_error) {
+                        Ok(GetBlockHeaderError::MissingBlock { .. }) => (),
+                        other => panic!("unexpected method error mapping: {:?}", other),
+                    }
+                }
+                other => panic!("unexpected top-level error: {other:?}"),
             }
         }
 

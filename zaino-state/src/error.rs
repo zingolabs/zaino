@@ -7,7 +7,7 @@ use crate::BlockHash;
 
 use std::{any::type_name, fmt::Display};
 
-use zaino_fetch::jsonrpsee::connector::RpcRequestError;
+use zaino_fetch::jsonrpsee::connector::{RpcError, RpcRequestError};
 
 impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
     fn from(value: RpcRequestError<T>) -> Self {
@@ -134,32 +134,27 @@ impl From<StateServiceError> for tonic::Status {
     }
 }
 
-impl<T: ToString> From<RpcRequestError<T>> for FetchServiceError {
-    fn from(value: RpcRequestError<T>) -> Self {
+impl<E> From<RpcRequestError<E>> for FetchServiceError
+where
+    E: Into<RpcError>,
+{
+    fn from(value: RpcRequestError<E>) -> Self {
         match value {
+            RpcRequestError::Method(e) => FetchServiceError::RpcError(e.into()),
             RpcRequestError::Transport(transport_error) => {
                 FetchServiceError::JsonRpcConnectorError(transport_error)
             }
             RpcRequestError::JsonRpc(error) => {
-                FetchServiceError::Critical(format!("argument failed to serialze: {error}"))
-            }
-            RpcRequestError::InternalUnrecoverable(e) => {
-                FetchServiceError::Critical(format!("Internal unrecoverable error: {e}"))
+                FetchServiceError::Critical(format!("argument failed to serialize: {error}"))
             }
             RpcRequestError::ServerWorkQueueFull => FetchServiceError::Critical(
                 "Server queue full. Handling for this not yet implemented".to_string(),
             ),
-            RpcRequestError::Method(e) => FetchServiceError::Critical(format!(
-                "unhandled rpc-specific {} error: {}",
-                type_name::<T>(),
-                e.to_string()
-            )),
             RpcRequestError::UnexpectedErrorResponse(error) => {
-                FetchServiceError::Critical(format!(
-                    "unhandled rpc-specific {} error: {}",
-                    type_name::<T>(),
-                    error
-                ))
+                FetchServiceError::Critical(format!("unexpected rpc error response: {error}"))
+            }
+            RpcRequestError::InternalUnrecoverable(e) => {
+                FetchServiceError::Critical(format!("Internal unrecoverable error: {e}"))
             }
         }
     }
@@ -221,6 +216,7 @@ impl From<FetchServiceError> for tonic::Status {
         }
     }
 }
+
 /// These aren't the best conversions, but the MempoolError should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for MempoolError {

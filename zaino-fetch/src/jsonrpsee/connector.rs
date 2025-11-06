@@ -5,6 +5,7 @@
 use base64::{engine::general_purpose, Engine};
 use http::Uri;
 use reqwest::{Client, ClientBuilder, Url};
+use serde::de::Error;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::{
@@ -98,6 +99,12 @@ impl RpcError {
                 .data()
                 .map(|raw| serde_json::from_str(raw.get()).unwrap()),
         }
+    }
+}
+
+impl From<Infallible> for RpcError {
+    fn from(x: Infallible) -> Self {
+        match x {} // Unreachable
     }
 }
 
@@ -287,7 +294,7 @@ impl JsonRpSeeConnector {
         params: T,
     ) -> Result<R, RpcRequestError<R::RpcError>>
     where
-        R::RpcError: Send + Sync + 'static,
+        R::RpcError: Send + Sync + 'static + std::fmt::Display,
     {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -322,37 +329,70 @@ impl JsonRpSeeConnector {
                 continue;
             }
 
+            // Try to parse a JSON-RPC envelope no matter what the HTTP status is.
+            if let Ok(rpc) = serde_json::from_slice::<RpcResponse<R>>(&body_bytes) {
+                // If the server sent a JSON-RPC error, surface it as a method error
+                if let Some(error) = rpc.error {
+                    let raw_code = error.code;
+                    let raw_msg = error.message.clone();
+
+                    let mapped = R::RpcError::try_from(error)
+                        .map_err(|e| RpcRequestError::UnexpectedErrorResponse(Box::new(e)))?;
+
+                    // Log method errors
+                    error!(
+                        target: "zaino_fetch::jsonrpc",
+                        method = %method,
+                        id = id,
+                        code = raw_code,
+                        message = %raw_msg,
+                        mapped_type = %type_name::<R::RpcError>(),
+                        mapped = ?mapped,
+                        params = tracing::field::debug(&params),
+                        "JSON-RPC method error"
+                    );
+
+                    return Err(RpcRequestError::Method(mapped));
+                }
+
+                // If the server sent a JSON-RPC result, treat it as success
+                if let Some(result) = rpc.result {
+                    match result.to_error() {
+                        Ok(r) => return Ok(r),
+                        Err(e) => {
+                            error!(
+                                target: "zaino_fetch::jsonrpc",
+                                method = %method,
+                                id = id,
+                                mapped_type = %type_name::<R::RpcError>(),
+                                mapped = ?e,
+                                params = tracing::field::debug(&params),
+                                "Domain-specific method error from result"
+                            );
+                            return Err(RpcRequestError::Method(e));
+                        }
+                    }
+                }
+
+                // Bad node response
+                return Err(RpcRequestError::Transport(
+                    TransportError::EmptyResponseBody,
+                ));
+            }
+
+            // Fall back to HTTP semantics at this point
             let code = status.as_u16();
             return match code {
-                // Invalid
                 ..100 | 600.. => Err(RpcRequestError::Transport(
                     TransportError::InvalidStatusCode(code),
                 )),
-                // Informational | Redirection
                 100..200 | 300..400 => Err(RpcRequestError::Transport(
                     TransportError::UnexpectedStatusCode(code),
                 )),
-                // Success
-                200..300 => {
-                    let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
-                        .map_err(|e| TransportError::BadNodeData(Box::new(e), type_name::<R>()))?;
-
-                    match (response.error, response.result) {
-                        (Some(error), _) => Err(RpcRequestError::Method(
-                            R::RpcError::try_from(error).map_err(|e| {
-                                RpcRequestError::UnexpectedErrorResponse(Box::new(e))
-                            })?,
-                        )),
-                        (None, Some(result)) => match result.to_error() {
-                            Ok(r) => Ok(r),
-                            Err(e) => Err(RpcRequestError::Method(e)),
-                        },
-                        (None, None) => Err(RpcRequestError::Transport(
-                            TransportError::EmptyResponseBody,
-                        )),
-                    }
-                    // Error
-                }
+                200..300 => Err(RpcRequestError::Transport(TransportError::BadNodeData(
+                    Box::new(serde_json::Error::custom("non-JSON response with 2xx")),
+                    type_name::<R>(),
+                ))),
                 400..600 => Err(RpcRequestError::Transport(TransportError::ErrorStatusCode(
                     code,
                 ))),

@@ -244,7 +244,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         params: GetAddressDeltasParams,
     ) -> Result<GetAddressDeltasResponse, Self::Error> {
-        Ok(self.fetcher.get_address_deltas(params).await?)
+        Ok(self.fetcher.get_address_deltas(params).await.unwrap())
     }
 
     /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
@@ -352,7 +352,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     data: None,
                 })
             })?)
-            .await?
+            .await
+            .unwrap()
             .into())
     }
 
@@ -378,7 +379,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self
             .fetcher
             .send_raw_transaction(raw_transaction_hex)
-            .await?
+            .await
+            .unwrap()
             .into())
     }
 
@@ -414,7 +416,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self
             .fetcher
             .get_block(hash_or_height, verbosity)
-            .await?
+            .await
+            .unwrap()
             .try_into()?)
     }
 
@@ -426,7 +429,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// Note: This method has only been implemented in `zcashd`. Zebra has no intention of supporting it.
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
-        Ok(self.fetcher.get_block_deltas(hash).await?)
+        Ok(self.fetcher.get_block_deltas(hash).await.unwrap())
     }
 
     async fn get_block_header(
@@ -527,7 +530,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self
             .fetcher
             .get_treestate(hash_or_height)
-            .await?
+            .await
+            .unwrap()
             .try_into()?)
     }
 
@@ -558,7 +562,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self
             .fetcher
             .get_subtrees_by_index(pool, start_index.0, limit.map(|limit_index| limit_index.0))
-            .await?
+            .await
+            .unwrap()
             .into())
     }
 
@@ -621,7 +626,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self
             .fetcher
             .get_address_txids(addresses, start, end)
-            .await?
+            .await
+            .unwrap()
             .transactions)
     }
 
@@ -652,7 +658,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     data: None,
                 })
             })?)
-            .await?
+            .await
+            .unwrap()
             .into_iter()
             .map(|utxos| utxos.into())
             .collect())

@@ -29,8 +29,11 @@ pub enum GetBlockHeaderError {
     InvalidVerbosity(i8),
 
     /// The requested block hash or height could not be found
-    #[error("Block not found: {0}")]
-    MissingBlock(String),
+    #[error("Block not found: {message}")]
+    MissingBlock {
+        code: i64, // TODO: -5 (hash) or -8 (height)
+        message: String,
+    },
 }
 
 /// Verbose response to a `getblockheader` RPC request.
@@ -121,12 +124,29 @@ impl TryFrom<RpcError> for GetBlockHeaderError {
     type Error = RpcError;
 
     fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // If the block is not in Zebra's state, returns
-        // [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
-        if value.code == -8 {
-            Ok(Self::MissingBlock(value.message))
-        } else {
-            Err(value)
+        match value.code {
+            -5 | -8 => Ok(Self::MissingBlock {
+                code: value.code,
+                message: value.message,
+            }),
+            _ => Err(value),
+        }
+    }
+}
+
+impl From<GetBlockHeaderError> for RpcError {
+    fn from(e: GetBlockHeaderError) -> Self {
+        match e {
+            GetBlockHeaderError::MissingBlock { code, message } => RpcError {
+                code,
+                message,
+                data: None,
+            },
+            GetBlockHeaderError::InvalidVerbosity(v) => RpcError {
+                code: -32602, // TODO: Abstract JSON-RPC codes away
+                message: format!("Invalid verbosity: {v}"),
+                data: None,
+            },
         }
     }
 }
