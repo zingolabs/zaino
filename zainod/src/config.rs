@@ -1,4 +1,16 @@
-//! Zaino config.
+//! Zainod config.
+//!
+//! When Zainod is providing an indexer as a service, i.e. running as a zainod daemon
+//! it reads it's configuration from one of two locations:
+//!
+//! `pwd`/zainod/config.toml
+//!
+//! OR from the commandline argumnet --config=ABSOLUTE_FILE_PATH
+//!
+//! If neither of those are provided zainod will exit with a "No configuration provided error".
+//!
+//! The default config file contents are provided here:
+//!
 use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
