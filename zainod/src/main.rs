@@ -25,18 +25,14 @@ async fn main() {
         .with_target(true)
         .init();
 
-    let args = Args::parse();
+    let config_path = Args::parse().config.unwrap_or_else(|| {
+        std::env::current_dir()
+            .unwrap()
+            .join("zainod/zindexer.toml")
+    });
 
-    let config_file_location = std::env::current_dir()
-        .unwrap()
-        .join("zainod/zindexer.toml");
-    let config_path = args
-        .config
-        .unwrap_or_else(|| PathBuf::from("./zainod/zindexer.toml"));
-
-    dbg!(std::env::current_dir().expect("Failed to get current directory"));
     loop {
-        match start_indexer(load_config(&config_file_location).unwrap()).await {
+        match start_indexer(load_config(&config_path).unwrap()).await {
             Ok(joinhandle_result) => {
                 info!("Zaino Indexer started successfully.");
                 match joinhandle_result.await {
