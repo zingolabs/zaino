@@ -36,7 +36,7 @@ backend = "fetch"
   # (e.g., /tmp/zaino/.cookie or XDG_RUNTIME_DIR) will be used.
   # Directory to store authentication cookie file.
   # cookie_dir = ""
-  cookie_dir = "/path/to/cookie_dir"
+  cookie_dir = ${COOKIE_DIR} # e.g. "/path/to/cookie_dir"
 
 # gRPC server config:
 # Required for valid zainod config.
@@ -60,7 +60,7 @@ backend = "fetch"
   validator_jsonrpc_listen_address = "127.0.0.1:18230"
 
     # Path to the validator cookie file.
-    validator_cookie_path = "/path/to/validator.cookie"
+    validator_cookie_path = ${VALIDATOR_COOKIE_PATH} # e.g. "/path/to/validator.cookie"
 
 #  Service-level configuration (timeout, channel size).
 #  Required.
@@ -73,7 +73,7 @@ backend = "fetch"
 #
 #  ZebraDB location.
 #  PathBuf, Required.
-zebra_db_path = ""
+zebra_db_path = ${ZEBRA_DB_PATH} # e.g. "????"
 #
 #  Network chain type.
 #  Required.
@@ -95,10 +95,10 @@ network = "Testnet"
 # map_shard_amount = 16 // TODO: Investigate whether an internal default is used, and if so encode here explicitly
 
 # Zaino Block Cache database file path.
-zaino_db_path = "$HOME/.cache/zaino/" (platform dependent)
+zaino_db_path = ${ZAINO_DB_PATH} # "$HOME/.cache/zaino/" (platform dependent)
 
 # Zebra Block Cache database file path.
-zebra_db_path = "$HOME/.cache/zebra/" (platform dependent)
+zebra_db_path = ${ZEBRA_DB_PATH} # FIXME: WHY IS THIS LISTED TWICE? "$HOME/.cache/zebra/" (platform dependent)
 
 # Block Cache database maximum size in gb.
 # Only used by the FetchService.
