@@ -26,17 +26,17 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"
 backend = "fetch"
 
 # Zainod JsonRPC server config:
-# Optional: Some enables Zaino's JsonRPC server.
+# json_rpc_services are enabled in zainod
+# Required for valid zainod config.
 [json_server_settings]
-# Zainod's JsonRPC server listen addr. Required if json_server_settings is Some.
+# Zainod's JsonRPC server listen addr.
   json_rpc_listen_address = "127.0.0.1:8237"
 
-  # Some enables cookie-based authentication for JsonRPC server.
-  # An empty PathBuf that is still Some will have a default emphemeral path assigned to it when zaino loads the config.
+  # Enable cookie-based authentication for JsonRPC server.
   # (e.g., /tmp/zaino/.cookie or XDG_RUNTIME_DIR) will be used.
   # Directory to store authentication cookie file.
   # cookie_dir = ""
-  # cookie_dir = "/path/to/cookie_dir"
+  cookie_dir = "/path/to/cookie_dir"
 
 # gRPC server config:
 # Required for valid zainod config.
@@ -44,16 +44,6 @@ backend = "fetch"
 # Zainod's gRPC server listen address.
   # SocketAddress, Required.
   grpc_listen_address = "127.0.0.1:8137"
-
-  # Some Enables TLS for the gRPC server.
-  # tls: Option<GrpcTls>,
-  # [tls]
-    # Path to the TLS certificate file in PEM format.
-    # cert_path: ""
-    # cert_path = "/path/to/cert.pem"
-    # Path to the TLS private key file in PEM format.
-    # key_path = ""
-    # key_path = "/path/to/key.pem"
 
 # Validator config:
 # Required for valid zainod config.
@@ -69,17 +59,9 @@ backend = "fetch"
   # SocketAddr, Required.
   validator_jsonrpc_listen_address = "127.0.0.1:18230"
 
-    # Optional. Enable validator rpc cookie authentication with Some.
     # Path to the validator cookie file.
-    # validator_cookie_path = "/path/to/validator.cookie"
-    # validator_cookie_path = ""
-    # Optional. Enable  user / pass authentication with Some.
-    # Full node / validator Username.
-    # validator_user = ""
-    # Optional. Enable user / pass authentication with Some
-    # full node / validator Password.
-    # validator_password: ""
-    #
+    validator_cookie_path = "/path/to/validator.cookie"
+
 #  Service-level configuration (timeout, channel size).
 #  Required.
 #  [service]
@@ -87,43 +69,41 @@ backend = "fetch"
 
 #  Storage configuration (cache and database).
 #  Required.
-#  [storage]
+[storage]
 #
 #  ZebraDB location.
 #  PathBuf, Required.
-#  zebra_db_path = ""
+zebra_db_path = ""
 #
 #  Network chain type.
 #  Required.
 #  Network chain type (Mainnet, Testnet, Regtest).
-#  network = "Testnet"
+network = "Testnet"
 
 # ----
 
 # Capacity of the Dashmaps used for the Mempool.
 # Also used by the BlockCache::NonFinalisedState when using the FetchService.
 # If omitted, Zaino uses an internal default or relies on library defaults.
-# map_capacity = 10000
+# map_capacity = 10000 // TODO: Investigate whether an internal default is used, and if so encode here explicitly
 
 # Number of shard used in the DashMap used for the Mempool.
 # Also used by the BlockCache::NonFinalisedState when using the FetchService.
 #
 # shard_amount should greater than 0 and be a power of two.
 # If omitted, Zaino uses an internal default or relies on library defaults.
-# map_shard_amount = 16
+# map_shard_amount = 16 // TODO: Investigate whether an internal default is used, and if so encode here explicitly
 
 # Zaino Block Cache database file path.
-# If omitted, this defaults to $HOME/.cache/zaino/ (platform dependent).
-# zaino_db_path = "/path/to/zaino_db"
+zaino_db_path = "$HOME/.cache/zaino/" (platform dependent)
 
 # Zebra Block Cache database file path.
-# If omitted, this defaults to $HOME/.cache/zebra/ (platform dependent).
-# zebra_db_path = "/path/to/zebra_db"
+zebra_db_path = "$HOME/.cache/zebra/" (platform dependent)
 
 # Block Cache database maximum size in gb.
 # Only used by the FetchService.
 # If omitted, no specific limit may be enforced by Zaino for this setting initially.
-# db_size = 100
+# db_size = 100 // FIXME:  remove with the FetchService
 "#;
 use figment::{
     providers::{Format, Toml},
