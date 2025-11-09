@@ -1640,3 +1640,26 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         )))
     }
 }
+
+#[allow(deprecated)]
+#[cfg(test)]
+mod tests {
+    use zaino_fetch::jsonrpsee::{
+        connector::RpcRequestError, response::block_header::GetBlockHeaderError,
+    };
+
+    use crate::FetchServiceError;
+
+    #[test]
+    fn downcast_typed_method_error() {
+        let block_header_error = GetBlockHeaderError::MissingBlock;
+
+        let fs_err: FetchServiceError = RpcRequestError::Method(block_header_error).into();
+
+        if let FetchServiceError::RpcMethod(e) = &fs_err {
+            assert!(e.downcast_ref::<GetBlockHeaderError>().is_some());
+        } else {
+            panic!("expected RpcMethod variant");
+        }
+    }
+}

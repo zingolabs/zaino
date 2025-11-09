@@ -5,11 +5,10 @@
 use base64::{engine::general_purpose, Engine};
 use http::Uri;
 use reqwest::{Client, ClientBuilder, Url};
-use serde::de::Error;
+use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::{
-    any::type_name,
     convert::Infallible,
     fmt, fs,
     net::SocketAddr,
@@ -23,10 +22,12 @@ use std::{
 use tracing::error;
 use zebra_rpc::client::ValidateAddressResponse;
 
+use crate::jsonrpsee::connector::map_err::{MapRpcError, Mapper};
+use crate::jsonrpsee::error::{JsonRpcErrorKind, RpcErrorKind, ValidatorErrorKind};
 use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
 use crate::jsonrpsee::response::info::GetInfoResponse;
 use crate::jsonrpsee::{
-    error::{JsonRpcError, TransportError},
+    error::TransportError,
     response::{
         address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
         block_deltas::{BlockDeltas, BlockDeltasError},
@@ -60,15 +61,11 @@ struct RpcResponse<T> {
     error: Option<RpcError>,
 }
 
-/// Json RPSee Error type.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RpcError {
-    /// Error Code.
     pub code: i64,
-    /// Error Message.
     pub message: String,
-    /// Error Data.
-    pub data: Option<JsonRpcError>,
+    pub data: Option<serde_json::Value>,
 }
 
 impl RpcError {
@@ -89,16 +86,35 @@ impl RpcError {
         fallback_message: impl Into<String>,
     ) -> Self {
         RpcError {
-            // We can use the actual JSON-RPC code:
             code: error_obj.code() as i64,
 
-            // Or combine the fallback with the original message:
             message: format!("{}: {}", fallback_message.into(), error_obj.message()),
 
-            // If you want to store the data too:
             data: error_obj
                 .data()
                 .map(|raw| serde_json::from_str(raw.get()).unwrap()),
+        }
+    }
+
+    pub fn kind(&self) -> RpcErrorKind {
+        let m = self.message.to_ascii_lowercase();
+        match self.code {
+            // JSON-RPC standard
+            -32700 => RpcErrorKind::JsonRpc(JsonRpcErrorKind::Parse),
+            -32600 => RpcErrorKind::JsonRpc(JsonRpcErrorKind::InvalidRequest),
+            -32601 => RpcErrorKind::JsonRpc(JsonRpcErrorKind::MethodNotFound),
+            -32602 => RpcErrorKind::JsonRpc(JsonRpcErrorKind::InvalidParams),
+            -32603 => RpcErrorKind::JsonRpc(JsonRpcErrorKind::Internal),
+
+            // Bitcoin/Zcash-ish
+            -28 => RpcErrorKind::Validator(ValidatorErrorKind::InWarmup),
+            -27 => RpcErrorKind::Validator(ValidatorErrorKind::AlreadyExists),
+            -26 | -25 => RpcErrorKind::Validator(ValidatorErrorKind::Rejected),
+            -5 | -8 if m.contains("not found") => {
+                RpcErrorKind::Validator(ValidatorErrorKind::NotFound)
+            }
+
+            other => RpcErrorKind::Validator(ValidatorErrorKind::Other(other)),
         }
     }
 }
@@ -116,6 +132,39 @@ impl fmt::Display for RpcError {
 }
 
 impl std::error::Error for RpcError {}
+
+mod map_err {
+    use super::*;
+
+    // Trait is generic over the MethodError type parameter
+    pub trait MapRpcError<MethodError> {
+        fn map(raw: RpcError) -> RpcRequestError<MethodError>;
+    }
+
+    // A zero-sized type to host the impls
+    pub struct Mapper;
+
+    // Method errors
+    impl<MethodError> MapRpcError<MethodError> for Mapper
+    where
+        MethodError: From<RpcError> + std::error::Error + Send + Sync + 'static,
+    {
+        #[inline]
+        fn map(raw: RpcError) -> RpcRequestError<MethodError> {
+            RpcRequestError::Method(MethodError::from(raw))
+        }
+    }
+
+    // Infallible endpoints
+    impl MapRpcError<Infallible> for Mapper {
+        #[inline]
+        fn map(raw: RpcError) -> RpcRequestError<Infallible> {
+            // A JSON-RPC error here means the node "misbehaved" (under our model)
+            // A better word is "unexpected"
+            RpcRequestError::UnexpectedErrorResponse(Box::new(raw))
+        }
+    }
+}
 
 // Helper function to read and parse the cookie file content.
 // Zebra's RPC server expects Basic Auth with username "__cookie__"
@@ -286,118 +335,87 @@ impl JsonRpSeeConnector {
     /// Sends a jsonRPC request and returns the response.
     /// NOTE: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     ///       This is because the node's queue can become overloaded and stop servicing RPCs.
-    async fn send_request<
-        T: std::fmt::Debug + Serialize,
-        R: std::fmt::Debug + for<'de> Deserialize<'de> + ResponseToError,
-    >(
+    async fn send_request<T, R, MethodError>(
         &self,
         method: &str,
         params: T,
-    ) -> Result<R, RpcRequestError<R::RpcError>>
+    ) -> Result<R, RpcRequestError<MethodError>>
     where
-        R::RpcError: Send + Sync + 'static + std::fmt::Display,
+        T: std::fmt::Debug + Serialize,
+        R: std::fmt::Debug + DeserializeOwned,
+        MethodError: std::fmt::Debug + Send + Sync + 'static,
+        map_err::Mapper: map_err::MapRpcError<MethodError>,
     {
+        #[derive(Deserialize)]
+        struct RpcEnvelope<R> {
+            result: Option<R>,
+            error: Option<RpcError>,
+        }
+
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
 
-        let max_attempts = 5;
-        let mut attempts = 0;
-        loop {
-            attempts += 1;
+        let request_builder = self
+            .build_request(method, &params, id)
+            .map_err(RpcRequestError::JsonRpc)?;
 
-            let request_builder = self
-                .build_request(method, &params, id)
-                .map_err(RpcRequestError::JsonRpc)?;
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
 
-            let response = request_builder
-                .send()
-                .await
-                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
+        let status = response.status();
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
+        let body_str = String::from_utf8_lossy(&body_bytes);
 
-            let status = response.status();
+        if body_str.contains("Work queue depth exceeded") {
+            return Err(RpcRequestError::ServerWorkQueueFull);
+        }
 
-            let body_bytes = response
-                .bytes()
-                .await
-                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
+        if let Ok(env) = serde_json::from_slice::<RpcEnvelope<R>>(&body_bytes) {
+            if let Some(err) = env.error {
+                error!(
+                    target: "zaino_fetch::jsonrpc",
+                    method = %method,
+                    id = id,
+                    code = err.code,
+                    kind = ?err.kind(),
+                    message = %err.message,
+                    params = tracing::field::debug(&params),
+                    "JSON-RPC method error"
+                );
+                // return Err(RpcRequestError::Method(MethodError::from(err)));
 
-            let body_str = String::from_utf8_lossy(&body_bytes);
-
-            if body_str.contains("Work queue depth exceeded") {
-                if attempts >= max_attempts {
-                    return Err(RpcRequestError::ServerWorkQueueFull);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                continue;
+                // This line picks the correct impl:
+                // - If MethodError = Infallible  -> uses the Infallible impl
+                // - Else requires MethodError: From<RpcError> + Error …
+                return Err(<Mapper as MapRpcError<MethodError>>::map(err));
             }
-
-            // Try to parse a JSON-RPC envelope no matter what the HTTP status is.
-            if let Ok(rpc) = serde_json::from_slice::<RpcResponse<R>>(&body_bytes) {
-                // If the server sent a JSON-RPC error, surface it as a method error
-                if let Some(error) = rpc.error {
-                    let raw_code = error.code;
-                    let raw_msg = error.message.clone();
-
-                    let mapped = R::RpcError::try_from(error)
-                        .map_err(|e| RpcRequestError::UnexpectedErrorResponse(Box::new(e)))?;
-
-                    // Log method errors
-                    error!(
-                        target: "zaino_fetch::jsonrpc",
-                        method = %method,
-                        id = id,
-                        code = raw_code,
-                        message = %raw_msg,
-                        mapped_type = %type_name::<R::RpcError>(),
-                        mapped = ?mapped,
-                        params = tracing::field::debug(&params),
-                        "JSON-RPC method error"
-                    );
-
-                    return Err(RpcRequestError::Method(mapped));
-                }
-
-                // If the server sent a JSON-RPC result, treat it as success
-                if let Some(result) = rpc.result {
-                    match result.to_error() {
-                        Ok(r) => return Ok(r),
-                        Err(e) => {
-                            error!(
-                                target: "zaino_fetch::jsonrpc",
-                                method = %method,
-                                id = id,
-                                mapped_type = %type_name::<R::RpcError>(),
-                                mapped = ?e,
-                                params = tracing::field::debug(&params),
-                                "Domain-specific method error from result"
-                            );
-                            return Err(RpcRequestError::Method(e));
-                        }
-                    }
-                }
-
-                // Bad node response
-                return Err(RpcRequestError::Transport(
-                    TransportError::EmptyResponseBody,
-                ));
+            if let Some(result) = env.result {
+                return Ok(result);
             }
+            return Err(RpcRequestError::Transport(
+                TransportError::EmptyResponseBody,
+            ));
+        }
 
-            // Fall back to HTTP semantics at this point
-            let code = status.as_u16();
-            return match code {
-                ..100 | 600.. => Err(RpcRequestError::Transport(
-                    TransportError::InvalidStatusCode(code),
-                )),
-                100..200 | 300..400 => Err(RpcRequestError::Transport(
-                    TransportError::UnexpectedStatusCode(code),
-                )),
-                200..300 => Err(RpcRequestError::Transport(TransportError::BadNodeData(
-                    Box::new(serde_json::Error::custom("non-JSON response with 2xx")),
-                    type_name::<R>(),
-                ))),
-                400..600 => Err(RpcRequestError::Transport(TransportError::ErrorStatusCode(
-                    code,
-                ))),
-            };
+        let code = status.as_u16();
+        match code {
+            ..100 | 600.. => Err(RpcRequestError::Transport(
+                TransportError::InvalidStatusCode(code),
+            )),
+            100..200 | 300..400 => Err(RpcRequestError::Transport(
+                TransportError::UnexpectedStatusCode(code),
+            )),
+            200..300 => Err(RpcRequestError::Transport(TransportError::BadNodeData(
+                Box::new(serde_json::Error::custom("non-JSON response with 2xx")),
+                std::any::type_name::<R>(),
+            ))),
+            400..600 => Err(RpcRequestError::Transport(TransportError::ErrorStatusCode(
+                code,
+            ))),
         }
     }
 
@@ -470,8 +488,7 @@ impl JsonRpSeeConnector {
     /// method: post
     /// tags: control
     pub async fn get_info(&self) -> Result<GetInfoResponse, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetInfoResponse>("getinfo", ())
-            .await
+        self.send_request("getinfo", ()).await
     }
 
     ///
@@ -481,8 +498,7 @@ impl JsonRpSeeConnector {
     pub async fn get_blockchain_info(
         &self,
     ) -> Result<GetBlockchainInfoResponse, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetBlockchainInfoResponse>("getblockchaininfo", ())
-            .await
+        self.send_request("getblockchaininfo", ()).await
     }
 
     /// Returns details on the active state of the TX memory pool.
@@ -497,8 +513,7 @@ impl JsonRpSeeConnector {
     pub async fn get_mempool_info(
         &self,
     ) -> Result<GetMempoolInfoResponse, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetMempoolInfoResponse>("getmempoolinfo", ())
-            .await
+        self.send_request("getmempoolinfo", ()).await
     }
 
     /// Returns data about each connected network node as a json array of objects.
@@ -508,8 +523,7 @@ impl JsonRpSeeConnector {
     ///
     /// Current `zebrad` does not include the same fields as `zcashd`.
     pub async fn get_peer_info(&self) -> Result<GetPeerInfo, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetPeerInfo>("getpeerinfo", ())
-            .await
+        self.send_request("getpeerinfo", ()).await
     }
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
@@ -520,8 +534,7 @@ impl JsonRpSeeConnector {
     pub async fn get_difficulty(
         &self,
     ) -> Result<GetDifficultyResponse, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetDifficultyResponse>("getdifficulty", ())
-            .await
+        self.send_request("getdifficulty", ()).await
     }
 
     /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
@@ -660,8 +673,7 @@ impl JsonRpSeeConnector {
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     pub async fn get_best_blockhash(&self) -> Result<GetBlockHash, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetBlockHash>("getbestblockhash", ())
-            .await
+        self.send_request("getbestblockhash", ()).await
     }
 
     /// Returns the height of the most recent block in the best valid block chain
@@ -673,8 +685,7 @@ impl JsonRpSeeConnector {
     pub async fn get_block_count(
         &self,
     ) -> Result<GetBlockCountResponse, RpcRequestError<Infallible>> {
-        self.send_request::<(), GetBlockCountResponse>("getblockcount", ())
-            .await
+        self.send_request("getblockcount", ()).await
     }
 
     /// Return information about the given Zcash address.
@@ -699,8 +710,7 @@ impl JsonRpSeeConnector {
     /// method: post
     /// tags: blockchain
     pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, RpcRequestError<TxidsError>> {
-        self.send_request::<(), TxidsResponse>("getrawmempool", ())
-            .await
+        self.send_request("getrawmempool", ()).await
     }
 
     /// Returns information about the given block's Sapling & Orchard tree state.
@@ -717,7 +727,8 @@ impl JsonRpSeeConnector {
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, RpcRequestError<GetTreestateError>> {
         let params = vec![serde_json::to_value(hash_or_height).map_err(RpcRequestError::JsonRpc)?];
-        self.send_request("z_gettreestate", params).await
+        // self.send_request("z_gettreestate", params).await
+        todo!()
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.
@@ -748,7 +759,8 @@ impl JsonRpSeeConnector {
                 serde_json::to_value(start_index).map_err(RpcRequestError::JsonRpc)?,
             ],
         };
-        self.send_request("z_getsubtreesbyindex", params).await
+        // self.send_request("z_getsubtreesbyindex", params).await
+        todo!()
     }
 
     /// Returns the raw transaction data, as a [`GetTransactionResponse`].
@@ -777,7 +789,8 @@ impl JsonRpSeeConnector {
             ],
         };
 
-        self.send_request("getrawtransaction", params).await
+        // self.send_request("getrawtransaction", params).await
+        todo!()
     }
 
     /// Returns the transaction ids made by the provided transparent addresses.
@@ -804,7 +817,8 @@ impl JsonRpSeeConnector {
             "end": end
         });
 
-        self.send_request("getaddresstxids", vec![params]).await
+        // self.send_request("getaddresstxids", vec![params]).await
+        todo!()
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -821,14 +835,16 @@ impl JsonRpSeeConnector {
         addresses: Vec<String>,
     ) -> Result<Vec<GetUtxosResponse>, RpcRequestError<GetUtxosError>> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
-        self.send_request("getaddressutxos", params).await
+        // self.send_request("getaddressutxos", params).await
+        todo!()
     }
 
     /// Returns a json object containing mining-related information.
     ///
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
     pub async fn get_mining_info(&self) -> Result<GetMiningInfoWire, RpcRequestError<Infallible>> {
-        self.send_request("getmininginfo", ()).await
+        // self.send_request("getmininginfo", ()).await
+        todo!()
     }
 
     /// Returns the estimated network solutions per second based on the last n blocks.
@@ -865,8 +881,9 @@ impl JsonRpSeeConnector {
             // default to -1
             params.push(serde_json::json!(-1_i32))
         }
+        todo!()
 
-        self.send_request("getnetworksolps", params).await
+        // self.send_request("getnetworksolps", params).await
     }
 }
 

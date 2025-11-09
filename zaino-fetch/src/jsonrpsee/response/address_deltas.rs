@@ -136,17 +136,23 @@ pub enum GetAddressDeltasError {
     InvalidBlockRange(u32, u32),
 }
 
+impl From<RpcError> for GetAddressDeltasError {
+    fn from(value: RpcError) -> Self {
+        todo!()
+    }
+}
+
 impl ResponseToError for GetAddressDeltasResponse {
     type RpcError = GetAddressDeltasError;
 }
 
-impl TryFrom<RpcError> for GetAddressDeltasError {
-    type Error = RpcError;
+// impl TryFrom<RpcError> for GetAddressDeltasError {
+//     type Error = RpcError;
 
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        Err(value)
-    }
-}
+//     fn try_from(value: RpcError) -> Result<Self, Self::Error> {
+//         Err(value)
+//     }
+// }
 
 /// Represents a change in the balance of a transparent address.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]

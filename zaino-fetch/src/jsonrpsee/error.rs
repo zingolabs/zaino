@@ -2,6 +2,8 @@
 
 use std::io;
 
+use crate::jsonrpsee::connector::RpcError;
+
 /// Error type for JSON-RPC responses.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct JsonRpcError {
@@ -76,4 +78,28 @@ impl From<TransportError> for tonic::Status {
     fn from(err: TransportError) -> Self {
         err.to_grpc_status()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonRpcErrorKind {
+    Parse,
+    InvalidRequest,
+    MethodNotFound,
+    InvalidParams,
+    Internal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidatorErrorKind {
+    NotFound,      // (-5/-8) with “not found”
+    Rejected,      // (-26/-25)
+    AlreadyExists, // (-27)
+    InWarmup,      // (-28)
+    Other(i64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcErrorKind {
+    JsonRpc(JsonRpcErrorKind),
+    Validator(ValidatorErrorKind),
 }

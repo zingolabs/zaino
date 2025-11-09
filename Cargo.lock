@@ -8446,6 +8446,7 @@ dependencies = [
 name = "zaino-state"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
  "arc-swap",
  "async-trait",
  "bitflags 2.9.4",

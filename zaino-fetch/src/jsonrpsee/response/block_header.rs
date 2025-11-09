@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use zebra_rpc::methods::opthex;
 
-use crate::jsonrpsee::connector::{ResponseToError, RpcError};
+use crate::jsonrpsee::{
+    connector::{ResponseToError, RpcError},
+    error::{JsonRpcErrorKind, RpcErrorKind, ValidatorErrorKind},
+};
 
 /// Response to a `getblockheader` RPC request.
 #[allow(clippy::large_enum_variant)]
@@ -29,11 +32,30 @@ pub enum GetBlockHeaderError {
     InvalidVerbosity(i8),
 
     /// The requested block hash or height could not be found
-    #[error("Block not found: {message}")]
-    MissingBlock {
-        code: i64, // TODO: -5 (hash) or -8 (height)
-        message: String,
-    },
+    #[error("Block not found")]
+    MissingBlock,
+
+    #[error("rpc error {code}: {message}")]
+    Other { code: i64, message: String },
+}
+
+// Hook: RpcErrorKind -> MethodError
+impl From<RpcError> for GetBlockHeaderError {
+    fn from(raw: RpcError) -> Self {
+        match raw.kind() {
+            RpcErrorKind::JsonRpc(JsonRpcErrorKind::InvalidParams) => {
+                // If you can parse the given verbosity from raw.message, do it.
+                GetBlockHeaderError::InvalidVerbosity(1)
+            }
+            RpcErrorKind::Validator(ValidatorErrorKind::NotFound) => {
+                GetBlockHeaderError::MissingBlock
+            }
+            _ => GetBlockHeaderError::Other {
+                code: raw.code,
+                message: raw.message,
+            },
+        }
+    }
 }
 
 /// Verbose response to a `getblockheader` RPC request.
@@ -120,36 +142,36 @@ impl ResponseToError for GetBlockHeader {
     type RpcError = GetBlockHeaderError;
 }
 
-impl TryFrom<RpcError> for GetBlockHeaderError {
-    type Error = RpcError;
+// impl TryFrom<RpcError> for GetBlockHeaderError {
+//     type Error = RpcError;
 
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        match value.code {
-            -5 | -8 => Ok(Self::MissingBlock {
-                code: value.code,
-                message: value.message,
-            }),
-            _ => Err(value),
-        }
-    }
-}
+//     fn try_from(value: RpcError) -> Result<Self, Self::Error> {
+//         match value.code {
+//             -5 | -8 => Ok(Self::MissingBlock {
+//                 code: value.code,
+//                 message: value.message,
+//             }),
+//             _ => Err(value),
+//         }
+//     }
+// }
 
-impl From<GetBlockHeaderError> for RpcError {
-    fn from(e: GetBlockHeaderError) -> Self {
-        match e {
-            GetBlockHeaderError::MissingBlock { code, message } => RpcError {
-                code,
-                message,
-                data: None,
-            },
-            GetBlockHeaderError::InvalidVerbosity(v) => RpcError {
-                code: -32602, // TODO: Abstract JSON-RPC codes away
-                message: format!("Invalid verbosity: {v}"),
-                data: None,
-            },
-        }
-    }
-}
+// impl From<GetBlockHeaderError> for RpcError {
+//     fn from(e: GetBlockHeaderError) -> Self {
+//         match e {
+//             GetBlockHeaderError::MissingBlock { code, message } => RpcError {
+//                 code,
+//                 message,
+//                 data: None,
+//             },
+//             GetBlockHeaderError::InvalidVerbosity(v) => RpcError {
+//                 code: -32602, // TODO: Abstract JSON-RPC codes away
+//                 message: format!("Invalid verbosity: {v}"),
+//                 data: None,
+//             },
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {

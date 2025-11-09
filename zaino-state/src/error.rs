@@ -134,32 +134,6 @@ impl From<StateServiceError> for tonic::Status {
     }
 }
 
-impl<E> From<RpcRequestError<E>> for FetchServiceError
-where
-    E: Into<RpcError>,
-{
-    fn from(value: RpcRequestError<E>) -> Self {
-        match value {
-            RpcRequestError::Method(e) => FetchServiceError::RpcError(e.into()),
-            RpcRequestError::Transport(transport_error) => {
-                FetchServiceError::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestError::JsonRpc(error) => {
-                FetchServiceError::Critical(format!("argument failed to serialize: {error}"))
-            }
-            RpcRequestError::ServerWorkQueueFull => FetchServiceError::Critical(
-                "Server queue full. Handling for this not yet implemented".to_string(),
-            ),
-            RpcRequestError::UnexpectedErrorResponse(error) => {
-                FetchServiceError::Critical(format!("unexpected rpc error response: {error}"))
-            }
-            RpcRequestError::InternalUnrecoverable(e) => {
-                FetchServiceError::Critical(format!("Internal unrecoverable error: {e}"))
-            }
-        }
-    }
-}
-
 /// Errors related to the `FetchService`.
 #[deprecated]
 #[derive(Debug, thiserror::Error)]
@@ -191,6 +165,34 @@ pub enum FetchServiceError {
     /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(#[from] zebra_chain::serialization::SerializationError),
+
+    // Any method error (typed or raw) with backtrace and downcast
+    #[error(transparent)]
+    RpcMethod(#[from] anyhow::Error),
+}
+
+impl<E> From<RpcRequestError<E>> for FetchServiceError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn from(e: RpcRequestError<E>) -> Self {
+        match e {
+            RpcRequestError::Method(me) => FetchServiceError::RpcMethod(me.into()),
+            RpcRequestError::Transport(t) => FetchServiceError::JsonRpcConnectorError(t),
+            RpcRequestError::JsonRpc(j) => FetchServiceError::RpcMethod(anyhow::anyhow!(
+                "request input failed to serialize: {j}"
+            )),
+            RpcRequestError::ServerWorkQueueFull => FetchServiceError::RpcMethod(anyhow::anyhow!(
+                "Server queue full. Handling not yet implemented"
+            )),
+            RpcRequestError::UnexpectedErrorResponse(u) => {
+                FetchServiceError::RpcMethod(anyhow::anyhow!("unexpected error response: {u}"))
+            }
+            RpcRequestError::InternalUnrecoverable(s) => {
+                FetchServiceError::RpcMethod(anyhow::anyhow!("Internal unrecoverable error: {s}"))
+            }
+        }
+    }
 }
 
 impl From<FetchServiceError> for tonic::Status {
@@ -212,6 +214,9 @@ impl From<FetchServiceError> for tonic::Status {
             FetchServiceError::TonicStatusError(err) => err,
             FetchServiceError::SerializationError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
+            }
+            FetchServiceError::RpcMethod(err) => {
+                tonic::Status::internal(format!("RPC error: {err:?}"))
             }
         }
     }
