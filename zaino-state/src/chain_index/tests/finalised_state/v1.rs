@@ -146,7 +146,7 @@ pub(crate) async fn load_vectors_v1db_and_reader() -> (
 
 // *** ZainoDB Tests ***
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn sync_to_height() {
     init_tracing();
 
@@ -165,7 +165,7 @@ async fn sync_to_height() {
     assert_eq!(built_db_height, Height(200));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn add_blocks_to_db_and_verify() {
     init_tracing();
 
@@ -176,7 +176,7 @@ async fn add_blocks_to_db_and_verify() {
     dbg!(zaino_db.db_height().await.unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn delete_blocks_from_db() {
     init_tracing();
 
@@ -196,7 +196,7 @@ async fn delete_blocks_from_db() {
     dbg!(zaino_db.db_height().await.unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn save_db_to_file_and_reload() {
     init_tracing();
 
@@ -303,7 +303,7 @@ async fn save_db_to_file_and_reload() {
     .unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn load_db_backend_from_file() {
     init_tracing();
 
@@ -347,7 +347,7 @@ async fn load_db_backend_from_file() {
     std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn try_write_invalid_block() {
     init_tracing();
 
@@ -389,7 +389,7 @@ async fn try_write_invalid_block() {
     dbg!(zaino_db.db_height().await.unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn try_delete_block_with_invalid_height() {
     init_tracing();
 
@@ -416,7 +416,7 @@ async fn try_delete_block_with_invalid_height() {
     dbg!(zaino_db.db_height().await.unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn create_db_reader() {
     let (blocks, _faucet, _recipient, _db_dir, zaino_db, db_reader) =
         load_vectors_v1db_and_reader().await;
@@ -431,7 +431,7 @@ async fn create_db_reader() {
 
 // *** DbReader Tests ***
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_chain_blocks() {
     init_tracing();
 
@@ -481,7 +481,7 @@ async fn get_chain_blocks() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_compact_blocks() {
     init_tracing();
 
@@ -532,7 +532,7 @@ async fn get_compact_blocks() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_faucet_txids() {
     init_tracing();
 
@@ -631,7 +631,7 @@ async fn get_faucet_txids() {
     assert_eq!(faucet_txids, reader_faucet_txids);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_recipient_txids() {
     init_tracing();
 
@@ -735,7 +735,7 @@ async fn get_recipient_txids() {
     assert_eq!(recipient_txids, reader_recipient_txids);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_faucet_utxos() {
     init_tracing();
 
@@ -775,7 +775,7 @@ async fn get_faucet_utxos() {
     assert_eq!(cleaned_utxos, reader_faucet_utxos);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_recipient_utxos() {
     init_tracing();
 
@@ -815,7 +815,7 @@ async fn get_recipient_utxos() {
     assert_eq!(cleaned_utxos, reader_recipient_utxos);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_balance() {
     init_tracing();
 
@@ -856,7 +856,7 @@ async fn get_balance() {
     assert_eq!(recipient_balance, reader_recipient_balance);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn check_faucet_spent_map() {
     init_tracing();
 
@@ -1015,7 +1015,7 @@ async fn check_faucet_spent_map() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn check_recipient_spent_map() {
     init_tracing();
 

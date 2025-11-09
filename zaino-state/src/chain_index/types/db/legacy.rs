@@ -49,7 +49,7 @@ use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeS
 // Each section should be migrated as a complete unit to maintain clean git history.
 
 /// Block hash (SHA256d hash of the block header).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockHash(pub [u8; 32]);
 
@@ -73,6 +73,12 @@ impl BlockHash {
 impl fmt::Display for BlockHash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&self.encode_hex::<String>())
+    }
+}
+
+impl fmt::Debug for BlockHash {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "BlockHash({})", self.encode_hex::<String>())
     }
 }
 

@@ -58,10 +58,14 @@ pub async fn spawn_indexer(
     );
     match BackendConfig::try_from(config.clone()) {
         Ok(BackendConfig::State(state_service_config)) => {
-            Indexer::<StateService>::launch_inner(state_service_config, config).await
+            Indexer::<StateService>::launch_inner(state_service_config, config)
+                .await
+                .map(|res| res.0)
         }
         Ok(BackendConfig::Fetch(fetch_service_config)) => {
-            Indexer::<FetchService>::launch_inner(fetch_service_config, config).await
+            Indexer::<FetchService>::launch_inner(fetch_service_config, config)
+                .await
+                .map(|res| res.0)
         }
         Err(e) => Err(e),
     }
@@ -72,11 +76,20 @@ where
     IndexerError: From<<Service::Subscriber as ZcashIndexer>::Error>,
 {
     /// Spawns a new Indexer server.
+    // TODO: revise whether returning the subscriber here is the best way to access the service after the indexer is spawned.
     pub async fn launch_inner(
         service_config: Service::Config,
         indexer_config: ZainodConfig,
-    ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    ) -> Result<
+        (
+            tokio::task::JoinHandle<Result<(), IndexerError>>,
+            Service::Subscriber,
+        ),
+        IndexerError,
+    > {
         let service = IndexerService::<Service>::spawn(service_config).await?;
+        let service_subscriber = service.inner_ref().get_subscriber();
+
         let json_server = match indexer_config.json_server_settings {
             Some(json_server_config) => Some(
                 JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
@@ -130,7 +143,7 @@ where
             }
         });
 
-        Ok(serve_task)
+        Ok((serve_task, service_subscriber.inner()))
     }
 
     /// Checks indexers status and servers internal statuses for either offline of critical error signals.
@@ -254,9 +267,6 @@ fn startup_message() {
              Thank you for using ZingoLabs Zaino!
 
        - Donate to us at https://free2z.cash/zingolabs.
-       - For security conserns contact us online on Matrix:
-         Admins can be contacted for private messageing at
-         #zingolabs:matrix.org which is a public, unencrypted channel.
 
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
     "#;

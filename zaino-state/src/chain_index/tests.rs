@@ -105,7 +105,7 @@ mod mockchain_tests {
         (blocks, indexer, index_reader, source)
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
@@ -130,7 +130,7 @@ mod mockchain_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_transaction() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
@@ -171,7 +171,7 @@ mod mockchain_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_status() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
@@ -233,7 +233,7 @@ mod mockchain_tests {
         assert_eq!(active_mockchain_tip, indexer_tip);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_transaction() {
         let (blocks, _indexer, index_reader, mockchain) =
             load_test_vectors_and_sync_chain_index(true).await;
@@ -280,7 +280,7 @@ mod mockchain_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_transaction_status() {
         let (blocks, _indexer, index_reader, mockchain) =
             load_test_vectors_and_sync_chain_index(true).await;
@@ -325,7 +325,7 @@ mod mockchain_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_transactions() {
         let (blocks, _indexer, index_reader, mockchain) =
             load_test_vectors_and_sync_chain_index(true).await;
@@ -371,7 +371,7 @@ mod mockchain_tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_filtered_mempool_transactions() {
         let (blocks, _indexer, index_reader, mockchain) =
             load_test_vectors_and_sync_chain_index(true).await;
@@ -512,7 +512,7 @@ mod mockchain_tests {
         assert!(mempool_stream.is_none());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_block_height() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
@@ -539,7 +539,7 @@ mod mockchain_tests {
         assert_eq!(got, None);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_treestate() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;

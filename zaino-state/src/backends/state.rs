@@ -18,7 +18,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
-    MempoolKey,
+    BackendType, MempoolKey,
 };
 
 use nonempty::NonEmpty;
@@ -173,6 +173,8 @@ impl StateService {
 #[async_trait]
 #[allow(deprecated)]
 impl ZcashService for StateService {
+    const BACKEND_TYPE: BackendType = BackendType::State;
+
     type Subscriber = StateServiceSubscriber;
     type Config = StateServiceConfig;
 
