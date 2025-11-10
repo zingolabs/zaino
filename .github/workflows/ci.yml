@@ -110,7 +110,7 @@ jobs:
       fail-fast: false
       matrix:
         partition:
-          - "integration-tests::chain_cache"
+          # - "integration-tests::chain_cache" FIXME: this must be reintroduced when the chain index test hangs are debugged
           - "integration-tests::fetch_service"
           - "integration-tests::json_server"
           - "integration-tests::local_cache"

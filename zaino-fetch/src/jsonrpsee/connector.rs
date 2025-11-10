@@ -22,10 +22,16 @@ use std::{
 use tracing::error;
 use zebra_rpc::client::ValidateAddressResponse;
 
+use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
-        block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire, peer_info::GetPeerInfo,
+        address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+        block_deltas::{BlockDeltas, BlockDeltasError},
+        block_header::{GetBlockHeader, GetBlockHeaderError},
+        block_subsidy::GetBlockSubsidy,
+        mining_info::GetMiningInfoWire,
+        peer_info::GetPeerInfo,
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
         GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
@@ -394,6 +400,29 @@ impl JsonRpSeeConnector {
         Ok(request_builder)
     }
 
+    /// Returns all changes for an address.
+    ///
+    /// Returns information about all changes to the given transparent addresses within the given block range (inclusive)
+    ///
+    /// block height range, default is the full blockchain.
+    /// If start or end are not specified, they default to zero.
+    /// If start is greater than the latest block height, it's interpreted as that height.
+    ///
+    /// If end is zero, it's interpreted as the latest block height.
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    pub async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, RpcRequestError<GetAddressDeltasError>> {
+        let params = vec![serde_json::to_value(params).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getaddressdeltas", params).await
+    }
+
     /// Returns software information from the RPC server, as a [`crate::jsonrpsee::connector::GetInfoResponse`] JSON struct.
     ///
     /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
@@ -539,6 +568,42 @@ impl JsonRpSeeConnector {
                 .await
                 .map(GetBlockResponse::Object)
         }
+    }
+
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_block_deltas(
+        &self,
+        hash: String,
+    ) -> Result<BlockDeltas, RpcRequestError<BlockDeltasError>> {
+        let params = vec![serde_json::to_value(hash).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getblockdeltas", params).await
+    }
+
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
+    /// If verbose is true, returns an Object with information about blockheader `hash`.
+    ///
+    /// # Parameters
+    ///
+    /// - hash: (string, required) The block hash
+    /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, RpcRequestError<GetBlockHeaderError>> {
+        let params = [
+            serde_json::to_value(hash).map_err(RpcRequestError::JsonRpc)?,
+            serde_json::to_value(verbose).map_err(RpcRequestError::JsonRpc)?,
+        ];
+        self.send_request("getblockheader", params).await
     }
 
     /// Returns the hash of the best block (tip) of the longest chain.

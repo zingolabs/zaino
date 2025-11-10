@@ -89,7 +89,18 @@ pub struct ActivationHeights {
 
 impl Default for ActivationHeights {
     fn default() -> Self {
-        ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS
+        ActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(2),
+            nu6: Some(2),
+            nu6_1: Some(2),
+            nu7: None,
+        }
     }
 }
 

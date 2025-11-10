@@ -1,7 +1,7 @@
+#![allow(deprecated)]
 //! Holds error types for Zaino-state.
 
 // Needs to be module level due to the thiserror::Error macro
-#![allow(deprecated)]
 
 use crate::BlockHash;
 
@@ -96,6 +96,7 @@ pub enum StateServiceError {
     },
 }
 
+#[allow(deprecated)]
 impl From<StateServiceError> for tonic::Status {
     fn from(error: StateServiceError) -> Self {
         match error {
@@ -198,6 +199,7 @@ pub enum FetchServiceError {
     SerializationError(#[from] zebra_chain::serialization::SerializationError),
 }
 
+#[allow(deprecated)]
 impl From<FetchServiceError> for tonic::Status {
     fn from(error: FetchServiceError) -> Self {
         match error {

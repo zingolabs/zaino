@@ -119,6 +119,9 @@ figment = "0.10"
 nonempty = "0.11.0"
 proptest = "~1.2"
 zip32 = "0.2.1"
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "f88e1d76ea244d6cc48d7fd4c3a609c6598318dc", features = [
+    "testutils",
+] }
 
 # Patch for vulnerable dependency
 slab = "0.4.11"

@@ -5,10 +5,13 @@ use async_trait::async_trait;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_fetch::jsonrpsee::response::{
+    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    block_deltas::BlockDeltas,
+    block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
-    {GetMempoolInfoResponse, GetNetworkSolPsResponse},
+    GetMempoolInfoResponse, GetNetworkSolPsResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -34,6 +37,7 @@ use crate::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
     },
+    BackendType,
 };
 
 /// Wrapper Struct for a ZainoState chain-fetch service (StateService, FetchService)
@@ -75,6 +79,9 @@ where
 /// Zcash Service functionality.
 #[async_trait]
 pub trait ZcashService: Sized {
+    /// Backend type. Read state or fetch service.
+    const BACKEND_TYPE: BackendType;
+
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer;
 
@@ -157,6 +164,26 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Some fields from the zcashd reference are missing from Zebra's [`GetInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
     async fn get_info(&self) -> Result<GetInfo, Self::Error>;
+
+    /// Returns all changes for an address.
+    ///
+    /// Returns information about all changes to the given transparent addresses within the given (inclusive)
+    ///
+    /// block height range, default is the full blockchain.
+    /// If start or end are not specified, they default to zero.
+    /// If start is greater than the latest block height, it's interpreted as that height.
+    ///
+    /// If end is zero, it's interpreted as the latest block height.
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, Self::Error>;
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
@@ -252,6 +279,23 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error>;
 
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
+    /// If verbose is true, returns an Object with information about blockheader `hash`.
+    ///
+    /// # Parameters
+    ///
+    /// - hash: (string, required) The block hash
+    /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, Self::Error>;
+
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
     /// If the block is not in Zebra's state, returns
     /// [error code `-8`.](https://github.com/zcash/zcash/issues/5758) if a height was
@@ -281,6 +325,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error>;
+
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error>;
 
     /// Returns the current block count in the best valid block chain.
     ///

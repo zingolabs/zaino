@@ -598,12 +598,15 @@ dependencies = [
  "itertools 0.12.1",
  "lazy_static",
  "lazycell",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
  "rustc-hash 1.1.0",
  "shlex",
  "syn 2.0.106",
+ "which 4.4.2",
 ]
 
 [[package]]
@@ -2964,9 +2967,13 @@ dependencies = [
  "zaino-proto",
  "zaino-state",
  "zaino-testutils",
+ "zainod",
+ "zcash_local_net",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.1.0)",
+ "zingolib",
  "zip32",
 ]
 
@@ -8503,9 +8510,10 @@ dependencies = [
  "proptest",
  "tempfile",
  "tokio",
- "tonic 0.12.3",
+ "tonic 0.13.1",
  "tracing-subscriber",
  "zaino-common",
+ "zaino-proto",
  "zaino-serve",
  "zaino-state",
  "zaino-testvectors",
@@ -8514,6 +8522,7 @@ dependencies = [
  "zcash_local_net",
  "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zebra-chain",
+ "zebra-state",
  "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?tag=zingo_common_components_v0.1.0)",
  "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?tag=zingo_common_components_v0.1.0)",
  "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.1.0)",
@@ -9077,7 +9086,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caf6e76f310bb2d3cc233086a97c1710ba1de7ffbbf8198b8113407d0f427dfc"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen 0.69.5",
  "bitflags 2.9.4",
  "cc",
  "enum_primitive",
