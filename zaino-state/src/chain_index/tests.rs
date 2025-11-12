@@ -31,7 +31,7 @@ mod mockchain_tests {
                 build_active_mockchain_source, build_mockchain_source, load_test_vectors,
             },
             types::{BestChainLocation, TransactionHash},
-            Client, Query, Subscriber,
+            Index, Query, Subscriber,
         },
         BlockCacheConfig,
     };
@@ -50,7 +50,7 @@ mod mockchain_tests {
             ),
             (Vec<u8>, Vec<u8>),
         )>,
-        Client<MockchainSource>,
+        Index<MockchainSource>,
         Subscriber<MockchainSource>,
         MockchainSource,
     ) {
@@ -84,7 +84,7 @@ mod mockchain_tests {
             network: Network::Regtest(ActivationHeights::default()),
         };
 
-        let indexer = Client::new(source.clone(), config).await.unwrap();
+        let indexer = Index::new(source.clone(), config).await.unwrap();
         let index_reader = indexer.subscriber().await;
 
         loop {

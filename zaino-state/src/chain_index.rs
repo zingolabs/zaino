@@ -167,7 +167,7 @@ mod tests;
 /// - Unified access to finalized and non-finalized blockchain state
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
-pub struct Client<Source: BlockchainSource = ValidatorConnector> {
+pub struct Index<Source: BlockchainSource = ValidatorConnector> {
     blockchain_source: std::sync::Arc<Source>,
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
@@ -390,7 +390,7 @@ pub trait Query {
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
 }
 
-impl<Source: BlockchainSource> Client<Source> {
+impl<Source: BlockchainSource> Index<Source> {
     /// Creates a new chainindex from a connection to a validator
     /// Currently this is a ReadStateService or JsonRpSeeConnector
     pub async fn new(

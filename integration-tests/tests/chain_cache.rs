@@ -54,7 +54,7 @@ mod chain_query_interface {
         chain_index::{
             source::ValidatorConnector,
             types::{BestChainLocation, TransactionHash},
-            Client, Subscriber,
+            Index, Subscriber,
         },
         test_dependencies::{
             chain_index::{self, Query},
@@ -79,7 +79,7 @@ mod chain_query_interface {
         TestManager<FetchService>,
         JsonRpSeeConnector,
         Option<StateService>,
-        Client,
+        Index,
         Subscriber,
     ) {
         let (test_manager, json_service) = create_test_manager_and_connector(
@@ -150,7 +150,7 @@ mod chain_query_interface {
                         test_manager.local_net.get_activation_heights().into(),
                     ),
                 };
-                let chain_index = Client::new(
+                let chain_index = Index::new(
                     ValidatorConnector::State(chain_index::source::State {
                         read_state_service: state_service.read_state_service().clone(),
                         mempool_fetcher: json_service.clone(),
@@ -188,7 +188,7 @@ mod chain_query_interface {
                     ),
                 };
                 let chain_index =
-                    Client::new(ValidatorConnector::Fetch(json_service.clone()), config)
+                    Index::new(ValidatorConnector::Fetch(json_service.clone()), config)
                         .await
                         .unwrap();
                 let index_reader = chain_index.subscriber().await;
