@@ -11,12 +11,11 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::non_finalised_state::snapshot::NonFinalized;
-use crate::chain_index::non_finalised_state::{NonfinalizedBlockCacheSnapshot, SyncError};
+use crate::chain_index::snapshot::NonFinalized as _;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
-use crate::IndexedBlock;
-use crate::{AtomicStatus, StatusType};
+use crate::{AtomicStatus, NonfinalizedBlockCacheSnapshot, StatusType};
+use crate::{IndexedBlock, SyncError};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
@@ -37,7 +36,7 @@ pub mod mempool;
 /// State less than 100 blocks old, stored separately as it may be reorged
 pub mod non_finalised_state;
 /// Snapshots of non_finalised_state
-mod snapshot;
+pub mod snapshot;
 /// BlockchainSource
 pub mod source;
 /// Common types used by the rest of this module
@@ -300,7 +299,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// 3. Call `Index::new(source, config).await`
 pub trait Queryable {
     /// A snapshot of the nonfinalized state, needed for atomic access
-    type Snapshot: NonFinalized;
+    type Snapshot: snapshot::NonFinalized;
 
     /// How it can fail
     type Error;
