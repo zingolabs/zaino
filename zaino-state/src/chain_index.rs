@@ -36,6 +36,8 @@ pub mod finalised_state;
 pub mod mempool;
 /// State less than 100 blocks old, stored separately as it may be reorged
 pub mod non_finalised_state;
+/// Snapshots of non_finalised_state
+mod snapshot;
 /// BlockchainSource
 pub mod source;
 /// Common types used by the rest of this module
@@ -434,6 +436,8 @@ impl<Source: BlockchainSource> Index<Source> {
 
     /// Creates a [`Subscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
+    /// This relatively simple name presumes the developer attends
+    /// to the containing mod name [`chain_index`].
     pub async fn subscriber(&self) -> Subscriber<Source> {
         Subscriber {
             blockchain_source: self.blockchain_source.as_ref().clone(),
