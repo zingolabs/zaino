@@ -31,7 +31,7 @@ mod mockchain_tests {
                 build_active_mockchain_source, build_mockchain_source, load_test_vectors,
             },
             types::{BestChainLocation, TransactionHash},
-            NodeBackedChainIndex, NodeBackedChainIndexSubscriber, Query,
+            ChainIndex, NodeBackedChainIndexSubscriber, Query,
         },
         BlockCacheConfig,
     };
@@ -50,7 +50,7 @@ mod mockchain_tests {
             ),
             (Vec<u8>, Vec<u8>),
         )>,
-        NodeBackedChainIndex<MockchainSource>,
+        ChainIndex<MockchainSource>,
         NodeBackedChainIndexSubscriber<MockchainSource>,
         MockchainSource,
     ) {
@@ -84,9 +84,7 @@ mod mockchain_tests {
             network: Network::Regtest(ActivationHeights::default()),
         };
 
-        let indexer = NodeBackedChainIndex::new(source.clone(), config)
-            .await
-            .unwrap();
+        let indexer = ChainIndex::new(source.clone(), config).await.unwrap();
         let index_reader = indexer.subscriber().await;
 
         loop {

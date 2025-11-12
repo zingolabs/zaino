@@ -44,6 +44,139 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+/// The combined index. Contains a view of the mempool, and the full
+/// chain state, both finalized and non-finalized, to allow queries over
+/// the entire chain at once.
+///
+/// This is the primary implementation backing [`ChainIndex`] and replaces the functionality
+/// previously provided by `FetchService` and `StateService`. It can be backed by either:
+/// - A zebra `ReadStateService` for direct database access (preferred for performance)
+/// - A JSON-RPC connection to any validator node (zcashd, zebrad, or another zainod)
+///
+/// To use the [`ChainIndex`] trait methods, call [`subscriber()`](NodeBackedChainIndex::subscriber)
+/// to get a [`NodeBackedChainIndexSubscriber`] which implements the trait.
+///
+/// # Construction
+///
+/// Use [`NodeBackedChainIndex::new()`] with:
+/// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
+/// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
+///
+/// # Example with StateService (Preferred)
+///
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::chain_index::source::State;
+/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
+/// use zebra_state::{ReadStateService, Config as ZebraConfig};
+/// use std::path::PathBuf;
+///
+/// // Create ReadStateService for direct database access
+/// let zebra_config = ZebraConfig::default();
+/// let read_state_service = ReadStateService::new(&zebra_config).await?;
+///
+/// // Temporary: Create JSON-RPC connector for mempool access
+/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
+///     false,
+///     "127.0.0.1:8232".parse()?,
+///     "user".to_string(),
+///     "password".to_string(),
+///     None,
+/// ).await?;
+///
+/// let source = ValidatorConnector::State(State {
+///     read_state_service,
+///     mempool_fetcher: mempool_connector,
+/// });
+///
+/// // Configure the cache (extract these from your previous StateServiceConfig)
+/// let config = BlockCacheConfig {
+///     map_capacity: Some(1000),
+///     map_shard_amount: Some(16),
+///     db_version: 1,
+///     db_path: PathBuf::from("/path/to/cache"),
+///     db_size: Some(10), // GB
+///     network: zebra_chain::parameters::Network::Mainnet,
+///     no_sync: false,
+///     no_db: false,
+/// };
+///
+/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let subscriber = chain_index.subscriber().await;
+///
+/// // Use the subscriber to access ChainIndex trait methods
+/// let snapshot = subscriber.snapshot_nonfinalized_state();
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Example with JSON-RPC Only (Fallback)
+///
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
+/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
+/// use std::path::PathBuf;
+///
+/// // For JSON-RPC backend (replaces FetchService::spawn)
+/// let connector = JsonRpSeeConnector::new_from_config_parts(
+///     false,
+///     "127.0.0.1:8232".parse()?,
+///     "user".to_string(),
+///     "password".to_string(),
+///     None,
+/// ).await?;
+/// let source = ValidatorConnector::Fetch(connector);
+///
+/// // Configure the cache (extract these from your previous FetchServiceConfig)
+/// let config = BlockCacheConfig {
+///     map_capacity: Some(1000),
+///     map_shard_amount: Some(16),
+///     db_version: 1,
+///     db_path: PathBuf::from("/path/to/cache"),
+///     db_size: Some(10), // GB
+///     network: zebra_chain::parameters::Network::Mainnet,
+///     no_sync: false,
+///     no_db: false,
+/// };
+///
+/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let subscriber = chain_index.subscriber().await;
+///
+/// // Use the subscriber to access ChainIndex trait methods
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Migration from StateService/FetchService
+///
+/// If migrating from `StateService::spawn(config)`:
+/// 1. Create a `ReadStateService` and temporary JSON-RPC connector for mempool
+/// 2. Convert config to `BlockCacheConfig` (or use `From` impl)
+/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::State(...), block_config)`
+///
+/// If migrating from `FetchService::spawn(config)`:
+/// 1. Create a `JsonRpSeeConnector` using the RPC fields from your `FetchServiceConfig`
+/// 2. Convert remaining config fields to `BlockCacheConfig` (or use `From` impl)
+/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::Fetch(connector), block_config)`
+///
+/// # Current Features
+///
+/// - Full mempool support including streaming and filtering
+/// - Unified access to finalized and non-finalized blockchain state
+/// - Automatic synchronization between state layers
+/// - Snapshot-based consistency for queries
+pub struct ChainIndex<Source: BlockchainSource = ValidatorConnector> {
+    blockchain_source: std::sync::Arc<Source>,
+    #[allow(dead_code)]
+    mempool: std::sync::Arc<mempool::Mempool<Source>>,
+    non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
+    finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
+    sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
+    status: AtomicStatus,
+}
+
 /// The interface to the chain index.
 ///
 /// `ChainIndex` provides a unified interface for querying blockchain data from different
@@ -257,140 +390,7 @@ pub trait Query {
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
 }
 
-/// The combined index. Contains a view of the mempool, and the full
-/// chain state, both finalized and non-finalized, to allow queries over
-/// the entire chain at once.
-///
-/// This is the primary implementation backing [`ChainIndex`] and replaces the functionality
-/// previously provided by `FetchService` and `StateService`. It can be backed by either:
-/// - A zebra `ReadStateService` for direct database access (preferred for performance)
-/// - A JSON-RPC connection to any validator node (zcashd, zebrad, or another zainod)
-///
-/// To use the [`ChainIndex`] trait methods, call [`subscriber()`](NodeBackedChainIndex::subscriber)
-/// to get a [`NodeBackedChainIndexSubscriber`] which implements the trait.
-///
-/// # Construction
-///
-/// Use [`NodeBackedChainIndex::new()`] with:
-/// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
-/// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
-///
-/// # Example with StateService (Preferred)
-///
-/// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_state::chain_index::source::State;
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
-///
-/// // Create ReadStateService for direct database access
-/// let zebra_config = ZebraConfig::default();
-/// let read_state_service = ReadStateService::new(&zebra_config).await?;
-///
-/// // Temporary: Create JSON-RPC connector for mempool access
-/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-///
-/// let source = ValidatorConnector::State(State {
-///     read_state_service,
-///     mempool_fetcher: mempool_connector,
-/// });
-///
-/// // Configure the cache (extract these from your previous StateServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # Example with JSON-RPC Only (Fallback)
-///
-/// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use std::path::PathBuf;
-///
-/// // For JSON-RPC backend (replaces FetchService::spawn)
-/// let connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-/// let source = ValidatorConnector::Fetch(connector);
-///
-/// // Configure the cache (extract these from your previous FetchServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # Migration from StateService/FetchService
-///
-/// If migrating from `StateService::spawn(config)`:
-/// 1. Create a `ReadStateService` and temporary JSON-RPC connector for mempool
-/// 2. Convert config to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::State(...), block_config)`
-///
-/// If migrating from `FetchService::spawn(config)`:
-/// 1. Create a `JsonRpSeeConnector` using the RPC fields from your `FetchServiceConfig`
-/// 2. Convert remaining config fields to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::Fetch(connector), block_config)`
-///
-/// # Current Features
-///
-/// - Full mempool support including streaming and filtering
-/// - Unified access to finalized and non-finalized blockchain state
-/// - Automatic synchronization between state layers
-/// - Snapshot-based consistency for queries
-pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
-    blockchain_source: std::sync::Arc<Source>,
-    #[allow(dead_code)]
-    mempool: std::sync::Arc<mempool::Mempool<Source>>,
-    non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
-    finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
-    sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
-    status: AtomicStatus,
-}
-
-impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
+impl<Source: BlockchainSource> ChainIndex<Source> {
     /// Creates a new chainindex from a connection to a validator
     /// Currently this is a ReadStateService or JsonRpSeeConnector
     pub async fn new(
