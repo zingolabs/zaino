@@ -53,12 +53,12 @@ mod tests;
 /// - A zebra `ReadStateService` for direct database access (preferred for performance)
 /// - A JSON-RPC connection to any validator node (zcashd, zebrad, or another zainod)
 ///
-/// To use the [`ChainIndex`] trait methods, call [`subscriber()`](NodeBackedChainIndex::subscriber)
-/// to get a [`NodeBackedChainIndexSubscriber`] which implements the trait.
+/// To use the [`ChainIndex`] trait methods, call [`subscriber()`](Index::subscriber)
+/// to get a [`Subscriber`] which implements the trait.
 ///
 /// # Construction
 ///
-/// Use [`NodeBackedChainIndex::new()`] with:
+/// Use [`Index::new()`] with:
 /// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
 /// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
 ///
@@ -66,7 +66,7 @@ mod tests;
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_state::chain_index::source::State;
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use zebra_state::{ReadStateService, Config as ZebraConfig};
@@ -102,7 +102,7 @@ mod tests;
 ///     no_db: false,
 /// };
 ///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
 /// // Use the subscriber to access ChainIndex trait methods
@@ -115,7 +115,7 @@ mod tests;
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use std::path::PathBuf;
 ///
@@ -141,7 +141,7 @@ mod tests;
 ///     no_db: false,
 /// };
 ///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
 /// // Use the subscriber to access ChainIndex trait methods
@@ -154,12 +154,12 @@ mod tests;
 /// If migrating from `StateService::spawn(config)`:
 /// 1. Create a `ReadStateService` and temporary JSON-RPC connector for mempool
 /// 2. Convert config to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::State(...), block_config)`
+/// 3. Call `Index::new(ValidatorConnector::State(...), block_config)`
 ///
 /// If migrating from `FetchService::spawn(config)`:
 /// 1. Create a `JsonRpSeeConnector` using the RPC fields from your `FetchServiceConfig`
 /// 2. Convert remaining config fields to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::Fetch(connector), block_config)`
+/// 3. Call `Index::new(ValidatorConnector::Fetch(connector), block_config)`
 ///
 /// # Current Features
 ///
@@ -185,7 +185,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///
 /// # Implementation
 ///
-/// The primary implementation is [`NodeBackedChainIndex`], which can be backed by either:
+/// The primary implementation is [`Index`], which can be backed by either:
 /// - Direct read access to a zebrad database via `ReadStateService` (preferred)
 /// - A JSON-RPC connection to a validator node (zcashd, zebrad, or another zainod)
 ///
@@ -193,7 +193,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{ChainIndex, Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use zebra_state::{ReadStateService, Config as ZebraConfig};
 /// use std::path::PathBuf;
@@ -230,7 +230,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// );
 ///
 /// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
 /// // Take a snapshot for consistent queries
@@ -252,7 +252,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{ChainIndex, Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use std::path::PathBuf;
 ///
@@ -281,7 +281,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// );
 ///
 /// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
 /// // Use the subscriber to access ChainIndex trait methods
@@ -295,7 +295,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// If you were previously using `FetchService::spawn()` or `StateService::spawn()`:
 /// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
 /// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
-/// 3. Call `NodeBackedChainIndex::new(source, config).await`
+/// 3. Call `Index::new(source, config).await`
 pub trait Query {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalized;
@@ -432,7 +432,7 @@ impl<Source: BlockchainSource> Index<Source> {
         Ok(chain_index)
     }
 
-    /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
+    /// Creates a [`Subscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
     pub async fn subscriber(&self) -> Subscriber<Source> {
         Subscriber {
@@ -527,11 +527,11 @@ impl<Source: BlockchainSource> Index<Source> {
     }
 }
 
-/// A clone-safe *read-only* view onto a running [`NodeBackedChainIndex`].
+/// A clone-safe *read-only* view onto a running [`Index`].
 ///
 /// Designed for concurrent efficiency.
 ///
-/// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
+/// [`Subscriber`] can safely be cloned and dropped freely.
 #[derive(Clone)]
 pub struct Subscriber<Source: BlockchainSource = ValidatorConnector> {
     blockchain_source: Source,
@@ -774,7 +774,7 @@ impl<Source: BlockchainSource> Query for Subscriber<Source> {
         // NOTE: Could we safely use zebra's get transaction method here without invalidating the snapshot?
         // This would be a more efficient way to fetch transaction data.
         //
-        // Should NodeBackedChainIndex keep a clone of source to use here?
+        // Should Index keep a clone of source to use here?
         //
         // This will require careful attention as there is a case where a transaction may still exist,
         // but may have been reorged into a different block, possibly breaking the validation of this interface.
