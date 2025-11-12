@@ -167,7 +167,7 @@ mod tests;
 /// - Unified access to finalized and non-finalized blockchain state
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
-pub struct ChainIndex<Source: BlockchainSource = ValidatorConnector> {
+pub struct Client<Source: BlockchainSource = ValidatorConnector> {
     blockchain_source: std::sync::Arc<Source>,
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
@@ -390,7 +390,7 @@ pub trait Query {
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
 }
 
-impl<Source: BlockchainSource> ChainIndex<Source> {
+impl<Source: BlockchainSource> Client<Source> {
     /// Creates a new chainindex from a connection to a validator
     /// Currently this is a ReadStateService or JsonRpSeeConnector
     pub async fn new(
@@ -434,8 +434,8 @@ impl<Source: BlockchainSource> ChainIndex<Source> {
 
     /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
-    pub async fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
-        NodeBackedChainIndexSubscriber {
+    pub async fn subscriber(&self) -> Subscriber<Source> {
+        Subscriber {
             blockchain_source: self.blockchain_source.as_ref().clone(),
             mempool: self.mempool.subscriber(),
             non_finalized_state: self.non_finalized_state.clone(),
@@ -533,7 +533,7 @@ impl<Source: BlockchainSource> ChainIndex<Source> {
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 #[derive(Clone)]
-pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
+pub struct Subscriber<Source: BlockchainSource = ValidatorConnector> {
     blockchain_source: Source,
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
@@ -541,7 +541,7 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
     status: AtomicStatus,
 }
 
-impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
+impl<Source: BlockchainSource> Subscriber<Source> {
     /// Displays the status of the chain_index
     pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_state.status();
@@ -612,7 +612,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     }
 }
 
-impl<Source: BlockchainSource> Query for NodeBackedChainIndexSubscriber<Source> {
+impl<Source: BlockchainSource> Query for Subscriber<Source> {
     type Snapshot = Arc<NonfinalizedBlockCacheSnapshot>;
     type Error = ChainIndexError;
 

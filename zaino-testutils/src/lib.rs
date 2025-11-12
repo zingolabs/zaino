@@ -23,7 +23,7 @@ use zaino_common::{
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_state::{
     chain_index::NonFinalizedSnapshot, BackendType, ChainIndexQuery as _, LightWalletIndexer,
-    LightWalletService, NodeBackedChainIndexSubscriber, ZcashIndexer, ZcashService,
+    LightWalletService, Subscriber, ZcashIndexer, ZcashService,
 };
 use zainodlib::{config::ZainodConfig, error::IndexerError, indexer::Indexer};
 pub use zcash_local_net as services;
@@ -657,11 +657,7 @@ where
     }
 
     /// Generate `n` blocks for the local network and poll zaino's chain index until the chain index is synced to the target height.
-    pub async fn generate_blocks_and_poll_chain_index(
-        &self,
-        n: u32,
-        chain_index: &NodeBackedChainIndexSubscriber,
-    ) {
+    pub async fn generate_blocks_and_poll_chain_index(&self, n: u32, chain_index: &Subscriber) {
         let chain_height = self.local_net.get_chain_height().await;
         let mut next_block_height = u32::from(chain_height) + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
