@@ -22,7 +22,7 @@ use zaino_common::{
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_state::{
-    chain_index::NonFinalizedSnapshot, BackendType, ChainIndexQuery as _, LightWalletIndexer,
+    chain_index::snapshot::NonFinalized, BackendType, ChainIndexQuery as _, LightWalletIndexer,
     LightWalletService, Subscriber, ZcashIndexer, ZcashService,
 };
 use zainodlib::{config::ZainodConfig, error::IndexerError, indexer::Indexer};

@@ -1,8 +1,11 @@
-use super::{finalised_state::ZainoDB, source::BlockchainSource};
 use crate::{
-    chain_index::types::{self, BlockHash, BlockMetadata, BlockWithMetadata, Height, TreeRootData},
+    chain_index::{
+        finalised_state::ZainoDB,
+        source::BlockchainSourceError,
+        types::{self, BlockHash, BlockMetadata, BlockWithMetadata, Height, TreeRootData},
+    },
     error::FinalisedStateError,
-    ChainWork, IndexedBlock,
+    BlockchainSource, ChainWork, IndexedBlock,
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
@@ -17,7 +20,7 @@ use zebra_state::HashOrHeight;
 pub struct NonFinalizedState<Source: BlockchainSource> {
     /// We need access to the validator's best block hash, as well
     /// as a source of blocks
-    pub(super) source: Source,
+    pub(crate) source: Source,
     staged: Mutex<mpsc::Receiver<IndexedBlock>>,
     staging_sender: mpsc::Sender<IndexedBlock>,
     /// This lock should not be exposed to consumers. Rather,
@@ -286,7 +289,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// sync to the top of the chain, trimming to the finalised tip.
-    pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
+    pub(crate) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
         let initial_state = self.get_snapshot();
         let mut nonbest_blocks = HashMap::new();
 
@@ -660,7 +663,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// Get a snapshot of the block cache
-    pub(super) fn get_snapshot(&self) -> Arc<NonfinalizedBlockCacheSnapshot> {
+    pub(crate) fn get_snapshot(&self) -> Arc<NonfinalizedBlockCacheSnapshot> {
         self.current.load_full()
     }
 
@@ -695,7 +698,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     async fn get_tree_roots_from_source(
         &self,
         block_hash: BlockHash,
-    ) -> Result<TreeRootData, super::source::BlockchainSourceError> {
+    ) -> Result<TreeRootData, BlockchainSourceError> {
         let (sapling_root_and_len, orchard_root_and_len) =
             self.source.get_commitment_tree_roots(block_hash).await?;
 
