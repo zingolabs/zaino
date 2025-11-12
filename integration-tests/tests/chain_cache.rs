@@ -57,7 +57,7 @@ mod chain_query_interface {
             Index, Subscriber,
         },
         test_dependencies::{
-            chain_index::{self, Query},
+            chain_index::{self, Queryable},
             BlockCacheConfig,
         },
         Height, StateService, StateServiceConfig, ZcashService,

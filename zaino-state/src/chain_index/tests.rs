@@ -31,7 +31,7 @@ mod mockchain_tests {
                 build_active_mockchain_source, build_mockchain_source, load_test_vectors,
             },
             types::{BestChainLocation, TransactionHash},
-            Index, Query, Subscriber,
+            Index, Queryable, Subscriber,
         },
         BlockCacheConfig,
     };
@@ -112,7 +112,7 @@ mod mockchain_tests {
         let start = crate::Height(0);
 
         let indexer_blocks =
-            Query::get_block_range(&index_reader, &nonfinalized_snapshot, start, None)
+            Queryable::get_block_range(&index_reader, &nonfinalized_snapshot, start, None)
                 .unwrap()
                 .collect::<Vec<_>>()
                 .await;

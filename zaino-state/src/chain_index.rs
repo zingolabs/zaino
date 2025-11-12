@@ -5,7 +5,7 @@
 //! - NonFinalisedState: Holds block data for the top 100 blocks of all chains.
 //! - FinalisedState: Holds block data for the remainder of the best chain.
 //!
-//! - Chain: Holds chain / block structs used internally by the Query
+//! - Chain: Holds chain / block structs used internally by the Queryable
 //!   - Holds fields required to:
 //!     - a. Serve CompactBlock data dirctly.
 //!     - b. Build trasparent tx indexes efficiently
@@ -48,12 +48,12 @@ mod tests;
 /// chain state, both finalized and non-finalized, to allow queries over
 /// the entire chain at once.
 ///
-/// This is the primary implementation backing [`Query`] and replaces the functionality
+/// This is the primary implementation backing [`Queryable`] and replaces the functionality
 /// previously provided by `FetchService` and `StateService`. It can be backed by either:
 /// - A zebra `ReadStateService` for direct database access (preferred for performance)
 /// - A JSON-RPC connection to any validator node (zcashd, zebrad, or another zainod)
 ///
-/// To use the [`Query`] trait methods, call [`subscriber()`](Index::subscriber)
+/// To use the [`Queryable`] trait methods, call [`subscriber()`](Index::subscriber)
 /// to get a [`Subscriber`] which implements the trait.
 ///
 /// # Construction
@@ -105,7 +105,7 @@ mod tests;
 /// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
-/// // Use the subscriber to access Query trait methods
+/// // Use the subscriber to access Queryable trait methods
 /// let snapshot = subscriber.snapshot_nonfinalized_state();
 /// # Ok(())
 /// # }
@@ -144,7 +144,7 @@ mod tests;
 /// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
-/// // Use the subscriber to access Query trait methods
+/// // Use the subscriber to access Queryable trait methods
 /// # Ok(())
 /// # }
 /// ```
@@ -179,7 +179,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 
 /// The interface to the chain index.
 ///
-/// `Query` provides a unified interface for querying blockchain data from different
+/// `Queryable` provides a unified interface for querying blockchain data from different
 /// backend sources. It combines access to both finalized state (older than 100 blocks) and
 /// non-finalized state (recent blocks that may still be reorganized).
 ///
@@ -193,7 +193,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{Query, Index, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{Queryable, Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use zebra_state::{ReadStateService, Config as ZebraConfig};
 /// use std::path::PathBuf;
@@ -236,7 +236,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// // Take a snapshot for consistent queries
 /// let snapshot = subscriber.snapshot_nonfinalized_state();
 ///
-/// // Query blocks in a range using the subscriber
+/// // Queryable blocks in a range using the subscriber
 /// if let Some(stream) = subscriber.get_block_range(
 ///     &snapshot,
 ///     zaino_state::Height(100000),
@@ -252,7 +252,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{Query, Index, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{Queryable, Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use std::path::PathBuf;
 ///
@@ -265,7 +265,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///     None,  // no cookie path
 /// ).await?;
 ///
-/// // Wrap the connector for use with Query
+/// // Wrap the connector for use with Queryable
 /// let source = ValidatorConnector::Fetch(connector);
 ///
 /// // Configure the block cache (same as above)
@@ -284,7 +284,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// let index = Index::new(source, config).await?;
 /// let subscriber = index.subscriber().await;
 ///
-/// // Use the subscriber to access Query trait methods
+/// // Use the subscriber to access Queryable trait methods
 /// let snapshot = subscriber.snapshot_nonfinalized_state();
 /// # Ok(())
 /// # }
@@ -296,7 +296,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
 /// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
 /// 3. Call `Index::new(source, config).await`
-pub trait Query {
+pub trait Queryable {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalized;
 
@@ -612,7 +612,7 @@ impl<Source: BlockchainSource> Subscriber<Source> {
     }
 }
 
-impl<Source: BlockchainSource> Query for Subscriber<Source> {
+impl<Source: BlockchainSource> Queryable for Subscriber<Source> {
     type Snapshot = Arc<NonfinalizedBlockCacheSnapshot>;
     type Error = ChainIndexError;
 
