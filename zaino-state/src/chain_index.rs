@@ -163,7 +163,7 @@ mod tests;
 /// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
 /// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
 /// 3. Call `NodeBackedChainIndex::new(source, config).await`
-pub trait ChainIndex {
+pub trait Query {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
 
@@ -612,7 +612,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     }
 }
 
-impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Source> {
+impl<Source: BlockchainSource> Query for NodeBackedChainIndexSubscriber<Source> {
     type Snapshot = Arc<NonfinalizedBlockCacheSnapshot>;
     type Error = ChainIndexError;
 
