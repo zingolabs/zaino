@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use zebra_chain::parameters::Network;
 use zebra_state::HashOrHeight;
-
+pub mod snapshot;
 /// Holds the block cache
 pub struct NonFinalizedState<Source: BlockchainSource> {
     /// We need access to the validator's best block hash, as well

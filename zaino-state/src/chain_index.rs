@@ -11,12 +11,12 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::snapshot::non_finalised_state::NonfinalizedBlockCacheSnapshot;
-use crate::chain_index::snapshot::NonFinalized;
+use crate::chain_index::non_finalised_state::snapshot::NonFinalized;
+use crate::chain_index::non_finalised_state::{NonfinalizedBlockCacheSnapshot, SyncError};
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::IndexedBlock;
-use crate::{AtomicStatus, StatusType, SyncError};
+use crate::{AtomicStatus, StatusType};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
@@ -35,7 +35,7 @@ pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
 /// State less than 100 blocks old, stored separately as it may be reorged
-pub mod snapshot;
+pub mod non_finalised_state;
 /// BlockchainSource
 pub mod source;
 /// Common types used by the rest of this module

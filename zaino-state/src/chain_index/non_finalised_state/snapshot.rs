@@ -1,8 +1,6 @@
+//! This mod provides a readable view of the index state at a given point in time.
+use crate::chain_index::non_finalised_state::{BestTip, NonfinalizedBlockCacheSnapshot};
 /// State that has not been confirmed by at least 100 blocks.
-pub mod non_finalised_state;
-use non_finalised_state::NonfinalizedBlockCacheSnapshot;
-
-use crate::chain_index::snapshot::non_finalised_state::BestTip;
 use crate::chain_index::types;
 use crate::IndexedBlock;
 
