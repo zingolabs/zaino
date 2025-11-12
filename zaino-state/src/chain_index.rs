@@ -230,8 +230,8 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// );
 ///
 /// // Create the chain index and get a subscriber for queries
-/// let chain_index = Index::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
+/// let index = Index::new(source, config).await?;
+/// let subscriber = index.subscriber().await;
 ///
 /// // Take a snapshot for consistent queries
 /// let snapshot = subscriber.snapshot_nonfinalized_state();
@@ -281,8 +281,8 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// );
 ///
 /// // Create the chain index and get a subscriber for queries
-/// let chain_index = Index::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
+/// let index = Index::new(source, config).await?;
+/// let subscriber = index.subscriber().await;
 ///
 /// // Use the subscriber to access Query trait methods
 /// let snapshot = subscriber.snapshot_nonfinalized_state();
@@ -419,7 +419,7 @@ impl<Source: BlockchainSource> Index<Source> {
         )
         .await?;
 
-        let mut chain_index = Self {
+        let mut index = Self {
             blockchain_source: Arc::new(source),
             mempool: std::sync::Arc::new(mempool_state),
             non_finalized_state: std::sync::Arc::new(non_finalized_state),
@@ -427,9 +427,9 @@ impl<Source: BlockchainSource> Index<Source> {
             sync_loop_handle: None,
             status: AtomicStatus::new(StatusType::Spawning),
         };
-        chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
+        index.sync_loop_handle = Some(index.start_sync_loop());
 
-        Ok(chain_index)
+        Ok(index)
     }
 
     /// Creates a [`Subscriber`] from self,
@@ -454,7 +454,7 @@ impl<Source: BlockchainSource> Index<Source> {
         Ok(())
     }
 
-    /// Displays the status of the chain_index
+    /// Displays the status of the index
     pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_db.status();
         let mempool_status = self.mempool.status();
@@ -542,7 +542,7 @@ pub struct Subscriber<Source: BlockchainSource = ValidatorConnector> {
 }
 
 impl<Source: BlockchainSource> Subscriber<Source> {
-    /// Displays the status of the chain_index
+    /// Displays the status of the index
     pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_state.status();
         let mempool_status = self.mempool.status();
