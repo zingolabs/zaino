@@ -5,7 +5,7 @@
 //! - NonFinalisedState: Holds block data for the top 100 blocks of all chains.
 //! - FinalisedState: Holds block data for the remainder of the best chain.
 //!
-//! - Chain: Holds chain / block structs used internally by the ChainIndex.
+//! - Chain: Holds chain / block structs used internally by the Query
 //!   - Holds fields required to:
 //!     - a. Serve CompactBlock data dirctly.
 //!     - b. Build trasparent tx indexes efficiently
@@ -48,12 +48,12 @@ mod tests;
 /// chain state, both finalized and non-finalized, to allow queries over
 /// the entire chain at once.
 ///
-/// This is the primary implementation backing [`ChainIndex`] and replaces the functionality
+/// This is the primary implementation backing [`Query`] and replaces the functionality
 /// previously provided by `FetchService` and `StateService`. It can be backed by either:
 /// - A zebra `ReadStateService` for direct database access (preferred for performance)
 /// - A JSON-RPC connection to any validator node (zcashd, zebrad, or another zainod)
 ///
-/// To use the [`ChainIndex`] trait methods, call [`subscriber()`](Index::subscriber)
+/// To use the [`Query`] trait methods, call [`subscriber()`](Index::subscriber)
 /// to get a [`Subscriber`] which implements the trait.
 ///
 /// # Construction
@@ -105,7 +105,7 @@ mod tests;
 /// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
-/// // Use the subscriber to access ChainIndex trait methods
+/// // Use the subscriber to access Query trait methods
 /// let snapshot = subscriber.snapshot_nonfinalized_state();
 /// # Ok(())
 /// # }
@@ -144,7 +144,7 @@ mod tests;
 /// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
-/// // Use the subscriber to access ChainIndex trait methods
+/// // Use the subscriber to access Query trait methods
 /// # Ok(())
 /// # }
 /// ```
@@ -179,7 +179,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 
 /// The interface to the chain index.
 ///
-/// `ChainIndex` provides a unified interface for querying blockchain data from different
+/// `Query` provides a unified interface for querying blockchain data from different
 /// backend sources. It combines access to both finalized state (older than 100 blocks) and
 /// non-finalized state (recent blocks that may still be reorganized).
 ///
@@ -193,7 +193,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, Index, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{Query, Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use zebra_state::{ReadStateService, Config as ZebraConfig};
 /// use std::path::PathBuf;
@@ -252,7 +252,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, Index, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{Query, Index, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use std::path::PathBuf;
 ///
@@ -265,7 +265,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 ///     None,  // no cookie path
 /// ).await?;
 ///
-/// // Wrap the connector for use with ChainIndex
+/// // Wrap the connector for use with Query
 /// let source = ValidatorConnector::Fetch(connector);
 ///
 /// // Configure the block cache (same as above)
@@ -284,7 +284,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// let chain_index = Index::new(source, config).await?;
 /// let subscriber = chain_index.subscriber().await;
 ///
-/// // Use the subscriber to access ChainIndex trait methods
+/// // Use the subscriber to access Query trait methods
 /// let snapshot = subscriber.snapshot_nonfinalized_state();
 /// # Ok(())
 /// # }
@@ -468,7 +468,7 @@ impl<Source: BlockchainSource> Index<Source> {
     }
 
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
-        info!("Starting ChainIndex sync.");
+        info!("Starting Index sync.");
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
