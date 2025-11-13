@@ -1,11 +1,13 @@
 //! Holds Zaino's local compact block cache implementation.
 
+use std::any::type_name;
+
+#[allow(deprecated)]
 use crate::{
     config::BlockCacheConfig, error::BlockCacheError, status::StatusType, StateServiceSubscriber,
 };
 
 pub mod finalised_state;
-pub mod mempool;
 pub mod non_finalised_state;
 
 use finalised_state::{FinalisedState, FinalisedStateSubscriber};
@@ -56,10 +58,12 @@ impl BlockCache {
         info!("Launching Local Block Cache..");
         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(100);
 
-        let finalised_state = if !config.no_db {
-            Some(FinalisedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
-        } else {
-            None
+        let db_size = config.storage.database.size;
+        let finalised_state = match db_size {
+            zaino_common::DatabaseSize::Gb(0) => None,
+            zaino_common::DatabaseSize::Gb(_) => {
+                Some(FinalisedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
+            }
         };
 
         let non_finalised_state =
@@ -92,9 +96,9 @@ impl BlockCache {
     /// Returns the status of the block cache.
     pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.no_db {
-            true => StatusType::Ready,
-            false => match &self.finalised_state {
+        let finalised_state_status = match self.config.storage.database.size {
+            zaino_common::DatabaseSize::Gb(0) => StatusType::Ready,
+            zaino_common::DatabaseSize::Gb(_) => match &self.finalised_state {
                 Some(finalised_state) => finalised_state.status(),
                 None => return StatusType::Offline,
             },
@@ -158,7 +162,7 @@ impl BlockCacheSubscriber {
                 None => {
                     let (_, block) = fetch_block_from_node(
                         self.state.as_ref(),
-                        Some(&self.config.network),
+                        Some(&self.config.network.to_zebra_network()),
                         &self.fetcher,
                         hash_or_height,
                     )
@@ -193,9 +197,9 @@ impl BlockCacheSubscriber {
     /// Returns the status of the [`BlockCache`]..
     pub fn status(&self) -> StatusType {
         let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.no_db {
-            true => StatusType::Ready,
-            false => match &self.finalised_state {
+        let finalised_state_status = match self.config.storage.database.size {
+            zaino_common::DatabaseSize::Gb(0) => StatusType::Ready,
+            zaino_common::DatabaseSize::Gb(_) => match &self.finalised_state {
                 Some(finalised_state) => finalised_state.status(),
                 None => return StatusType::Offline,
             },
@@ -225,6 +229,7 @@ pub(crate) async fn fetch_block_from_node(
     try_fetcher_path(fetcher, hash_or_height).await
 }
 
+#[allow(deprecated)]
 async fn try_state_path(
     state: &ReadStateService,
     network: &Network,
@@ -241,9 +246,9 @@ async fn try_state_path(
                 GetBlock::Raw(_) => Err(BlockCacheError::Custom(
                     "Found transaction of `Raw` type, expected only `Hash` types.".to_string(),
                 )),
-                GetBlock::Object {
-                    hash, tx, trees, ..
-                } => Ok((hash, tx, trees)),
+                GetBlock::Object(block_obj) => {
+                    Ok((block_obj.hash(), block_obj.tx().clone(), block_obj.trees()))
+                }
             })?;
 
     StateServiceSubscriber::get_block_inner(state, network, hash_or_height, Some(0))
@@ -268,7 +273,7 @@ async fn try_state_path(
                     .collect::<Vec<String>>();
 
                 Ok((
-                    hash.0,
+                    hash,
                     FullBlock::parse_from_hex(
                         block_hex.as_ref(),
                         Some(display_txids_to_server(txid_strings)?),
@@ -293,6 +298,7 @@ async fn try_fetcher_path(
             GetBlockResponse::Raw(_) => {
                 Err(RpcRequestError::Transport(TransportError::BadNodeData(
                     Box::new(std::io::Error::other("unexpected raw block response")),
+                    type_name::<GetBlockError>(),
                 )))
             }
             GetBlockResponse::Object(block) => Ok((block.hash, block.tx, block.trees)),
@@ -305,6 +311,7 @@ async fn try_fetcher_path(
             GetBlockResponse::Object { .. } => {
                 Err(RpcRequestError::Transport(TransportError::BadNodeData(
                     Box::new(std::io::Error::other("unexpected object block response")),
+                    type_name::<GetBlockError>(),
                 )))
             }
             GetBlockResponse::Raw(block_hex) => Ok((
@@ -312,20 +319,37 @@ async fn try_fetcher_path(
                 FullBlock::parse_from_hex(
                     block_hex.as_ref(),
                     Some(display_txids_to_server(tx).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        RpcRequestError::Transport(TransportError::BadNodeData(
+                            Box::new(e),
+                            type_name::<GetBlockError>(),
+                        ))
                     })?),
                 )
-                .map_err(|e| RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e))))?
+                .map_err(|e| {
+                    RpcRequestError::Transport(TransportError::BadNodeData(
+                        Box::new(e),
+                        type_name::<GetBlockError>(),
+                    ))
+                })?
                 .into_compact(
                     u32::try_from(trees.sapling()).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        RpcRequestError::Transport(TransportError::BadNodeData(
+                            Box::new(e),
+                            type_name::<GetBlockError>(),
+                        ))
                     })?,
                     u32::try_from(trees.orchard()).map_err(|e| {
-                        RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                        RpcRequestError::Transport(TransportError::BadNodeData(
+                            Box::new(e),
+                            type_name::<GetBlockError>(),
+                        ))
                     })?,
                 )
                 .map_err(|e| {
-                    RpcRequestError::Transport(TransportError::BadNodeData(Box::new(e)))
+                    RpcRequestError::Transport(TransportError::BadNodeData(
+                        Box::new(e),
+                        type_name::<GetBlockError>(),
+                    ))
                 })?,
             )),
         })

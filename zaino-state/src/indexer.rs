@@ -2,9 +2,17 @@
 //! and generic wrapper structs for the various backend options available.
 
 use async_trait::async_trait;
-
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
+use zaino_fetch::jsonrpsee::response::{
+    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    block_deltas::BlockDeltas,
+    block_header::GetBlockHeader,
+    block_subsidy::GetBlockSubsidy,
+    mining_info::GetMiningInfoWire,
+    peer_info::GetPeerInfo,
+    GetMempoolInfoResponse, GetNetworkSolPsResponse,
+};
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
@@ -15,10 +23,12 @@ use zaino_proto::proto::{
     },
 };
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
-use zebra_rpc::methods::{
-    trees::{GetSubtrees, GetTreestate},
-    AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-    GetBlockChainInfo, GetInfo, GetRawTransaction, SentTransactionHash,
+use zebra_rpc::{
+    client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
+    methods::{
+        AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
+        GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
+    },
 };
 
 use crate::{
@@ -27,6 +37,7 @@ use crate::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
     },
+    BackendType,
 };
 
 /// Wrapper Struct for a ZainoState chain-fetch service (StateService, FetchService)
@@ -68,17 +79,20 @@ where
 /// Zcash Service functionality.
 #[async_trait]
 pub trait ZcashService: Sized {
+    /// Backend type. Read state or fetch service.
+    const BACKEND_TYPE: BackendType;
+
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer;
 
     /// Service Config.
     type Config: Clone;
 
-    /// Spawns a [`Service`].
+    /// Spawns a [`ZcashIndexer`].
     async fn spawn(config: Self::Config)
         -> Result<Self, <Self::Subscriber as ZcashIndexer>::Error>;
 
-    /// Returns a [`ServiceSubscriber`].
+    /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
 
     /// Fetches the current status
@@ -151,7 +165,27 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
     async fn get_info(&self) -> Result<GetInfo, Self::Error>;
 
-    /// Returns blockchain state information, as a [`GetBlockChainInfo`] JSON struct.
+    /// Returns all changes for an address.
+    ///
+    /// Returns information about all changes to the given transparent addresses within the given (inclusive)
+    ///
+    /// block height range, default is the full blockchain.
+    /// If start or end are not specified, they default to zero.
+    /// If start is greater than the latest block height, it's interpreted as that height.
+    ///
+    /// If end is zero, it's interpreted as the latest block height.
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, Self::Error>;
+
+    /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
     /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
@@ -159,9 +193,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockChainInfo`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    async fn get_blockchain_info(&self) -> Result<GetBlockChainInfo, Self::Error>;
+    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
@@ -169,6 +203,34 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// method: post
     /// tags: blockchain
     async fn get_difficulty(&self) -> Result<f64, Self::Error>;
+
+    /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
+    ///
+    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error>;
+
+    /// Returns details on the active state of the TX memory pool.
+    ///
+    /// zcashd reference: [`getmempoolinfo`](https://zcash.github.io/rpc/getmempoolinfo.html)
+    /// method: post
+    /// tags: mempool
+    ///
+    /// Original implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
+    async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error>;
+
+    /// Returns data about each connected network node as a json array of objects.
+    ///
+    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// tags: network
+    ///
+    /// Current `zebrad` does not include the same fields as `zcashd`.
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -217,6 +279,23 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error>;
 
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
+    /// If verbose is true, returns an Object with information about blockheader `hash`.
+    ///
+    /// # Parameters
+    ///
+    /// - hash: (string, required) The block hash
+    /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, Self::Error>;
+
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
     /// If the block is not in Zebra's state, returns
     /// [error code `-8`.](https://github.com/zcash/zcash/issues/5758) if a height was
@@ -247,12 +326,43 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error>;
 
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error>;
+
     /// Returns the current block count in the best valid block chain.
     ///
     /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error>;
+
+    /// Return information about the given Zcash address.
+    ///
+    /// # Parameters
+    /// - `address`: (string, required, example="tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb") The Zcash transparent address to validate.
+    ///
+    /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
+    /// method: post
+    /// tags: blockchain
+    async fn validate_address(
+        &self,
+        address: String,
+    ) -> Result<ValidateAddressResponse, Self::Error>;
+
+    /// Returns the hash of the best block (tip) of the longest chain.
+    /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
+    /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
+    /// method: post
+    /// tags: blockchain
+    /// The Zcash source code is considered canonical:
+    /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
+    /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
+    /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339) returning a `std::string`
+    async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
@@ -277,7 +387,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
-    async fn z_get_treestate(&self, hash_or_height: String) -> Result<GetTreestate, Self::Error>;
+    async fn z_get_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<GetTreestateResponse, Self::Error>;
 
     /// Returns information about a range of Sapling or Orchard subtrees.
     ///
@@ -302,7 +415,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtrees, Self::Error>;
+    ) -> Result<GetSubtreesByIndexResponse, Self::Error>;
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
@@ -370,6 +483,30 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         address_strings: AddressStrings,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error>;
 
+    /// Returns a json object containing mining-related information.
+    ///
+    /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
+    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error>;
+
+    /// Returns the estimated network solutions per second based on the last n blocks.
+    ///
+    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// This RPC is implemented in the [mining.cpp](https://github.com/zcash/zcash/blob/d00fc6f4365048339c83f463874e4d6c240b63af/src/rpc/mining.cpp#L104)
+    /// file of the Zcash repository. The Zebra implementation can be found [here](https://github.com/ZcashFoundation/zebra/blob/19bca3f1159f9cb9344c9944f7e1cb8d6a82a07f/zebra-rpc/src/methods.rs#L2687).
+    ///
+    /// # Parameters
+    ///
+    /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
+    /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
+    async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<GetNetworkSolPsResponse, Self::Error>;
+
     /// Helper function to get the chain height
     async fn chain_height(&self) -> Result<Height, Self::Error>;
 
@@ -381,43 +518,49 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ) -> Result<Vec<String>, Self::Error> {
         let chain_height = self.chain_height().await?;
         let (start, end) = match request.range {
-            Some(range) => match (range.start, range.end) {
-                (Some(start), Some(end)) => {
-                    let start = match u32::try_from(start.height) {
-                        Ok(height) => height.min(chain_height.0),
+            Some(range) => {
+                let start = if let Some(start) = range.start {
+                    match u32::try_from(start.height) {
+                        Ok(height) => Some(height.min(chain_height.0)),
                         Err(_) => {
                             return Err(Self::Error::from(tonic::Status::invalid_argument(
                                 "Error: Start height out of range. Failed to convert to u32.",
                             )))
                         }
-                    };
-                    let end = match u32::try_from(end.height) {
-                        Ok(height) => height.min(chain_height.0),
+                    }
+                } else {
+                    None
+                };
+                let end = if let Some(end) = range.end {
+                    match u32::try_from(end.height) {
+                        Ok(height) => Some(height.min(chain_height.0)),
                         Err(_) => {
                             return Err(Self::Error::from(tonic::Status::invalid_argument(
                                 "Error: End height out of range. Failed to convert to u32.",
                             )))
                         }
-                    };
-                    if start > end {
-                        (end, start)
-                    } else {
-                        (start, end)
                     }
+                } else {
+                    None
+                };
+                match (start, end) {
+                    (Some(start), Some(end)) => {
+                        if start > end {
+                            (Some(end), Some(start))
+                        } else {
+                            (Some(start), Some(end))
+                        }
+                    }
+                    _ => (start, end),
                 }
-                _ => {
-                    return Err(Self::Error::from(tonic::Status::invalid_argument(
-                        "Error: Incomplete block range given.",
-                    )))
-                }
-            },
+            }
             None => {
                 return Err(Self::Error::from(tonic::Status::invalid_argument(
                     "Error: No block range given.",
                 )))
             }
         };
-        self.get_address_tx_ids(GetAddressTxIdsRequest::from_parts(
+        self.get_address_tx_ids(GetAddressTxIdsRequest::new(
             vec![request.address],
             start,
             end,
@@ -426,7 +569,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     }
 }
 
-/// LightWallet RPC method signatures.
+/// Light Client Protocol gRPC method signatures.
+/// For more information, see [the lightwallet protocol](https://github.com/zcash/lightwallet-protocol/blob/180717dfa21f3cbf063b8a1ad7697ccba7f5b054/walletrpc/service.proto#L181).
 ///
 /// Doc comments taken from Zaino-Proto for consistency.
 #[async_trait]
@@ -553,13 +697,13 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let timeout = timeout(
                 std::time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for subtree in subtrees.subtrees {
+                    for subtree in subtrees.subtrees() {
                         match service_clone
                             .z_get_block(subtree.end_height.0.to_string(), Some(1))
                             .await
                         {
-                            Ok(GetBlock::Object { hash, height, .. }) => {
-                                let checked_height = match height {
+                            Ok(GetBlock::Object (block_object)) => {
+                                let checked_height = match block_object.height() {
                                     Some(h) => h.0 as u64,
                                     None => {
                                         match channel_tx
@@ -602,8 +746,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                 if channel_tx
                                     .send(Ok(SubtreeRoot {
                                         root_hash: checked_root_hash,
-                                        completing_block_hash: hash
-                                            .0
+                                        completing_block_hash: block_object.hash()
                                             .bytes_in_display_order()
                                             .to_vec(),
                                         completing_block_height: checked_height,
@@ -687,6 +830,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// NOTE: Currently unimplemented in Zaino.
     async fn ping(&self, request: Duration) -> Result<PingResponse, Self::Error>;
 }
+
 /// Zcash Service functionality.
 #[async_trait]
 pub trait LightWalletService: Sized + ZcashService<Subscriber: LightWalletIndexer> {}
@@ -700,14 +844,14 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
 ) -> Result<(), mpsc::error::SendError<Result<RawTransaction, tonic::Status>>> {
     match transaction {
         Ok(GetRawTransaction::Object(transaction_obj)) => {
-            let height: u64 = match transaction_obj.height {
+            let height: u64 = match transaction_obj.height() {
                 Some(h) => h as u64,
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
                 None => chain_height,
             };
             transmitter
                 .send(Ok(RawTransaction {
-                    data: transaction_obj.hex.as_ref().to_vec(),
+                    data: transaction_obj.hex().as_ref().to_vec(),
                     height,
                 }))
                 .await

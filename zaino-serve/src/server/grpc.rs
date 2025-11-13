@@ -10,10 +10,10 @@ use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusTyp
 
 use crate::{
     rpc::GrpcClient,
-    server::{config::GrpcConfig, error::ServerError},
+    server::{config::GrpcServerConfig, error::ServerError},
 };
 
-/// LightWallet server capable of servicing clients over TCP.
+/// LightWallet gRPC server capable of servicing clients over TCP.
 pub struct TonicServer {
     /// Current status of the server.
     pub status: AtomicStatus,
@@ -29,9 +29,9 @@ impl TonicServer {
     /// - Checks for shutdown signal, shutting down server if received.
     pub async fn spawn<Indexer: ZcashIndexer + LightWalletIndexer>(
         service_subscriber: IndexerSubscriber<Indexer>,
-        server_config: GrpcConfig,
+        server_config: GrpcServerConfig,
     ) -> Result<Self, ServerError> {
-        let status = AtomicStatus::new(StatusType::Spawning.into());
+        let status = AtomicStatus::new(StatusType::Spawning);
 
         let svc = CompactTxStreamerServer::new(GrpcClient {
             service_subscriber: service_subscriber.clone(),
@@ -49,20 +49,20 @@ impl TonicServer {
         let shutdown_signal = async move {
             loop {
                 shutdown_check_interval.tick().await;
-                if StatusType::from(shutdown_check_status.load()) == StatusType::Closing {
+                if shutdown_check_status.load() == StatusType::Closing {
                     break;
                 }
             }
         };
         let server_future = server_builder
             .add_service(svc)
-            .serve_with_shutdown(server_config.grpc_listen_address, shutdown_signal);
+            .serve_with_shutdown(server_config.listen_address, shutdown_signal);
 
         let task_status = status.clone();
         let server_handle = tokio::task::spawn(async move {
-            task_status.store(StatusType::Ready.into());
+            task_status.store(StatusType::Ready);
             server_future.await?;
-            task_status.store(StatusType::Offline.into());
+            task_status.store(StatusType::Offline);
             Ok(())
         });
 
@@ -74,7 +74,7 @@ impl TonicServer {
 
     /// Sets the servers to close gracefully.
     pub async fn close(&mut self) {
-        self.status.store(StatusType::Closing as usize);
+        self.status.store(StatusType::Closing);
 
         if let Some(handle) = self.server_handle.take() {
             let _ = handle.await;
@@ -83,7 +83,7 @@ impl TonicServer {
 
     /// Returns the servers current status.
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 }
 

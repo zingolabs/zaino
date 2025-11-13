@@ -1,0 +1,57 @@
+name: CI - Nightly
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+  AWS_REGION: us-east-1
+  CACHE_ENDPOINT: gh-cache-hl.minio-tenants.svc.cluster.local
+  CACHE_PORT: 9000
+  CACHE_BUCKET: gha-cache-bucket
+  INSECURE_CACHE: true
+
+jobs:
+  pr-checks:
+    uses: ./.github/workflows/ci.yml
+
+  compute-tag:
+    uses: ./.github/workflows/compute-tag.yml
+
+  cargo-hack-build:
+    name: Cargo Hack Build
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
+
+      - name: Install protoc
+        run: |
+          if ! command -v protoc; then
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
+          fi
+
+      - name: Run cargo-hack
+        uses: zingolabs/infrastructure/.github/actions/cargo-hack@20485fed7a080e381130ed8120419dc81acae641
+        with:
+          hack-subcommand: build

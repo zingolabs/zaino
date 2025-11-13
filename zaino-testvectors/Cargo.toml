@@ -1,0 +1,13 @@
+[package]
+name = "zaino-testvectors"
+description = "Crate containing Zaino test vectors."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = { workspace = true }
+
+[dependencies]
+lazy_static = { workspace = true }
+

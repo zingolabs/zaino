@@ -7,39 +7,50 @@ homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
+publish = false
 
 [dependencies]
+# Zaino
+zaino-proto = { workspace = true }
+zaino-state = { workspace = true, features = ["test_dependencies"] }
+zaino-serve.workspace = true
+zaino-testvectors.workspace = true
+zaino-common.workspace = true
 zainod = { workspace = true }
-zaino-state = { workspace = true, features = ["bench"] }
 
 # Librustzcash
-zcash_protocol = { workspace = true }
-zcash_client_backend = { workspace = true }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = [
+  "local-consensus",
+] }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = ["lightwalletd-tonic"] }
 
 # Zebra
 zebra-chain = { workspace = true }
+zebra-state.workspace = true
 
 # Zingo-infra
-zingo-infra-services = { workspace = true }
-zingo-infra-testutils = { workspace = true }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0"  }
+
+# Zingo-common
+zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [ "for_test" ]}
+zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0"  }
 
 # ZingoLib
 zingolib = { workspace = true }
-testvectors = { workspace = true }
-
-# Tracing
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time"] }
-tracing-futures = { workspace = true }
 
 # Miscellaneous
-tokio = { workspace = true }
-tonic = { workspace = true }
 http = { workspace = true }
-ctrlc = { workspace = true }
-tempfile = { workspace = true }
-portpicker = { workspace = true }
 once_cell = { workspace = true }
+portpicker = { workspace = true }
+tokio = { workspace = true }
+tonic = { version = "0.13" } # TODO: unify in the workspace
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+    "fmt",
+    "env-filter",
+    "time",
+] }
 
 # We don't need this as a direct dependency.
 # Rather, we need to pin this version of proptest.
@@ -49,5 +60,6 @@ once_cell = { workspace = true }
 # with its rand version of 0.8.5.
 # TODO: Investigate whether proptest has violated semver guarentees with
 # its rand version update.
-proptest = "~1.2"
-
+proptest = { workspace = true }
+lazy_static = { workspace = true }
+zip32 = {workspace = true}
