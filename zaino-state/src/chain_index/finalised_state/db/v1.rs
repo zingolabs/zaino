@@ -18,7 +18,7 @@ use crate::{
     CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactSize, CompactTxData,
     FixedEncodedLen as _, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
     SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
-    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerialise as _,
+    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde as _,
 };
 
 use zebra_chain::parameters::NetworkKind;
@@ -3083,7 +3083,7 @@ impl DbV1 {
 
                     Some(zaino_proto::proto::compact_formats::CompactTx {
                         index: i as u64,
-                        hash: txid.bytes_in_display_order().to_vec().to_vec(),
+                        hash: txid.0.to_vec(),
                         fee: 0,
                         spends,
                         outputs,

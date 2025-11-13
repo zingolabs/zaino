@@ -10,7 +10,7 @@ use core2::io::{self, Read, Write};
 
 use crate::chain_index::encoding::{
     read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
-    ZainoVersionedSerialise,
+    ZainoVersionedSerde,
 };
 
 /// Holds commitment tree metadata (roots and sizes) for a block.
@@ -38,7 +38,7 @@ impl CommitmentTreeData {
     }
 }
 
-impl ZainoVersionedSerialise for CommitmentTreeData {
+impl ZainoVersionedSerde for CommitmentTreeData {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -94,7 +94,7 @@ impl CommitmentTreeRoots {
     }
 }
 
-impl ZainoVersionedSerialise for CommitmentTreeRoots {
+impl ZainoVersionedSerde for CommitmentTreeRoots {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -148,7 +148,7 @@ impl CommitmentTreeSizes {
     }
 }
 
-impl ZainoVersionedSerialise for CommitmentTreeSizes {
+impl ZainoVersionedSerde for CommitmentTreeSizes {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {

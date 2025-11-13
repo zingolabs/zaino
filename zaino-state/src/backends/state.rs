@@ -1,5 +1,6 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
+#[allow(deprecated)]
 use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
@@ -17,7 +18,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
-    MempoolKey,
+    BackendType, MempoolKey,
 };
 
 use nonempty::NonEmpty;
@@ -27,8 +28,13 @@ use zaino_fetch::{
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
-            block_subsidy::GetBlockSubsidy, peer_info::GetPeerInfo, GetMempoolInfoResponse,
-            GetNetworkSolPsResponse, GetSubtreesResponse,
+            address_deltas::{BlockInfo, GetAddressDeltasParams, GetAddressDeltasResponse},
+            block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
+            block_header::GetBlockHeader,
+            block_subsidy::GetBlockSubsidy,
+            mining_info::GetMiningInfoWire,
+            peer_info::GetPeerInfo,
+            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
     },
 };
@@ -43,6 +49,7 @@ use zaino_proto::proto::{
 
 use zcash_protocol::consensus::NetworkType;
 use zebra_chain::{
+    amount::{Amount, NonNegative},
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
@@ -51,15 +58,15 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{
-        GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData,
+        GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData, Input,
         SubtreeRpcData, TransactionObject, ValidateAddressResponse,
     },
     methods::{
         chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
-        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader,
-        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
-        GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
-        TipConsensusBranch,
+        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash,
+        GetBlockHeader as GetBlockHeaderZebra, GetBlockHeaderObject, GetBlockTransaction,
+        GetBlockTrees, GetBlockchainInfoResponse, GetInfo, GetRawTransaction, NetworkUpgradeInfo,
+        NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
@@ -73,7 +80,7 @@ use chrono::{DateTime, Utc};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashSet, future::poll_fn, str::FromStr, sync::Arc};
+use std::{collections::HashSet, error::Error, fmt, future::poll_fn, str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -102,27 +109,38 @@ macro_rules! expected_read_response {
 ///       If we want the ability to clone Service all JoinHandle's should be
 /// converted to Arc\<JoinHandle\>.
 #[derive(Debug)]
+#[deprecated = "Will be eventually replaced by `BlockchainSource"]
 pub struct StateService {
     /// `ReadeStateService` from Zebra-State.
     read_state_service: ReadStateService,
+
     /// Sync task handle.
     sync_task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
+
     /// JsonRPC Client.
     rpc_client: JsonRpSeeConnector,
+
     /// Local compact block cache.
     block_cache: BlockCache,
+
     /// Internal mempool.
     mempool: Mempool<ValidatorConnector>,
+
     /// Service metadata.
     data: ServiceMetadata,
+
     /// StateService config data.
+    #[allow(deprecated)]
     config: StateServiceConfig,
+
     /// Thread-safe status indicator.
     status: AtomicStatus,
+
     /// Listener for when the chain tip changes
     chain_tip_change: zebra_state::ChainTipChange,
 }
 
+#[allow(deprecated)]
 impl StateService {
     /// Uses poll_ready to update the status of the `ReadStateService`.
     async fn fetch_status_from_validator(&self) -> StatusType {
@@ -153,16 +171,18 @@ impl StateService {
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl ZcashService for StateService {
+    const BACKEND_TYPE: BackendType = BackendType::State;
+
     type Subscriber = StateServiceSubscriber;
     type Config = StateServiceConfig;
 
     /// Initializes a new StateService instance and starts sync process.
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
-        info!("Launching Chain Fetch Service..");
+        info!("Spawning State Service..");
 
         let rpc_client = JsonRpSeeConnector::new_from_config_parts(
-            config.validator_cookie_auth,
             config.validator_rpc_address,
             config.validator_rpc_user.clone(),
             config.validator_rpc_password.clone(),
@@ -210,9 +230,9 @@ impl ZcashService for StateService {
         info!("Launching Chain Syncer..");
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
-                config.validator_config.clone(),
+                config.validator_state_config.clone(),
                 &config.network.to_zebra_network(),
-                config.validator_indexer_rpc_address,
+                config.validator_grpc_address,
             )
             .await??;
 
@@ -311,6 +331,7 @@ impl ZcashService for StateService {
     }
 }
 
+#[allow(deprecated)]
 impl Drop for StateService {
     fn drop(&mut self) {
         self.close()
@@ -321,19 +342,27 @@ impl Drop for StateService {
 ///
 /// Subscribers should be
 #[derive(Debug, Clone)]
+#[deprecated]
 pub struct StateServiceSubscriber {
     /// Remote wrappper functionality for zebra's [`ReadStateService`].
     pub read_state_service: ReadStateService,
+
     /// JsonRPC Client.
     pub rpc_client: JsonRpSeeConnector,
+
     /// Local compact block cache.
     pub block_cache: BlockCacheSubscriber,
+
     /// Internal mempool.
     pub mempool: MempoolSubscriber,
+
     /// Service metadata.
     pub data: ServiceMetadata,
+
     /// StateService config data.
+    #[allow(deprecated)]
     config: StateServiceConfig,
+
     /// Listener for when the chain tip changes
     chain_tip_change: zebra_state::ChainTipChange,
 }
@@ -361,6 +390,7 @@ impl ChainTipSubscriber {
 ///
 /// These would be simple to add to the public interface if
 /// needed, there are currently no plans to do so.
+#[allow(deprecated)]
 impl StateServiceSubscriber {
     /// Gets a Subscriber to any updates to the latest chain tip
     pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
@@ -390,12 +420,12 @@ impl StateServiceSubscriber {
     ///
     /// This rpc is used by get_block(verbose), there is currently no
     /// plan to offer this RPC publicly.
-    async fn get_block_header(
+    async fn get_block_header_inner(
         state: &ReadStateService,
         network: &Network,
         hash_or_height: HashOrHeight,
         verbose: Option<bool>,
-    ) -> Result<GetBlockHeader, StateServiceError> {
+    ) -> Result<GetBlockHeaderZebra, StateServiceError> {
         let mut state = state.clone();
         let verbose = verbose.unwrap_or(true);
         let network = network.clone();
@@ -426,7 +456,7 @@ impl StateServiceSubscriber {
         };
 
         let response = if !verbose {
-            GetBlockHeader::Raw(HexData(header.zcash_serialize_to_vec()?))
+            GetBlockHeaderZebra::Raw(HexData(header.zcash_serialize_to_vec()?))
         } else {
             let zebra_state::ReadResponse::SaplingTree(sapling_tree) = state
                 .ready()
@@ -505,14 +535,14 @@ impl StateServiceSubscriber {
                 next_block_hash,
             );
 
-            GetBlockHeader::Object(Box::new(block_header))
+            GetBlockHeaderZebra::Object(Box::new(block_header))
         };
 
         Ok(response)
     }
 
     /// Return a list of consecutive compact blocks.
-    #[allow(dead_code)]
+    #[allow(dead_code, deprecated)]
     async fn get_block_range_inner(
         &self,
         request: BlockRange,
@@ -733,7 +763,7 @@ impl StateServiceSubscriber {
                 let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
                     blockandsize_future,
                     orchard_future,
-                    StateServiceSubscriber::get_block_header(
+                    StateServiceSubscriber::get_block_header_inner(
                         &state_3,
                         network,
                         hash_or_height,
@@ -743,10 +773,10 @@ impl StateServiceSubscriber {
                 );
 
                 let header_obj = match header? {
-                    GetBlockHeader::Raw(_hex_data) => unreachable!(
+                    GetBlockHeaderZebra::Raw(_hex_data) => unreachable!(
                         "`true` was passed to get_block_header, an object should be returned"
                     ),
-                    GetBlockHeader::Object(get_block_header_object) => get_block_header_object,
+                    GetBlockHeaderZebra::Object(get_block_header_object) => get_block_header_object,
                 };
 
                 let (transactions_response, size, block_info): (Vec<GetBlockTransaction>, _, _) =
@@ -853,13 +883,141 @@ impl StateServiceSubscriber {
         }
     }
 
+    /// Fetches transaction objects for addresses within a given block range.
+    /// This method takes addresses and a block range and returns full transaction objects.
+    /// Uses parallel async calls for efficient transaction fetching.
+    ///
+    /// If `fail_fast` is true, fails immediately when any transaction fetch fails.
+    /// Otherwise, it continues and returns partial results, filtering out failed fetches.
+    async fn get_taddress_txs(
+        &self,
+        addresses: Vec<String>,
+        start: u32,
+        end: u32,
+        fail_fast: bool,
+    ) -> Result<Vec<Box<TransactionObject>>, StateServiceError> {
+        // Convert to GetAddressTxIdsRequest for compatibility with existing helper
+        let tx_ids_request = GetAddressTxIdsRequest::new(addresses, Some(start), Some(end));
+
+        // Get transaction IDs using existing method
+        let txids = self.get_address_tx_ids(tx_ids_request).await?;
+
+        // Fetch all transactions in parallel
+        let results = futures::future::join_all(
+            txids
+                .into_iter()
+                .map(|txid| async { self.clone().get_raw_transaction(txid, Some(1)).await }),
+        )
+        .await;
+
+        let transactions = results
+            .into_iter()
+            .filter_map(|result| {
+                match (fail_fast, result) {
+                    // Fail-fast mode: propagate errors
+                    (true, Err(e)) => Some(Err(e)),
+                    (true, Ok(tx)) => Some(Ok(tx)),
+                    // Filter mode: skip errors
+                    (false, Err(_)) => None,
+                    (false, Ok(tx)) => Some(Ok(tx)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|tx| match tx {
+                GetRawTransaction::Object(transaction_obj) => Some(transaction_obj),
+                GetRawTransaction::Raw(_) => None,
+            })
+            .collect();
+
+        Ok(transactions)
+    }
+
+    /// Creates a BlockInfo from a block height using direct state service calls.
+    async fn block_info_from_height(&self, height: Height) -> Result<BlockInfo, StateServiceError> {
+        use zebra_state::{HashOrHeight, ReadRequest};
+
+        let hash_or_height = HashOrHeight::Height(height);
+
+        let response = self
+            .read_state_service
+            .clone()
+            .ready()
+            .await?
+            .call(ReadRequest::BlockHeader(hash_or_height))
+            .await?;
+
+        match response {
+            ReadResponse::BlockHeader { hash, .. } => Ok(BlockInfo::new(
+                hex::encode(hash.bytes_in_display_order()),
+                height.0,
+            )),
+            _ => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                LegacyCode::InvalidParameter,
+                format!("Block not found at height {}", height.0),
+            ))),
+        }
+    }
+
     /// Returns the network type running.
+    #[allow(deprecated)]
     pub fn network(&self) -> zaino_common::Network {
         self.config.network
+    }
+
+    /// Returns the median time of the last 11 blocks.
+    async fn median_time_past(
+        &self,
+        start: &zebra_rpc::client::BlockObject,
+    ) -> Result<i64, MedianTimePast> {
+        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
+
+        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
+
+        let start_hash = start.hash().to_string();
+        let time_0 = start
+            .time()
+            .ok_or_else(|| MedianTimePast::StartMissingTime {
+                hash: start_hash.clone(),
+            })?;
+        times.push(time_0);
+
+        let mut prev = start.previous_block_hash();
+
+        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
+            let hash = match prev {
+                Some(h) => h.to_string(),
+                None => break, // genesis
+            };
+
+            match self.z_get_block(hash.clone(), Some(1)).await {
+                Ok(GetBlock::Object(obj)) => {
+                    if let Some(t) = obj.time() {
+                        times.push(t);
+                    }
+                    prev = obj.previous_block_hash();
+                }
+                Ok(GetBlock::Raw(_)) => {
+                    return Err(MedianTimePast::UnexpectedRaw { hash });
+                }
+                Err(_e) => {
+                    // Use values up to this point
+                    break;
+                }
+            }
+        }
+
+        if times.is_empty() {
+            return Err(MedianTimePast::EmptyWindow);
+        }
+
+        times.sort_unstable();
+        Ok(times[times.len() / 2])
     }
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl ZcashIndexer for StateServiceSubscriber {
     type Error = StateServiceError;
 
@@ -871,6 +1029,68 @@ impl ZcashIndexer for StateServiceSubscriber {
             .await
             .map(GetInfo::from)
             .map_err(|e| StateServiceError::Custom(e.to_string()))
+    }
+
+    /// Returns all changes for an address.
+    ///
+    /// Returns information about all changes to the given transparent addresses within the given (inclusive)
+    ///
+    /// block height range, default is the full blockchain.
+    /// If start or end are not specified, they default to zero.
+    /// If start is greater than the latest block height, it's interpreted as that height.
+    ///
+    /// If end is zero, it's interpreted as the latest block height.
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        let (addresses, start_raw, end_raw, chain_info) = match &params {
+            GetAddressDeltasParams::Filtered {
+                addresses,
+                start,
+                end,
+                chain_info,
+            } => (addresses.clone(), *start, *end, *chain_info),
+            GetAddressDeltasParams::Address(a) => (vec![a.clone()], 0, 0, false),
+        };
+
+        let tip = self.chain_height().await?;
+        let mut start = Height(start_raw);
+        let mut end = Height(end_raw);
+        if end == Height(0) || end > tip {
+            end = tip;
+        }
+        if start > tip {
+            start = tip;
+        }
+
+        let transactions = self
+            .get_taddress_txs(addresses.clone(), start.0, end.0, true)
+            .await?;
+
+        // Ordered deltas
+        let deltas =
+            GetAddressDeltasResponse::process_transactions_to_deltas(&transactions, &addresses);
+
+        if chain_info && start > Height(0) && end > Height(0) {
+            let start_info = self.block_info_from_height(start).await?;
+            let end_info = self.block_info_from_height(end).await?;
+
+            Ok(GetAddressDeltasResponse::WithChainInfo {
+                deltas,
+                start: start_info,
+                end: end_info,
+            })
+        } else {
+            // Otherwise return the array form
+            Ok(GetAddressDeltasResponse::Simple(deltas))
+        }
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
@@ -1085,6 +1305,17 @@ impl ZcashIndexer for StateServiceSubscriber {
             .map_err(Into::into)
     }
 
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, Self::Error> {
+        self.rpc_client
+            .get_block_header(hash, verbose)
+            .await
+            .map_err(|e| StateServiceError::Custom(e.to_string()))
+    }
+
     async fn z_get_block(
         &self,
         hash_or_height_string: String,
@@ -1099,6 +1330,135 @@ impl ZcashIndexer for StateServiceSubscriber {
             verbosity,
         )
         .await
+    }
+
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
+        // Get the block WITH the transaction data
+        let zblock = self.z_get_block(hash, Some(2)).await?;
+
+        match zblock {
+            GetBlock::Object(boxed_block) => {
+                let deltas = boxed_block
+                    .tx()
+                    .iter()
+                    .enumerate()
+                    .map(|(tx_index, tx)| match tx {
+                        GetBlockTransaction::Object(txo) => {
+                            let txid = txo.txid().to_string();
+
+                            let inputs: Vec<InputDelta> = txo
+                                .inputs()
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, vin)| match vin {
+                                    Input::Coinbase { .. } => None,
+                                    Input::NonCoinbase {
+                                        txid: prevtxid,
+                                        vout: prevout,
+                                        value,
+                                        value_zat,
+                                        address,
+                                        ..
+                                    } => {
+                                        let zats = if let Some(z) = value_zat {
+                                            *z
+                                        } else if let Some(v) = value {
+                                            (v * 100_000_000.0).round() as i64
+                                        } else {
+                                            return None;
+                                        };
+
+                                        let addr = match address {
+                                            Some(a) => a.clone(),
+                                            None => return None,
+                                        };
+
+                                        let input_amt: Amount = match (-zats).try_into() {
+                                            Ok(a) => a,
+                                            Err(_) => return None,
+                                        };
+
+                                        Some(InputDelta {
+                                            address: addr,
+                                            satoshis: input_amt,
+                                            index: i as u32,
+                                            prevtxid: prevtxid.clone(),
+                                            prevout: *prevout,
+                                        })
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+
+                            let outputs: Vec<OutputDelta> =
+                                txo.outputs()
+                                    .iter()
+                                    .filter_map(|vout| {
+                                        let addr_opt =
+                                            vout.script_pub_key().addresses().as_ref().and_then(
+                                                |v| if v.len() == 1 { v.first() } else { None },
+                                            );
+
+                                        let addr = addr_opt?.clone();
+
+                                        let output_amt: Amount<NonNegative> =
+                                            match vout.value_zat().try_into() {
+                                                Ok(a) => a,
+                                                Err(_) => return None,
+                                            };
+
+                                        Some(OutputDelta {
+                                            address: addr,
+                                            satoshis: output_amt,
+                                            index: vout.n(),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>();
+
+                            Ok::<_, Self::Error>(BlockDelta {
+                                txid,
+                                index: tx_index as u32,
+                                inputs,
+                                outputs,
+                            })
+                        }
+                        GetBlockTransaction::Hash(_) => Err(StateServiceError::Custom(
+                            "Unexpected hash when expecting object".to_string(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(BlockDeltas {
+                    hash: boxed_block.hash().to_string(),
+                    confirmations: boxed_block.confirmations(),
+                    size: boxed_block.size().expect("size should be present"),
+                    height: boxed_block.height().expect("height should be present").0,
+                    version: boxed_block.version().expect("version should be present"),
+                    merkle_root: boxed_block
+                        .merkle_root()
+                        .expect("merkle root should be present")
+                        .encode_hex::<String>(),
+                    deltas,
+                    time: boxed_block.time().expect("time should be present"),
+
+                    median_time: self.median_time_past(&boxed_block).await.unwrap(),
+                    nonce: hex::encode(boxed_block.nonce().unwrap()),
+                    bits: boxed_block
+                        .bits()
+                        .expect("bits should be present")
+                        .to_string(),
+                    difficulty: boxed_block
+                        .difficulty()
+                        .expect("difficulty should be present"),
+                    previous_block_hash: boxed_block
+                        .previous_block_hash()
+                        .map(|hash| hash.to_string()),
+                    next_block_hash: boxed_block.next_block_hash().map(|h| h.to_string()),
+                })
+            }
+            GetBlock::Raw(_serialized_block) => Err(StateServiceError::Custom(
+                "Unexpected raw block".to_string(),
+            )),
+        }
     }
 
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
@@ -1169,6 +1529,10 @@ impl ZcashIndexer for StateServiceSubscriber {
             sapling,
             orchard,
         ))
+    }
+
+    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+        Ok(self.rpc_client.get_mining_info().await?)
     }
 
     // No request parameters.
@@ -1557,6 +1921,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
@@ -2191,7 +2556,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
     }
 }
 
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err, deprecated)]
 fn header_to_block_commitments(
     header: &Header,
     network: &Network,
@@ -2221,3 +2586,34 @@ fn header_to_block_commitments(
     };
     Ok(hash)
 }
+
+/// An error type for median time past calculation errors
+#[derive(Debug, Clone)]
+pub enum MedianTimePast {
+    /// The start block has no `time`.
+    StartMissingTime { hash: String },
+
+    /// Ignored verbosity.
+    UnexpectedRaw { hash: String },
+
+    /// No timestamps collected at all.
+    EmptyWindow,
+}
+
+impl fmt::Display for MedianTimePast {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MedianTimePast::StartMissingTime { hash } => {
+                write!(f, "start block {hash} is missing `time`")
+            }
+            MedianTimePast::UnexpectedRaw { hash } => {
+                write!(f, "unexpected raw payload for block {hash}")
+            }
+            MedianTimePast::EmptyWindow => {
+                write!(f, "no timestamps collected (empty MTP window)")
+            }
+        }
+    }
+}
+
+impl Error for MedianTimePast {}

@@ -23,9 +23,13 @@ use zaino_fetch::{
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
+            address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+            block_deltas::BlockDeltas,
+            block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
+            mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            {GetMempoolInfoResponse, GetNetworkSolPsResponse},
+            GetMempoolInfoResponse, GetNetworkSolPsResponse,
         },
     },
 };
@@ -39,6 +43,7 @@ use zaino_proto::proto::{
     },
 };
 
+#[allow(deprecated)]
 use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
@@ -56,6 +61,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
+    BackendType,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -67,29 +73,38 @@ use crate::{
 ///       ServiceSubscribers are used to create separate chain fetch processes while allowing central state processes to be managed in a single place.
 ///       If we want the ability to clone Service all JoinHandle's should be converted to Arc\<JoinHandle\>.
 #[derive(Debug)]
+#[deprecated = "Will be eventually replaced by `BlockchainSource`"]
 pub struct FetchService {
     /// JsonRPC Client.
     fetcher: JsonRpSeeConnector,
+
     /// Local compact block cache.
     block_cache: BlockCache,
+
     /// Internal mempool.
     mempool: Mempool<ValidatorConnector>,
+
     /// Service metadata.
     data: ServiceMetadata,
+
     /// StateService config data.
+    #[allow(deprecated)]
     config: FetchServiceConfig,
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl ZcashService for FetchService {
+    const BACKEND_TYPE: BackendType = BackendType::Fetch;
+
     type Subscriber = FetchServiceSubscriber;
     type Config = FetchServiceConfig;
-    /// Initializes a new StateService instance and starts sync process.
+
+    /// Initializes a new FetchService instance and starts sync process.
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!("Launching Chain Fetch Service..");
 
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
-            config.validator_cookie_auth,
             config.validator_rpc_address,
             config.validator_rpc_user.clone(),
             config.validator_rpc_password.clone(),
@@ -159,6 +174,7 @@ impl ZcashService for FetchService {
     }
 }
 
+#[allow(deprecated)]
 impl Drop for FetchService {
     fn drop(&mut self) {
         self.close()
@@ -169,16 +185,22 @@ impl Drop for FetchService {
 ///
 /// Subscribers should be
 #[derive(Debug, Clone)]
+#[allow(deprecated)]
 pub struct FetchServiceSubscriber {
     /// JsonRPC Client.
     pub fetcher: JsonRpSeeConnector,
+
     /// Local compact block cache.
     pub block_cache: BlockCacheSubscriber,
+
     /// Internal mempool.
     pub mempool: MempoolSubscriber,
+
     /// Service metadata.
     pub data: ServiceMetadata,
+
     /// StateService config data.
+    #[allow(deprecated)]
     config: FetchServiceConfig,
 }
 
@@ -192,14 +214,42 @@ impl FetchServiceSubscriber {
     }
 
     /// Returns the network type running.
+    #[allow(deprecated)]
     pub fn network(&self) -> zaino_common::Network {
         self.config.network
     }
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl ZcashIndexer for FetchServiceSubscriber {
     type Error = FetchServiceError;
+
+    /// Returns information about all changes to the given transparent addresses within the given inclusive block-height range.
+    ///
+    /// Defaults: if start or end are not specified, they default to 0.
+    ///
+    /// ### Normalization
+    ///
+    /// - If start is greater than the latest block height (tip), start is set to the tip.
+    /// - If end is 0 or greater than the tip, end is set to the tip.
+    ///
+    /// ### Validation
+    ///
+    /// If the resulting start is greater than end, the call fails with an error.
+    /// (Thus, [tip, tip] is valid and returns only the tip block.)
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        Ok(self.fetcher.get_address_deltas(params).await?)
+    }
 
     /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
     ///
@@ -370,6 +420,29 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .get_block(hash_or_height, verbosity)
             .await?
             .try_into()?)
+    }
+
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// Note: This method has only been implemented in `zcashd`. Zebra has no intention of supporting it.
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
+        Ok(self.fetcher.get_block_deltas(hash).await?)
+    }
+
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, Self::Error> {
+        Ok(self.fetcher.get_block_header(hash, verbose).await?)
+    }
+
+    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+        Ok(self.fetcher.get_mining_info().await?)
     }
 
     /// Returns the hash of the best block (tip) of the longest chain.
@@ -612,6 +685,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
@@ -711,6 +785,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     }
 
     /// Return a list of consecutive compact blocks
+    #[allow(deprecated)]
     async fn get_block_range(
         &self,
         request: BlockRange,
@@ -823,6 +898,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Same as GetBlockRange except actions contain only nullifiers
     ///
     /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
+    #[allow(deprecated)]
     async fn get_block_range_nullifiers(
         &self,
         request: BlockRange,
@@ -948,6 +1024,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     }
 
     /// Return the txids corresponding to the given t-address within the given block range
+    #[allow(deprecated)]
     async fn get_taddress_txids(
         &self,
         request: TransparentAddressBlockFilter,
@@ -1011,6 +1088,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     }
 
     /// Returns the total balance for a list of taddrs
+    #[allow(deprecated)]
     async fn get_taddress_balance_stream(
         &self,
         mut request: AddressStream,
@@ -1116,6 +1194,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// more bandwidth-efficient; if two or more transactions in the mempool
     /// match a shortened txid, they are all sent (none is excluded). Transactions
     /// in the exclude list that don't exist in the mempool are ignored.
+    #[allow(deprecated)]
     async fn get_mempool_tx(
         &self,
         request: Exclude,
@@ -1218,6 +1297,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
     /// Return a stream of current Mempool transactions. This will keep the output stream open while
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
+    #[allow(deprecated)]
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
@@ -1368,6 +1448,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         }
     }
 
+    #[allow(deprecated)]
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
             self.config.service.timeout,
@@ -1431,6 +1512,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
     /// Returns max [GetAddressUtxosArg.max_entries] utxos, or unrestricted if [GetAddressUtxosArg.max_entries] = 0.
     /// Utxos are returned in a stream.
+    #[allow(deprecated)]
     async fn get_address_utxos_stream(
         &self,
         request: GetAddressUtxosArg,

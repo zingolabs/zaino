@@ -1,4 +1,7 @@
+#![allow(deprecated)]
 //! Holds error types for Zaino-state.
+
+// Needs to be module level due to the thiserror::Error macro
 
 use crate::BlockHash;
 
@@ -28,6 +31,7 @@ impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
 }
 
 /// Errors related to the `StateService`.
+#[deprecated]
 #[derive(Debug, thiserror::Error)]
 pub enum StateServiceError {
     /// An rpc-specific error we haven't accounted for
@@ -92,6 +96,7 @@ pub enum StateServiceError {
     },
 }
 
+#[allow(deprecated)]
 impl From<StateServiceError> for tonic::Status {
     fn from(error: StateServiceError) -> Self {
         match error {
@@ -162,6 +167,7 @@ impl<T: ToString> From<RpcRequestError<T>> for FetchServiceError {
 }
 
 /// Errors related to the `FetchService`.
+#[deprecated]
 #[derive(Debug, thiserror::Error)]
 pub enum FetchServiceError {
     /// Critical Errors, Restart Zaino.
@@ -193,6 +199,7 @@ pub enum FetchServiceError {
     SerializationError(#[from] zebra_chain::serialization::SerializationError),
 }
 
+#[allow(deprecated)]
 impl From<FetchServiceError> for tonic::Status {
     fn from(error: FetchServiceError) -> Self {
         match error {

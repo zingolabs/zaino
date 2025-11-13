@@ -1,6 +1,6 @@
 //! Database-serializable types for the chain index.
 //!
-//! This module contains all types that implement `ZainoVersionedSerialise` and are used
+//! This module contains all types that implement `ZainoVersionedSerde` and are used
 //! for database persistence. These types follow strict versioning rules to maintain
 //! backward compatibility across database schema changes.
 //!
@@ -10,7 +10,7 @@
 //!    - Store fundamental data in the struct
 //!    - Implement `From`/`Into` or getters/setters for external type conversions
 //!
-//! 2. **Must implement ZainoVersionedSerialise**
+//! 2. **Must implement ZainoVersionedSerde**
 //!    - Follow stringent versioning rules outlined in the trait
 //!    - Ensure backward compatibility
 //!

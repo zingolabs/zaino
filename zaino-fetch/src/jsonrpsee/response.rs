@@ -3,8 +3,12 @@
 //! These types are redefined rather than imported from zebra_rpc
 //! to prevent locking consumers into a zebra_rpc version
 
+pub mod address_deltas;
+pub mod block_deltas;
+pub mod block_header;
 pub mod block_subsidy;
-mod common;
+pub mod common;
+pub mod mining_info;
 pub mod peer_info;
 
 use std::{convert::Infallible, num::ParseIntError};
@@ -18,7 +22,6 @@ use zebra_chain::{
     value_balance::ValueBalance,
     work::difficulty::CompactDifficulty,
 };
-
 use zebra_rpc::{
     client::{GetBlockchainInfoBalance, ValidateAddressResponse},
     methods::opthex,

@@ -1,0 +1,27 @@
+name: Compute Docker Image Tag
+
+on:
+  workflow_call:
+    outputs:
+      image-tag:
+        description: "The computed Docker image tag"
+        value: ${{ jobs.compute-tag.outputs.image-tag }}
+
+jobs:
+  compute-tag:
+    name: Compute Docker Image Tag
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.taggen.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Compute version-based image tag
+        id: taggen
+        run: |
+          source .env.testing-artifacts
+          export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DOCKER_DIR_HASH
+          TAG=$(./utils/get-ci-image-tag.sh)
+          echo "TAG= $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"

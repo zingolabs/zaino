@@ -10,10 +10,10 @@ use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusTyp
 
 use crate::{
     rpc::GrpcClient,
-    server::{config::GrpcConfig, error::ServerError},
+    server::{config::GrpcServerConfig, error::ServerError},
 };
 
-/// LightWallet server capable of servicing clients over TCP.
+/// LightWallet gRPC server capable of servicing clients over TCP.
 pub struct TonicServer {
     /// Current status of the server.
     pub status: AtomicStatus,
@@ -29,7 +29,7 @@ impl TonicServer {
     /// - Checks for shutdown signal, shutting down server if received.
     pub async fn spawn<Indexer: ZcashIndexer + LightWalletIndexer>(
         service_subscriber: IndexerSubscriber<Indexer>,
-        server_config: GrpcConfig,
+        server_config: GrpcServerConfig,
     ) -> Result<Self, ServerError> {
         let status = AtomicStatus::new(StatusType::Spawning);
 
@@ -56,7 +56,7 @@ impl TonicServer {
         };
         let server_future = server_builder
             .add_service(svc)
-            .serve_with_shutdown(server_config.grpc_listen_address, shutdown_signal);
+            .serve_with_shutdown(server_config.listen_address, shutdown_signal);
 
         let task_status = status.clone();
         let server_handle = tokio::task::spawn(async move {

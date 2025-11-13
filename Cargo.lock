@@ -598,12 +598,15 @@ dependencies = [
  "itertools 0.12.1",
  "lazy_static",
  "lazycell",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
  "rustc-hash 1.1.0",
  "shlex",
  "syn 2.0.106",
+ "which 4.4.2",
 ]
 
 [[package]]
@@ -2964,9 +2967,13 @@ dependencies = [
  "zaino-proto",
  "zaino-state",
  "zaino-testutils",
+ "zainod",
+ "zcash_local_net",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.1.0)",
+ "zingolib",
  "zip32",
 ]
 
@@ -3779,9 +3786,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openssl"
-version = "0.10.73"
+version = "0.10.74"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8505734d46c8ab1e19a1dce3aef597ad87dcb4c37e7188231769bd6bd51cebf8"
+checksum = "24ad14dd45412269e1a30f52ad8f0664f0f4f4a89ee8fe28c3b3527021ebb654"
 dependencies = [
  "bitflags 2.9.4",
  "cfg-if",
@@ -3811,9 +3818,9 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.109"
+version = "0.9.110"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90096e2e47630d78b7d1c20952dc621f957103f8bc2c8359ec81290d75238571"
+checksum = "0a9f0075ba3c21b09f8e8b2026584b1d18d49388648f2fbbf3c97ea8deced8e2"
 dependencies = [
  "cc",
  "libc",
@@ -8428,6 +8435,7 @@ version = "0.1.2"
 dependencies = [
  "futures",
  "jsonrpsee",
+ "serde",
  "thiserror 1.0.69",
  "tokio",
  "tonic 0.12.3",
@@ -8502,9 +8510,11 @@ dependencies = [
  "proptest",
  "tempfile",
  "tokio",
- "tonic 0.12.3",
+ "tonic 0.13.1",
  "tracing-subscriber",
  "zaino-common",
+ "zaino-proto",
+ "zaino-serve",
  "zaino-state",
  "zaino-testvectors",
  "zainod",
@@ -8512,6 +8522,7 @@ dependencies = [
  "zcash_local_net",
  "zcash_protocol 0.6.1 (git+https://github.com/zcash/librustzcash?rev=d387aed7e04e881dbe30c6ff8b26a96c834c094b)",
  "zebra-chain",
+ "zebra-state",
  "zingo_common_components 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?tag=zingo_common_components_v0.1.0)",
  "zingo_netutils 0.1.0 (git+https://github.com/zingolabs/zingo-common.git?tag=zingo_common_components_v0.1.0)",
  "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.1.0)",
@@ -9075,7 +9086,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caf6e76f310bb2d3cc233086a97c1710ba1de7ffbbf8198b8113407d0f427dfc"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen 0.69.5",
  "bitflags 2.9.4",
  "cc",
  "enum_primitive",

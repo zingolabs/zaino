@@ -1,80 +1,40 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
 use futures::StreamExt as _;
-use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
     TransparentAddressBlockFilter, TxFilter,
 };
-use zaino_state::{
-    BackendType, FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer,
-    StatusType, ZcashIndexer, ZcashService as _,
-};
-use zaino_testutils::Validator as _;
+#[allow(deprecated)]
+use zaino_state::{BackendType, FetchService, LightWalletIndexer, StatusType, ZcashIndexer};
 use zaino_testutils::{TestManager, ValidatorKind};
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetBlock, GetBlockHash};
 use zip32::AccountId;
 
-async fn create_test_manager_and_fetch_service(
-    validator: &ValidatorKind,
-    chain_cache: Option<std::path::PathBuf>,
-    enable_zaino: bool,
-    zaino_no_sync: bool,
-    zaino_no_db: bool,
-    enable_clients: bool,
-) -> (TestManager, FetchService, FetchServiceSubscriber) {
-    let test_manager = TestManager::launch_with_default_activation_heights(
+#[allow(deprecated)]
+async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std::path::PathBuf>) {
+    let mut test_manager = TestManager::<FetchService>::launch(
         validator,
         &BackendType::Fetch,
         None,
+        None,
         chain_cache,
-        enable_zaino,
+        true,
         false,
         false,
-        zaino_no_sync,
-        zaino_no_db,
-        enable_clients,
     )
     .await
     .unwrap();
 
-    let fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.zebrad_rpc_listen_address,
-        false,
-        None,
-        None,
-        None,
-        ServiceConfig::default(),
-        StorageConfig {
-            database: DatabaseConfig {
-                path: test_manager
-                    .local_net
-                    .data_dir()
-                    .path()
-                    .to_path_buf()
-                    .join("zaino"),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        Network::Regtest(ActivationHeights::default()),
-        true,
-        true,
-    ))
-    .await
-    .unwrap();
-    let subscriber = fetch_service.get_subscriber().inner();
-    (test_manager, fetch_service, subscriber)
-}
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
-async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std::path::PathBuf>) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, chain_cache, false, true, true, false)
-            .await;
+    // FIXME: status is sometimes syncing instead of ready here
+    while fetch_service_subscriber.status() == StatusType::Syncing {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
     assert_eq!(fetch_service_subscriber.status(), StatusType::Ready);
     dbg!(fetch_service_subscriber.data.clone());
     dbg!(fetch_service_subscriber.get_info().await.unwrap());
@@ -87,9 +47,22 @@ async fn launch_fetch_service(validator: &ValidatorKind, chain_cache: Option<std
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -100,12 +73,14 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -115,8 +90,9 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     clients.recipient.sync_and_await().await.unwrap();
     let recipient_balance = clients
@@ -151,9 +127,22 @@ async fn fetch_service_get_address_balance(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block_raw(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, false, true, true, false).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber
         .z_get_block("1".to_string(), Some(0))
@@ -163,9 +152,22 @@ async fn fetch_service_get_block_raw(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block_object(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, false, true, true, false).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber
         .z_get_block("1".to_string(), Some(1))
@@ -175,9 +177,23 @@ async fn fetch_service_get_block_object(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
     let mut clients = test_manager
         .clients
         .take()
@@ -185,8 +201,7 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
 
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
+            test_manager.full_node_rpc_listen_address,
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -198,22 +213,26 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
     )
     .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -247,33 +266,50 @@ async fn fetch_service_get_raw_mempool(validator: &ValidatorKind) {
 }
 
 // `getmempoolinfo` computed from local Broadcast state for all validators
+#[allow(deprecated)]
 pub async fn test_get_mempool_info(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
     clients.faucet.sync_and_await().await.unwrap();
 
     // Zebra cannot mine directly to Orchard in this setup, so shield funds first.
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
 
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
 
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     }
 
@@ -330,9 +366,22 @@ pub async fn test_get_mempool_info(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -341,12 +390,15 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // TODO: investigate why 101 blocks are needed instead of the previous 100 blocks (chain index integration related?)
+        test_manager
+            .generate_blocks_and_poll_indexer(101, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -358,8 +410,9 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
     .await
     .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     dbg!(fetch_service_subscriber
         .z_get_treestate("2".to_string())
@@ -369,9 +422,22 @@ async fn fetch_service_z_get_treestate(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -380,11 +446,14 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
     };
@@ -397,8 +466,9 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     .await
     .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     dbg!(fetch_service_subscriber
         .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
@@ -408,9 +478,22 @@ async fn fetch_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -419,12 +502,14 @@ async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -436,8 +521,9 @@ async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
     .await
     .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     dbg!(fetch_service_subscriber
         .get_raw_transaction(tx.first().to_string(), Some(1))
@@ -447,9 +533,22 @@ async fn fetch_service_get_raw_transaction(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -460,12 +559,14 @@ async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -475,8 +576,9 @@ async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     let chain_height = fetch_service_subscriber
         .block_cache
@@ -502,9 +604,22 @@ async fn fetch_service_get_address_tx_ids(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -514,12 +629,14 @@ async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -529,8 +646,9 @@ async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     clients.faucet.sync_and_await().await.unwrap();
 
@@ -547,16 +665,30 @@ async fn fetch_service_get_address_utxos(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
+            test_manager.full_node_rpc_listen_address,
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -587,16 +719,28 @@ async fn fetch_service_get_latest_block(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn assert_fetch_service_difficulty_matches_rpc(validator: &ValidatorKind) {
-    let (test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let fetch_service_get_difficulty = fetch_service_subscriber.get_difficulty().await.unwrap();
 
     let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
+            test_manager.full_node_rpc_listen_address,
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -612,16 +756,65 @@ async fn assert_fetch_service_difficulty_matches_rpc(validator: &ValidatorKind) 
     assert_eq!(fetch_service_get_difficulty, rpc_difficulty_response.0);
 }
 
+#[allow(deprecated)]
+async fn assert_fetch_service_mininginfo_matches_rpc(validator: &ValidatorKind) {
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    let fetch_service_mining_info = fetch_service_subscriber.get_mining_info().await.unwrap();
+
+    let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+        test_node_and_return_url(
+            test_manager.full_node_rpc_listen_address,
+            None,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap(),
+        "xxxxxx".to_string(),
+        "xxxxxx".to_string(),
+    )
+    .unwrap();
+
+    let rpc_mining_info_response = jsonrpc_client.get_mining_info().await.unwrap();
+    assert_eq!(fetch_service_mining_info, rpc_mining_info_response);
+}
+
+#[allow(deprecated)]
 async fn assert_fetch_service_peerinfo_matches_rpc(validator: &ValidatorKind) {
-    let (test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let fetch_service_get_peer_info = fetch_service_subscriber.get_peer_info().await.unwrap();
 
     let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
+            test_manager.full_node_rpc_listen_address,
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -640,22 +833,35 @@ async fn assert_fetch_service_peerinfo_matches_rpc(validator: &ValidatorKind) {
     assert_eq!(fetch_service_get_peer_info, rpc_peer_info_response);
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block_subsidy(validator: &ValidatorKind) {
-    let (test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     const BLOCK_LIMIT: u32 = 10;
 
     for i in 0..BLOCK_LIMIT {
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         let fetch_service_get_block_subsidy =
             fetch_service_subscriber.get_block_subsidy(i).await.unwrap();
 
         let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
             test_node_and_return_url(
-                test_manager.zebrad_rpc_listen_address,
-                false,
+                test_manager.full_node_rpc_listen_address,
                 None,
                 Some("xxxxxx".to_string()),
                 Some("xxxxxx".to_string()),
@@ -672,9 +878,22 @@ async fn fetch_service_get_block_subsidy(validator: &ValidatorKind) {
     }
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let block_id = BlockId {
         height: 1,
@@ -700,12 +919,102 @@ async fn fetch_service_get_block(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
-async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+#[allow(deprecated)]
+async fn fetch_service_get_block_header(validator: &ValidatorKind) {
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
 
-    test_manager.local_net.generate_blocks(5).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    const BLOCK_LIMIT: u32 = 10;
+
+    for i in 0..BLOCK_LIMIT {
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
+
+        let block = fetch_service_subscriber
+            .z_get_block(i.to_string(), Some(1))
+            .await
+            .unwrap();
+
+        let block_hash = match block {
+            GetBlock::Object(block) => block.hash(),
+            GetBlock::Raw(_) => panic!("Expected block object"),
+        };
+
+        let fetch_service_get_block_header = fetch_service_subscriber
+            .get_block_header(block_hash.to_string(), false)
+            .await
+            .unwrap();
+
+        let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+            test_node_and_return_url(
+                test_manager.full_node_rpc_listen_address,
+                None,
+                Some("xxxxxx".to_string()),
+                Some("xxxxxx".to_string()),
+            )
+            .await
+            .unwrap(),
+            "xxxxxx".to_string(),
+            "xxxxxx".to_string(),
+        )
+        .unwrap();
+
+        let rpc_block_header_response = jsonrpc_client
+            .get_block_header(block_hash.to_string(), false)
+            .await
+            .unwrap();
+
+        let fetch_service_get_block_header_verbose = fetch_service_subscriber
+            .get_block_header(block_hash.to_string(), true)
+            .await
+            .unwrap();
+
+        let rpc_block_header_response_verbose = jsonrpc_client
+            .get_block_header(block_hash.to_string(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(fetch_service_get_block_header, rpc_block_header_response);
+        assert_eq!(
+            fetch_service_get_block_header_verbose,
+            rpc_block_header_response_verbose
+        );
+    }
+}
+
+#[allow(deprecated)]
+async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    test_manager
+        .generate_blocks_and_poll_indexer(5, &fetch_service_subscriber)
+        .await;
 
     let inspected_block: GetBlock = fetch_service_subscriber
         // Some(verbosity) : 1 for JSON Object, 2 for tx data as JSON instead of hex
@@ -729,12 +1038,26 @@ async fn fetch_service_get_best_blockhash(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block_count(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
 
-    test_manager.local_net.generate_blocks(5).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    test_manager
+        .generate_blocks_and_poll_indexer(5, &fetch_service_subscriber)
+        .await;
 
     let block_id = BlockId {
         height: 7,
@@ -749,9 +1072,22 @@ async fn fetch_service_get_block_count(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_validate_address(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     // scriptpubkey: "76a914000000000000000000000000000000000000000088ac"
     let expected_validation = ValidateAddressResponse::new(
@@ -786,9 +1122,22 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block_nullifiers(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let block_id = BlockId {
         height: 1,
@@ -805,11 +1154,26 @@ async fn fetch_service_get_block_nullifiers(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block_range(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
-    test_manager.local_net.generate_blocks(10).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    test_manager
+        .generate_blocks_and_poll_indexer(10, &fetch_service_subscriber)
+        .await;
 
     let block_range = BlockRange {
         start: Some(BlockId {
@@ -838,11 +1202,26 @@ async fn fetch_service_get_block_range(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_block_range_nullifiers(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
-    test_manager.local_net.generate_blocks(10).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    test_manager
+        .generate_blocks_and_poll_indexer(10, &fetch_service_subscriber)
+        .await;
 
     let block_range = BlockRange {
         start: Some(BlockId {
@@ -871,9 +1250,22 @@ async fn fetch_service_get_block_range_nullifiers(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -882,12 +1274,14 @@ async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -898,8 +1292,9 @@ async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     let tx_filter = TxFilter {
         block: None,
@@ -917,9 +1312,22 @@ async fn fetch_service_get_transaction_mined(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -928,12 +1336,14 @@ async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -963,9 +1373,22 @@ async fn fetch_service_get_transaction_mempool(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -976,12 +1399,14 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -991,8 +1416,9 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     let chain_height = fetch_service_subscriber
         .block_cache
@@ -1033,9 +1459,22 @@ async fn fetch_service_get_taddress_txids(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1045,12 +1484,14 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -1060,8 +1501,9 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     clients.recipient.sync_and_await().await.unwrap();
     let balance = clients
@@ -1088,29 +1530,46 @@ async fn fetch_service_get_taddress_balance(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
         .take()
         .expect("Clients are not initialized");
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -1181,34 +1640,55 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
         .take()
         .expect("Clients are not initialized");
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
+    let fetch_service_subscriber_2 = fetch_service_subscriber.clone();
     let fetch_service_handle = tokio::spawn(async move {
-        let fetch_service_stream = fetch_service_subscriber.get_mempool_stream().await.unwrap();
+        let fetch_service_stream = fetch_service_subscriber_2
+            .get_mempool_stream()
+            .await
+            .unwrap();
         let fetch_service_mempool_tx: Vec<_> = fetch_service_stream.collect().await;
         fetch_service_mempool_tx
             .into_iter()
@@ -1234,8 +1714,9 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
     .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     let fetch_mempool_tx = fetch_service_handle.await.unwrap();
 
@@ -1247,9 +1728,22 @@ async fn fetch_service_get_mempool_stream(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_tree_state(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let block_id = BlockId {
         height: 1,
@@ -1266,9 +1760,22 @@ async fn fetch_service_get_tree_state(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_latest_tree_state(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber
         .get_latest_tree_state()
@@ -1278,9 +1785,22 @@ async fn fetch_service_get_latest_tree_state(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_subtree_roots(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let subtree_roots_arg = GetSubtreeRootsArg {
         start_index: 0,
@@ -1304,9 +1824,22 @@ async fn fetch_service_get_subtree_roots(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1316,12 +1849,14 @@ async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -1331,8 +1866,9 @@ async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     let utxos_arg = GetAddressUtxosArg {
         addresses: vec![recipient_taddr],
@@ -1351,9 +1887,22 @@ async fn fetch_service_get_taddress_utxos(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        true,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let mut clients = test_manager
         .clients
@@ -1363,12 +1912,14 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -1378,8 +1929,9 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
 
     let utxos_arg = GetAddressUtxosArg {
         addresses: vec![recipient_taddr],
@@ -1403,18 +1955,44 @@ async fn fetch_service_get_taddress_utxos_stream(validator: &ValidatorKind) {
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn fetch_service_get_lightd_info(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     dbg!(fetch_service_subscriber.get_lightd_info().await.unwrap());
 
     test_manager.close().await;
 }
 
+#[allow(deprecated)]
 async fn assert_fetch_service_getnetworksols_matches_rpc(validator: &ValidatorKind) {
-    let (test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let fetch_service_get_networksolps = fetch_service_subscriber
         .get_network_sol_ps(None, None)
@@ -1423,8 +2001,7 @@ async fn assert_fetch_service_getnetworksols_matches_rpc(validator: &ValidatorKi
 
     let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
+            test_manager.full_node_rpc_listen_address,
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -1448,12 +2025,12 @@ mod zcashd {
 
         use super::*;
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn regtest_no_cache() {
             launch_fetch_service(&ValidatorKind::Zcashd, None).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         #[ignore = "We no longer use chain caches. See zcashd::launch::regtest_no_cache."]
         pub(crate) async fn regtest_with_cache() {
             launch_fetch_service(
@@ -1468,7 +2045,7 @@ mod zcashd {
 
         use super::*;
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn validate_address() {
             fetch_service_validate_address(&ValidatorKind::Zcashd).await;
         }
@@ -1478,27 +2055,27 @@ mod zcashd {
 
         use super::*;
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn address_balance() {
             fetch_service_get_address_balance(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_raw() {
             fetch_service_get_block_raw(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_object() {
             fetch_service_get_block_object(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn raw_mempool() {
             fetch_service_get_raw_mempool(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mempool_info() {
             test_get_mempool_info(&ValidatorKind::Zcashd).await;
         }
@@ -1507,138 +2084,201 @@ mod zcashd {
 
             use super::*;
 
-            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn get_treestate() {
                 fetch_service_z_get_treestate(&ValidatorKind::Zcashd).await;
             }
 
-            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn subtrees_by_index() {
                 fetch_service_z_get_subtrees_by_index(&ValidatorKind::Zcashd).await;
             }
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn raw_transaction() {
             fetch_service_get_raw_transaction(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn address_tx_ids() {
             fetch_service_get_address_tx_ids(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn address_utxos() {
             fetch_service_get_address_utxos(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn latest_block() {
             fetch_service_get_latest_block(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block() {
             fetch_service_get_block(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn block_header() {
+            fetch_service_get_block_header(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn difficulty() {
             assert_fetch_service_difficulty_matches_rpc(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[allow(deprecated)]
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn block_deltas() {
+            let mut test_manager = TestManager::<FetchService>::launch(
+                &ValidatorKind::Zcashd,
+                &BackendType::Fetch,
+                None,
+                None,
+                None,
+                true,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+
+            let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+            let current_block = fetch_service_subscriber.get_latest_block().await.unwrap();
+
+            let block_hash_bytes: [u8; 32] = current_block.hash.as_slice().try_into().unwrap();
+
+            let block_hash = zebra_chain::block::Hash::from(block_hash_bytes);
+
+            // Note: we need an 'expected' block hash in order to query its deltas.
+            // Having a predictable or test vector chain is the way to go here.
+            let fetch_service_block_deltas = fetch_service_subscriber
+                .get_block_deltas(block_hash.to_string())
+                .await
+                .unwrap();
+
+            let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+                test_node_and_return_url(
+                    test_manager.full_node_rpc_listen_address,
+                    None,
+                    Some("xxxxxx".to_string()),
+                    Some("xxxxxx".to_string()),
+                )
+                .await
+                .unwrap(),
+                "xxxxxx".to_string(),
+                "xxxxxx".to_string(),
+            )
+            .unwrap();
+
+            let rpc_block_deltas = jsonrpc_client
+                .get_block_deltas(block_hash.to_string())
+                .await
+                .unwrap();
+
+            assert_eq!(fetch_service_block_deltas, rpc_block_deltas);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn mining_info() {
+            assert_fetch_service_mininginfo_matches_rpc(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn peer_info() {
             assert_fetch_service_peerinfo_matches_rpc(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_subsidy() {
             fetch_service_get_block_subsidy(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn best_blockhash() {
             fetch_service_get_best_blockhash(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_count() {
             fetch_service_get_block_count(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_nullifiers() {
             fetch_service_get_block_nullifiers(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_range() {
             fetch_service_get_block_range(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_range_nullifiers() {
             fetch_service_get_block_range_nullifiers(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn transaction_mined() {
             fetch_service_get_transaction_mined(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn transaction_mempool() {
             fetch_service_get_transaction_mempool(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_txids() {
             fetch_service_get_taddress_txids(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_balance() {
             fetch_service_get_taddress_balance(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mempool_tx() {
             fetch_service_get_mempool_tx(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mempool_stream() {
             fetch_service_get_mempool_stream(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn tree_state() {
             fetch_service_get_tree_state(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn latest_tree_state() {
             fetch_service_get_latest_tree_state(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn subtree_roots() {
             fetch_service_get_subtree_roots(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_utxos() {
             fetch_service_get_taddress_utxos(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_utxos_stream() {
             fetch_service_get_taddress_utxos_stream(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn lightd_info() {
             fetch_service_get_lightd_info(&ValidatorKind::Zcashd).await;
         }
@@ -1658,12 +2298,12 @@ mod zebrad {
 
         use super::*;
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn regtest_no_cache() {
             launch_fetch_service(&ValidatorKind::Zebrad, None).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         #[ignore = "We no longer use chain caches. See zebrad::launch::regtest_no_cache."]
         pub(crate) async fn regtest_with_cache() {
             launch_fetch_service(
@@ -1678,7 +2318,7 @@ mod zebrad {
 
         use super::*;
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn validate_address() {
             fetch_service_validate_address(&ValidatorKind::Zebrad).await;
         }
@@ -1688,27 +2328,27 @@ mod zebrad {
 
         use super::*;
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn address_balance() {
             fetch_service_get_address_balance(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_raw() {
             fetch_service_get_block_raw(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_object() {
             fetch_service_get_block_object(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn raw_mempool() {
             fetch_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mempool_info() {
             test_get_mempool_info(&ValidatorKind::Zebrad).await;
         }
@@ -1717,138 +2357,148 @@ mod zebrad {
 
             use super::*;
 
-            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn treestate() {
                 fetch_service_z_get_treestate(&ValidatorKind::Zebrad).await;
             }
 
-            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn subtrees_by_index() {
                 fetch_service_z_get_subtrees_by_index(&ValidatorKind::Zebrad).await;
             }
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn raw_transaction() {
             fetch_service_get_raw_transaction(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn address_tx_ids() {
             fetch_service_get_address_tx_ids(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn address_utxos() {
             fetch_service_get_address_utxos(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn latest_block() {
             fetch_service_get_latest_block(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block() {
             fetch_service_get_block(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn block_header() {
+            fetch_service_get_block_header(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn difficulty() {
             assert_fetch_service_difficulty_matches_rpc(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn mining_info() {
+            assert_fetch_service_mininginfo_matches_rpc(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn peer_info() {
             assert_fetch_service_peerinfo_matches_rpc(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_subsidy() {
             fetch_service_get_block_subsidy(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn best_blockhash() {
             fetch_service_get_best_blockhash(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_count() {
             fetch_service_get_block_count(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_nullifiers() {
             fetch_service_get_block_nullifiers(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_range() {
             fetch_service_get_block_range(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_range_nullifiers() {
             fetch_service_get_block_range_nullifiers(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn transaction_mined() {
             fetch_service_get_transaction_mined(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn transaction_mempool() {
             fetch_service_get_transaction_mempool(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_txids() {
             fetch_service_get_taddress_txids(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_balance() {
             fetch_service_get_taddress_balance(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mempool_tx() {
             fetch_service_get_mempool_tx(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mempool_stream() {
             fetch_service_get_mempool_stream(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn tree_state() {
             fetch_service_get_tree_state(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn latest_tree_state() {
             fetch_service_get_latest_tree_state(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn subtree_roots() {
             fetch_service_get_subtree_roots(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_utxos() {
             fetch_service_get_taddress_utxos(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_utxos_stream() {
             fetch_service_get_taddress_utxos_stream(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn lightd_info() {
             fetch_service_get_lightd_info(&ValidatorKind::Zebrad).await;
         }

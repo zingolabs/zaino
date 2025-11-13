@@ -12,7 +12,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, IndexedBlock};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn v0_to_v1_full() {
     init_tracing();
 
@@ -31,9 +31,6 @@ async fn v0_to_v1_full() {
         },
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
-
-        no_sync: false,
-        no_db: false,
     };
     let v1_config = BlockCacheConfig {
         storage: StorageConfig {
@@ -45,9 +42,6 @@ async fn v0_to_v1_full() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
-
-        no_sync: false,
-        no_db: false,
     };
 
     let source = build_mockchain_source(blocks.clone());
@@ -88,7 +82,7 @@ async fn v0_to_v1_full() {
     dbg!(zaino_db_2.shutdown().await.unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn v0_to_v1_interrupted() {
     init_tracing();
 
@@ -107,9 +101,6 @@ async fn v0_to_v1_interrupted() {
         },
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
-
-        no_sync: false,
-        no_db: false,
     };
     let v1_config = BlockCacheConfig {
         storage: StorageConfig {
@@ -121,9 +112,6 @@ async fn v0_to_v1_interrupted() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
-
-        no_sync: false,
-        no_db: false,
     };
 
     let source = build_mockchain_source(blocks.clone());
@@ -216,7 +204,7 @@ async fn v0_to_v1_interrupted() {
     dbg!(zaino_db_2.shutdown().await.unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn v0_to_v1_partial() {
     init_tracing();
 
@@ -235,9 +223,6 @@ async fn v0_to_v1_partial() {
         },
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
-
-        no_sync: false,
-        no_db: false,
     };
     let v1_config = BlockCacheConfig {
         storage: StorageConfig {
@@ -249,9 +234,6 @@ async fn v0_to_v1_partial() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
-
-        no_sync: false,
-        no_db: false,
     };
 
     let source = build_mockchain_source(blocks.clone());

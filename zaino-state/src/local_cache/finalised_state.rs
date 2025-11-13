@@ -476,7 +476,7 @@ impl FinalisedState {
         }
 
         // Wait for server to sync to with p2p network and sync new blocks.
-        if !self.config.network.to_zebra_network().is_regtest() && !self.config.no_sync {
+        if !self.config.network.to_zebra_network().is_regtest() {
             self.status.store(StatusType::Syncing);
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await?;

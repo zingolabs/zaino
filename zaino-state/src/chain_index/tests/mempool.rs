@@ -35,7 +35,7 @@ async fn spawn_mempool_and_mockchain() -> (
     (mempool, subscriber, mockchain, block_data)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_mempool() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
@@ -92,7 +92,7 @@ async fn get_mempool() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_filtered_mempool() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
@@ -166,7 +166,7 @@ async fn get_filtered_mempool() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_mempool_transaction() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
@@ -210,7 +210,7 @@ async fn get_mempool_transaction() {
     assert_eq!(*mempool_transactions[0], subscriber_transaction);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_mempool_info() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
@@ -271,7 +271,7 @@ async fn get_mempool_info() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread")]
 async fn get_mempool_stream() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
     let mut subscriber = subscriber;
