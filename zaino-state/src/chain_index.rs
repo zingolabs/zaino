@@ -436,7 +436,7 @@ impl<Source: BlockchainSource> Index<Source> {
     /// Creates a [`Subscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
     /// This relatively simple name presumes the developer attends
-    /// to the containing mod name [`chain_index`].
+    /// to the containing mod name [`crate::chain_index`].
     pub async fn subscriber(&self) -> Subscriber<Source> {
         Subscriber {
             blockchain_source: self.blockchain_source.as_ref().clone(),
