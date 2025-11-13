@@ -50,3 +50,9 @@ thiserror = { workspace = true }
 # Formats
 toml = { workspace = true }
 figment= { workspace = true, features = ["toml", "env", "test"] }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
+tempfile = { workspace = true }
+portpicker = { workspace = true }
