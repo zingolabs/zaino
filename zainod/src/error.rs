@@ -1,11 +1,14 @@
 //! Hold error types for the Indexer and related functionality.
 
-use zaino_fetch::jsonrpsee::error::JsonRpSeeConnectorError;
+use zaino_fetch::jsonrpsee::error::TransportError;
 use zaino_serve::server::error::ServerError;
+
+#[allow(deprecated)]
 use zaino_state::{FetchServiceError, StateServiceError};
 
 /// Zingo-Indexer errors.
 #[derive(Debug, thiserror::Error)]
+#[allow(deprecated)]
 pub enum IndexerError {
     /// Server based errors.
     #[error("Server error: {0}")]
@@ -15,7 +18,7 @@ pub enum IndexerError {
     ConfigError(String),
     /// JSON RPSee connector errors.
     #[error("JSON RPSee connector error: {0}")]
-    JsonRpSeeConnectorError(#[from] JsonRpSeeConnectorError),
+    TransportError(#[from] TransportError),
     /// FetchService errors.
     #[error("FetchService error: {0}")]
     FetchServiceError(Box<FetchServiceError>),
@@ -36,11 +39,14 @@ pub enum IndexerError {
     Restart,
 }
 
+#[allow(deprecated)]
 impl From<StateServiceError> for IndexerError {
     fn from(value: StateServiceError) -> Self {
         IndexerError::StateServiceError(Box::new(value))
     }
 }
+
+#[allow(deprecated)]
 impl From<FetchServiceError> for IndexerError {
     fn from(value: FetchServiceError) -> Self {
         IndexerError::FetchServiceError(Box::new(value))

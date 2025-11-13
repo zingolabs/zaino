@@ -1,0 +1,107 @@
+# ────────────────────────────────────────────────────────────────────────────────
+#  Zaino – Finalised State Database, on-disk layout (Schema v1, 2025-08-05)
+# ────────────────────────────────────────────────────────────────────────────────
+#
+#  Any change to this file is a **breaking** change.  Bump the schema version,
+#  place the new description in a *new* file (`db_schema_v{N}.txt`), compute the
+#  new 32-byte BLAKE2b digest and update the constant in `schema.rs`.
+#
+#  Abbreviations
+#  ─────────────
+#      H      = block Height  (u32)        |  B = [u8;32] block/tx hash
+#      LE(uN) = unsigned integer of N bits |  BE = big-endian
+#      CS     = CompactSize length prefix
+#      U256 = 32-byte little-endian unsigned integer
+#
+#  Conventions
+#  ───────────
+#  • All records are encoded with Zaino’s versioned-serialize framework:
+#       <u8 version_tag>  <body bytes defined below>
+#  • All fixed-width integral fields are little-endian unless explicitly noted.
+#  • Variable-length collections are length-prefixed with Bitcoin/Zcash
+#    CompactSize.
+#  • `Option<T>` is encoded as: 0x00 (None) | 0x01 (Some) <encoded T>.
+#  • `StoredEntryFixed<T>`  -> fixed length metadata wrapper around `T`
+#       V1 body = <u8 version_tag> <encoded T> < [u8; 32] check_hash>
+#  • `StoredEntryVar<T>`  -> variable metadata wrapper around `T`
+#       V1 body = <u8 version_tag> <CS encoded T len> <encoded T> < [u8; 32] check_hash>
+#
+# ─────────────────────────── Logical databases ────────────────────────────────
+#
+# 1. headers  ―  H  ->  StoredEntryVar<BlockHeaderData>
+#    Key : BE height
+#    Val : 0x01 + BlockHeaderData
+#           BlockHeaderData V1 body  =
+#              BlockIndex  +  BlockData
+#              BlockIndex  =  B hash  B parent_hash  U256 chain_work
+#                             Option<H> height
+#              BlockData   =  LE(u32) version
+#                             LE(i64) unix_time
+#                             B merkle_root
+#                             B block_commitments
+#                             LE(u32) bits
+#                             [32] nonce
+#
+# 2. txids  ―  H  ->  StoredEntryVar<TxidList>
+#    Val : 0x01 + CS count + count × B txid
+#
+# 3. transparent  ―  H  ->  StoredEntryVar<Vec<TransparentTxList>>
+#    Val : 0x01 + CS blk_tx_count + each TransparentTxList
+#           TransparentTxList = CS tx_count + tx_count × Option<TransparentCompactTx>
+#
+# 4. sapling  ―  H  ->  StoredEntryVar<SaplingTxList>
+#    Key : BE height
+#    Val : 0x01 + CS tx_count + tx_count × Option<SaplingCompactTx>
+#           SaplingCompactTx =
+#              Option<i64> value_balance
+#              spends  = CS n + n × CompactSaplingSpend
+#                         CompactSaplingSpend  = 32-byte nullifier
+#              outputs = CS m + m × CompactSaplingOutput
+#                         CompactSaplingOutput = 32-byte cmu  32-byte epk  52-byte ciphertext
+#
+# 5. orchard  ―  H  ->  StoredEntryVar<OrchardTxList>
+#    Key : BE height
+#    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
+#           OrchardCompactTx =
+#              Option<i64> value_balance
+#              actions = CS n + n × CompactOrchardAction
+#                         CompactOrchardAction = 32-byte nullifier  32-byte cmx  32-byte epk  52-byte ciphertext
+#
+# 6. commitment_tree_data  ―  H  ->  StoredEntryFixed<Vec<CommitmentTreeData>>
+#    Key : BE height
+#    Val : 0x01 + CS n + n × CommitmentTreeData
+#           CommitmentTreeData V1 body  =
+#              CommitmentTreeRoots  +  CommitmentTreeSizes
+#              CommitmentTreeRoots  = 32-byte sapling_root  32-byte orchard_root
+#              CommitmentTreeSizes  = LE(u32) sapling_total  LE(u32) orchard_total
+#
+# 7. heights  ―  B (block hash)  ->  StoredEntryFixed<Height>
+#    Key : 32-byte block hash (internal byte order)
+#    Val : 0x01 + BE height
+#
+# 8. spent  ―  Outpoint  ->  StoredEntryFixed<Vec<TxLocation>>
+#    Key : 0x01 + Outpoint
+#           Outpoint = B prev_txid  LE(u32) prev_index
+#    Val : 0x01 + CS n + n × TxLocation
+#           TxLocation = LE(u32) height  LE(u32) tx_index
+#
+# 9. address_history  ―  AddrScript  ->  StoredEntryFixed<AddrEventBytes>
+#    Key : 0x01 + AddrScript
+#           AddrScript = [20] hash  u8 script_type
+#    Val : 0x01 + CS len + raw event bytes  (multiple entries may share the key)
+#
+# 10. metadata  ―  "metadata" (ASCII)  ->  StoredEntryFixed<DbMetadata>  (singleton)
+#     DbMetadata V1 body =
+#         [32] schema_hash
+#         LE(i64) created_unix_ts
+#         LE(u32) pruned_tip
+#         LE(u32) network (Zcash main = 0, test = 1, regtest = 2)
+#
+# ─────────────────────────── Environment settings ─────────────────────────────
+#   LMDB page-size:         platform default
+#   max_dbs:                10 (see list above)
+#   Flags:                  MDB_NOTLS | MDB_NORDAHEAD
+#
+#   All Databases are append-only and indexed by height -> LMDB default
+#
+# ───────────────────────────── END OF FILE ────────────────────────────────────

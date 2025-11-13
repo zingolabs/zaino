@@ -9,16 +9,20 @@ license = { workspace = true }
 version = { workspace = true }
 
 [features]
-# (Work)bench - Exposes internal functionality for testing.
-bench = []
+# test_dependencies - Exposes internal functionality for testing.
+test_dependencies = []
 
 [dependencies]
+zaino-common = { workspace = true }
 zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
 # LibRustZcash
+zcash_address = { workspace = true }
+zcash_keys = { workspace = true }
 zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
+zcash_transparent = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
@@ -35,30 +39,34 @@ tower = { workspace = true, features = ["buffer", "util"] }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 indexmap = { workspace = true }
-url = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
 tonic = { workspace = true }
-http = { workspace = true }
-lazy-regex = { workspace = true }
 dashmap = { workspace = true }
 lmdb = { workspace = true }
+lmdb-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
-jsonrpsee-core = { workspace = true }
 prost = { workspace = true }
 primitive-types = { workspace = true }
-byteorder = { workspace = true }
-nonempty = "0.11.0"
+blake2 = { workspace = true }
+sha2 = { workspace = true }
+core2 = { workspace = true }
+bs58 = { workspace = true }
+nonempty = { workspace = true }
+arc-swap = { workspace = true }
+reqwest.workspace = true
+bitflags = { workspace = true }
+derive_more = { workspace = true, features = ["from"] }
+
 
 [dev-dependencies]
-zingo-infra-services = { workspace = true }
-
-# ZingoLib
-zingolib = { workspace = true }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+once_cell = { workspace = true }
 
 [build-dependencies]
 whoami = { workspace = true }
-cargo-lock = "10.1.0"
-
+cargo-lock = { workspace = true }

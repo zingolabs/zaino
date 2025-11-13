@@ -1,14 +1,15 @@
 //! JsonRPSee client implementation.
 //!
 //! TODO: - Add option for http connector.
-//!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [https://github.com/zingolabs/zaino/issues/67].
-
+//!       - Refactor JsonRPSeecConnectorError into concrete error types and implement fmt::display [<https://github.com/zingolabs/zaino/issues/67>].
 use base64::{engine::general_purpose, Engine};
 use http::Uri;
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use std::path::PathBuf;
 use std::{
+    any::type_name,
+    convert::Infallible,
     fmt, fs,
     net::SocketAddr,
     path::Path,
@@ -19,17 +20,27 @@ use std::{
     time::Duration,
 };
 use tracing::error;
+use zebra_rpc::client::ValidateAddressResponse;
 
+use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
 use crate::jsonrpsee::{
-    error::JsonRpSeeConnectorError,
+    error::{JsonRpcError, TransportError},
     response::{
-        GetBalanceResponse, GetBlockCountResponse, GetBlockResponse, GetBlockchainInfoResponse,
-        GetInfoResponse, GetSubtreesResponse, GetTransactionResponse, GetTreestateResponse,
-        GetUtxosResponse, SendTransactionResponse, TxidsResponse,
+        address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+        block_deltas::{BlockDeltas, BlockDeltasError},
+        block_header::{GetBlockHeader, GetBlockHeaderError},
+        block_subsidy::GetBlockSubsidy,
+        mining_info::GetMiningInfoWire,
+        peer_info::GetPeerInfo,
+        GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
+        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
+        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
+        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
+        SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
-use super::response::GetDifficultyResponse;
+use super::response::{GetDifficultyResponse, GetNetworkSolPsResponse};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest<T> {
@@ -55,7 +66,7 @@ pub struct RpcError {
     /// Error Message.
     pub message: String,
     /// Error Data.
-    pub data: Option<Value>,
+    pub data: Option<JsonRpcError>,
 }
 
 impl RpcError {
@@ -85,7 +96,7 @@ impl RpcError {
             // If you want to store the data too:
             data: error_obj
                 .data()
-                .map(|raw| serde_json::from_str(raw.get()).unwrap_or_default()),
+                .map(|raw| serde_json::from_str(raw.get()).unwrap()),
         }
     }
 }
@@ -103,9 +114,9 @@ impl std::error::Error for RpcError {}
 // and the token from the cookie file as the password.
 // The cookie file itself is formatted as "__cookie__:<token>".
 // This function extracts just the <token> part.
-fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, JsonRpSeeConnectorError> {
+fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, TransportError> {
     let cookie_content =
-        fs::read_to_string(cookie_path).map_err(JsonRpSeeConnectorError::IoError)?;
+        fs::read_to_string(cookie_path).map_err(TransportError::CookieReadError)?;
     let trimmed_content = cookie_content.trim();
     if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
         Ok(stripped.to_string())
@@ -120,6 +131,49 @@ fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, JsonRpSeeCo
 enum AuthMethod {
     Basic { username: String, password: String },
     Cookie { cookie: String },
+}
+
+/// Trait to convert a JSON-RPC response to an error.
+pub trait ResponseToError: Sized {
+    /// The error type.
+    type RpcError: std::fmt::Debug
+        + TryFrom<RpcError, Error: std::error::Error + Send + Sync + 'static>;
+
+    /// Converts a JSON-RPC response to an error.
+    fn to_error(self) -> Result<Self, Self::RpcError> {
+        Ok(self)
+    }
+}
+
+/// Error type for JSON-RPC requests.
+#[derive(Debug, thiserror::Error)]
+pub enum RpcRequestError<MethodError> {
+    /// Error variant for errors related to the transport layer.
+    #[error("Transport error: {0}")]
+    Transport(#[from] TransportError),
+
+    /// Error variant for errors related to the JSON-RPC method being called.
+    #[error("Method error: {0:?}")]
+    Method(MethodError),
+
+    /// The provided input failed to serialize.
+    #[error("request input failed to serialize: {0:?}")]
+    JsonRpc(serde_json::Error),
+
+    /// Internal unrecoverable error.
+    #[error("Internal unrecoverable error: {0}")]
+    InternalUnrecoverable(String),
+
+    /// Server at capacity
+    #[error("rpc server at capacity, please try again")]
+    ServerWorkQueueFull,
+
+    /// An error related to the specific JSON-RPC method being called, that
+    /// wasn't accounted for as a MethodError. This means that either
+    /// Zaino has not yet accounted for the possibilty of this error,
+    /// or the Node returned an undocumented/malformed error response.
+    #[error("unexpected error response from server: {0}")]
+    UnexpectedErrorResponse(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 /// JsonRpSee Client config data.
@@ -137,13 +191,13 @@ impl JsonRpSeeConnector {
         url: Url,
         username: String,
         password: String,
-    ) -> Result<Self, JsonRpSeeConnectorError> {
+    ) -> Result<Self, TransportError> {
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(JsonRpSeeConnectorError::ReqwestError)?;
+            .map_err(TransportError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -154,10 +208,7 @@ impl JsonRpSeeConnector {
     }
 
     /// Creates a new JsonRpSeeConnector with Cookie Authentication.
-    pub fn new_with_cookie_auth(
-        url: Url,
-        cookie_path: &Path,
-    ) -> Result<Self, JsonRpSeeConnectorError> {
+    pub fn new_with_cookie_auth(url: Url, cookie_path: &Path) -> Result<Self, TransportError> {
         let cookie_password = read_and_parse_cookie_token(cookie_path)?;
 
         let client = ClientBuilder::new()
@@ -166,7 +217,7 @@ impl JsonRpSeeConnector {
             .redirect(reqwest::redirect::Policy::none())
             .cookie_store(true)
             .build()
-            .map_err(JsonRpSeeConnectorError::ReqwestError)?;
+            .map_err(TransportError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -178,20 +229,17 @@ impl JsonRpSeeConnector {
         })
     }
 
-    /// Helper function to create from parts of a StateServiceConfig or
-    /// FetchServiceConfig
+    /// Helper function to create from parts of a StateServiceConfig or FetchServiceConfig
     pub async fn new_from_config_parts(
-        validator_cookie_auth: bool,
         validator_rpc_address: SocketAddr,
         validator_rpc_user: String,
         validator_rpc_password: String,
-        validator_cookie_path: Option<String>,
-    ) -> Result<Self, JsonRpSeeConnectorError> {
-        match validator_cookie_auth {
+        validator_cookie_path: Option<PathBuf>,
+    ) -> Result<Self, TransportError> {
+        match validator_cookie_path.is_some() {
             true => JsonRpSeeConnector::new_with_cookie_auth(
                 test_node_and_return_url(
                     validator_rpc_address,
-                    validator_cookie_auth,
                     validator_cookie_path.clone(),
                     None,
                     None,
@@ -206,7 +254,6 @@ impl JsonRpSeeConnector {
             false => JsonRpSeeConnector::new_with_basic_auth(
                 test_node_and_return_url(
                     validator_rpc_address,
-                    false,
                     None,
                     Some(validator_rpc_user.clone()),
                     Some(validator_rpc_password.clone()),
@@ -219,7 +266,7 @@ impl JsonRpSeeConnector {
     }
 
     /// Returns the http::uri the JsonRpSeeConnector is configured to send requests to.
-    pub fn uri(&self) -> Result<Uri, JsonRpSeeConnectorError> {
+    pub fn uri(&self) -> Result<Uri, TransportError> {
         Ok(self.url.as_str().parse()?)
     }
 
@@ -229,118 +276,198 @@ impl JsonRpSeeConnector {
     }
 
     /// Sends a jsonRPC request and returns the response.
-    ///
     /// NOTE: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     ///       This is because the node's queue can become overloaded and stop servicing RPCs.
     async fn send_request<
         T: std::fmt::Debug + Serialize,
-        R: std::fmt::Debug + for<'de> Deserialize<'de>,
+        R: std::fmt::Debug + for<'de> Deserialize<'de> + ResponseToError,
     >(
         &self,
         method: &str,
         params: T,
-    ) -> Result<R, JsonRpSeeConnectorError> {
+    ) -> Result<R, RpcRequestError<R::RpcError>>
+    where
+        R::RpcError: Send + Sync + 'static,
+    {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
-        let req = RpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: method.to_string(),
-            params,
-            id,
-        };
+
         let max_attempts = 5;
         let mut attempts = 0;
         loop {
             attempts += 1;
-            let mut request_builder = self
-                .client
-                .post(self.url.clone())
-                .header("Content-Type", "application/json");
 
-            match &self.auth_method {
-                AuthMethod::Basic { username, password } => {
-                    request_builder = request_builder.basic_auth(username, Some(password));
-                }
-                AuthMethod::Cookie { cookie } => {
-                    request_builder = request_builder.header(
-                        reqwest::header::AUTHORIZATION,
-                        format!(
-                            "Basic {}",
-                            general_purpose::STANDARD.encode(format!("__cookie__:{cookie}"))
-                        ),
-                    );
-                }
-            }
-
-            let request_body =
-                serde_json::to_string(&req).map_err(JsonRpSeeConnectorError::SerdeJsonError)?;
+            let request_builder = self
+                .build_request(method, &params, id)
+                .map_err(RpcRequestError::JsonRpc)?;
 
             let response = request_builder
-                .body(request_body)
                 .send()
                 .await
-                .map_err(JsonRpSeeConnectorError::ReqwestError)?;
+                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
 
             let status = response.status();
 
             let body_bytes = response
                 .bytes()
                 .await
-                .map_err(JsonRpSeeConnectorError::ReqwestError)?;
+                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
 
             let body_str = String::from_utf8_lossy(&body_bytes);
 
             if body_str.contains("Work queue depth exceeded") {
                 if attempts >= max_attempts {
-                    return Err(JsonRpSeeConnectorError::new(
-                        "Error: The node's rpc queue depth was exceeded after multiple attempts",
-                    ));
+                    return Err(RpcRequestError::ServerWorkQueueFull);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             }
 
-            if !status.is_success() {
-                return Err(JsonRpSeeConnectorError::new(format!(
-                    "Error: Error status from node's rpc server: {}, {}",
-                    status, body_str
-                )));
-            }
-
-            let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
-                .map_err(JsonRpSeeConnectorError::SerdeJsonError)?;
-
-            return match (response.error, response.result) {
-                (Some(error), _) => Err(JsonRpSeeConnectorError::new(format!(
-                    "Error: Error from node's rpc server: {} - {}",
-                    error.code, error.message
-                ))),
-                (None, Some(result)) => Ok(result),
-                (None, None) => Err(JsonRpSeeConnectorError::new(
-                    "error: no response body".to_string(),
+            let code = status.as_u16();
+            return match code {
+                // Invalid
+                ..100 | 600.. => Err(RpcRequestError::Transport(
+                    TransportError::InvalidStatusCode(code),
                 )),
+                // Informational | Redirection
+                100..200 | 300..400 => Err(RpcRequestError::Transport(
+                    TransportError::UnexpectedStatusCode(code),
+                )),
+                // Success
+                200..300 => {
+                    let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
+                        .map_err(|e| TransportError::BadNodeData(Box::new(e), type_name::<R>()))?;
+
+                    match (response.error, response.result) {
+                        (Some(error), _) => Err(RpcRequestError::Method(
+                            R::RpcError::try_from(error).map_err(|e| {
+                                RpcRequestError::UnexpectedErrorResponse(Box::new(e))
+                            })?,
+                        )),
+                        (None, Some(result)) => match result.to_error() {
+                            Ok(r) => Ok(r),
+                            Err(e) => Err(RpcRequestError::Method(e)),
+                        },
+                        (None, None) => Err(RpcRequestError::Transport(
+                            TransportError::EmptyResponseBody,
+                        )),
+                    }
+                    // Error
+                }
+                400..600 => Err(RpcRequestError::Transport(TransportError::ErrorStatusCode(
+                    code,
+                ))),
             };
         }
     }
 
-    /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
+    /// Builds a request from a given method, params, and id.
+    fn build_request<T: std::fmt::Debug + Serialize>(
+        &self,
+        method: &str,
+        params: T,
+        id: i32,
+    ) -> serde_json::Result<reqwest::RequestBuilder> {
+        let req = RpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            params,
+            id,
+        };
+
+        let mut request_builder = self
+            .client
+            .post(self.url.clone())
+            .header("Content-Type", "application/json");
+
+        match &self.auth_method {
+            AuthMethod::Basic { username, password } => {
+                request_builder = request_builder.basic_auth(username, Some(password));
+            }
+            AuthMethod::Cookie { cookie } => {
+                request_builder = request_builder.header(
+                    reqwest::header::AUTHORIZATION,
+                    format!(
+                        "Basic {}",
+                        general_purpose::STANDARD.encode(format!("__cookie__:{cookie}"))
+                    ),
+                );
+            }
+        }
+
+        let request_body = serde_json::to_string(&req)?;
+        request_builder = request_builder.body(request_body);
+
+        Ok(request_builder)
+    }
+
+    /// Returns all changes for an address.
+    ///
+    /// Returns information about all changes to the given transparent addresses within the given block range (inclusive)
+    ///
+    /// block height range, default is the full blockchain.
+    /// If start or end are not specified, they default to zero.
+    /// If start is greater than the latest block height, it's interpreted as that height.
+    ///
+    /// If end is zero, it's interpreted as the latest block height.
+    ///
+    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    pub async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, RpcRequestError<GetAddressDeltasError>> {
+        let params = vec![serde_json::to_value(params).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getaddressdeltas", params).await
+    }
+
+    /// Returns software information from the RPC server, as a [`crate::jsonrpsee::connector::GetInfoResponse`] JSON struct.
     ///
     /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
     /// tags: control
-    pub async fn get_info(&self) -> Result<GetInfoResponse, JsonRpSeeConnectorError> {
+    pub async fn get_info(&self) -> Result<GetInfoResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetInfoResponse>("getinfo", ())
             .await
     }
 
-    /// Returns blockchain state information, as a [`GetBlockChainInfo`] JSON struct.
     ///
     /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
     /// tags: blockchain
     pub async fn get_blockchain_info(
         &self,
-    ) -> Result<GetBlockchainInfoResponse, JsonRpSeeConnectorError> {
+    ) -> Result<GetBlockchainInfoResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetBlockchainInfoResponse>("getblockchaininfo", ())
+            .await
+    }
+
+    /// Returns details on the active state of the TX memory pool.
+    ///
+    /// online zcash rpc reference: [`getmempoolinfo`](https://zcash.github.io/rpc/getmempoolinfo.html)
+    /// method: post
+    /// tags: mempool
+    ///
+    /// Canonical source code implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
+    ///
+    /// Zebra does not support this RPC directly.
+    pub async fn get_mempool_info(
+        &self,
+    ) -> Result<GetMempoolInfoResponse, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetMempoolInfoResponse>("getmempoolinfo", ())
+            .await
+    }
+
+    /// Returns data about each connected network node as a json array of objects.
+    ///
+    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// tags: network
+    ///
+    /// Current `zebrad` does not include the same fields as `zcashd`.
+    pub async fn get_peer_info(&self) -> Result<GetPeerInfo, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetPeerInfo>("getpeerinfo", ())
             .await
     }
 
@@ -349,12 +476,31 @@ impl JsonRpSeeConnector {
     /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     /// method: post
     /// tags: blockchain
-    pub async fn get_difficulty(&self) -> Result<GetDifficultyResponse, JsonRpSeeConnectorError> {
+    pub async fn get_difficulty(
+        &self,
+    ) -> Result<GetDifficultyResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetDifficultyResponse>("getdifficulty", ())
             .await
     }
 
-    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
+    /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
+    ///
+    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
+    pub async fn get_block_subsidy(
+        &self,
+        height: u32,
+    ) -> Result<GetBlockSubsidy, RpcRequestError<Infallible>> {
+        let params = vec![serde_json::to_value(height).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getblocksubsidy", params).await
+    }
+
+    /// Returns the total balance of a provided `addresses` in an [`crate::jsonrpsee::response::GetBalanceResponse`] instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
@@ -367,13 +513,12 @@ impl JsonRpSeeConnector {
     pub async fn get_address_balance(
         &self,
         addresses: Vec<String>,
-    ) -> Result<GetBalanceResponse, JsonRpSeeConnectorError> {
+    ) -> Result<GetBalanceResponse, RpcRequestError<GetBalanceError>> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressbalance", params).await
     }
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`SentTransactionHash`] for the transaction, as a JSON string.
     ///
     /// zcashd reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
@@ -385,12 +530,13 @@ impl JsonRpSeeConnector {
     pub async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<SendTransactionResponse, JsonRpSeeConnectorError> {
-        let params = vec![serde_json::to_value(raw_transaction_hex)?];
+    ) -> Result<SendTransactionResponse, RpcRequestError<SendTransactionError>> {
+        let params =
+            vec![serde_json::to_value(raw_transaction_hex).map_err(RpcRequestError::JsonRpc)?];
         self.send_request("sendrawtransaction", params).await
     }
 
-    /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
+    /// Returns the requested block by hash or height, as a [`GetBlockResponse`].
     /// If the block is not in Zebra's state, returns
     /// [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
     ///
@@ -406,12 +552,13 @@ impl JsonRpSeeConnector {
         &self,
         hash_or_height: String,
         verbosity: Option<u8>,
-    ) -> Result<GetBlockResponse, JsonRpSeeConnectorError> {
+    ) -> Result<GetBlockResponse, RpcRequestError<GetBlockError>> {
         let v = verbosity.unwrap_or(1);
         let params = [
-            serde_json::to_value(hash_or_height)?,
-            serde_json::to_value(v)?,
+            serde_json::to_value(hash_or_height).map_err(RpcRequestError::JsonRpc)?,
+            serde_json::to_value(v).map_err(RpcRequestError::JsonRpc)?,
         ];
+
         if v == 0 {
             self.send_request("getblock", params)
                 .await
@@ -423,15 +570,86 @@ impl JsonRpSeeConnector {
         }
     }
 
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_block_deltas(
+        &self,
+        hash: String,
+    ) -> Result<BlockDeltas, RpcRequestError<BlockDeltasError>> {
+        let params = vec![serde_json::to_value(hash).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("getblockdeltas", params).await
+    }
+
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
+    /// If verbose is true, returns an Object with information about blockheader `hash`.
+    ///
+    /// # Parameters
+    ///
+    /// - hash: (string, required) The block hash
+    /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, RpcRequestError<GetBlockHeaderError>> {
+        let params = [
+            serde_json::to_value(hash).map_err(RpcRequestError::JsonRpc)?,
+            serde_json::to_value(verbose).map_err(RpcRequestError::JsonRpc)?,
+        ];
+        self.send_request("getblockheader", params).await
+    }
+
+    /// Returns the hash of the best block (tip) of the longest chain.
+    /// zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Notes
+    ///
+    /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
+    /// The Zcash source code is considered canonical.
+    /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
+    /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
+    /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
+    pub async fn get_best_blockhash(&self) -> Result<GetBlockHash, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetBlockHash>("getbestblockhash", ())
+            .await
+    }
+
     /// Returns the height of the most recent block in the best valid block chain
     /// (equivalently, the number of blocks in this chain excluding the genesis block).
     ///
     /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
     /// method: post
     /// tags: blockchain
-    pub async fn get_block_count(&self) -> Result<GetBlockCountResponse, JsonRpSeeConnectorError> {
+    pub async fn get_block_count(
+        &self,
+    ) -> Result<GetBlockCountResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetBlockCountResponse>("getblockcount", ())
             .await
+    }
+
+    /// Return information about the given Zcash address.
+    ///
+    /// # Parameters
+    /// - `address`: (string, required, example="tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb") The Zcash transparent address to validate.
+    ///
+    /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn validate_address(
+        &self,
+        address: String,
+    ) -> Result<ValidateAddressResponse, RpcRequestError<Infallible>> {
+        let params = vec![serde_json::to_value(address).map_err(RpcRequestError::JsonRpc)?];
+        self.send_request("validateaddress", params).await
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
@@ -439,7 +657,7 @@ impl JsonRpSeeConnector {
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
-    pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, JsonRpSeeConnectorError> {
+    pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, RpcRequestError<TxidsError>> {
         self.send_request::<(), TxidsResponse>("getrawmempool", ())
             .await
     }
@@ -456,8 +674,8 @@ impl JsonRpSeeConnector {
     pub async fn get_treestate(
         &self,
         hash_or_height: String,
-    ) -> Result<GetTreestateResponse, JsonRpSeeConnectorError> {
-        let params = vec![serde_json::to_value(hash_or_height)?];
+    ) -> Result<GetTreestateResponse, RpcRequestError<GetTreestateError>> {
+        let params = vec![serde_json::to_value(hash_or_height).map_err(RpcRequestError::JsonRpc)?];
         self.send_request("z_gettreestate", params).await
     }
 
@@ -477,22 +695,22 @@ impl JsonRpSeeConnector {
         pool: String,
         start_index: u16,
         limit: Option<u16>,
-    ) -> Result<GetSubtreesResponse, JsonRpSeeConnectorError> {
+    ) -> Result<GetSubtreesResponse, RpcRequestError<GetSubtreesError>> {
         let params = match limit {
             Some(v) => vec![
-                serde_json::to_value(pool)?,
-                serde_json::to_value(start_index)?,
-                serde_json::to_value(v)?,
+                serde_json::to_value(pool).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(start_index).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(v).map_err(RpcRequestError::JsonRpc)?,
             ],
             None => vec![
-                serde_json::to_value(pool)?,
-                serde_json::to_value(start_index)?,
+                serde_json::to_value(pool).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(start_index).map_err(RpcRequestError::JsonRpc)?,
             ],
         };
         self.send_request("z_getsubtreesbyindex", params).await
     }
 
-    /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
+    /// Returns the raw transaction data, as a [`GetTransactionResponse`].
     ///
     /// zcashd reference: [`getrawtransaction`](https://zcash.github.io/rpc/getrawtransaction.html)
     /// method: post
@@ -506,10 +724,16 @@ impl JsonRpSeeConnector {
         &self,
         txid_hex: String,
         verbose: Option<u8>,
-    ) -> Result<GetTransactionResponse, JsonRpSeeConnectorError> {
+    ) -> Result<GetTransactionResponse, RpcRequestError<Infallible>> {
         let params = match verbose {
-            Some(v) => vec![serde_json::to_value(txid_hex)?, serde_json::to_value(v)?],
-            None => vec![serde_json::to_value(txid_hex)?, serde_json::to_value(0)?],
+            Some(v) => vec![
+                serde_json::to_value(txid_hex).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(v).map_err(RpcRequestError::JsonRpc)?,
+            ],
+            None => vec![
+                serde_json::to_value(txid_hex).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(0).map_err(RpcRequestError::JsonRpc)?,
+            ],
         };
 
         self.send_request("getrawtransaction", params).await
@@ -532,7 +756,7 @@ impl JsonRpSeeConnector {
         addresses: Vec<String>,
         start: u32,
         end: u32,
-    ) -> Result<TxidsResponse, JsonRpSeeConnectorError> {
+    ) -> Result<TxidsResponse, RpcRequestError<TxidsError>> {
         let params = serde_json::json!({
             "addresses": addresses,
             "start": start,
@@ -554,17 +778,59 @@ impl JsonRpSeeConnector {
     pub async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
-    ) -> Result<Vec<GetUtxosResponse>, JsonRpSeeConnectorError> {
+    ) -> Result<Vec<GetUtxosResponse>, RpcRequestError<GetUtxosError>> {
         let params = vec![serde_json::json!({ "addresses": addresses })];
         self.send_request("getaddressutxos", params).await
+    }
+
+    /// Returns a json object containing mining-related information.
+    ///
+    /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
+    pub async fn get_mining_info(&self) -> Result<GetMiningInfoWire, RpcRequestError<Infallible>> {
+        self.send_request("getmininginfo", ()).await
+    }
+
+    /// Returns the estimated network solutions per second based on the last n blocks.
+    ///
+    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// This RPC is implemented in the [mining.cpp](https://github.com/zcash/zcash/blob/d00fc6f4365048339c83f463874e4d6c240b63af/src/rpc/mining.cpp#L104)
+    /// file of the Zcash repository. The Zebra implementation can be found [here](https://github.com/ZcashFoundation/zebra/blob/19bca3f1159f9cb9344c9944f7e1cb8d6a82a07f/zebra-rpc/src/methods.rs#L2687).
+    ///
+    /// # Parameters
+    ///
+    /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
+    /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
+    pub async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<GetNetworkSolPsResponse, RpcRequestError<Infallible>> {
+        let mut params = Vec::new();
+
+        // check whether the blocks parameter is present
+        if let Some(b) = blocks {
+            params.push(serde_json::json!(b));
+        } else {
+            params.push(serde_json::json!(120_i32))
+        }
+
+        // check whether the height parameter is present
+        if let Some(h) = height {
+            params.push(serde_json::json!(h));
+        } else {
+            // default to -1
+            params.push(serde_json::json!(-1_i32))
+        }
+
+        self.send_request("getnetworksolps", params).await
     }
 }
 
 /// Tests connection with zebrad / zebrad.
-async fn test_node_connection(
-    url: Url,
-    auth_method: AuthMethod,
-) -> Result<(), JsonRpSeeConnectorError> {
+async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), TransportError> {
     let client = Client::builder()
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(5))
@@ -595,25 +861,24 @@ async fn test_node_connection(
     let response = request_builder
         .send()
         .await
-        .map_err(JsonRpSeeConnectorError::ReqwestError)?;
+        .map_err(TransportError::ReqwestError)?;
     let body_bytes = response
         .bytes()
         .await
-        .map_err(JsonRpSeeConnectorError::ReqwestError)?;
-    let _response: RpcResponse<serde_json::Value> =
-        serde_json::from_slice(&body_bytes).map_err(JsonRpSeeConnectorError::SerdeJsonError)?;
+        .map_err(TransportError::ReqwestError)?;
+    let _response: RpcResponse<serde_json::Value> = serde_json::from_slice(&body_bytes)
+        .map_err(|e| TransportError::BadNodeData(Box::new(e), ""))?;
     Ok(())
 }
 
 /// Tries to connect to zebrad/zcashd using the provided SocketAddr and returns the correct URL.
 pub async fn test_node_and_return_url(
     addr: SocketAddr,
-    rpc_cookie_auth: bool,
-    cookie_path: Option<String>,
+    cookie_path: Option<PathBuf>,
     user: Option<String>,
     password: Option<String>,
-) -> Result<Url, JsonRpSeeConnectorError> {
-    let auth_method = match rpc_cookie_auth {
+) -> Result<Url, TransportError> {
+    let auth_method = match cookie_path.is_some() {
         true => {
             let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
             let cookie_password = read_and_parse_cookie_token(Path::new(&cookie_file_path_str))?;

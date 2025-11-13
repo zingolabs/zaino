@@ -20,27 +20,35 @@ use std::{
 /// - [>=7: Critical-Error].
 ///   TODO: Refine error code spec.
 #[derive(Debug, Clone)]
-pub struct AtomicStatus(Arc<AtomicUsize>);
+pub struct AtomicStatus {
+    inner: Arc<AtomicUsize>,
+}
 
 impl AtomicStatus {
     /// Creates a new AtomicStatus
-    pub fn new(status: u16) -> Self {
-        Self(Arc::new(AtomicUsize::new(status as usize)))
+    pub fn new(status: StatusType) -> Self {
+        Self {
+            inner: Arc::new(AtomicUsize::new(status.into())),
+        }
     }
 
     /// Loads the value held in the AtomicStatus
-    pub fn load(&self) -> usize {
-        self.0.load(Ordering::SeqCst)
+    pub fn load(&self) -> StatusType {
+        StatusType::from(self.inner.load(Ordering::SeqCst))
     }
 
     /// Sets the value held in the AtomicStatus
-    pub fn store(&self, status: usize) {
-        self.0.store(status, Ordering::SeqCst);
+    pub fn store(&self, status: StatusType) {
+        self.inner
+            .store(status.into(), std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 /// Status of the server's components.
-#[derive(Debug, PartialEq, Clone)]
+///
+/// TODO: Some of these statuses may be artefacts of a previous version
+/// of the status. We may be able to remove some of them
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum StatusType {
     /// Running initial startup routine.
     Spawning = 0,
@@ -81,18 +89,6 @@ impl From<StatusType> for usize {
     }
 }
 
-impl From<AtomicStatus> for StatusType {
-    fn from(status: AtomicStatus) -> Self {
-        status.load().into()
-    }
-}
-
-impl From<StatusType> for u16 {
-    fn from(status: StatusType) -> Self {
-        status as u16
-    }
-}
-
 impl fmt::Display for StatusType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let status_str = match self {
@@ -105,7 +101,7 @@ impl fmt::Display for StatusType {
             StatusType::RecoverableError => "RecoverableError",
             StatusType::CriticalError => "CriticalError",
         };
-        write!(f, "{}", status_str)
+        write!(f, "{status_str}")
     }
 }
 

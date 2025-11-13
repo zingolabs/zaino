@@ -11,13 +11,9 @@ version = { workspace = true }
 [dependencies]
 zaino-proto = { workspace = true }
 
-# Librustzcash
-zcash_protocol = { workspace = true }
-
 # Zebra
 zebra-chain = { workspace = true }
 zebra-rpc = { workspace = true }
-zebra-state = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
@@ -40,3 +36,7 @@ base64 = { workspace = true }
 byteorder = { workspace = true }
 sha2 = { workspace = true }
 jsonrpsee-types = { workspace = true }
+derive_more = { workspace = true, features = ["from"] }
+
+[dev-dependencies]
+zaino-testvectors = { workspace = true }

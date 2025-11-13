@@ -2,7 +2,7 @@
 
 use crate::{
     rpc::{jsonrpc::service::ZcashIndexerRpcServer as _, JsonRpcClient},
-    server::{config::JsonRpcConfig, error::ServerError},
+    server::{config::JsonRpcServerConfig, error::ServerError},
 };
 
 use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusType, ZcashIndexer};
@@ -36,20 +36,20 @@ impl JsonRpcServer {
     /// - Checks for shutdown signal, shutting down server if received.
     pub async fn spawn<Service: ZcashIndexer + LightWalletIndexer + Clone>(
         service_subscriber: IndexerSubscriber<Service>,
-        server_config: JsonRpcConfig,
+        server_config: JsonRpcServerConfig,
     ) -> Result<Self, ServerError> {
-        let status = AtomicStatus::new(StatusType::Spawning.into());
+        let status = AtomicStatus::new(StatusType::Spawning);
 
         let rpc_impl = JsonRpcClient {
             service_subscriber: service_subscriber.clone(),
         };
 
         // Initialize Zebra-compatible cookie-based authentication if enabled.
-        let (cookie, cookie_dir) = if server_config.enable_cookie_auth {
+        let (cookie, cookie_dir) = if server_config.cookie_dir.is_some() {
             let cookie = Cookie::default();
             if let Some(dir) = &server_config.cookie_dir {
                 write_to_disk(&cookie, dir).map_err(|e| {
-                    ServerError::ServerConfigError(format!("Failed to write cookie: {}", e))
+                    ServerError::ServerConfigError(format!("Failed to write cookie: {e}"))
                 })?;
             } else {
                 return Err(ServerError::ServerConfigError(
@@ -76,7 +76,7 @@ impl JsonRpcServer {
             .build(server_config.json_rpc_listen_address)
             .await
             .map_err(|e| {
-                ServerError::ServerConfigError(format!("JSON-RPC server build error: {}", e))
+                ServerError::ServerConfigError(format!("JSON-RPC server build error: {e}"))
             })?;
 
         let server_handle = server.start(rpc_impl.into_rpc());
@@ -86,7 +86,7 @@ impl JsonRpcServer {
         let shutdown_signal = async move {
             loop {
                 shutdown_check_interval.tick().await;
-                if StatusType::from(shutdown_check_status.load()) == StatusType::Closing {
+                if shutdown_check_status.load() == StatusType::Closing {
                     break;
                 }
             }
@@ -96,7 +96,7 @@ impl JsonRpcServer {
         let server_task_handle = tokio::task::spawn({
             let server_handle_clone = server_handle.clone();
             async move {
-                task_status.store(StatusType::Ready.into());
+                task_status.store(StatusType::Ready);
 
                 tokio::select! {
                     _ = shutdown_signal => {
@@ -105,7 +105,7 @@ impl JsonRpcServer {
                     _ = server_handle.stopped() => {},
                 }
 
-                task_status.store(StatusType::Offline.into());
+                task_status.store(StatusType::Offline);
                 Ok(())
             }
         });
@@ -119,7 +119,7 @@ impl JsonRpcServer {
 
     /// Sets the servers to close gracefully.
     pub async fn close(&mut self) {
-        self.status.store(StatusType::Closing as usize);
+        self.status.store(StatusType::Closing);
 
         if let Some(dir) = &self.cookie_dir {
             if let Err(e) = remove_from_disk(dir) {
@@ -134,7 +134,7 @@ impl JsonRpcServer {
 
     /// Returns the servers current status.
     pub fn status(&self) -> StatusType {
-        self.status.load().into()
+        self.status.load()
     }
 }
 

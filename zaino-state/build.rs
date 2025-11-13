@@ -4,6 +4,7 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr as _;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use cargo_lock::package::GitReference;
 use cargo_lock::package::SourceKind;
@@ -29,20 +30,27 @@ fn main() -> io::Result<()> {
     println!("cargo:rustc-env=BRANCH={}", branch.trim());
 
     // Set the build date
-    let build_date = Command::new("date")
-        .output()
-        .expect("Failed to get build date")
-        .stdout;
-    let build_date = String::from_utf8(build_date).expect("Invalid UTF-8 sequence");
-    println!("cargo:rustc-env=BUILD_DATE={}", build_date.trim());
+    // SOURCE_DATE_EPOCH can be used to set system time to a desired value
+    // which is important for achieving determinism. More details can be found
+    // at https://reproducible-builds.org/docs/source-date-epoch/
+    let build_date = match env::var("SOURCE_DATE_EPOCH") {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string(),
+    };
+
+    println!("cargo:rustc-env=BUILD_DATE={}", build_date);
 
     // Set the build user
     let build_user = whoami::username();
-    println!("cargo:rustc-env=BUILD_USER={}", build_user);
+    println!("cargo:rustc-env=BUILD_USER={build_user}");
 
     // Set the version from Cargo.toml
     let version = env::var("CARGO_PKG_VERSION").expect("Failed to get version from Cargo.toml");
-    println!("cargo:rustc-env=VERSION={}", version);
+    println!("cargo:rustc-env=VERSION={version}");
     let lockfile = Lockfile::load("../Cargo.lock").expect("build script cannot load lockfile");
     let maybe_zebra_rev = lockfile.packages.iter().find_map(|package| {
         if package.name == cargo_lock::Name::from_str("zebra-chain").unwrap() {
@@ -61,10 +69,7 @@ fn main() -> io::Result<()> {
     let dest_path = Path::new(&out_dir).join("zebraversion.rs");
     fs::write(
         &dest_path,
-        format!(
-            "const ZEBRA_VERSION: Option<&'static str> = {:?};",
-            maybe_zebra_rev
-        ),
+        format!("const ZEBRA_VERSION: Option<&'static str> = {maybe_zebra_rev:?};"),
     )
     .unwrap();
 

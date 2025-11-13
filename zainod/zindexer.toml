@@ -7,63 +7,80 @@
 # - "state" - Uses ReadStateService to fetch data (Zebrad).
 backend = "fetch"
 
-# JsonRPC server config:
+# Zainod JsonRPC server config:
+# Optional: Some enables Zaino's JsonRPC server.
+[json_server_settings]
+  # JsonRPC server listen addr. Required if json_server_settings is Some.
+  json_rpc_listen_address = "127.0.0.1:8237"
 
-# Enables JsonRPC server.
-enable_json_server =  false
-
-# JsonRPC server listen addr.
-json_rpc_listen_address = "127.0.0.1:8237"
-
-# Enables cookie-based authentication for JsonRPC server.
-enable_cookie_auth = false
-
-# Directory to store authentication cookie file.
-# If 'enable_cookie_auth' is true and this is omitted, a default ephemeral path (e.g., /tmp/zaino/.cookie or XDG_RUNTIME_DIR) will be used.
-# If 'enable_cookie_auth' is false, this setting is ignored and no cookie_dir is used.
-# cookie_dir = "/path/to/cookie_dir"
+  # Some enables cookie-based authentication for JsonRPC server.
+  # An empty PathBuf that is still Some will have a default emphemeral path assigned to it when zaino loads the config.
+  # (e.g., /tmp/zaino/.cookie or XDG_RUNTIME_DIR) will be used.
+  # Directory to store authentication cookie file.
+  # cookie_dir = ""
+  # cookie_dir = "/path/to/cookie_dir"
 
 # gRPC server config:
-
+# Required for valid zainod config.
+[grpc_settings]
 # Zainod's gRPC server listen address.
+  # SocketAddress, Required.
+  grpc_listen_address = "127.0.0.1:8137"
+
+  # Some Enables TLS for the gRPC server.
+  # tls: Option<GrpcTls>,
+  # [tls]
+    # Path to the TLS certificate file in PEM format.
+    # cert_path: ""
+    # cert_path = "/path/to/cert.pem"
+    # Path to the TLS private key file in PEM format.
+    # key_path = ""
+    # key_path = "/path/to/key.pem"
+
+# Validator config:
+# Required for valid zainod config.
+[validator_settings]
+  # Full node / validator listen address.
+  #
+  # Must be a "private" address as defined in [IETF RFC 1918] for ipv4 addreses and [IETF RFC 4193] for ipv6 addreses.
+  #
+  # Must use validator rpc cookie authentication when connecting to non localhost addresses.
+  # Required
+  validator_grpc_listen_address =  "127.0.0.1:18232"
+
+  # SocketAddr, Required.
+  validator_jsonrpc_listen_address = "127.0.0.1:18230"
+
+    # Optional. Enable validator rpc cookie authentication with Some.
+    # Path to the validator cookie file.
+    # validator_cookie_path = "/path/to/validator.cookie"
+    # validator_cookie_path = ""
+    # Optional. Enable  user / pass authentication with Some.
+    # Full node / validator Username.
+    # validator_user = ""
+    # Optional. Enable user / pass authentication with Some
+    # full node / validator Password.
+    # validator_password: ""
+    #
+#  Service-level configuration (timeout, channel size).
+#  Required.
+#  [service]
+#  ...
+
+#  Storage configuration (cache and database).
+#  Required.
+#  [storage]
 #
-# Must use TLS when connecting to non localhost addresses.
-grpc_listen_address = "127.0.0.1:8137"
-
-# Enables TLS for the gRPC server.
-grpc_tls = false
-
-# Path to the TLS certificate file in PEM format.
-# Required if `grpc_tls` is true. If omitted and grpc_tls is true, startup will fail.
-# tls_cert_path = "/path/to/cert.pem"
-
-# Path to the TLS private key file in PEM format.
-# Required if `grpc_tls` is true. If omitted and grpc_tls is true, startup will fail.
-# tls_key_path = "/path/to/key.pem"
-
-# JsonRPC client config:
-
-# Full node / validator listen address.
+#  ZebraDB location.
+#  PathBuf, Required.
+#  zebra_db_path = ""
 #
-# Must be a "private" address as defined in [IETF RFC 1918] for ipv4 addreses and [IETF RFC 4193] for ipv6 addreses.
-#
-# Must use validator rpc cookie authentication when connecting to non localhost addresses.
-validator_listen_address = "127.0.0.1:18232"
+#  Network chain type.
+#  Required.
+#  Network chain type (Mainnet, Testnet, Regtest).
+#  network = "Testnet"
 
-# Enable validator rpc cookie authentication.
-validator_cookie_auth = false
-
-# Path to the validator cookie file.
-# Required if `validator_cookie_auth` is true. If omitted and validator_cookie_auth is true, startup will fail.
-# validator_cookie_path = "/path/to/validator.cookie"
-
-# Optional full node / validator Username.
-# validator_user = "xxxxxx"
-
-# Optional full node / validator Password.
-# validator_password = "xxxxxx"
-
-# Mempool, Non-Finalised State and Finalised State config:
+# ----
 
 # Capacity of the Dashmaps used for the Mempool.
 # Also used by the BlockCache::NonFinalisedState when using the FetchService.
@@ -89,25 +106,3 @@ validator_cookie_auth = false
 # Only used by the FetchService.
 # If omitted, no specific limit may be enforced by Zaino for this setting initially.
 # db_size = 100
-
-# Network:
-
-# Network chain type (Mainnet, Testnet, Regtest).
-network = "Testnet"
-
-# Options:
-
-# Disables internal sync and stops zaino waiting on server to sync with p2p network.
-# Useful for testing.
-no_sync = false
-
-# Disables the FinalisedState in the BlockCache
-#
-# Only used by the FetchServic.
-# Used for testing.
-no_db = false
-
-# When enabled Zaino syncs it DB in the background, fetching data from the validator.
-#
-# NOTE: Unimplemented.
-slow_sync = false
