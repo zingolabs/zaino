@@ -13,15 +13,15 @@ use tempfile::TempDir;
 /// It automatically kills the daemon when dropped to ensure cleanup.
 struct ZainodTestContainer {
     /// service addresses
-    addresses: ZainodServiceAddresses,
+    addresses: ServiceAddresses,
     /// child process handle
     process: Child,
     /// Temporary directory for config and data
     _temp_dir: TempDir,
 }
 
-/// Ports that zainod may have
-struct ZainodServiceAddresses {
+/// SocketAddrs that zainod may have
+struct ServiceAddresses {
     /// grpc_server listener for incoming client connections to the zainod grpc server
     grpc_address: SocketAddr,
     /// lightwallet client supporting RPC-server JSON-RPC listen address
@@ -43,11 +43,23 @@ impl TestPaths {
         }
     }
 }
-impl ZainodServiceAddresses {
-    fn generate_addresses() -> Self {
-        let grpc_port = portpicker::pick_unused_port().expect("No ports for grpc");
-        let json_rpc_port = portpicker::pick_unused_port().expect("No ports for json_rpc");
-        ZainodServiceAddresses {
+fn pick_non_reserved_port(reserved: &Vec<u16>) -> u16 {
+    loop {
+        let port = portpicker::pick_unused_port().expect("to pick one!");
+
+        if !reserved.contains(&port) {
+            return port;
+        }
+    }
+}
+impl ServiceAddresses {
+    fn generate_random_unused_addresses() -> Self {
+        // disallow zebra ports from being picked
+        let mut reserved = vec![18230, 18232];
+        let grpc_port = pick_non_reserved_port(&reserved);
+        reserved.extend([grpc_port]);
+        let json_rpc_port = pick_non_reserved_port(&reserved);
+        ServiceAddresses {
             grpc_address: format!("127.0.0.1:{}", grpc_port)
                 .parse::<SocketAddr>()
                 .unwrap(),
@@ -56,10 +68,16 @@ impl ZainodServiceAddresses {
                 .unwrap(),
         }
     }
+    fn zebrad_default_addresses() -> Self {
+        ServiceAddresses {
+            grpc_address: "127.0.0.1:18232".parse::<SocketAddr>().unwrap(),
+            json_rpc_address: "127.0.0.1:18230".parse::<SocketAddr>().unwrap(),
+        }
+    }
 }
 impl ZainodTestContainer {
     async fn spawn() {
-        let addresses = ZainodServiceAddresses::generate_addresses();
+        let zainod_addresses = ServiceAddresses::generate_random_unused_addresses();
         let test_paths = TestPaths::generate_paths();
     }
 }
