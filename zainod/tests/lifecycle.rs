@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo nextest run --package zainod --test lifecycle
 
-use std::{net::SocketAddr, process::Child};
+use std::{net::SocketAddr, path::PathBuf, process::Child};
 use tempfile::TempDir;
 
 ///  A *private* test type to facilitate test process management
@@ -28,6 +28,21 @@ struct ZainodServiceAddresses {
     json_rpc_address: SocketAddr,
 }
 
+struct TestPaths {
+    config: PathBuf,
+    db: PathBuf,
+    zebra_db: PathBuf,
+}
+impl TestPaths {
+    fn generate_paths() -> Self {
+        let temp_dir = tempfile::tempdir().expect("to create a tempdir");
+        Self {
+            config: temp_dir.path().join("test_config.toml"),
+            db: temp_dir.path().join("zaino_db"),
+            zebra_db: temp_dir.path().join("zebra_db"),
+        }
+    }
+}
 impl ZainodServiceAddresses {
     fn generate_addresses() -> Self {
         let grpc_port = portpicker::pick_unused_port().expect("No ports for grpc");
@@ -44,8 +59,11 @@ impl ZainodServiceAddresses {
 }
 impl ZainodTestContainer {
     async fn spawn() {
-        todo!()
+        let addresses = ZainodServiceAddresses::generate_addresses();
+        let test_paths = TestPaths::generate_paths();
     }
 }
-#[test]
-fn an_int_test() {}
+#[tokio::test]
+async fn an_int_test() {
+    ZainodTestContainer::spawn().await;
+}
