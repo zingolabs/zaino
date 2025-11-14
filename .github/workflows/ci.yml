@@ -117,7 +117,7 @@ jobs:
           - "integration-tests::state_service"
           - "integration-tests::test_vectors"
           - "integration-tests::wallet_to_validator"
-          - "zainod::config"
+          - "zainod"
           - "zaino-state"
           - "zaino-testutils"
     steps:
