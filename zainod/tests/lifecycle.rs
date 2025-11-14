@@ -55,6 +55,7 @@ fn pick_non_reserved_port(reserved: &Vec<u16>) -> u16 {
 impl ServiceAddresses {
     fn generate_random_unused_addresses() -> Self {
         // disallow zebra ports from being picked
+        // I'm assuming zebra spawns first
         let mut reserved = vec![18230, 18232];
         let grpc_port = pick_non_reserved_port(&reserved);
         reserved.extend([grpc_port]);
@@ -75,8 +76,39 @@ impl ServiceAddresses {
         }
     }
 }
+fn create_test_config(
+    zainod_grpc: SocketAddr,
+    zainod_rpc: Option<SocketAddr>,
+    validator_rpc_addr: SocketAddr,
+    validator_grpc_address: SocketAddr,
+    db_path: PathBuf,
+    zebra_db_path: PathBuf,
+) -> String {
+    let json_server_selection = if let Some(addr) = zainod_rpc {
+        format!(
+            r#"
+[json_server_settings]
+json_rpc_listen_address = "{}"
+            "#,
+            addr
+        )
+    } else {
+        String::new()
+    };
+    format! {
+                            r#"
+backend = "fetch"
+{json_server_selection}
+[grpc_settings]
+grpc_listen_address = "{zainod_grpc}"
+path = "{db_path}"
+zebra_db_path = "{zebra_db_path}"
+network = "Regtest"
+"#, db_path = db_path.display(), zebra_db_path = zebra_db_path.display()}
+}
 impl ZainodTestContainer {
     async fn spawn() {
+        let zebrad_addresses = ServiceAddresses::zebrad_default_addresses();
         let zainod_addresses = ServiceAddresses::generate_random_unused_addresses();
         let test_paths = TestPaths::generate_paths();
     }
