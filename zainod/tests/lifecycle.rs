@@ -124,6 +124,15 @@ impl ZainodTestContainer {
         let zebrad_addresses = ServiceAddresses::zebrad_default_addresses();
         let zainod_addresses = ServiceAddresses::generate_random_unused_addresses();
         let test_paths = TestPaths::generate_paths();
+        let config = create_test_config(
+            zainod_addresses.grpc_address,
+            Some(zainod_addresses.json_rpc_address),
+            zebrad_addresses.json_rpc_address,
+            zebrad_addresses.grpc_address,
+            test_paths.db,
+            test_paths.zebra_db,
+        );
+        eprintln!("{}", config);
     }
 }
 #[tokio::test]
