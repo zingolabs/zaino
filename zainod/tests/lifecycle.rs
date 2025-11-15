@@ -79,7 +79,7 @@ impl ServiceAddresses {
 fn create_test_config(
     zainod_grpc: SocketAddr,
     zainod_rpc: Option<SocketAddr>,
-    validator_rpc_addr: SocketAddr,
+    validator_rpc_address: SocketAddr,
     validator_grpc_address: SocketAddr,
     db_path: PathBuf,
     zebra_db_path: PathBuf,
@@ -102,6 +102,16 @@ backend = "fetch"
 [grpc_settings]
 grpc_listen_address = "{zainod_grpc}"
 [validator_settings]
+validator_jsonrpc_listen_address = "{validator_rpc_address}"
+validator_grpc_listen_address = "{validator_grpc_address}"
+validator_user = "testuser"
+validator_password = "testpass"
+[service]
+# Use default service settings
+[storage]
+[storage.cache]
+# Use default cache settings
+[storage.database]
 path = "{db_path}"
 zebra_db_path = "{zebra_db_path}"
 network = "Regtest"
