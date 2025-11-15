@@ -96,15 +96,18 @@ json_rpc_listen_address = "{}"
         String::new()
     };
     format! {
-                            r#"
+            r#"
 backend = "fetch"
 {json_server_selection}
 [grpc_settings]
 grpc_listen_address = "{zainod_grpc}"
+[validator_settings]
 path = "{db_path}"
 zebra_db_path = "{zebra_db_path}"
 network = "Regtest"
-"#, db_path = db_path.display(), zebra_db_path = zebra_db_path.display()}
+"#, db_path = db_path.display(),
+    zebra_db_path = zebra_db_path.display()
+    }
 }
 impl ZainodTestContainer {
     async fn spawn() {
