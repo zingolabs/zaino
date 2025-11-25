@@ -6,9 +6,9 @@ use crate::IndexedBlock;
 
 use std::sync::Arc;
 
-impl<T> NonFinalized for Arc<T>
+impl<T> Snapshottable for Arc<T>
 where
-    T: NonFinalized,
+    T: Snapshottable,
 {
     fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
         self.as_ref().get_chainblock_by_hash(target_hash)
@@ -24,7 +24,7 @@ where
 }
 
 /// A snapshot of the non-finalized state, for consistent queries
-pub trait NonFinalized {
+pub trait Snapshottable {
     /// Hash -> block
     fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock>;
     /// Height -> block
@@ -33,7 +33,7 @@ pub trait NonFinalized {
     fn best_chaintip(&self) -> BestTip;
 }
 
-impl NonFinalized for NonfinalizedBlockCacheSnapshot {
+impl Snapshottable for NonfinalizedBlockCacheSnapshot {
     fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
         self.blocks.iter().find_map(|(hash, chainblock)| {
             if hash == target_hash {

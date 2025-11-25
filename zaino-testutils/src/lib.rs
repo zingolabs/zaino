@@ -23,7 +23,7 @@ use zaino_common::{
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_state::{
     BackendType, ChainIndexQueryable as _, LightWalletIndexer, LightWalletService,
-    NonFinalized as _, Subscriber, ZcashIndexer, ZcashService,
+    Snapshottable as _, Subscriber, ZcashIndexer, ZcashService,
 };
 use zainodlib::{config::ZainodConfig, error::IndexerError, indexer::Indexer};
 pub use zcash_local_net as services;

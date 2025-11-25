@@ -42,7 +42,7 @@ pub use chain_index::non_finalised_state::{
     InitError, NodeConnectionError, NonFinalizedState, NonfinalizedBlockCacheSnapshot, SyncError,
     UpdateError,
 };
-pub use chain_index::snapshot::NonFinalized;
+pub use chain_index::snapshot::Snapshottable;
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
     AddrHistRecord, AddrScript, BlockData, BlockHash, BlockHeaderData, BlockIndex, BlockMetadata,

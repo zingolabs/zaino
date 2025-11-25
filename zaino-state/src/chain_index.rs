@@ -11,7 +11,7 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::snapshot::NonFinalized as _;
+use crate::chain_index::snapshot::Snapshottable as _;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::{AtomicStatus, NonfinalizedBlockCacheSnapshot, StatusType};
@@ -299,7 +299,7 @@ pub struct Index<Source: BlockchainSource = ValidatorConnector> {
 /// 3. Call `Index::new(source, config).await`
 pub trait Queryable {
     /// A snapshot of the nonfinalized state, needed for atomic access
-    type Snapshot: snapshot::NonFinalized;
+    type Snapshot: snapshot::Snapshottable;
 
     /// How it can fail
     type Error;
