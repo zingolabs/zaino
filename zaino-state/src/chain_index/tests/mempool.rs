@@ -8,7 +8,7 @@ use crate::{
     chain_index::{
         mempool::MempoolSubscriber,
         source::test::MockchainSource,
-        tests::vectors::{build_active_mockchain_source, load_test_vectors},
+        tests::vectors::{build_active_mockchain_source, load_test_vectors, TestVectorBlockData},
     },
     Mempool, MempoolKey, MempoolValue,
 };
@@ -19,7 +19,7 @@ async fn spawn_mempool_and_mockchain() -> (
     MockchainSource,
     Vec<zebra_chain::block::Block>,
 ) {
-    let (blocks, _faucet, _recipient) = load_test_vectors().unwrap();
+    let blocks = load_test_vectors().unwrap().blocks;
 
     let mockchain = build_active_mockchain_source(0, blocks.clone());
 
@@ -29,7 +29,7 @@ async fn spawn_mempool_and_mockchain() -> (
 
     let block_data = blocks
         .iter()
-        .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
+        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
     (mempool, subscriber, mockchain, block_data)

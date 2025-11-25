@@ -105,18 +105,11 @@ impl ZainodConfig {
         }
 
         // Check validator cookie authentication settings
-        if self.validator_settings.validator_cookie_path.is_some() {
-            if let Some(ref cookie_path) = self.validator_settings.validator_cookie_path {
-                if !std::path::Path::new(cookie_path).exists() {
-                    return Err(IndexerError::ConfigError(
+        if let Some(ref cookie_path) = self.validator_settings.validator_cookie_path {
+            if !std::path::Path::new(cookie_path).exists() {
+                return Err(IndexerError::ConfigError(
                         format!("Validator cookie authentication is enabled, but cookie path '{:?}' does not exist.", cookie_path),
                     ));
-                }
-            } else {
-                return Err(IndexerError::ConfigError(
-                    "Validator cookie authentication is enabled, but no cookie path is provided."
-                        .to_string(),
-                ));
             }
         }
 

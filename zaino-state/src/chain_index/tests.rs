@@ -29,6 +29,7 @@ mod mockchain_tests {
             source::test::MockchainSource,
             tests::vectors::{
                 build_active_mockchain_source, build_mockchain_source, load_test_vectors,
+                TestVectorBlockData,
             },
             types::{BestChainLocation, TransactionHash},
             Index, Queryable, Subscriber,
@@ -39,24 +40,14 @@ mod mockchain_tests {
     async fn load_test_vectors_and_sync_chain_index(
         active_mockchain_source: bool,
     ) -> (
-        Vec<(
-            u32,
-            zebra_chain::block::Block,
-            (
-                zebra_chain::sapling::tree::Root,
-                u64,
-                zebra_chain::orchard::tree::Root,
-                u64,
-            ),
-            (Vec<u8>, Vec<u8>),
-        )>,
+        Vec<TestVectorBlockData>,
         Index<MockchainSource>,
         Subscriber<MockchainSource>,
         MockchainSource,
     ) {
         super::init_tracing();
 
-        let (blocks, _faucet, _recipient) = load_test_vectors().unwrap();
+        let blocks = load_test_vectors().unwrap().blocks;
 
         let source = if active_mockchain_source {
             build_active_mockchain_source(150, blocks.clone())
@@ -123,7 +114,7 @@ mod mockchain_tests {
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
 
-            let expected_block = &blocks[i].1;
+            let expected_block = &blocks[i].zebra_block;
             assert_eq!(&parsed_block, expected_block);
         }
     }
@@ -135,10 +126,10 @@ mod mockchain_tests {
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
         for (expected_transaction, height) in blocks.into_iter().flat_map(|block| {
             block
-                .1
+                .zebra_block
                 .transactions
                 .into_iter()
-                .map(move |transaction| (transaction, block.0))
+                .map(move |transaction| (transaction, block.height))
         }) {
             let (transaction, branch_id) = index_reader
                 .get_raw_transaction(
@@ -178,11 +169,17 @@ mod mockchain_tests {
         for (expected_transaction, block_hash, block_height) in
             blocks.into_iter().flat_map(|block| {
                 block
-                    .1
+                    .zebra_block
                     .transactions
                     .iter()
                     .cloned()
-                    .map(|transaction| (transaction, block.1.hash(), block.1.coinbase_height()))
+                    .map(|transaction| {
+                        (
+                            transaction,
+                            block.zebra_block.hash(),
+                            block.zebra_block.coinbase_height(),
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .into_iter()
             })
@@ -237,7 +234,7 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
+            .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
@@ -284,7 +281,7 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
+            .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
@@ -329,7 +326,7 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
+            .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
@@ -375,7 +372,7 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
+            .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
@@ -440,7 +437,7 @@ mod mockchain_tests {
 
         let block_data: Vec<zebra_chain::block::Block> = blocks
             .iter()
-            .map(|(_height, zebra_block, _roots, _treestates)| zebra_block.clone())
+            .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
             .collect();
 
         sleep(Duration::from_millis(2000)).await;
@@ -517,7 +514,12 @@ mod mockchain_tests {
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
 
         // Positive cases: every known best-chain block returns its height
-        for (expected_height, zebra_block, _roots, _treestates) in blocks.iter() {
+        for TestVectorBlockData {
+            height,
+            zebra_block,
+            ..
+        } in blocks.iter()
+        {
             let got = index_reader
                 .get_block_height(
                     &nonfinalized_snapshot,
@@ -525,7 +527,7 @@ mod mockchain_tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(got, Some(crate::Height(*expected_height)));
+            assert_eq!(got, Some(crate::Height(*height)));
         }
 
         // Negative case: an unknown hash returns None
@@ -542,8 +544,12 @@ mod mockchain_tests {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
 
-        for (_height, zebra_block, _roots, (expected_sapling_bytes, expected_orchard_bytes)) in
-            blocks.into_iter()
+        for TestVectorBlockData {
+            zebra_block,
+            sapling_tree_state,
+            orchard_tree_state,
+            ..
+        } in blocks.into_iter()
         {
             let (sapling_bytes_opt, orchard_bytes_opt) = index_reader
                 .get_treestate(&crate::BlockHash(zebra_block.hash().0))
@@ -552,11 +558,11 @@ mod mockchain_tests {
 
             assert_eq!(
                 sapling_bytes_opt.as_deref(),
-                Some(expected_sapling_bytes.as_slice())
+                Some(sapling_tree_state.as_slice())
             );
             assert_eq!(
                 orchard_bytes_opt.as_deref(),
-                Some(expected_orchard_bytes.as_slice())
+                Some(orchard_tree_state.as_slice())
             );
         }
     }

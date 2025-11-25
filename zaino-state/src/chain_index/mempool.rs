@@ -18,6 +18,7 @@ use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 /// Holds txid.
 ///
 /// TODO: Update to hold zebra_chain::Transaction::Hash ( or internal version )
+/// `https://github.com/zingolabs/zaino/issues/661`
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub struct MempoolKey {
     /// currently txid (as string) - see above TODO, could be stronger type
