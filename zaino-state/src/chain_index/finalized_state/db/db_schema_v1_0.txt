@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────────────
-#  Zaino – Finalized State Database, on-disk layout (Schema v1, 2025-08-05)
+#  Zaino – Finalised State Database, on-disk layout (Schema v1, 2025-08-05)
 # ────────────────────────────────────────────────────────────────────────────────
 #
 #  Any change to this file is a **breaking** change.  Bump the schema version,
