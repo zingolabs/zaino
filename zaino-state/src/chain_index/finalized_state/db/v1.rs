@@ -3723,8 +3723,8 @@ impl DbV1 {
                     // Warn if schema hash mismatches
                     // NOTE: There could be a schema mismatch at launch during minor migrations,
                     //       so we do not return an error here. Maybe we can improve this?
-                    if meta.schema_hash != DB_SCHEMA_V1_HASH {
-                        warn!(
+                    if dbg!(meta.schema_hash != DB_SCHEMA_V1_HASH) {
+                        panic!(
                             "schema hash mismatch: db_schema_v1.txt has likely changed \
                          without bumping version; expected 0x{:02x?}, found 0x{:02x?}",
                             &DB_SCHEMA_V1_HASH[..4],
