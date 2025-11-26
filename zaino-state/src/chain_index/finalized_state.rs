@@ -1,4 +1,4 @@
-//! Holds the Finalised portion of the chain index on disk.
+//! Holds the Finalized portion of the chain index on disk.
 
 // TODO / FIX - REMOVE THIS ONCE CHAININDEX LANDS!
 #![allow(dead_code)]
@@ -21,7 +21,7 @@ use zebra_chain::parameters::NetworkKind;
 use crate::{
     chain_index::{source::BlockchainSourceError, types::GENESIS_HEIGHT},
     config::BlockCacheConfig,
-    error::FinalisedStateError,
+    error::FinalizedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, StatusType,
 };
 
@@ -44,7 +44,7 @@ impl ZainoDB {
     pub(crate) async fn spawn<T>(
         cfg: BlockCacheConfig,
         source: T,
-    ) -> Result<Self, FinalisedStateError>
+    ) -> Result<Self, FinalizedStateError>
     where
         T: BlockchainSource,
     {
@@ -62,7 +62,7 @@ impl ZainoDB {
                 patch: 0,
             },
             x => {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(FinalizedStateError::Custom(format!(
                     "unsupported database version: DbV{x}"
                 )));
             }
@@ -75,7 +75,7 @@ impl ZainoDB {
                     0 => DbBackend::spawn_v0(&cfg).await?,
                     1 => DbBackend::spawn_v1(&cfg).await?,
                     _ => {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(FinalizedStateError::Custom(format!(
                             "unsupported database version: DbV{version}"
                         )));
                     }
@@ -87,7 +87,7 @@ impl ZainoDB {
                     0 => DbBackend::spawn_v0(&cfg).await?,
                     1 => DbBackend::spawn_v1(&cfg).await?,
                     _ => {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(FinalizedStateError::Custom(format!(
                             "unsupported database version: DbV{target_version}"
                         )));
                     }
@@ -117,7 +117,7 @@ impl ZainoDB {
     }
 
     /// Gracefully shuts down the running ZainoDB, closing all child processes.
-    pub(crate) async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn shutdown(&self) -> Result<(), FinalizedStateError> {
         self.db.shutdown().await
     }
 
@@ -192,7 +192,7 @@ impl ZainoDB {
     pub(crate) fn backend_for_cap(
         &self,
         cap: CapabilityRequest,
-    ) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    ) -> Result<Arc<DbBackend>, FinalizedStateError> {
         self.db.backend(cap)
     }
 
@@ -203,7 +203,7 @@ impl ZainoDB {
         &self,
         height: Height,
         source: T,
-    ) -> Result<(), FinalisedStateError>
+    ) -> Result<(), FinalizedStateError>
     where
         T: BlockchainSource,
     {
@@ -239,7 +239,7 @@ impl ZainoDB {
             {
                 Some(block) => block,
                 None => {
-                    return Err(FinalisedStateError::BlockchainSourceError(
+                    return Err(FinalizedStateError::BlockchainSourceError(
                         BlockchainSourceError::Unrecoverable(format!(
                             "error fetching block at height {} from validator",
                             height.0
@@ -256,14 +256,14 @@ impl ZainoDB {
                         (sapling_root, sapling_size, orchard_root, orchard_size)
                     }
                     (None, _) => {
-                        return Err(FinalisedStateError::BlockchainSourceError(
+                        return Err(FinalizedStateError::BlockchainSourceError(
                             BlockchainSourceError::Unrecoverable(format!(
                                 "missing Sapling commitment tree root for block {block_hash}"
                             )),
                         ));
                     }
                     (_, None) => {
-                        return Err(FinalisedStateError::BlockchainSourceError(
+                        return Err(FinalizedStateError::BlockchainSourceError(
                             BlockchainSourceError::Unrecoverable(format!(
                                 "missing Orchard commitment tree root for block {block_hash}"
                             )),
@@ -284,7 +284,7 @@ impl ZainoDB {
             let chain_block = match IndexedBlock::try_from(block_with_metadata) {
                 Ok(block) => block,
                 Err(_) => {
-                    return Err(FinalisedStateError::BlockchainSourceError(
+                    return Err(FinalizedStateError::BlockchainSourceError(
                         BlockchainSourceError::Unrecoverable(format!(
                             "error building block data at height {}",
                             height.0
@@ -303,7 +303,7 @@ impl ZainoDB {
     /// Writes a block to the database.
     ///
     /// This **MUST** be the *next* block in the chain (db_tip_height + 1).
-    pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalizedStateError> {
         self.db.write_block(b).await
     }
 
@@ -317,29 +317,29 @@ impl ZainoDB {
     pub(crate) async fn delete_block_at_height(
         &self,
         h: Height,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), FinalizedStateError> {
         self.db.delete_block_at_height(h).await
     }
 
     /// Deletes a given block from the database.
     ///
     /// This **MUST** be the *top* block in the db.
-    pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), FinalizedStateError> {
         self.db.delete_block(b).await
     }
 
     // ***** DB Core Read *****
 
     /// Returns the highest block height held in the database.
-    pub(crate) async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+    pub(crate) async fn db_height(&self) -> Result<Option<Height>, FinalizedStateError> {
         self.db.db_height().await
     }
 
-    /// Returns the block height for the given block hash *if* present in the finalised state.
+    /// Returns the block height for the given block hash *if* present in the finalized state.
     pub(crate) async fn get_block_height(
         &self,
         hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    ) -> Result<Option<Height>, FinalizedStateError> {
         self.db.get_block_height(hash).await
     }
 
@@ -347,12 +347,12 @@ impl ZainoDB {
     pub(crate) async fn get_block_hash(
         &self,
         height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError> {
+    ) -> Result<Option<BlockHash>, FinalizedStateError> {
         self.db.get_block_hash(height).await
     }
 
     /// Returns metadata for the running ZainoDB.
-    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalizedStateError> {
         self.db.get_metadata().await
     }
 

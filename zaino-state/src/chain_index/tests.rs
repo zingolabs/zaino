@@ -1,6 +1,6 @@
 //! Zaino-State ChainIndex unit tests.
 
-pub(crate) mod finalised_state;
+pub(crate) mod finalized_state;
 pub(crate) mod mempool;
 pub(crate) mod vectors;
 

@@ -1,4 +1,4 @@
-//! Holds zaino-state::Broadcast, a thread safe broadcaster used by the mempool and non-finalised state.
+//! Holds zaino-state::Broadcast, a thread safe broadcaster used by the mempool and non-finalized state.
 
 use dashmap::DashMap;
 use std::{collections::HashSet, hash::Hash, sync::Arc};

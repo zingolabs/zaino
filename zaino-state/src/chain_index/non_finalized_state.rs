@@ -1,7 +1,7 @@
-use super::{finalised_state::ZainoDB, source::BlockchainSource};
+use super::{finalized_state::ZainoDB, source::BlockchainSource};
 use crate::{
     chain_index::types::{self, BlockHash, BlockMetadata, BlockWithMetadata, Height, TreeRootData},
-    error::FinalisedStateError,
+    error::FinalizedStateError,
     ChainWork, IndexedBlock,
 };
 use arc_swap::ArcSwap;
@@ -124,7 +124,7 @@ pub enum InitError {
     MempoolInitialzationError(#[from] crate::error::MempoolError),
     #[error(transparent)]
     /// The finalized state failed to initialize
-    FinalisedStateInitialzationError(#[from] FinalisedStateError),
+    FinalizedStateInitialzationError(#[from] FinalizedStateError),
     /// the initial block provided was not on the best chain
     #[error("initial block not on best chain")]
     InitalBlockMissingHeight,
@@ -189,7 +189,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         network: Network,
         start_block: Option<IndexedBlock>,
     ) -> Result<Self, InitError> {
-        info!("Initialising non-finalised state.");
+        info!("Initialising non-finalized state.");
 
         // Set up staging channel for block processing
         let staging_channel = StagingChannel::new(100);
@@ -285,7 +285,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map(Mutex::new)
     }
 
-    /// sync to the top of the chain, trimming to the finalised tip.
+    /// sync to the top of the chain, trimming to the finalized tip.
     pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
         let initial_state = self.get_snapshot();
         let mut nonbest_blocks = HashMap::new();
@@ -555,7 +555,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.staging_sender.try_send(block).map_err(Box::new)
     }
 
-    /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalised tip.
+    /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalized tip.
     async fn update(&self, finalized_db: Arc<ZainoDB>) -> Result<(), UpdateError> {
         let mut new = HashMap::<BlockHash, IndexedBlock>::new();
         let mut staged = self.staged.lock().await;

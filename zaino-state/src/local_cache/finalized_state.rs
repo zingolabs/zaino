@@ -1,4 +1,4 @@
-//! Compact Block Cache finalised state implementation.
+//! Compact Block Cache finalized state implementation.
 
 use lmdb::{Cursor, Database, Environment, Transaction};
 use prost::Message;
@@ -17,7 +17,7 @@ use zaino_proto::proto::compact_formats::CompactBlock;
 
 use crate::{
     config::BlockCacheConfig,
-    error::FinalisedStateError,
+    error::FinalizedStateError,
     local_cache::fetch_block_from_node,
     status::{AtomicStatus, StatusType},
 };
@@ -34,10 +34,10 @@ impl DbHeight {
     }
 
     /// Parse a 4-byte **big-endian** array into a `[DbHeight]`.
-    fn from_be_bytes(bytes: &[u8]) -> Result<Self, FinalisedStateError> {
+    fn from_be_bytes(bytes: &[u8]) -> Result<Self, FinalizedStateError> {
         let arr: [u8; 4] = bytes
             .try_into()
-            .map_err(|_| FinalisedStateError::Custom("Invalid height key length".to_string()))?;
+            .map_err(|_| FinalizedStateError::Custom("Invalid height key length".to_string()))?;
         Ok(DbHeight(Height(u32::from_be_bytes(arr))))
     }
 }
@@ -78,14 +78,14 @@ impl<'de> Deserialize<'de> for DbCompactBlock {
 #[derive(Debug)]
 struct DbRequest {
     hash_or_height: HashOrHeight,
-    response_channel: tokio::sync::oneshot::Sender<Result<CompactBlock, FinalisedStateError>>,
+    response_channel: tokio::sync::oneshot::Sender<Result<CompactBlock, FinalizedStateError>>,
 }
 
 impl DbRequest {
     /// Creates a new [`DbRequest`].
     fn new(
         hash_or_height: HashOrHeight,
-        response_channel: tokio::sync::oneshot::Sender<Result<CompactBlock, FinalisedStateError>>,
+        response_channel: tokio::sync::oneshot::Sender<Result<CompactBlock, FinalizedStateError>>,
     ) -> Self {
         Self {
             hash_or_height,
@@ -96,7 +96,7 @@ impl DbRequest {
 
 /// Fanalised part of the chain, held in an LMDB database.
 #[derive(Debug)]
-pub struct FinalisedState {
+pub struct FinalizedState {
     /// JsonRPC client based chain fetch service.
     fetcher: JsonRpSeeConnector,
     /// Optional ReadStateService based chain fetch service.
@@ -113,14 +113,14 @@ pub struct FinalisedState {
     read_task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Database writer task handle.
     write_task_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Non-finalised state status.
+    /// Non-finalized state status.
     status: AtomicStatus,
     /// BlockCache config data.
     config: BlockCacheConfig,
 }
 
-impl FinalisedState {
-    /// Spawns a new [`Self`] and syncs the FinalisedState to the servers finalised state.
+impl FinalizedState {
+    /// Spawns a new [`Self`] and syncs the FinalizedState to the servers finalized state.
     ///
     /// Inputs:
     /// - fetcher: Json RPC client.
@@ -133,8 +133,8 @@ impl FinalisedState {
         state: Option<&ReadStateService>,
         block_receiver: tokio::sync::mpsc::Receiver<(Height, Hash, CompactBlock)>,
         config: BlockCacheConfig,
-    ) -> Result<Self, FinalisedStateError> {
-        info!("Launching Finalised State..");
+    ) -> Result<Self, FinalizedStateError> {
+        info!("Launching Finalized State..");
         let db_size_bytes = config.storage.database.size.to_byte_count();
         let db_path_dir = match config.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "live",
@@ -157,19 +157,19 @@ impl FinalisedState {
             Err(lmdb::Error::NotFound) => {
                 database.create_db(Some("heights_to_hashes"), lmdb::DatabaseFlags::empty())?
             }
-            Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            Err(e) => return Err(FinalizedStateError::LmdbError(e)),
         };
         let hashes_to_blocks = match database.open_db(Some("hashes_to_blocks")) {
             Ok(db) => db,
             Err(lmdb::Error::NotFound) => {
                 database.create_db(Some("hashes_to_blocks"), lmdb::DatabaseFlags::empty())?
             }
-            Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            Err(e) => return Err(FinalizedStateError::LmdbError(e)),
         };
 
         let (request_tx, request_rx) = tokio::sync::mpsc::channel(124);
 
-        let mut finalised_state = FinalisedState {
+        let mut finalized_state = FinalizedState {
             fetcher: fetcher.clone(),
             state: state.cloned(),
             database,
@@ -182,20 +182,20 @@ impl FinalisedState {
             config,
         };
 
-        finalised_state.sync_db_from_reorg().await?;
-        finalised_state.spawn_writer(block_receiver).await?;
-        finalised_state.spawn_reader(request_rx).await?;
+        finalized_state.sync_db_from_reorg().await?;
+        finalized_state.spawn_writer(block_receiver).await?;
+        finalized_state.spawn_reader(request_rx).await?;
 
-        finalised_state.status.store(StatusType::Ready);
+        finalized_state.status.store(StatusType::Ready);
 
-        Ok(finalised_state)
+        Ok(finalized_state)
     }
 
     async fn spawn_writer(
         &mut self,
         mut block_receiver: tokio::sync::mpsc::Receiver<(Height, Hash, CompactBlock)>,
-    ) -> Result<(), FinalisedStateError> {
-        let finalised_state = Self {
+    ) -> Result<(), FinalizedStateError> {
+        let finalized_state = Self {
             fetcher: self.fetcher.clone(),
             state: self.state.clone(),
             database: Arc::clone(&self.database),
@@ -213,20 +213,20 @@ impl FinalisedState {
                 let mut retry_attempts = 3;
 
                 loop {
-                    match finalised_state.insert_block((height, hash, compact_block.clone())) {
+                    match finalized_state.insert_block((height, hash, compact_block.clone())) {
                         Ok(_) => {
                             info!(
-                                "Block at height [{}] with hash [{}] successfully committed to finalised state.",
+                                "Block at height [{}] with hash [{}] successfully committed to finalized state.",
                                 height.0, hash
                             );
                             break;
                         }
-                        Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
-                            match finalised_state.get_hash(height.0) {
+                        Err(FinalizedStateError::LmdbError(lmdb::Error::KeyExist)) => {
+                            match finalized_state.get_hash(height.0) {
                                 Ok(db_hash) => {
                                     if db_hash != hash {
-                                        if finalised_state.delete_block(height).is_err() {
-                                            finalised_state.status.store(StatusType::CriticalError);
+                                        if finalized_state.delete_block(height).is_err() {
+                                            finalized_state.status.store(StatusType::CriticalError);
                                             return;
                                         };
                                         continue;
@@ -239,14 +239,14 @@ impl FinalisedState {
                                     }
                                 }
                                 Err(_) => {
-                                    finalised_state.status.store(StatusType::CriticalError);
+                                    finalized_state.status.store(StatusType::CriticalError);
                                     return;
                                 }
                             }
                         }
-                        Err(FinalisedStateError::LmdbError(db_err)) => {
+                        Err(FinalizedStateError::LmdbError(db_err)) => {
                             error!("LMDB error inserting block {}: {:?}", height.0, db_err);
-                            finalised_state.status.store(StatusType::CriticalError);
+                            finalized_state.status.store(StatusType::CriticalError);
                             return;
                         }
                         Err(e) => {
@@ -260,16 +260,16 @@ impl FinalisedState {
                                     "Failed to insert block {} after multiple retries.",
                                     height.0
                                 );
-                                finalised_state.status.store(StatusType::CriticalError);
+                                finalized_state.status.store(StatusType::CriticalError);
                                 return;
                             }
 
                             retry_attempts -= 1;
 
                             match fetch_block_from_node(
-                                finalised_state.state.as_ref(),
-                                Some(&finalised_state.config.network.to_zebra_network()),
-                                &finalised_state.fetcher,
+                                finalized_state.state.as_ref(),
+                                Some(&finalized_state.config.network.to_zebra_network()),
+                                &finalized_state.fetcher,
                                 HashOrHeight::Height(height),
                             )
                             .await
@@ -287,7 +287,7 @@ impl FinalisedState {
                                         "Failed to fetch block {} from validator: {:?}",
                                         height.0, fetch_err
                                     );
-                                    finalised_state.status.store(StatusType::CriticalError);
+                                    finalized_state.status.store(StatusType::CriticalError);
                                     return;
                                 }
                             }
@@ -306,8 +306,8 @@ impl FinalisedState {
     async fn spawn_reader(
         &mut self,
         mut request_receiver: tokio::sync::mpsc::Receiver<DbRequest>,
-    ) -> Result<(), FinalisedStateError> {
-        let finalised_state = Self {
+    ) -> Result<(), FinalizedStateError> {
+        let finalized_state = Self {
             fetcher: self.fetcher.clone(),
             state: self.state.clone(),
             database: Arc::clone(&self.database),
@@ -326,20 +326,20 @@ impl FinalisedState {
                 response_channel,
             }) = request_receiver.recv().await
             {
-                let response = match finalised_state.get_block(hash_or_height) {
+                let response = match finalized_state.get_block(hash_or_height) {
                     Ok(block) => Ok(block),
                     Err(_) => {
                         warn!("Failed to fetch block from DB, re-fetching from validator.");
                         match fetch_block_from_node(
-                            finalised_state.state.as_ref(),
-                            Some(&finalised_state.config.network.to_zebra_network()),
-                            &finalised_state.fetcher,
+                            finalized_state.state.as_ref(),
+                            Some(&finalized_state.config.network.to_zebra_network()),
+                            &finalized_state.fetcher,
                             hash_or_height,
                         )
                         .await
                         {
                             Ok((hash, block)) => {
-                                match finalised_state.insert_block((
+                                match finalized_state.insert_block((
                                     Height(block.height as u32),
                                     hash,
                                     block.clone(),
@@ -351,8 +351,8 @@ impl FinalisedState {
                                     }
                                 }
                             }
-                            Err(_) => Err(FinalisedStateError::Custom(format!(
-                                "Block {hash_or_height:?} not found in finalised state or validator."
+                            Err(_) => Err(FinalizedStateError::Custom(format!(
+                                "Block {hash_or_height:?} not found in finalized state or validator."
                             ))),
                         }
                     }
@@ -373,7 +373,7 @@ impl FinalisedState {
     /// Checks for reorg before syncing:
     /// - Searches from ZainoDB tip backwards looking for the last valid block in the database and sets `reorg_height` to the last VALID block.
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
-    async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
+    async fn sync_db_from_reorg(&self) -> Result<(), FinalizedStateError> {
         let network = self.config.network.to_zebra_network();
 
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
@@ -389,7 +389,7 @@ impl FinalisedState {
         {
             zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
             _ => {
-                return Err(FinalisedStateError::Custom(
+                return Err(FinalizedStateError::Custom(
                     "Unexpected block response type".to_string(),
                 ))
             }
@@ -402,7 +402,7 @@ impl FinalisedState {
             match reorg_height.previous() {
                 Ok(height) => reorg_height = height,
                 // Underflow error meaning reorg_height = start of chain.
-                // This means the whole finalised state is old or corrupt.
+                // This means the whole finalized state is old or corrupt.
                 Err(_) => {
                     {
                         let mut txn = self.database.begin_rw_txn()?;
@@ -423,14 +423,14 @@ impl FinalisedState {
             {
                 zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
                 _ => {
-                    return Err(FinalisedStateError::Custom(
+                    return Err(FinalizedStateError::Custom(
                         "Unexpected block response type".to_string(),
                     ))
                 }
             };
         }
 
-        // Refill from max(reorg_height[+1], sapling_activation_height) to current server (finalised state) height.
+        // Refill from max(reorg_height[+1], sapling_activation_height) to current server (finalized state) height.
         let mut sync_height = self
             .fetcher
             .get_blockchain_info()
@@ -461,7 +461,7 @@ impl FinalisedState {
                     Ok((hash, block)) => {
                         self.insert_block((Height(block_height), hash, block))?;
                         info!(
-                            "Block at height {} successfully inserted in finalised state.",
+                            "Block at height {} successfully inserted in finalized state.",
                             block_height
                         );
                         break;
@@ -497,7 +497,7 @@ impl FinalisedState {
                             Ok((hash, block)) => {
                                 self.insert_block((Height(block_height), hash, block))?;
                                 info!(
-                                    "Block at height {} successfully inserted in finalised state.",
+                                    "Block at height {} successfully inserted in finalized state.",
                                     block_height
                                 );
                                 break;
@@ -533,8 +533,8 @@ impl FinalisedState {
         Ok(())
     }
 
-    /// Inserts a block into the finalised state.
-    fn insert_block(&self, block: (Height, Hash, CompactBlock)) -> Result<(), FinalisedStateError> {
+    /// Inserts a block into the finalized state.
+    fn insert_block(&self, block: (Height, Hash, CompactBlock)) -> Result<(), FinalizedStateError> {
         let (height, hash, compact_block) = block;
         // let height_key = serde_json::to_vec(&DbHeight(height))?;
         let height_key = DbHeight(height).to_be_bytes();
@@ -559,14 +559,14 @@ impl FinalisedState {
             })
         {
             txn.abort();
-            return Err(FinalisedStateError::LmdbError(database_err));
+            return Err(FinalizedStateError::LmdbError(database_err));
         }
         txn.commit()?;
         Ok(())
     }
 
-    /// Deletes a block from the finalised state.
-    fn delete_block(&self, height: Height) -> Result<(), FinalisedStateError> {
+    /// Deletes a block from the finalized state.
+    fn delete_block(&self, height: Height) -> Result<(), FinalizedStateError> {
         let hash = self.get_hash(height.0)?;
         // let height_key = serde_json::to_vec(&DbHeight(height))?;
         let height_key = DbHeight(height).to_be_bytes();
@@ -582,7 +582,7 @@ impl FinalisedState {
     /// Retrieves a CompactBlock by Height or Hash.
     ///
     /// NOTE: It may be more efficient to implement a `get_block_range` method and batch database read calls.
-    fn get_block(&self, height_or_hash: HashOrHeight) -> Result<CompactBlock, FinalisedStateError> {
+    fn get_block(&self, height_or_hash: HashOrHeight) -> Result<CompactBlock, FinalizedStateError> {
         let txn = self.database.begin_ro_txn()?;
 
         let hash_key = match height_or_hash {
@@ -601,7 +601,7 @@ impl FinalisedState {
     }
 
     /// Retrieves a Hash by Height.
-    fn get_hash(&self, height: u32) -> Result<Hash, FinalisedStateError> {
+    fn get_hash(&self, height: u32) -> Result<Hash, FinalizedStateError> {
         let txn = self.database.begin_ro_txn()?;
 
         // let height_key = serde_json::to_vec(&DbHeight(Height(height)))?;
@@ -610,11 +610,11 @@ impl FinalisedState {
         let hash_bytes: &[u8] = match txn.get(self.heights_to_hashes, &height_key) {
             Ok(bytes) => bytes,
             Err(lmdb::Error::NotFound) => {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(FinalizedStateError::Custom(format!(
                     "No hash found for height {height}"
                 )));
             }
-            Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            Err(e) => return Err(FinalizedStateError::LmdbError(e)),
         };
 
         let hash: Hash = serde_json::from_slice(hash_bytes)?;
@@ -622,7 +622,7 @@ impl FinalisedState {
     }
 
     /// Fetches the highest stored height from LMDB.
-    pub fn get_db_height(&self) -> Result<Height, FinalisedStateError> {
+    pub fn get_db_height(&self) -> Result<Height, FinalizedStateError> {
         let txn = self.database.begin_ro_txn()?;
         let mut cursor = txn.open_ro_cursor(self.heights_to_hashes)?;
 
@@ -635,20 +635,20 @@ impl FinalisedState {
         }
     }
 
-    /// Returns a [`FinalisedStateSubscriber`].
-    pub fn subscriber(&self) -> FinalisedStateSubscriber {
-        FinalisedStateSubscriber {
+    /// Returns a [`FinalizedStateSubscriber`].
+    pub fn subscriber(&self) -> FinalizedStateSubscriber {
+        FinalizedStateSubscriber {
             request_sender: self.request_sender.clone(),
             status: self.status.clone(),
         }
     }
 
-    /// Returns the status of the finalised state.
+    /// Returns the status of the finalized state.
     pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
-    /// Sets the finalised state to close gracefully.
+    /// Sets the finalized state to close gracefully.
     pub fn close(&mut self) {
         self.status.store(StatusType::Closing);
         if let Some(handle) = self.read_task_handle.take() {
@@ -664,7 +664,7 @@ impl FinalisedState {
     }
 }
 
-impl Drop for FinalisedState {
+impl Drop for FinalizedState {
     fn drop(&mut self) {
         self.status.store(StatusType::Closing);
         if let Some(handle) = self.read_task_handle.take() {
@@ -680,19 +680,19 @@ impl Drop for FinalisedState {
     }
 }
 
-/// A subscriber to a [`crate::test_dependencies::chain_index::non_finalised_state::NonFinalizedState`].
+/// A subscriber to a [`crate::test_dependencies::chain_index::non_finalized_state::NonFinalizedState`].
 #[derive(Debug, Clone)]
-pub struct FinalisedStateSubscriber {
+pub struct FinalizedStateSubscriber {
     request_sender: tokio::sync::mpsc::Sender<DbRequest>,
     status: AtomicStatus,
 }
 
-impl FinalisedStateSubscriber {
-    /// Returns a Compact Block from the non-finalised state.
+impl FinalizedStateSubscriber {
+    /// Returns a Compact Block from the non-finalized state.
     pub async fn get_compact_block(
         &self,
         hash_or_height: HashOrHeight,
-    ) -> Result<CompactBlock, FinalisedStateError> {
+    ) -> Result<CompactBlock, FinalizedStateError> {
         let (channel_tx, channel_rx) = tokio::sync::oneshot::channel();
         if self
             .request_sender
@@ -700,7 +700,7 @@ impl FinalisedStateSubscriber {
             .await
             .is_err()
         {
-            return Err(FinalisedStateError::Custom(
+            return Err(FinalizedStateError::Custom(
                 "Error sending request to db reader".to_string(),
             ));
         }
@@ -708,16 +708,16 @@ impl FinalisedStateSubscriber {
         let result = tokio::time::timeout(std::time::Duration::from_secs(30), channel_rx).await;
         match result {
             Ok(Ok(compact_block)) => compact_block,
-            Ok(Err(_)) => Err(FinalisedStateError::Custom(
+            Ok(Err(_)) => Err(FinalizedStateError::Custom(
                 "Error receiving block from db reader".to_string(),
             )),
-            Err(_) => Err(FinalisedStateError::Custom(
+            Err(_) => Err(FinalizedStateError::Custom(
                 "Timeout while waiting for compact block".to_string(),
             )),
         }
     }
 
-    /// Returns the status of the FinalisedState..
+    /// Returns the status of the FinalizedState..
     pub fn status(&self) -> StatusType {
         self.status.load()
     }

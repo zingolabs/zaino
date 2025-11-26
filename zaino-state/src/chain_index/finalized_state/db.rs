@@ -8,14 +8,14 @@ use v1::DbV1;
 
 use crate::{
     chain_index::{
-        finalised_state::capability::{
+        finalized_state::capability::{
             BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
             DbMetadata, DbRead, DbWrite, IndexedBlockExt, TransparentHistExt,
         },
         types::TransactionHash,
     },
     config::BlockCacheConfig,
-    error::FinalisedStateError,
+    error::FinalizedStateError,
     AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, Height, IndexedBlock,
     OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
     TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
@@ -40,12 +40,12 @@ pub(crate) enum DbBackend {
 
 impl DbBackend {
     /// Spawn a v0 database.
-    pub(crate) async fn spawn_v0(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v0(cfg: &BlockCacheConfig) -> Result<Self, FinalizedStateError> {
         Ok(Self::V0(DbV0::spawn(cfg).await?))
     }
 
     /// Spawn a v1 database.
-    pub(crate) async fn spawn_v1(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v1(cfg: &BlockCacheConfig) -> Result<Self, FinalizedStateError> {
         Ok(Self::V1(DbV1::spawn(cfg).await?))
     }
 
@@ -95,7 +95,7 @@ impl DbCore for DbBackend {
         }
     }
 
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    async fn shutdown(&self) -> Result<(), FinalizedStateError> {
         match self {
             Self::V0(db) => db.shutdown().await,
             Self::V1(db) => db.shutdown().await,
@@ -105,7 +105,7 @@ impl DbCore for DbBackend {
 
 #[async_trait]
 impl DbRead for DbBackend {
-    async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+    async fn db_height(&self) -> Result<Option<Height>, FinalizedStateError> {
         match self {
             Self::V0(db) => db.db_height().await,
             Self::V1(db) => db.db_height().await,
@@ -115,7 +115,7 @@ impl DbRead for DbBackend {
     async fn get_block_height(
         &self,
         hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    ) -> Result<Option<Height>, FinalizedStateError> {
         match self {
             Self::V0(db) => db.get_block_height(hash).await,
             Self::V1(db) => db.get_block_height(hash).await,
@@ -125,14 +125,14 @@ impl DbRead for DbBackend {
     async fn get_block_hash(
         &self,
         height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError> {
+    ) -> Result<Option<BlockHash>, FinalizedStateError> {
         match self {
             Self::V0(db) => db.get_block_hash(height).await,
             Self::V1(db) => db.get_block_hash(height).await,
         }
     }
 
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    async fn get_metadata(&self) -> Result<DbMetadata, FinalizedStateError> {
         match self {
             Self::V0(db) => db.get_metadata().await,
             Self::V1(db) => db.get_metadata().await,
@@ -142,28 +142,28 @@ impl DbRead for DbBackend {
 
 #[async_trait]
 impl DbWrite for DbBackend {
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalizedStateError> {
         match self {
             Self::V0(db) => db.write_block(block).await,
             Self::V1(db) => db.write_block(block).await,
         }
     }
 
-    async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError> {
+    async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalizedStateError> {
         match self {
             Self::V0(db) => db.delete_block_at_height(height).await,
             Self::V1(db) => db.delete_block_at_height(height).await,
         }
     }
 
-    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalizedStateError> {
         match self {
             Self::V0(db) => db.delete_block(block).await,
             Self::V1(db) => db.delete_block(block).await,
         }
     }
 
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError> {
+    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalizedStateError> {
         match self {
             Self::V0(db) => db.update_metadata(metadata).await,
             Self::V1(db) => db.update_metadata(metadata).await,
@@ -178,10 +178,10 @@ impl BlockCoreExt for DbBackend {
     async fn get_block_header(
         &self,
         height: Height,
-    ) -> Result<BlockHeaderData, FinalisedStateError> {
+    ) -> Result<BlockHeaderData, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_header(height).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_core")),
         }
     }
 
@@ -189,17 +189,17 @@ impl BlockCoreExt for DbBackend {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
+    ) -> Result<Vec<BlockHeaderData>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_headers(start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_core")),
         }
     }
 
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
+    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_txids(height).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_core")),
         }
     }
 
@@ -207,30 +207,30 @@ impl BlockCoreExt for DbBackend {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TxidList>, FinalisedStateError> {
+    ) -> Result<Vec<TxidList>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_txids(start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_core")),
         }
     }
 
     async fn get_txid(
         &self,
         tx_location: TxLocation,
-    ) -> Result<TransactionHash, FinalisedStateError> {
+    ) -> Result<TransactionHash, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_txid(tx_location).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_core")),
         }
     }
 
     async fn get_tx_location(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_tx_location(txid).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_core")),
         }
     }
 }
@@ -240,20 +240,20 @@ impl BlockTransparentExt for DbBackend {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<TransparentCompactTx>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_transparent(tx_location).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 
     async fn get_block_transparent(
         &self,
         height: Height,
-    ) -> Result<TransparentTxList, FinalisedStateError> {
+    ) -> Result<TransparentTxList, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_transparent(height).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 
@@ -261,10 +261,10 @@ impl BlockTransparentExt for DbBackend {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
+    ) -> Result<Vec<TransparentTxList>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_transparent(start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 }
@@ -274,17 +274,17 @@ impl BlockShieldedExt for DbBackend {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<SaplingCompactTx>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_sapling(tx_location).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
-    async fn get_block_sapling(&self, h: Height) -> Result<SaplingTxList, FinalisedStateError> {
+    async fn get_block_sapling(&self, h: Height) -> Result<SaplingTxList, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_sapling(h).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -292,27 +292,27 @@ impl BlockShieldedExt for DbBackend {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
+    ) -> Result<Vec<SaplingTxList>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_sapling(start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_orchard(tx_location).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
-    async fn get_block_orchard(&self, h: Height) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_orchard(&self, h: Height) -> Result<OrchardTxList, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_orchard(h).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -320,20 +320,20 @@ impl BlockShieldedExt for DbBackend {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_orchard(start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,
-    ) -> Result<CommitmentTreeData, FinalisedStateError> {
+    ) -> Result<CommitmentTreeData, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_commitment_tree_data(height).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -341,10 +341,10 @@ impl BlockShieldedExt for DbBackend {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
+    ) -> Result<Vec<CommitmentTreeData>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_commitment_tree_data(start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 }
@@ -354,12 +354,12 @@ impl CompactBlockExt for DbBackend {
     async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
+    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalizedStateError> {
         #[allow(unreachable_patterns)]
         match self {
             Self::V0(db) => db.get_compact_block(height).await,
             Self::V1(db) => db.get_compact_block(height).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("compact_block")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("compact_block")),
         }
     }
 }
@@ -369,10 +369,10 @@ impl IndexedBlockExt for DbBackend {
     async fn get_chain_block(
         &self,
         height: Height,
-    ) -> Result<Option<IndexedBlock>, FinalisedStateError> {
+    ) -> Result<Option<IndexedBlock>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_chain_block(height).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("chain_block")),
+            _ => Err(FinalizedStateError::FeatureUnavailable("chain_block")),
         }
     }
 }
@@ -382,10 +382,10 @@ impl TransparentHistExt for DbBackend {
     async fn addr_records(
         &self,
         script: AddrScript,
-    ) -> Result<Option<Vec<crate::chain_index::types::AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<crate::chain_index::types::AddrEventBytes>>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.addr_records(script).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
+            _ => Err(FinalizedStateError::FeatureUnavailable(
                 "transparent_history",
             )),
         }
@@ -395,10 +395,10 @@ impl TransparentHistExt for DbBackend {
         &self,
         script: AddrScript,
         tx_location: TxLocation,
-    ) -> Result<Option<Vec<crate::chain_index::types::AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<crate::chain_index::types::AddrEventBytes>>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.addr_and_index_records(script, tx_location).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
+            _ => Err(FinalizedStateError::FeatureUnavailable(
                 "transparent_history",
             )),
         }
@@ -409,10 +409,10 @@ impl TransparentHistExt for DbBackend {
         script: AddrScript,
         start: Height,
         end: Height,
-    ) -> Result<Option<Vec<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<TxLocation>>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.addr_tx_locations_by_range(script, start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
+            _ => Err(FinalizedStateError::FeatureUnavailable(
                 "transparent_history",
             )),
         }
@@ -423,10 +423,10 @@ impl TransparentHistExt for DbBackend {
         script: AddrScript,
         start: Height,
         end: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.addr_utxos_by_range(script, start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
+            _ => Err(FinalizedStateError::FeatureUnavailable(
                 "transparent_history",
             )),
         }
@@ -437,10 +437,10 @@ impl TransparentHistExt for DbBackend {
         script: AddrScript,
         start: Height,
         end: Height,
-    ) -> Result<i64, FinalisedStateError> {
+    ) -> Result<i64, FinalizedStateError> {
         match self {
             Self::V1(db) => db.addr_balance_by_range(script, start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
+            _ => Err(FinalizedStateError::FeatureUnavailable(
                 "transparent_history",
             )),
         }
@@ -449,10 +449,10 @@ impl TransparentHistExt for DbBackend {
     async fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_outpoint_spender(outpoint).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
+            _ => Err(FinalizedStateError::FeatureUnavailable(
                 "transparent_history",
             )),
         }
@@ -461,10 +461,10 @@ impl TransparentHistExt for DbBackend {
     async fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,
-    ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Vec<Option<TxLocation>>, FinalizedStateError> {
         match self {
             Self::V1(db) => db.get_outpoint_spenders(outpoints).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
+            _ => Err(FinalizedStateError::FeatureUnavailable(
                 "transparent_history",
             )),
         }

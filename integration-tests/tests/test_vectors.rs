@@ -75,7 +75,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     clients.faucet.sync_and_await().await.unwrap();
 
-    // *** Mine 100 blocks to finalise first block reward ***
+    // *** Mine 100 blocks to finalize first block reward ***
     test_manager
         .generate_blocks_and_poll_indexer(100, &state_service_subscriber)
         .await;

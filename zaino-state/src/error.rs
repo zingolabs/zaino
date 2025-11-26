@@ -298,13 +298,13 @@ pub enum BlockCacheError {
     #[error("Critical error: {0}")]
     Critical(String),
 
-    /// Errors from the NonFinalisedState.
-    #[error("NonFinalisedState Error: {0}")]
-    NonFinalisedStateError(#[from] NonFinalisedStateError),
+    /// Errors from the NonFinalizedState.
+    #[error("NonFinalizedState Error: {0}")]
+    NonFinalizedStateError(#[from] NonFinalizedStateError),
 
-    /// Errors from the FinalisedState.
-    #[error("FinalisedState Error: {0}")]
-    FinalisedStateError(#[from] FinalisedStateError),
+    /// Errors from the FinalizedState.
+    #[error("FinalizedState Error: {0}")]
+    FinalizedStateError(#[from] FinalizedStateError),
 
     /// Error from JsonRpcConnector.
     #[error("JsonRpcConnector error: {0}")]
@@ -332,28 +332,28 @@ pub enum BlockCacheError {
 }
 /// These aren't the best conversions, but the NonFinalizedStateError should go away
 /// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
+impl<T: ToString> From<RpcRequestError<T>> for NonFinalizedStateError {
     fn from(value: RpcRequestError<T>) -> Self {
         match value {
             RpcRequestError::Transport(transport_error) => {
-                NonFinalisedStateError::JsonRpcConnectorError(transport_error)
+                NonFinalizedStateError::JsonRpcConnectorError(transport_error)
             }
             RpcRequestError::JsonRpc(error) => {
-                NonFinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
+                NonFinalizedStateError::Custom(format!("argument failed to serialze: {error}"))
             }
             RpcRequestError::InternalUnrecoverable(e) => {
-                NonFinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
+                NonFinalizedStateError::Custom(format!("Internal unrecoverable error: {e}"))
             }
-            RpcRequestError::ServerWorkQueueFull => NonFinalisedStateError::Custom(
+            RpcRequestError::ServerWorkQueueFull => NonFinalizedStateError::Custom(
                 "Server queue full. Handling for this not yet implemented".to_string(),
             ),
-            RpcRequestError::Method(e) => NonFinalisedStateError::Custom(format!(
+            RpcRequestError::Method(e) => NonFinalizedStateError::Custom(format!(
                 "unhandled rpc-specific {} error: {}",
                 type_name::<T>(),
                 e.to_string()
             )),
             RpcRequestError::UnexpectedErrorResponse(error) => {
-                NonFinalisedStateError::Custom(format!(
+                NonFinalizedStateError::Custom(format!(
                     "unhandled rpc-specific {} error: {}",
                     type_name::<T>(),
                     error
@@ -363,14 +363,14 @@ impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
     }
 }
 
-/// Errors related to the `NonFinalisedState`.
+/// Errors related to the `NonFinalizedState`.
 #[derive(Debug, thiserror::Error)]
-pub enum NonFinalisedStateError {
+pub enum NonFinalizedStateError {
     /// Custom Errors. *Remove before production.
     #[error("Custom error: {0}")]
     Custom(String),
 
-    /// Required data is missing from the non-finalised state.
+    /// Required data is missing from the non-finalized state.
     #[error("Missing data: {0}")]
     MissingData(String),
 
@@ -388,28 +388,28 @@ pub enum NonFinalisedStateError {
 }
 /// These aren't the best conversions, but the FinalizedStateError should go away
 /// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
+impl<T: ToString> From<RpcRequestError<T>> for FinalizedStateError {
     fn from(value: RpcRequestError<T>) -> Self {
         match value {
             RpcRequestError::Transport(transport_error) => {
-                FinalisedStateError::JsonRpcConnectorError(transport_error)
+                FinalizedStateError::JsonRpcConnectorError(transport_error)
             }
             RpcRequestError::JsonRpc(error) => {
-                FinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
+                FinalizedStateError::Custom(format!("argument failed to serialze: {error}"))
             }
             RpcRequestError::InternalUnrecoverable(e) => {
-                FinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
+                FinalizedStateError::Custom(format!("Internal unrecoverable error: {e}"))
             }
-            RpcRequestError::ServerWorkQueueFull => FinalisedStateError::Custom(
+            RpcRequestError::ServerWorkQueueFull => FinalizedStateError::Custom(
                 "Server queue full. Handling for this not yet implemented".to_string(),
             ),
-            RpcRequestError::Method(e) => FinalisedStateError::Custom(format!(
+            RpcRequestError::Method(e) => FinalizedStateError::Custom(format!(
                 "unhandled rpc-specific {} error: {}",
                 type_name::<T>(),
                 e.to_string()
             )),
             RpcRequestError::UnexpectedErrorResponse(error) => {
-                FinalisedStateError::Custom(format!(
+                FinalizedStateError::Custom(format!(
                     "unhandled rpc-specific {} error: {}",
                     type_name::<T>(),
                     error
@@ -419,16 +419,16 @@ impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
     }
 }
 
-/// Errors related to the `FinalisedState`.
-// TODO: Update name to DbError when ZainoDB replaces legacy finalised state.
+/// Errors related to the `FinalizedState`.
+// TODO: Update name to DbError when ZainoDB replaces legacy finalized state.
 #[derive(Debug, thiserror::Error)]
-pub enum FinalisedStateError {
+pub enum FinalizedStateError {
     /// Custom Errors.
     // TODO: Remove before production
     #[error("Custom error: {0}")]
     Custom(String),
 
-    /// Requested data is missing from the finalised state.
+    /// Requested data is missing from the finalized state.
     ///
     /// This could be due to the databae not yet being synced or due to a bad request input.
     ///
@@ -467,7 +467,7 @@ pub enum FinalisedStateError {
     LmdbError(#[from] lmdb::Error),
 
     /// Serde Json serialisation / deserialisation errors.
-    // TODO: Remove when ZainoDB replaces legacy finalised state.
+    // TODO: Remove when ZainoDB replaces legacy finalized state.
     #[error("LMDB database error: {0}")]
     SerdeJsonError(#[from] serde_json::Error),
 
@@ -476,7 +476,7 @@ pub enum FinalisedStateError {
     StatusError(StatusError),
 
     /// Error from JsonRpcConnector.
-    // TODO: Remove when ZainoDB replaces legacy finalised state.
+    // TODO: Remove when ZainoDB replaces legacy finalized state.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
@@ -569,27 +569,27 @@ impl ChainIndexError {
         }
     }
 }
-impl From<FinalisedStateError> for ChainIndexError {
-    fn from(value: FinalisedStateError) -> Self {
+impl From<FinalizedStateError> for ChainIndexError {
+    fn from(value: FinalizedStateError) -> Self {
         let message = match &value {
-            FinalisedStateError::DataUnavailable(err) => format!("unhandled missing data: {err}"),
-            FinalisedStateError::FeatureUnavailable(err) => {
+            FinalizedStateError::DataUnavailable(err) => format!("unhandled missing data: {err}"),
+            FinalizedStateError::FeatureUnavailable(err) => {
                 format!("unhandled missing feature: {err}")
             }
-            FinalisedStateError::InvalidBlock {
+            FinalizedStateError::InvalidBlock {
                 height,
                 hash: _,
                 reason,
             } => format!("invalid block at height {height}: {reason}"),
-            FinalisedStateError::Custom(err) | FinalisedStateError::Critical(err) => err.clone(),
-            FinalisedStateError::LmdbError(error) => error.to_string(),
-            FinalisedStateError::SerdeJsonError(error) => error.to_string(),
-            FinalisedStateError::StatusError(status_error) => status_error.to_string(),
-            FinalisedStateError::JsonRpcConnectorError(transport_error) => {
+            FinalizedStateError::Custom(err) | FinalizedStateError::Critical(err) => err.clone(),
+            FinalizedStateError::LmdbError(error) => error.to_string(),
+            FinalizedStateError::SerdeJsonError(error) => error.to_string(),
+            FinalizedStateError::StatusError(status_error) => status_error.to_string(),
+            FinalizedStateError::JsonRpcConnectorError(transport_error) => {
                 transport_error.to_string()
             }
-            FinalisedStateError::IoError(error) => error.to_string(),
-            FinalisedStateError::BlockchainSourceError(blockchain_source_error) => {
+            FinalizedStateError::IoError(error) => error.to_string(),
+            FinalizedStateError::BlockchainSourceError(blockchain_source_error) => {
                 blockchain_source_error.to_string()
             }
         };

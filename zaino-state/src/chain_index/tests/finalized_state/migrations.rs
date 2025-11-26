@@ -5,9 +5,9 @@ use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
-use crate::chain_index::finalised_state::capability::DbCore as _;
-use crate::chain_index::finalised_state::db::DbBackend;
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalized_state::capability::DbCore as _;
+use crate::chain_index::finalized_state::db::DbBackend;
+use crate::chain_index::finalized_state::ZainoDB;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, load_test_vectors, TestVectorData,

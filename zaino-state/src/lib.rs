@@ -37,7 +37,7 @@ pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
 // Supporting types
 pub use chain_index::encoding::*;
 pub use chain_index::mempool::Mempool;
-pub use chain_index::non_finalised_state::{
+pub use chain_index::non_finalized_state::{
     InitError, NodeConnectionError, NonFinalizedState, NonfinalizedBlockCacheSnapshot, SyncError,
     UpdateError,
 };

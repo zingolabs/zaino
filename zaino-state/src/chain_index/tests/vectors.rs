@@ -42,7 +42,7 @@ pub struct TestVectorClientData {
 }
 
 pub async fn sync_db_with_blockdata(
-    db: &impl crate::chain_index::finalised_state::capability::DbWrite,
+    db: &impl crate::chain_index::finalized_state::capability::DbWrite,
     vector_data: Vec<TestVectorBlockData>,
     height_limit: Option<u32>,
 ) {

@@ -6,19 +6,19 @@ use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
-use crate::chain_index::finalised_state::reader::DbReader;
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalized_state::reader::DbReader;
+use crate::chain_index::finalized_state::ZainoDB;
 use crate::chain_index::source::test::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, load_test_vectors, TestVectorBlockData, TestVectorData,
 };
-use crate::error::FinalisedStateError;
+use crate::error::FinalizedStateError;
 use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,
-) -> Result<(TempDir, ZainoDB), FinalisedStateError> {
+) -> Result<(TempDir, ZainoDB), FinalizedStateError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 

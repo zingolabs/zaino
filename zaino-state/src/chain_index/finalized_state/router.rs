@@ -10,7 +10,7 @@ use super::{
 };
 
 use crate::{
-    chain_index::finalised_state::capability::CapabilityRequest, error::FinalisedStateError,
+    chain_index::finalized_state::capability::CapabilityRequest, error::FinalizedStateError,
     BlockHash, Height, IndexedBlock, StatusType,
 };
 
@@ -58,7 +58,7 @@ impl Router {
     pub(crate) fn backend(
         &self,
         cap: CapabilityRequest,
-    ) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    ) -> Result<Arc<DbBackend>, FinalizedStateError> {
         let bit = cap.as_capability().bits();
 
         if self.shadow_mask.load(Ordering::Acquire) & bit != 0 {
@@ -70,7 +70,7 @@ impl Router {
             return Ok(self.primary.load_full());
         }
 
-        Err(FinalisedStateError::FeatureUnavailable(cap.name()))
+        Err(FinalizedStateError::FeatureUnavailable(cap.name()))
     }
 
     // ***** Shadow database control *****
@@ -98,9 +98,9 @@ impl Router {
     /// # Error
     ///
     /// Returns a critical error if the shadow is not found.
-    pub(crate) fn promote_shadow(&self) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    pub(crate) fn promote_shadow(&self) -> Result<Arc<DbBackend>, FinalizedStateError> {
         let Some(new_primary) = self.shadow.swap(None) else {
-            return Err(FinalisedStateError::Critical(
+            return Err(FinalizedStateError::Critical(
                 "shadow not found!".to_string(),
             ));
         };
@@ -141,7 +141,7 @@ impl DbCore for Router {
         }
     }
 
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    async fn shutdown(&self) -> Result<(), FinalizedStateError> {
         let primary_shutdown_result = self.primary.load_full().shutdown().await;
 
         let shadow_option = self.shadow.load();
@@ -157,25 +157,25 @@ impl DbCore for Router {
 
 #[async_trait]
 impl DbWrite for Router {
-    async fn write_block(&self, blk: IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, blk: IndexedBlock) -> Result<(), FinalizedStateError> {
         self.backend(CapabilityRequest::WriteCore)?
             .write_block(blk)
             .await
     }
 
-    async fn delete_block_at_height(&self, h: Height) -> Result<(), FinalisedStateError> {
+    async fn delete_block_at_height(&self, h: Height) -> Result<(), FinalizedStateError> {
         self.backend(CapabilityRequest::WriteCore)?
             .delete_block_at_height(h)
             .await
     }
 
-    async fn delete_block(&self, blk: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, blk: &IndexedBlock) -> Result<(), FinalizedStateError> {
         self.backend(CapabilityRequest::WriteCore)?
             .delete_block(blk)
             .await
     }
 
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError> {
+    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalizedStateError> {
         self.backend(CapabilityRequest::WriteCore)?
             .update_metadata(metadata)
             .await
@@ -184,26 +184,26 @@ impl DbWrite for Router {
 
 #[async_trait]
 impl DbRead for Router {
-    async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+    async fn db_height(&self) -> Result<Option<Height>, FinalizedStateError> {
         self.backend(CapabilityRequest::ReadCore)?.db_height().await
     }
 
     async fn get_block_height(
         &self,
         hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    ) -> Result<Option<Height>, FinalizedStateError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_block_height(hash)
             .await
     }
 
-    async fn get_block_hash(&self, h: Height) -> Result<Option<BlockHash>, FinalisedStateError> {
+    async fn get_block_hash(&self, h: Height) -> Result<Option<BlockHash>, FinalizedStateError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_block_hash(h)
             .await
     }
 
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    async fn get_metadata(&self) -> Result<DbMetadata, FinalizedStateError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_metadata()
             .await

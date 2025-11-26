@@ -11,7 +11,7 @@ use super::{
 use crate::{
     chain_index::{source::BlockchainSource, types::GENESIS_HEIGHT},
     config::BlockCacheConfig,
-    error::FinalisedStateError,
+    error::FinalizedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock,
 };
 
@@ -45,7 +45,7 @@ pub trait Migration<T: BlockchainSource> {
         router: Arc<Router>,
         cfg: BlockCacheConfig,
         source: T,
-    ) -> Result<(), FinalisedStateError>;
+    ) -> Result<(), FinalizedStateError>;
 }
 
 pub(super) struct MigrationManager<T: BlockchainSource> {
@@ -58,7 +58,7 @@ pub(super) struct MigrationManager<T: BlockchainSource> {
 
 impl<T: BlockchainSource> MigrationManager<T> {
     /// Iteratively performs each migration step from current version to target version.
-    pub(super) async fn migrate(&mut self) -> Result<(), FinalisedStateError> {
+    pub(super) async fn migrate(&mut self) -> Result<(), FinalizedStateError> {
         while self.current_version < self.target_version {
             let migration = self.get_migration()?;
             migration
@@ -75,14 +75,14 @@ impl<T: BlockchainSource> MigrationManager<T> {
     }
 
     /// Return the next migration for the current version.
-    fn get_migration(&self) -> Result<impl Migration<T>, FinalisedStateError> {
+    fn get_migration(&self) -> Result<impl Migration<T>, FinalizedStateError> {
         match (
             self.current_version.major,
             self.current_version.minor,
             self.current_version.patch,
         ) {
             (0, 0, 0) => Ok(Migration0_0_0To1_0_0),
-            (_, _, _) => Err(FinalisedStateError::Custom(format!(
+            (_, _, _) => Err(FinalizedStateError::Custom(format!(
                 "Missing migration from version {}",
                 self.current_version
             ))),
@@ -117,7 +117,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
         router: Arc<Router>,
         cfg: BlockCacheConfig,
         source: T,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), FinalizedStateError> {
         info!("Starting v0.0.0 to v1.0.0 migration.");
         // Open V1 as shadow
         let shadow = Arc::new(DbBackend::spawn_v1(&cfg).await?);
@@ -166,7 +166,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                             ))
                             .await?
                             .ok_or_else(|| {
-                                FinalisedStateError::Custom(format!(
+                                FinalizedStateError::Custom(format!(
                                     "block not found at height {height}"
                                 ))
                             })?;
@@ -176,13 +176,13 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                             source.get_commitment_tree_roots(hash).await?;
                         let (sapling_root, sapling_root_size) =
                             sapling_root_data.ok_or_else(|| {
-                                FinalisedStateError::Custom(format!(
+                                FinalizedStateError::Custom(format!(
                         "sapling commitment tree data missing for block {hash:?} at height {height}"
                     ))
                             })?;
                         let (orchard_root, orchard_root_size) =
                             orchard_root_data.ok_or_else(|| {
-                                FinalisedStateError::Custom(format!(
+                                FinalizedStateError::Custom(format!(
                         "orchard commitment tree data missing for block {hash:?} at height {height}"
                     ))
                             })?;
@@ -199,7 +199,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                         let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
                         let chain_block =
                             IndexedBlock::try_from(block_with_metadata).map_err(|_| {
-                                FinalisedStateError::Custom(
+                                FinalizedStateError::Custom(
                                     "Failed to build chain block".to_string(),
                                 )
                             })?;

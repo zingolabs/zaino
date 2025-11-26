@@ -93,50 +93,50 @@ async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, b
     let (test_manager, json_service, mut block_cache, mut block_cache_subscriber) =
         create_test_manager_and_block_cache(validator, None, true, false).await;
 
-    let finalised_state = block_cache.finalised_state.take().unwrap();
-    let finalised_state_subscriber = block_cache_subscriber.finalised_state.take().unwrap();
+    let finalized_state = block_cache.finalized_state.take().unwrap();
+    let finalized_state_subscriber = block_cache_subscriber.finalized_state.take().unwrap();
 
     for _ in 1..=batches {
         test_manager.generate_blocks_and_poll(100).await;
 
-        // Check chain height in validator, non-finalised state and finalised state.
+        // Check chain height in validator, non-finalized state and finalized state.
         let validator_height = dbg!(json_service.get_blockchain_info().await.unwrap().blocks.0);
-        let non_finalised_state_height =
+        let non_finalized_state_height =
             dbg!(block_cache_subscriber.get_chain_height().await.unwrap().0);
-        let finalised_state_height =
-            dbg!(dbg!(finalised_state.get_db_height()).unwrap_or(Height(0)).0);
+        let finalized_state_height =
+            dbg!(dbg!(finalized_state.get_db_height()).unwrap_or(Height(0)).0);
 
-        assert_eq!(&validator_height, &non_finalised_state_height);
+        assert_eq!(&validator_height, &non_finalized_state_height);
         assert_eq!(
-            (&non_finalised_state_height.saturating_sub(101)),
-            &finalised_state_height
+            (&non_finalized_state_height.saturating_sub(101)),
+            &finalized_state_height
         );
 
-        // Fetch blocks in non-finalised state.
-        let mut non_finalised_state_blocks = Vec::new();
-        for height in (finalised_state_height + 1)..=non_finalised_state_height {
+        // Fetch blocks in non-finalized state.
+        let mut non_finalized_state_blocks = Vec::new();
+        for height in (finalized_state_height + 1)..=non_finalized_state_height {
             let block = block_cache_subscriber
-                .non_finalised_state
+                .non_finalized_state
                 .get_compact_block(HashOrHeight::Height(Height(height)))
                 .await
                 .unwrap();
-            non_finalised_state_blocks.push(block);
+            non_finalized_state_blocks.push(block);
         }
 
-        // Fetch blocks in finalised state.
-        let mut finalised_state_blocks = Vec::new();
-        for height in 1..=finalised_state_height {
-            let block = finalised_state_subscriber
+        // Fetch blocks in finalized state.
+        let mut finalized_state_blocks = Vec::new();
+        for height in 1..=finalized_state_height {
+            let block = finalized_state_subscriber
                 .get_compact_block(HashOrHeight::Height(Height(height)))
                 .await
                 .unwrap();
-            finalised_state_blocks.push(block);
+            finalized_state_blocks.push(block);
         }
 
-        dbg!(non_finalised_state_blocks.first());
-        dbg!(non_finalised_state_blocks.last());
-        dbg!(finalised_state_blocks.first());
-        dbg!(finalised_state_blocks.last());
+        dbg!(non_finalized_state_blocks.first());
+        dbg!(non_finalized_state_blocks.last());
+        dbg!(finalized_state_blocks.first());
+        dbg!(finalized_state_blocks.last());
     }
 }
 

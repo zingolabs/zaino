@@ -1,4 +1,4 @@
-//! Compact Block Cache non-finalised state implementation.
+//! Compact Block Cache non-finalized state implementation.
 
 use std::collections::HashSet;
 
@@ -11,17 +11,17 @@ use zebra_state::{HashOrHeight, ReadStateService};
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
     config::BlockCacheConfig,
-    error::NonFinalisedStateError,
+    error::NonFinalizedStateError,
     local_cache::fetch_block_from_node,
     status::{AtomicStatus, StatusType},
 };
 
-/// Non-finalised part of the chain (last 100 blocks), held in memory to ease the handling of reorgs.
+/// Non-finalized part of the chain (last 100 blocks), held in memory to ease the handling of reorgs.
 ///
 /// NOTE: We hold the last 102 blocks to ensure there are no gaps in the block cache.
-/// TODO: Use ReadStateService when available (implemented in FinalisedState).
+/// TODO: Use ReadStateService when available (implemented in FinalizedState).
 #[derive(Debug)]
-pub struct NonFinalisedState {
+pub struct NonFinalizedState {
     /// Chain fetch service.
     fetcher: JsonRpSeeConnector,
     /// Optional ReadStateService based chain fetch service.
@@ -32,24 +32,24 @@ pub struct NonFinalisedState {
     hashes_to_blocks: Broadcast<Hash, CompactBlock>,
     /// Sync task handle.
     sync_task_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Used to send blocks to the finalised state.
+    /// Used to send blocks to the finalized state.
     block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
-    /// Non-finalised state status.
+    /// Non-finalized state status.
     status: AtomicStatus,
     /// BlockCache config data.
     config: BlockCacheConfig,
 }
 
-impl NonFinalisedState {
-    /// Spawns a new [`NonFinalisedState`].
+impl NonFinalizedState {
+    /// Spawns a new [`NonFinalizedState`].
     pub async fn spawn(
         fetcher: &JsonRpSeeConnector,
         state: Option<&ReadStateService>,
         block_sender: tokio::sync::mpsc::Sender<(Height, Hash, CompactBlock)>,
         config: BlockCacheConfig,
-    ) -> Result<Self, NonFinalisedStateError> {
-        info!("Launching Non-Finalised State..");
-        let mut non_finalised_state = NonFinalisedState {
+    ) -> Result<Self, NonFinalizedStateError> {
+        info!("Launching Non-Finalized State..");
+        let mut non_finalized_state = NonFinalizedState {
             fetcher: fetcher.clone(),
             state: state.cloned(),
             heights_to_hashes: Broadcast::new(
@@ -66,17 +66,17 @@ impl NonFinalisedState {
             config,
         };
 
-        non_finalised_state.wait_on_server().await?;
+        non_finalized_state.wait_on_server().await?;
 
         let chain_height = fetcher
             .get_blockchain_info()
             .await
-            .map_err(|_| NonFinalisedStateError::Custom("Failed to fetch blockchain info".into()))?
+            .map_err(|_| NonFinalizedStateError::Custom("Failed to fetch blockchain info".into()))?
             .blocks
             .0;
         // We do not fetch pre sapling activation.
         for height in chain_height.saturating_sub(99).max(
-            non_finalised_state
+            non_finalized_state
                 .config
                 .network
                 .to_zebra_network()
@@ -86,24 +86,24 @@ impl NonFinalisedState {
         {
             loop {
                 match fetch_block_from_node(
-                    non_finalised_state.state.as_ref(),
-                    Some(&non_finalised_state.config.network.to_zebra_network()),
-                    &non_finalised_state.fetcher,
+                    non_finalized_state.state.as_ref(),
+                    Some(&non_finalized_state.config.network.to_zebra_network()),
+                    &non_finalized_state.fetcher,
                     HashOrHeight::Height(Height(height)),
                 )
                 .await
                 {
                     Ok((hash, block)) => {
-                        non_finalised_state
+                        non_finalized_state
                             .heights_to_hashes
                             .insert(Height(height), hash, None);
-                        non_finalised_state
+                        non_finalized_state
                             .hashes_to_blocks
                             .insert(hash, block, None);
                         break;
                     }
                     Err(e) => {
-                        non_finalised_state.update_status_and_notify(StatusType::RecoverableError);
+                        non_finalized_state.update_status_and_notify(StatusType::RecoverableError);
                         warn!("{e}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
@@ -111,13 +111,13 @@ impl NonFinalisedState {
             }
         }
 
-        non_finalised_state.sync_task_handle = Some(non_finalised_state.serve().await?);
+        non_finalized_state.sync_task_handle = Some(non_finalized_state.serve().await?);
 
-        Ok(non_finalised_state)
+        Ok(non_finalized_state)
     }
 
-    async fn serve(&self) -> Result<tokio::task::JoinHandle<()>, NonFinalisedStateError> {
-        let non_finalised_state = Self {
+    async fn serve(&self) -> Result<tokio::task::JoinHandle<()>, NonFinalizedStateError> {
+        let non_finalized_state = Self {
             fetcher: self.fetcher.clone(),
             state: self.state.clone(),
             heights_to_hashes: self.heights_to_hashes.clone(),
@@ -133,14 +133,14 @@ impl NonFinalisedState {
             let mut check_block_hash: Hash;
 
             loop {
-                match non_finalised_state.fetcher.get_blockchain_info().await {
+                match non_finalized_state.fetcher.get_blockchain_info().await {
                     Ok(chain_info) => {
                         best_block_hash = chain_info.best_block_hash;
-                        non_finalised_state.status.store(StatusType::Ready);
+                        non_finalized_state.status.store(StatusType::Ready);
                         break;
                     }
                     Err(e) => {
-                        non_finalised_state.update_status_and_notify(StatusType::RecoverableError);
+                        non_finalized_state.update_status_and_notify(StatusType::RecoverableError);
                         warn!("{e}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
@@ -148,17 +148,17 @@ impl NonFinalisedState {
             }
 
             loop {
-                if non_finalised_state.status.load() == StatusType::Closing {
-                    non_finalised_state.update_status_and_notify(StatusType::Closing);
+                if non_finalized_state.status.load() == StatusType::Closing {
+                    non_finalized_state.update_status_and_notify(StatusType::Closing);
                     return;
                 }
 
-                match non_finalised_state.fetcher.get_blockchain_info().await {
+                match non_finalized_state.fetcher.get_blockchain_info().await {
                     Ok(chain_info) => {
                         check_block_hash = chain_info.best_block_hash;
                     }
                     Err(e) => {
-                        non_finalised_state.update_status_and_notify(StatusType::RecoverableError);
+                        non_finalized_state.update_status_and_notify(StatusType::RecoverableError);
                         warn!("{e}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         continue;
@@ -167,24 +167,24 @@ impl NonFinalisedState {
 
                 if check_block_hash != best_block_hash {
                     best_block_hash = check_block_hash;
-                    non_finalised_state.status.store(StatusType::Syncing);
-                    non_finalised_state
+                    non_finalized_state.status.store(StatusType::Syncing);
+                    non_finalized_state
                         .heights_to_hashes
-                        .notify(non_finalised_state.status.load());
-                    non_finalised_state
+                        .notify(non_finalized_state.status.load());
+                    non_finalized_state
                         .hashes_to_blocks
-                        .notify(non_finalised_state.status.load());
+                        .notify(non_finalized_state.status.load());
                     loop {
-                        match non_finalised_state.fill_from_reorg().await {
+                        match non_finalized_state.fill_from_reorg().await {
                             Ok(_) => break,
-                            Err(NonFinalisedStateError::Critical(e)) => {
-                                non_finalised_state
+                            Err(NonFinalizedStateError::Critical(e)) => {
+                                non_finalized_state
                                     .update_status_and_notify(StatusType::CriticalError);
                                 error!("{e}");
                                 return;
                             }
                             Err(e) => {
-                                non_finalised_state
+                                non_finalized_state
                                     .update_status_and_notify(StatusType::RecoverableError);
                                 warn!("{e}");
                                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -192,7 +192,7 @@ impl NonFinalisedState {
                         }
                     }
                 }
-                non_finalised_state.status.store(StatusType::Ready);
+                non_finalized_state.status.store(StatusType::Ready);
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         });
@@ -203,21 +203,21 @@ impl NonFinalisedState {
     /// Looks back through the chain to find reorg height and repopulates block cache.
     ///
     /// Newly mined blocks are treated as a reorg at chain_height[-0].
-    async fn fill_from_reorg(&self) -> Result<(), NonFinalisedStateError> {
+    async fn fill_from_reorg(&self) -> Result<(), NonFinalizedStateError> {
         let mut reorg_height = *self
             .heights_to_hashes
             .get_state()
             .iter()
             .max_by_key(|entry| entry.key().0)
             .ok_or_else(|| {
-                NonFinalisedStateError::MissingData(
-                    "Failed to find the maximum height in the non-finalised state.".to_string(),
+                NonFinalizedStateError::MissingData(
+                    "Failed to find the maximum height in the non-finalized state.".to_string(),
                 )
             })?
             .key();
 
         let mut reorg_hash = self.heights_to_hashes.get(&reorg_height).ok_or_else(|| {
-            NonFinalisedStateError::MissingData(format!(
+            NonFinalizedStateError::MissingData(format!(
                 "Missing hash for height: {}",
                 reorg_height.0
             ))
@@ -230,7 +230,7 @@ impl NonFinalisedState {
         {
             zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
             _ => {
-                return Err(NonFinalisedStateError::Custom(
+                return Err(NonFinalizedStateError::Custom(
                     "Unexpected block response type".to_string(),
                 ))
             }
@@ -243,7 +243,7 @@ impl NonFinalisedState {
             match reorg_height.previous() {
                 Ok(height) => reorg_height = height,
                 // Underflow error meaning reorg_height = start of chain.
-                // This means the whole non-finalised state is old.
+                // This means the whole non-finalized state is old.
                 Err(_) => {
                     self.heights_to_hashes.clear();
                     self.hashes_to_blocks.clear();
@@ -252,7 +252,7 @@ impl NonFinalisedState {
             };
 
             reorg_hash = self.heights_to_hashes.get(&reorg_height).ok_or_else(|| {
-                NonFinalisedStateError::MissingData(format!(
+                NonFinalizedStateError::MissingData(format!(
                     "Missing hash for height: {}",
                     reorg_height.0
                 ))
@@ -265,7 +265,7 @@ impl NonFinalisedState {
             {
                 zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
                 _ => {
-                    return Err(NonFinalisedStateError::Custom(
+                    return Err(NonFinalizedStateError::Custom(
                         "Unexpected block response type".to_string(),
                     ))
                 }
@@ -279,7 +279,7 @@ impl NonFinalisedState {
             .fetcher
             .get_blockchain_info()
             .await
-            .map_err(|e| NonFinalisedStateError::Custom(e.to_string()))?
+            .map_err(|e| NonFinalizedStateError::Custom(e.to_string()))?
             .blocks
             .0;
         for block_height in ((reorg_height.0 + 1).max(
@@ -290,8 +290,8 @@ impl NonFinalisedState {
                 .0,
         ))..=validator_height
         {
-            // Either pop the reorged block or pop the oldest block in non-finalised state.
-            // If we pop the oldest (valid) block we send it to the finalised state to be saved to disk.
+            // Either pop the reorged block or pop the oldest block in non-finalized state.
+            // If we pop the oldest (valid) block we send it to the finalized state to be saved to disk.
             if self.heights_to_hashes.contains_key(&Height(block_height)) {
                 if let Some(hash) = self.heights_to_hashes.get(&Height(block_height)) {
                     self.hashes_to_blocks.remove(&hash, None);
@@ -304,16 +304,16 @@ impl NonFinalisedState {
                     .iter()
                     .min_by_key(|entry| entry.key().0)
                     .ok_or_else(|| {
-                        NonFinalisedStateError::MissingData(
-                            "Failed to find the minimum height in the non-finalised state."
+                        NonFinalizedStateError::MissingData(
+                            "Failed to find the minimum height in the non-finalized state."
                                 .to_string(),
                         )
                     })?
                     .key();
-                // Only pop block if it is outside of the non-finalised state block range.
+                // Only pop block if it is outside of the non-finalized state block range.
                 if pop_height.0 < (validator_height.saturating_sub(100)) {
                     if let Some(hash) = self.heights_to_hashes.get(&pop_height) {
-                        // Send to FinalisedState if db is active.
+                        // Send to FinalizedState if db is active.
                         match self.config.storage.database.size {
                             zaino_common::DatabaseSize::Gb(0) => {} // do nothing
                             zaino_common::DatabaseSize::Gb(_) => {
@@ -325,8 +325,8 @@ impl NonFinalisedState {
                                         .is_err()
                                     {
                                         self.status.store(StatusType::CriticalError);
-                                        return Err(NonFinalisedStateError::Critical(
-                                            "Critical error in database. Closing NonFinalisedState"
+                                        return Err(NonFinalizedStateError::Critical(
+                                            "Critical error in database. Closing NonFinalizedState"
                                                 .to_string(),
                                         ));
                                     }
@@ -352,7 +352,7 @@ impl NonFinalisedState {
                             .insert(Height(block_height), hash, None);
                         self.hashes_to_blocks.insert(hash, block, None);
                         info!(
-                            "Block at height [{}] with hash [{}] successfully committed to non-finalised state.",
+                            "Block at height [{}] with hash [{}] successfully committed to non-finalized state.",
                             block_height, hash,
                         );
                         break;
@@ -370,7 +370,7 @@ impl NonFinalisedState {
     }
 
     /// Waits for server to sync with p2p network.
-    pub async fn wait_on_server(&self) -> Result<(), NonFinalisedStateError> {
+    pub async fn wait_on_server(&self) -> Result<(), NonFinalizedStateError> {
         // If no_db is active wait for server to sync with p2p network.
         let no_db = match self.config.storage.database.size {
             zaino_common::DatabaseSize::Gb(0) => true,
@@ -380,7 +380,7 @@ impl NonFinalisedState {
             self.status.store(StatusType::Syncing);
             loop {
                 let blockchain_info = self.fetcher.get_blockchain_info().await.map_err(|e| {
-                    NonFinalisedStateError::Custom(format!("Failed to fetch blockchain info: {e}"))
+                    NonFinalizedStateError::Custom(format!("Failed to fetch blockchain info: {e}"))
                 })?;
                 if (blockchain_info.blocks.0 as i64 - blockchain_info.estimated_height.0 as i64)
                     .abs()
@@ -402,28 +402,28 @@ impl NonFinalisedState {
         }
     }
 
-    /// Returns a [`NonFinalisedStateSubscriber`].
-    pub fn subscriber(&self) -> NonFinalisedStateSubscriber {
-        NonFinalisedStateSubscriber {
+    /// Returns a [`NonFinalizedStateSubscriber`].
+    pub fn subscriber(&self) -> NonFinalizedStateSubscriber {
+        NonFinalizedStateSubscriber {
             heights_to_hashes: self.heights_to_hashes.subscriber(),
             hashes_to_blocks: self.hashes_to_blocks.subscriber(),
             status: self.status.clone(),
         }
     }
 
-    /// Returns the status of the non-finalised state.
+    /// Returns the status of the non-finalized state.
     pub fn status(&self) -> StatusType {
         self.status.load()
     }
 
-    /// Updates the status of the non-finalised state and notifies subscribers.
+    /// Updates the status of the non-finalized state and notifies subscribers.
     fn update_status_and_notify(&self, status: StatusType) {
         self.status.store(status);
         self.heights_to_hashes.notify(self.status.load());
         self.hashes_to_blocks.notify(self.status.load());
     }
 
-    /// Sets the non-finalised state to close gracefully.
+    /// Sets the non-finalized state to close gracefully.
     pub fn close(&mut self) {
         self.update_status_and_notify(StatusType::Closing);
         if let Some(handle) = self.sync_task_handle.take() {
@@ -432,7 +432,7 @@ impl NonFinalisedState {
     }
 }
 
-impl Drop for NonFinalisedState {
+impl Drop for NonFinalizedState {
     fn drop(&mut self) {
         self.update_status_and_notify(StatusType::Closing);
         if let Some(handle) = self.sync_task_handle.take() {
@@ -441,26 +441,26 @@ impl Drop for NonFinalisedState {
     }
 }
 
-/// A subscriber to a [`NonFinalisedState`].
+/// A subscriber to a [`NonFinalizedState`].
 #[derive(Debug, Clone)]
-pub struct NonFinalisedStateSubscriber {
+pub struct NonFinalizedStateSubscriber {
     heights_to_hashes: BroadcastSubscriber<Height, Hash>,
     hashes_to_blocks: BroadcastSubscriber<Hash, CompactBlock>,
     status: AtomicStatus,
 }
 
-impl NonFinalisedStateSubscriber {
-    /// Returns a Compact Block from the non-finalised state.
+impl NonFinalizedStateSubscriber {
+    /// Returns a Compact Block from the non-finalized state.
     pub async fn get_compact_block(
         &self,
         hash_or_height: HashOrHeight,
-    ) -> Result<CompactBlock, NonFinalisedStateError> {
+    ) -> Result<CompactBlock, NonFinalizedStateError> {
         let hash = match hash_or_height {
             HashOrHeight::Hash(hash) => hash,
             HashOrHeight::Height(height) => {
                 *self.heights_to_hashes.get(&height).ok_or_else(|| {
-                    NonFinalisedStateError::MissingData(format!(
-                        "Height not found in non-finalised state: {}",
+                    NonFinalizedStateError::MissingData(format!(
+                        "Height not found in non-finalized state: {}",
                         height.0
                     ))
                 })?
@@ -471,19 +471,19 @@ impl NonFinalisedStateSubscriber {
             .get(&hash)
             .map(|block| block.as_ref().clone())
             .ok_or_else(|| {
-                NonFinalisedStateError::MissingData(format!("Block not found for hash: {hash}"))
+                NonFinalizedStateError::MissingData(format!("Block not found for hash: {hash}"))
             })
     }
 
-    /// Returns the height of the latest block in the non-finalised state.
-    pub async fn get_chain_height(&self) -> Result<Height, NonFinalisedStateError> {
+    /// Returns the height of the latest block in the non-finalized state.
+    pub async fn get_chain_height(&self) -> Result<Height, NonFinalizedStateError> {
         let (height, _) = *self
             .heights_to_hashes
             .get_filtered_state(&HashSet::new())
             .iter()
             .max_by_key(|(height, ..)| height.0)
             .ok_or_else(|| {
-                NonFinalisedStateError::MissingData("Non-finalised state is empty.".into())
+                NonFinalizedStateError::MissingData("Non-finalized state is empty.".into())
             })?;
 
         Ok(height)
@@ -497,7 +497,7 @@ impl NonFinalisedStateSubscriber {
         }
     }
 
-    /// Returns the status of the NonFinalisedState.
+    /// Returns the status of the NonFinalizedState.
     pub fn status(&self) -> StatusType {
         self.status.load()
     }

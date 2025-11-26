@@ -7,11 +7,11 @@ use crate::{
     config::BlockCacheConfig, error::BlockCacheError, status::StatusType, StateServiceSubscriber,
 };
 
-pub mod finalised_state;
-pub mod non_finalised_state;
+pub mod finalized_state;
+pub mod non_finalized_state;
 
-use finalised_state::{FinalisedState, FinalisedStateSubscriber};
-use non_finalised_state::{NonFinalisedState, NonFinalisedStateSubscriber};
+use finalized_state::{FinalizedState, FinalizedStateSubscriber};
+use non_finalized_state::{NonFinalizedState, NonFinalizedStateSubscriber};
 use tracing::info;
 use zaino_fetch::{
     chain::block::FullBlock,
@@ -36,10 +36,10 @@ use zebra_state::{HashOrHeight, ReadStateService};
 pub struct BlockCache {
     fetcher: JsonRpSeeConnector,
     state: Option<ReadStateService>,
-    non_finalised_state: NonFinalisedState,
+    non_finalized_state: NonFinalizedState,
     /// The state below the last 100 blocks, determined
     /// to be probabalistically nonreorgable
-    pub finalised_state: Option<FinalisedState>,
+    pub finalized_state: Option<FinalizedState>,
     config: BlockCacheConfig,
 }
 
@@ -59,61 +59,61 @@ impl BlockCache {
         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(100);
 
         let db_size = config.storage.database.size;
-        let finalised_state = match db_size {
+        let finalized_state = match db_size {
             zaino_common::DatabaseSize::Gb(0) => None,
             zaino_common::DatabaseSize::Gb(_) => {
-                Some(FinalisedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
+                Some(FinalizedState::spawn(fetcher, state, channel_rx, config.clone()).await?)
             }
         };
 
-        let non_finalised_state =
-            NonFinalisedState::spawn(fetcher, state, channel_tx, config.clone()).await?;
+        let non_finalized_state =
+            NonFinalizedState::spawn(fetcher, state, channel_tx, config.clone()).await?;
 
         Ok(BlockCache {
             fetcher: fetcher.clone(),
             state: state.cloned(),
-            non_finalised_state,
-            finalised_state,
+            non_finalized_state,
+            finalized_state,
             config,
         })
     }
 
     /// Returns a [`BlockCacheSubscriber`].
     pub fn subscriber(&self) -> BlockCacheSubscriber {
-        let finalised_state_subscriber = self
-            .finalised_state
+        let finalized_state_subscriber = self
+            .finalized_state
             .as_ref()
-            .map(FinalisedState::subscriber);
+            .map(FinalizedState::subscriber);
         BlockCacheSubscriber {
             fetcher: self.fetcher.clone(),
             state: self.state.clone(),
-            non_finalised_state: self.non_finalised_state.subscriber(),
-            finalised_state: finalised_state_subscriber,
+            non_finalized_state: self.non_finalized_state.subscriber(),
+            finalized_state: finalized_state_subscriber,
             config: self.config.clone(),
         }
     }
 
     /// Returns the status of the block cache.
     pub fn status(&self) -> StatusType {
-        let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.storage.database.size {
+        let non_finalized_state_status = self.non_finalized_state.status();
+        let finalized_state_status = match self.config.storage.database.size {
             zaino_common::DatabaseSize::Gb(0) => StatusType::Ready,
-            zaino_common::DatabaseSize::Gb(_) => match &self.finalised_state {
-                Some(finalised_state) => finalised_state.status(),
+            zaino_common::DatabaseSize::Gb(_) => match &self.finalized_state {
+                Some(finalized_state) => finalized_state.status(),
                 None => return StatusType::Offline,
             },
         };
 
-        non_finalised_state_status.combine(finalised_state_status)
+        non_finalized_state_status.combine(finalized_state_status)
     }
 
     /// Sets the block cache to close gracefully.
     pub fn close(&mut self) {
-        self.non_finalised_state.close();
-        if self.finalised_state.is_some() {
-            self.finalised_state
+        self.non_finalized_state.close();
+        if self.finalized_state.is_some() {
+            self.finalized_state
                 .take()
-                .expect("error taking Option<(Some)finalised_state> in block_cache::close")
+                .expect("error taking Option<(Some)finalized_state> in block_cache::close")
                 .close();
         }
     }
@@ -126,10 +126,10 @@ pub struct BlockCacheSubscriber {
     state: Option<ReadStateService>,
     /// the last 100 blocks, stored separately as it could
     /// be changed by reorgs
-    pub non_finalised_state: NonFinalisedStateSubscriber,
+    pub non_finalized_state: NonFinalizedStateSubscriber,
     /// The state below the last 100 blocks, determined
     /// to be probabalistically nonreorgable
-    pub finalised_state: Option<FinalisedStateSubscriber>,
+    pub finalized_state: Option<FinalizedStateSubscriber>,
     config: BlockCacheConfig,
 }
 
@@ -142,19 +142,19 @@ impl BlockCacheSubscriber {
         let hash_or_height: HashOrHeight = hash_or_height.parse()?;
 
         if self
-            .non_finalised_state
+            .non_finalized_state
             .contains_hash_or_height(hash_or_height)
             .await
         {
-            // Fetch from non-finalised state.
-            self.non_finalised_state
+            // Fetch from non-finalized state.
+            self.non_finalized_state
                 .get_compact_block(hash_or_height)
                 .await
                 .map_err(Into::into)
         } else {
-            match &self.finalised_state {
-                // Fetch from finalised state.
-                Some(finalised_state) => finalised_state
+            match &self.finalized_state {
+                // Fetch from finalized state.
+                Some(finalized_state) => finalized_state
                     .get_compact_block(hash_or_height)
                     .await
                     .map_err(Into::into),
@@ -188,24 +188,24 @@ impl BlockCacheSubscriber {
 
     /// Returns the height of the latest block in the [`BlockCache`].
     pub async fn get_chain_height(&self) -> Result<Height, BlockCacheError> {
-        self.non_finalised_state
+        self.non_finalized_state
             .get_chain_height()
             .await
-            .map_err(BlockCacheError::NonFinalisedStateError)
+            .map_err(BlockCacheError::NonFinalizedStateError)
     }
 
     /// Returns the status of the [`BlockCache`]..
     pub fn status(&self) -> StatusType {
-        let non_finalised_state_status = self.non_finalised_state.status();
-        let finalised_state_status = match self.config.storage.database.size {
+        let non_finalized_state_status = self.non_finalized_state.status();
+        let finalized_state_status = match self.config.storage.database.size {
             zaino_common::DatabaseSize::Gb(0) => StatusType::Ready,
-            zaino_common::DatabaseSize::Gb(_) => match &self.finalised_state {
-                Some(finalised_state) => finalised_state.status(),
+            zaino_common::DatabaseSize::Gb(_) => match &self.finalized_state {
+                Some(finalized_state) => finalized_state.status(),
                 None => return StatusType::Offline,
             },
         };
 
-        non_finalised_state_status.combine(finalised_state_status)
+        non_finalized_state_status.combine(finalized_state_status)
     }
 }
 

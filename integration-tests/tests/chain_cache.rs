@@ -427,12 +427,12 @@ mod chain_query_interface {
         let indexer_height = snapshot.best_tip.height;
         assert_eq!(Height::try_from(chain_height).unwrap(), indexer_height);
 
-        let finalised_start = Height::try_from(chain_height - 150).unwrap();
-        let finalised_tip = Height::try_from(chain_height - 100).unwrap();
+        let finalized_start = Height::try_from(chain_height - 150).unwrap();
+        let finalized_tip = Height::try_from(chain_height - 100).unwrap();
         let end = Height::try_from(chain_height - 50).unwrap();
 
         let finalized_blocks = indexer
-            .get_block_range(&snapshot, finalised_start, Some(finalised_tip))
+            .get_block_range(&snapshot, finalized_start, Some(finalized_tip))
             .unwrap()
             .try_collect::<Vec<_>>()
             .await
@@ -443,13 +443,13 @@ mod chain_query_interface {
                 .unwrap();
         }
 
-        let non_finalised_blocks = indexer
-            .get_block_range(&snapshot, finalised_tip, Some(end))
+        let non_finalized_blocks = indexer
+            .get_block_range(&snapshot, finalized_tip, Some(end))
             .unwrap()
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
-        for block in non_finalised_blocks {
+        for block in non_finalized_blocks {
             block
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();

@@ -183,7 +183,7 @@ where
 
     println!("\n\nFetching Tx From Unfinalized Chain!\n");
 
-    let unfinalised_transactions = fetch_service
+    let unfinalized_transactions = fetch_service
         .get_address_txids(
             vec![clients.get_recipient_address("transparent").await],
             height,
@@ -192,12 +192,12 @@ where
         .await
         .unwrap();
 
-    dbg!(unfinalised_transactions.clone());
+    dbg!(unfinalized_transactions.clone());
     test_manager.generate_blocks_and_poll(99).await;
 
     println!("\n\nFetching Tx From Finalized Chain!\n");
 
-    let finalised_transactions = fetch_service
+    let finalized_transactions = fetch_service
         .get_address_txids(
             vec![clients.get_recipient_address("transparent").await],
             height,
@@ -206,7 +206,7 @@ where
         .await
         .unwrap();
 
-    dbg!(finalised_transactions.clone());
+    dbg!(finalized_transactions.clone());
 
     clients.recipient.sync_and_await().await.unwrap();
 
@@ -222,7 +222,7 @@ where
         250_000
     );
 
-    assert_eq!(unfinalised_transactions, finalised_transactions);
+    assert_eq!(unfinalized_transactions, finalized_transactions);
     // test_manager.local_net.print_stdout();
 
     test_manager.close().await;

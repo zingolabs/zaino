@@ -7,13 +7,13 @@
 
 use crate::{
     chain_index::{
-        finalised_state::capability::{
+        finalized_state::capability::{
             CompactBlockExt, DbCore, DbMetadata, DbRead, DbVersion, DbWrite,
         },
         types::GENESIS_HEIGHT,
     },
     config::BlockCacheConfig,
-    error::FinalisedStateError,
+    error::FinalizedStateError,
     status::{AtomicStatus, StatusType},
     Height, IndexedBlock,
 };
@@ -37,19 +37,19 @@ use tracing::{info, warn};
 
 #[async_trait]
 impl DbRead for DbV0 {
-    async fn db_height(&self) -> Result<Option<crate::Height>, FinalisedStateError> {
+    async fn db_height(&self) -> Result<Option<crate::Height>, FinalizedStateError> {
         self.tip_height().await
     }
 
     async fn get_block_height(
         &self,
         hash: crate::BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    ) -> Result<Option<Height>, FinalizedStateError> {
         match self.get_block_height_by_hash(hash).await {
             Ok(height) => Ok(Some(height)),
             Err(
-                FinalisedStateError::DataUnavailable(_)
-                | FinalisedStateError::FeatureUnavailable(_),
+                FinalizedStateError::DataUnavailable(_)
+                | FinalizedStateError::FeatureUnavailable(_),
             ) => Ok(None),
             Err(other) => Err(other),
         }
@@ -58,41 +58,41 @@ impl DbRead for DbV0 {
     async fn get_block_hash(
         &self,
         height: crate::Height,
-    ) -> Result<Option<crate::BlockHash>, FinalisedStateError> {
+    ) -> Result<Option<crate::BlockHash>, FinalizedStateError> {
         match self.get_block_hash_by_height(height).await {
             Ok(hash) => Ok(Some(hash)),
             Err(
-                FinalisedStateError::DataUnavailable(_)
-                | FinalisedStateError::FeatureUnavailable(_),
+                FinalizedStateError::DataUnavailable(_)
+                | FinalizedStateError::FeatureUnavailable(_),
             ) => Ok(None),
             Err(other) => Err(other),
         }
     }
 
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    async fn get_metadata(&self) -> Result<DbMetadata, FinalizedStateError> {
         self.get_metadata().await
     }
 }
 
 #[async_trait]
 impl DbWrite for DbV0 {
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalizedStateError> {
         self.write_block(block).await
     }
 
     async fn delete_block_at_height(
         &self,
         height: crate::Height,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), FinalizedStateError> {
         self.delete_block_at_height(height).await
     }
 
-    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalizedStateError> {
         self.delete_block(block).await
     }
 
     /// NOTE: V0 does not hold metadata!
-    async fn update_metadata(&self, _metadata: DbMetadata) -> Result<(), FinalisedStateError> {
+    async fn update_metadata(&self, _metadata: DbMetadata) -> Result<(), FinalizedStateError> {
         Ok(())
     }
 }
@@ -103,7 +103,7 @@ impl DbCore for DbV0 {
         self.status.load()
     }
 
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    async fn shutdown(&self) -> Result<(), FinalizedStateError> {
         self.status.store(StatusType::Closing);
 
         if let Some(handle) = &self.db_handler {
@@ -125,12 +125,12 @@ impl CompactBlockExt for DbV0 {
     async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
+    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalizedStateError> {
         self.get_compact_block(height).await
     }
 }
 
-/// Finalised part of the chain, held in an LMDB database.
+/// Finalized part of the chain, held in an LMDB database.
 #[derive(Debug)]
 pub struct DbV0 {
     /// LMDB Database Environmant.
@@ -145,20 +145,20 @@ pub struct DbV0 {
     /// Database handler task handle.
     db_handler: Option<tokio::task::JoinHandle<()>>,
 
-    /// Non-finalised state status.
+    /// Non-finalized state status.
     status: AtomicStatus,
     /// BlockCache config data.
     config: BlockCacheConfig,
 }
 
 impl DbV0 {
-    /// Spawns a new [`DbV0`] and syncs the FinalisedState to the servers finalised state.
+    /// Spawns a new [`DbV0`] and syncs the FinalizedState to the servers finalized state.
     ///
     /// Uses ReadStateService to fetch chain data if given else uses JsonRPC client.
     ///
     /// Inputs:
     /// - config: ChainIndexConfig.
-    pub(crate) async fn spawn(config: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn(config: &BlockCacheConfig) -> Result<Self, FinalizedStateError> {
         info!("Launching ZainoDB");
 
         // Prepare database details and path.
@@ -215,7 +215,7 @@ impl DbV0 {
     }
 
     /// Try graceful shutdown, fall back to abort after a timeout.
-    pub(crate) async fn close(&mut self) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn close(&mut self) -> Result<(), FinalizedStateError> {
         self.status.store(StatusType::Closing);
 
         if let Some(mut handle) = self.db_handler.take() {
@@ -271,7 +271,7 @@ impl DbV0 {
     /// *   **Steady-state** – every 5 s tries to validate the next block that
     ///     appeared after the current `validated_tip`.
     ///     Every 60 s it also calls `clean_trailing()` to purge stale reader slots.
-    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
+    async fn spawn_handler(&mut self) -> Result<(), FinalizedStateError> {
         // Clone everything the task needs so we can move it into the async block.
         let zaino_db = Self {
             env: Arc::clone(&self.env),
@@ -318,7 +318,7 @@ impl DbV0 {
     }
 
     /// Clears stale reader slots by opening and closing a read transaction.
-    async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
+    async fn clean_trailing(&self) -> Result<(), FinalizedStateError> {
         let txn = self.env.begin_ro_txn()?;
         drop(txn);
         Ok(())
@@ -329,28 +329,28 @@ impl DbV0 {
         env: &Environment,
         name: &str,
         flags: DatabaseFlags,
-    ) -> Result<Database, FinalisedStateError> {
+    ) -> Result<Database, FinalizedStateError> {
         match env.open_db(Some(name)) {
             Ok(db) => Ok(db),
             Err(lmdb::Error::NotFound) => env
                 .create_db(Some(name), flags)
-                .map_err(FinalisedStateError::LmdbError),
-            Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                .map_err(FinalizedStateError::LmdbError),
+            Err(e) => Err(FinalizedStateError::LmdbError(e)),
         }
     }
 
     // *** DB write / delete methods ***
     // These should only ever be used in a single DB control task.
 
-    /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
-    pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+    /// Writes a given (finalized) [`IndexedBlock`] to ZainoDB.
+    pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalizedStateError> {
         self.status.store(StatusType::Syncing);
 
         let compact_block: CompactBlock = block.to_compact_block();
         let zebra_height: ZebraHeight = block
             .index()
             .height()
-            .expect("height always some in the finalised state")
+            .expect("height always some in the finalized state")
             .into();
         let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.index().hash());
 
@@ -362,7 +362,7 @@ impl DbV0 {
         let block_height = block
             .index()
             .height()
-            .expect("height always some in finalised state")
+            .expect("height always some in finalized state")
             .0;
 
         tokio::task::block_in_place(|| {
@@ -376,18 +376,18 @@ impl DbV0 {
                     let block_height = block
                         .index()
                         .height()
-                        .expect("height always some in finalised state")
+                        .expect("height always some in finalized state")
                         .0;
 
                     let last_height = DbHeight::from_be_bytes(
-                        last_height_bytes.expect("Height is always some in the finalised state"),
+                        last_height_bytes.expect("Height is always some in the finalized state"),
                     )?
                     .0
                      .0;
 
                     // Height must be exactly +1 over the current tip
                     if block_height != last_height + 1 {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(FinalizedStateError::Custom(format!(
                             "cannot write block at height {block_height:?}; \
                      current tip is {last_height:?}"
                         )));
@@ -396,14 +396,14 @@ impl DbV0 {
                 // no block in db, this must be genesis block.
                 Err(lmdb::Error::NotFound) => {
                     if block_height != GENESIS_HEIGHT.0 {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(FinalizedStateError::Custom(format!(
                             "first block must be height 0, got {block_height:?}"
                         )));
                     }
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(FinalizedStateError::LmdbError(e)),
             }
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, FinalizedStateError>(())
         })?;
 
         // if any database writes fail, or block validation fails, remove block from database and return err.
@@ -416,7 +416,7 @@ impl DbV0 {
             config: self.config.clone(),
         };
         let post_result = tokio::task::spawn_blocking(move || {
-            // let post_result: Result<(), FinalisedStateError> = (async {
+            // let post_result: Result<(), FinalizedStateError> = (async {
             // Write block to ZainoDB
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
@@ -436,24 +436,24 @@ impl DbV0 {
 
             txn.commit()?;
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, FinalizedStateError>(())
         })
         .await
-        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))?;
+        .map_err(|e| FinalizedStateError::Custom(format!("Tokio task error: {e}")))?;
 
         match post_result {
             Ok(_) => {
                 tokio::task::block_in_place(|| self.env.sync(true))
-                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+                    .map_err(|e| FinalizedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
                 Ok(())
             }
             Err(e) => {
                 let _ = self.delete_block(&block).await;
                 tokio::task::block_in_place(|| self.env.sync(true))
-                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+                    .map_err(|e| FinalizedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::RecoverableError);
-                Err(FinalisedStateError::InvalidBlock {
+                Err(FinalizedStateError::InvalidBlock {
                     height: block_height,
                     hash: *block.index().hash(),
                     reason: e.to_string(),
@@ -462,11 +462,11 @@ impl DbV0 {
         }
     }
 
-    /// Deletes a block identified height from every finalised table.
+    /// Deletes a block identified height from every finalized table.
     pub(crate) async fn delete_block_at_height(
         &self,
         height: crate::Height,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), FinalizedStateError> {
         let block_height = height.0;
         let height_key = DbHeight(zebra_chain::block::Height(block_height)).to_be_bytes();
 
@@ -480,14 +480,14 @@ impl DbV0 {
                 // Database already has blocks
                 Ok((last_height_bytes, last_hash_bytes)) => {
                     let last_height = DbHeight::from_be_bytes(
-                        last_height_bytes.expect("Height is always some in the finalised state"),
+                        last_height_bytes.expect("Height is always some in the finalized state"),
                     )?
                     .0
                      .0;
 
                     // Check this is the block at the top of the database.
                     if block_height != last_height {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(FinalizedStateError::Custom(format!(
                             "cannot delete block at height {block_height:?}; \
                      current tip is {last_height:?}"
                         )));
@@ -499,10 +499,10 @@ impl DbV0 {
                     Ok(db_hash.0)
                 }
                 // no block in db, this must be genesis block.
-                Err(lmdb::Error::NotFound) => Err(FinalisedStateError::Custom(format!(
+                Err(lmdb::Error::NotFound) => Err(FinalizedStateError::Custom(format!(
                     "first block must be height 1, got {block_height:?}"
                 ))),
-                Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => Err(FinalizedStateError::LmdbError(e)),
             }
         })?;
         let hash_key = serde_json::to_vec(&DbHash(zebra_block_hash))?;
@@ -527,8 +527,8 @@ impl DbV0 {
 
             self.env
                 .sync(true)
-                .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-            Ok::<_, FinalisedStateError>(())
+                .map_err(|e| FinalizedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+            Ok::<_, FinalizedStateError>(())
         })?;
 
         Ok(())
@@ -538,7 +538,7 @@ impl DbV0 {
     ///
     /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
     ///
-    /// WARNING: No checks are made that this block is at the top of the finalised state, and validated tip is not updated.
+    /// WARNING: No checks are made that this block is at the top of the finalized state, and validated tip is not updated.
     /// This enables use for correcting corrupt data within the database but it is left to the user to ensure safe use.
     /// Where possible delete_block_at_height should be used instead.
     ///
@@ -548,11 +548,11 @@ impl DbV0 {
     pub(crate) async fn delete_block(
         &self,
         block: &IndexedBlock,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), FinalizedStateError> {
         let zebra_height: ZebraHeight = block
             .index()
             .height()
-            .expect("height always some in the finalised state")
+            .expect("height always some in the finalized state")
             .into();
         let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.index().hash());
 
@@ -581,12 +581,12 @@ impl DbV0 {
             zaino_db
                 .env
                 .sync(true)
-                .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+                .map_err(|e| FinalizedStateError::Custom(format!("LMDB sync failed: {e}")))?;
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, FinalizedStateError>(())
         })
         .await
-        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))??;
+        .map_err(|e| FinalizedStateError::Custom(format!("Tokio task error: {e}")))??;
         Ok(())
     }
 
@@ -594,7 +594,7 @@ impl DbV0 {
 
     // Returns the greatest `Height` stored in `headers`
     /// (`None` if the DB is still empty).
-    pub(crate) async fn tip_height(&self) -> Result<Option<crate::Height>, FinalisedStateError> {
+    pub(crate) async fn tip_height(&self) -> Result<Option<crate::Height>, FinalizedStateError> {
         tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
             let cur = ro.open_ro_cursor(self.heights_to_hashes)?;
@@ -603,7 +603,7 @@ impl DbV0 {
                 Ok((height_bytes, _hash_bytes)) => {
                     let tip_height = crate::Height(
                         DbHeight::from_be_bytes(
-                            height_bytes.expect("Height is always some in the finalised state"),
+                            height_bytes.expect("Height is always some in the finalized state"),
                         )?
                         .0
                          .0,
@@ -611,7 +611,7 @@ impl DbV0 {
                     Ok(Some(tip_height))
                 }
                 Err(lmdb::Error::NotFound) => Ok(None),
-                Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => Err(FinalizedStateError::LmdbError(e)),
             }
         })
     }
@@ -620,7 +620,7 @@ impl DbV0 {
     async fn get_block_height_by_hash(
         &self,
         hash: crate::BlockHash,
-    ) -> Result<crate::Height, FinalisedStateError> {
+    ) -> Result<crate::Height, FinalizedStateError> {
         let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(hash);
         let hash_key = serde_json::to_vec(&DbHash(zebra_hash))?;
 
@@ -638,7 +638,7 @@ impl DbV0 {
     async fn get_block_hash_by_height(
         &self,
         height: crate::Height,
-    ) -> Result<crate::BlockHash, FinalisedStateError> {
+    ) -> Result<crate::BlockHash, FinalizedStateError> {
         let zebra_height: ZebraHeight = height.into();
         let height_key = DbHeight(zebra_height).to_be_bytes();
 
@@ -652,7 +652,7 @@ impl DbV0 {
         })
     }
 
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    async fn get_metadata(&self) -> Result<DbMetadata, FinalizedStateError> {
         Ok(DbMetadata {
             version: DbVersion {
                 major: 0,
@@ -661,14 +661,14 @@ impl DbV0 {
             },
             schema_hash: [0u8; 32],
             migration_status:
-                crate::chain_index::finalised_state::capability::MigrationStatus::Complete,
+                crate::chain_index::finalized_state::capability::MigrationStatus::Complete,
         })
     }
 
     async fn get_compact_block(
         &self,
         height: crate::Height,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
+    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalizedStateError> {
         let zebra_hash =
             zebra_chain::block::Hash::from(self.get_block_hash_by_height(height).await?);
         let hash_key = serde_json::to_vec(&DbHash(zebra_hash))?;
@@ -695,10 +695,10 @@ impl DbHeight {
     }
 
     /// Parse a 4-byte **big-endian** array into a `[DbHeight]`.
-    fn from_be_bytes(bytes: &[u8]) -> Result<Self, FinalisedStateError> {
+    fn from_be_bytes(bytes: &[u8]) -> Result<Self, FinalizedStateError> {
         let arr: [u8; 4] = bytes
             .try_into()
-            .map_err(|_| FinalisedStateError::Custom("Invalid height key length".to_string()))?;
+            .map_err(|_| FinalizedStateError::Custom("Invalid height key length".to_string()))?;
         Ok(DbHeight(ZebraHeight(u32::from_be_bytes(arr))))
     }
 }

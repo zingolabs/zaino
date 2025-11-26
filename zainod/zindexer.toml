@@ -83,12 +83,12 @@ backend = "fetch"
 # ----
 
 # Capacity of the Dashmaps used for the Mempool.
-# Also used by the BlockCache::NonFinalisedState when using the FetchService.
+# Also used by the BlockCache::NonFinalizedState when using the FetchService.
 # If omitted, Zaino uses an internal default or relies on library defaults.
 # map_capacity = 10000
 
 # Number of shard used in the DashMap used for the Mempool.
-# Also used by the BlockCache::NonFinalisedState when using the FetchService.
+# Also used by the BlockCache::NonFinalizedState when using the FetchService.
 #
 # shard_amount should greater than 0 and be a power of two.
 # If omitted, Zaino uses an internal default or relies on library defaults.

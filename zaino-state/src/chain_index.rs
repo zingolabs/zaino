@@ -2,8 +2,8 @@
 //!
 //! Components:
 //! - Mempool: Holds mempool transactions
-//! - NonFinalisedState: Holds block data for the top 100 blocks of all chains.
-//! - FinalisedState: Holds block data for the remainder of the best chain.
+//! - NonFinalizedState: Holds block data for the top 100 blocks of all chains.
+//! - FinalizedState: Holds block data for the remainder of the best chain.
 //!
 //! - Chain: Holds chain / block structs used internally by the ChainIndex.
 //!   - Holds fields required to:
@@ -11,16 +11,16 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::non_finalised_state::BestTip;
+use crate::chain_index::non_finalized_state::BestTip;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
-use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
+use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalizedStateError};
 use crate::IndexedBlock;
 use crate::{AtomicStatus, StatusType, SyncError};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, Stream};
-use non_finalised_state::NonfinalizedBlockCacheSnapshot;
+use non_finalized_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tracing::info;
@@ -31,11 +31,11 @@ use zebra_state::HashOrHeight;
 
 pub mod encoding;
 /// All state at least 100 blocks old
-pub mod finalised_state;
+pub mod finalized_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
 /// State less than 100 blocks old, stored separately as it may be reorged
-pub mod non_finalised_state;
+pub mod non_finalized_state;
 /// BlockchainSource
 pub mod source;
 /// Common types used by the rest of this module
@@ -385,7 +385,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
-    finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
+    finalized_db: std::sync::Arc<finalized_state::ZainoDB>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: AtomicStatus,
 }
@@ -400,7 +400,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         use futures::TryFutureExt as _;
 
         let finalized_db =
-            Arc::new(finalised_state::ZainoDB::spawn(config.clone(), source.clone()).await?);
+            Arc::new(finalized_state::ZainoDB::spawn(config.clone(), source.clone()).await?);
         let mempool_state = mempool::Mempool::spawn(source.clone(), None)
             .map_err(crate::InitError::MempoolInitialzationError)
             .await?;
@@ -447,7 +447,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// Shut down the sync process, for a cleaner drop
     /// an error indicates a failure to cleanly shutdown. Dropping the
     /// chain index should still stop everything
-    pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    pub async fn shutdown(&self) -> Result<(), FinalizedStateError> {
         self.finalized_db.shutdown().await?;
         self.mempool.close();
         self.status.store(StatusType::Closing);
@@ -537,7 +537,7 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
     blockchain_source: Source,
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
-    finalized_state: finalised_state::reader::DbReader,
+    finalized_state: finalized_state::reader::DbReader,
     status: AtomicStatus,
 }
 
@@ -575,7 +575,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         &'self_lt self,
         snapshot: &'snapshot NonfinalizedBlockCacheSnapshot,
         txid: [u8; 32],
-    ) -> Result<impl Iterator<Item = IndexedBlock> + use<'iter, Source>, FinalisedStateError>
+    ) -> Result<impl Iterator<Item = IndexedBlock> + use<'iter, Source>, FinalizedStateError>
     where
         'snapshot: 'iter,
         'self_lt: 'iter,

@@ -4,7 +4,7 @@ use core::fmt;
 
 use crate::{
     chain_index::types::{AddrEventBytes, TransactionHash},
-    error::FinalisedStateError,
+    error::FinalizedStateError,
     read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
     AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, FixedEncodedLen, Height,
     IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
@@ -388,42 +388,42 @@ impl FixedEncodedLen for MigrationStatus {
 #[async_trait]
 pub trait DbRead: Send + Sync {
     /// Highest block height stored (or `None` if DB empty).
-    async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError>;
+    async fn db_height(&self) -> Result<Option<Height>, FinalizedStateError>;
 
     /// Lookup height of a block by its hash.
     async fn get_block_height(
         &self,
         hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError>;
+    ) -> Result<Option<Height>, FinalizedStateError>;
 
     /// Lookup hash of a block by its height.
     async fn get_block_hash(
         &self,
         height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError>;
+    ) -> Result<Option<BlockHash>, FinalizedStateError>;
 
     /// Return the persisted `DbMetadata` singleton.
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError>;
+    async fn get_metadata(&self) -> Result<DbMetadata, FinalizedStateError>;
 }
 
 /// Write operations that *every* ZainoDB version must support.
 #[async_trait]
 pub trait DbWrite: Send + Sync {
     /// Persist a fully-validated block to the database.
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError>;
+    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalizedStateError>;
 
-    /// Deletes a block identified height from every finalised table.
-    async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError>;
+    /// Deletes a block identified height from every finalized table.
+    async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalizedStateError>;
 
-    /// Wipe the given block data from every finalised table.
+    /// Wipe the given block data from every finalized table.
     ///
     /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
     ///
     /// Used as a backup when delete_block_at_height fails.
-    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError>;
+    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalizedStateError>;
 
     /// Update the metadata store with the given DbMetadata
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError>;
+    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalizedStateError>;
 }
 
 /// Core database functionality that *every* ZainoDB version must support.
@@ -433,7 +433,7 @@ pub trait DbCore: DbRead + DbWrite + Send + Sync {
     fn status(&self) -> StatusType;
 
     /// Stops background tasks, syncs, etc.
-    async fn shutdown(&self) -> Result<(), FinalisedStateError>;
+    async fn shutdown(&self) -> Result<(), FinalizedStateError>;
 }
 
 // ***** Database Extension traits *****
@@ -445,36 +445,36 @@ pub trait BlockCoreExt: Send + Sync {
     async fn get_block_header(
         &self,
         height: Height,
-    ) -> Result<BlockHeaderData, FinalisedStateError>;
+    ) -> Result<BlockHeaderData, FinalizedStateError>;
 
     /// Return block headers for the given height range.
     async fn get_block_range_headers(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<BlockHeaderData>, FinalisedStateError>;
+    ) -> Result<Vec<BlockHeaderData>, FinalizedStateError>;
 
     /// Return block txids by height.
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError>;
+    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalizedStateError>;
 
     /// Return block txids for the given height range.
     async fn get_block_range_txids(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TxidList>, FinalisedStateError>;
+    ) -> Result<Vec<TxidList>, FinalizedStateError>;
 
     /// Fetch the txid bytes for a given TxLocation.
     async fn get_txid(
         &self,
         tx_location: TxLocation,
-    ) -> Result<TransactionHash, FinalisedStateError>;
+    ) -> Result<TransactionHash, FinalizedStateError>;
 
     /// Fetch the TxLocation for the given txid, transaction data is indexed by TxLocation internally.
     async fn get_tx_location(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError>;
+    ) -> Result<Option<TxLocation>, FinalizedStateError>;
 }
 
 /// Transparent block data extension.
@@ -484,20 +484,20 @@ pub trait BlockTransparentExt: Send + Sync {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError>;
+    ) -> Result<Option<TransparentCompactTx>, FinalizedStateError>;
 
     /// Fetch block transparent transaction data by height.
     async fn get_block_transparent(
         &self,
         height: Height,
-    ) -> Result<TransparentTxList, FinalisedStateError>;
+    ) -> Result<TransparentTxList, FinalizedStateError>;
 
     /// Fetches block transparent tx data for the given height range.
     async fn get_block_range_transparent(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransparentTxList>, FinalisedStateError>;
+    ) -> Result<Vec<TransparentTxList>, FinalizedStateError>;
 }
 
 /// Transparent block data extension.
@@ -507,48 +507,48 @@ pub trait BlockShieldedExt: Send + Sync {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, FinalisedStateError>;
+    ) -> Result<Option<SaplingCompactTx>, FinalizedStateError>;
 
     /// Fetch block sapling transaction data by height.
     async fn get_block_sapling(&self, height: Height)
-        -> Result<SaplingTxList, FinalisedStateError>;
+        -> Result<SaplingTxList, FinalizedStateError>;
 
     /// Fetches block sapling tx data for the given height range.
     async fn get_block_range_sapling(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<SaplingTxList>, FinalisedStateError>;
+    ) -> Result<Vec<SaplingTxList>, FinalizedStateError>;
 
     /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError>;
+    ) -> Result<Option<OrchardCompactTx>, FinalizedStateError>;
 
     /// Fetch block orchard transaction data by height.
     async fn get_block_orchard(&self, height: Height)
-        -> Result<OrchardTxList, FinalisedStateError>;
+        -> Result<OrchardTxList, FinalizedStateError>;
 
     /// Fetches block orchard tx data for the given height range.
     async fn get_block_range_orchard(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError>;
+    ) -> Result<Vec<OrchardTxList>, FinalizedStateError>;
 
     /// Fetch block commitment tree data by height.
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,
-    ) -> Result<CommitmentTreeData, FinalisedStateError>;
+    ) -> Result<CommitmentTreeData, FinalizedStateError>;
 
     /// Fetches block commitment tree data for the given height range.
     async fn get_block_range_commitment_tree_data(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError>;
+    ) -> Result<Vec<CommitmentTreeData>, FinalizedStateError>;
 }
 
 /// CompactBlock extension.
@@ -560,7 +560,7 @@ pub trait CompactBlockExt: Send + Sync {
     async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError>;
+    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalizedStateError>;
 }
 
 /// IndexedBlock v1 extension.
@@ -572,7 +572,7 @@ pub trait IndexedBlockExt: Send + Sync {
     async fn get_chain_block(
         &self,
         height: Height,
-    ) -> Result<Option<IndexedBlock>, FinalisedStateError>;
+    ) -> Result<Option<IndexedBlock>, FinalizedStateError>;
 }
 
 /// IndexedBlock v1 extension.
@@ -587,7 +587,7 @@ pub trait TransparentHistExt: Send + Sync {
     async fn addr_records(
         &self,
         addr_script: AddrScript,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError>;
+    ) -> Result<Option<Vec<AddrEventBytes>>, FinalizedStateError>;
 
     /// Fetch all address history records for a given address and TxLocation.
     ///
@@ -599,7 +599,7 @@ pub trait TransparentHistExt: Send + Sync {
         &self,
         addr_script: AddrScript,
         tx_location: TxLocation,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError>;
+    ) -> Result<Option<Vec<AddrEventBytes>>, FinalizedStateError>;
 
     /// Fetch all distinct `TxLocation` values for `addr_script` within the
     /// height range `[start_height, end_height]` (inclusive).
@@ -613,7 +613,7 @@ pub trait TransparentHistExt: Send + Sync {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<TxLocation>>, FinalisedStateError>;
+    ) -> Result<Option<Vec<TxLocation>>, FinalizedStateError>;
 
     /// Fetch all UTXOs (unspent mined outputs) for `addr_script` within the
     /// height range `[start_height, end_height]` (inclusive).
@@ -629,7 +629,7 @@ pub trait TransparentHistExt: Send + Sync {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError>;
+    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalizedStateError>;
 
     /// Computes the transparent balance change for `addr_script` over the
     /// height range `[start_height, end_height]` (inclusive).
@@ -644,7 +644,7 @@ pub trait TransparentHistExt: Send + Sync {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<i64, FinalisedStateError>;
+    ) -> Result<i64, FinalizedStateError>;
 
     // TODO: Add addr_deltas_by_range method!
 
@@ -657,7 +657,7 @@ pub trait TransparentHistExt: Send + Sync {
     async fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
-    ) -> Result<Option<TxLocation>, FinalisedStateError>;
+    ) -> Result<Option<TxLocation>, FinalizedStateError>;
 
     /// Fetch the `TxLocation` entries for a batch of outpoints.
     ///
@@ -668,5 +668,5 @@ pub trait TransparentHistExt: Send + Sync {
     async fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,
-    ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError>;
+    ) -> Result<Vec<Option<TxLocation>>, FinalizedStateError>;
 }
