@@ -135,19 +135,6 @@ pub(crate) struct DbMetadata {
 }
 
 impl DbMetadata {
-    /// Creates a new DbMetadata.
-    pub(crate) fn new(
-        version: DbVersion,
-        schema_hash: [u8; 32],
-        migration_status: MigrationStatus,
-    ) -> Self {
-        Self {
-            version,
-            schema_hash,
-            migration_status,
-        }
-    }
-
     /// Returns the version data.
     pub(crate) fn version(&self) -> DbVersion {
         self.version
