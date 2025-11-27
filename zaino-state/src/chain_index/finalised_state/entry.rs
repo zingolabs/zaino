@@ -30,25 +30,22 @@ pub(crate) struct StoredEntryFixed<T: ZainoVersionedSerde + FixedEncodedLen> {
 impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     /// Create a new entry, hashing `key || encoded_item`.
     pub(crate) fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
+        let checksum = Self::digest(key, &item);
+        Self { item, checksum }
+    }
+
+    fn digest<K: AsRef<[u8]>>(key: K, item: &T) -> [u8; 32] {
         let body = {
             let mut v = Vec::with_capacity(T::VERSIONED_LEN);
             item.serialize(&mut v).unwrap();
             v
         };
-        let checksum = Self::blake2b256(&[key.as_ref(), &body].concat());
-        Self { item, checksum }
+        Self::blake2b256(&[key.as_ref(), &body].concat())
     }
-
     /// Verify checksum given the DB key.
     /// Returns `true` if `self.checksum == blake2b256(key || item.serialize())`.
     pub(crate) fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
-        let body = {
-            let mut v = Vec::with_capacity(T::VERSIONED_LEN);
-            self.item.serialize(&mut v).unwrap();
-            v
-        };
-        let candidate = Self::blake2b256(&[key.as_ref(), &body].concat());
-        candidate == self.checksum
+        Self::digest(key, &self.item) == self.checksum
     }
 
     /// Returns a reference to the inner item.
