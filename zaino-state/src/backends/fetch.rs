@@ -44,6 +44,7 @@ use zaino_proto::proto::{
     },
 };
 
+use crate::TransactionHash;
 #[allow(deprecated)]
 use crate::{
     chain_index::{
@@ -62,6 +63,7 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
+    BackendType,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -95,8 +97,11 @@ pub struct FetchService {
 #[async_trait]
 #[allow(deprecated)]
 impl ZcashService for FetchService {
+    const BACKEND_TYPE: BackendType = BackendType::Fetch;
+
     type Subscriber = FetchServiceSubscriber;
     type Config = FetchServiceConfig;
+
     /// Initializes a new FetchService instance and starts sync process.
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!("Launching Chain Fetch Service..");
@@ -1208,6 +1213,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             .txid
             .iter()
             .map(|txid_bytes| {
+                // NOTE: the TransactionHash methods cannot be used for this hex encoding as exclusions could be truncated to less than 32 bytes
                 let reversed_txid_bytes: Vec<u8> = txid_bytes.iter().cloned().rev().collect();
                 hex::encode(&reversed_txid_bytes)
             })
@@ -1223,7 +1229,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     for (mempool_key, mempool_value) in
                         mempool.get_filtered_mempool(exclude_txids).await
                     {
-                        let txid_bytes = match hex::decode(mempool_key.txid) {
+                        let txid = match TransactionHash::from_hex(mempool_key.txid) {
                             Ok(bytes) => bytes,
                             Err(error) => {
                                 if channel_tx
@@ -1239,7 +1245,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         };
                         match <FullTransaction as ParseFromSlice>::parse_from_slice(
                             mempool_value.serialized_tx.as_ref().as_ref(),
-                            Some(vec![txid_bytes]),
+                            Some(vec![txid.0.to_vec()]),
                             None,
                         ) {
                             Ok(transaction) => {

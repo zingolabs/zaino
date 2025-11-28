@@ -18,6 +18,7 @@ use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 /// Holds txid.
 ///
 /// TODO: Update to hold zebra_chain::Transaction::Hash ( or internal version )
+/// `https://github.com/zingolabs/zaino/issues/661`
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub struct MempoolKey {
     /// currently txid (as string) - see above TODO, could be stronger type
@@ -384,17 +385,9 @@ impl MempoolSubscriber {
 
         let mut txids_to_exclude: HashSet<MempoolKey> = HashSet::new();
         for exclude_txid in &exclude_list {
-            // Convert to big endian (server format).
-            let server_exclude_txid: String = exclude_txid
-                .chars()
-                .collect::<Vec<_>>()
-                .chunks(2)
-                .rev()
-                .map(|chunk| chunk.iter().collect::<String>())
-                .collect();
             let matching_txids: Vec<&String> = mempool_txids
                 .iter()
-                .filter(|txid| txid.starts_with(&server_exclude_txid))
+                .filter(|txid| txid.starts_with(exclude_txid))
                 .collect();
 
             if matching_txids.len() == 1 {

@@ -50,7 +50,8 @@ const EXPECTED_CHAIN_TIP: u32 = 104;
 const HEIGHT_BEYOND_TIP: u32 = 200;
 const NON_EXISTENT_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
 
-async fn setup_chain(test_manager: &mut TestManager) -> (String, String) {
+#[allow(deprecated)]
+async fn setup_chain(test_manager: &mut TestManager<FetchService>) -> (String, String) {
     let mut clients = test_manager
         .clients
         .take()

@@ -1,6 +1,6 @@
 //! Tests that compare the output of both `zcashd` and `zainod` through `FetchService`.
 
-use zaino_common::network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
+use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 
 #[allow(deprecated)]
@@ -17,18 +17,18 @@ use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
 async fn create_test_manager_and_fetch_services(
     clients: bool,
 ) -> (
-    TestManager,
+    TestManager<FetchService>,
     FetchService,
     FetchServiceSubscriber,
     FetchService,
     FetchServiceSubscriber,
 ) {
     println!("Launching test manager..");
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::<FetchService>::launch(
         &ValidatorKind::Zcashd,
         &BackendType::Fetch,
         None,
-        Some(ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
+        None,
         None,
         true,
         true,
@@ -101,6 +101,22 @@ async fn create_test_manager_and_fetch_services(
         zaino_fetch_service,
         zaino_subscriber,
     )
+}
+
+#[allow(deprecated)]
+async fn generate_blocks_and_poll_all_chain_indexes(
+    n: u32,
+    test_manager: &TestManager<FetchService>,
+    zaino_subscriber: FetchServiceSubscriber,
+    zcashd_subscriber: FetchServiceSubscriber,
+) {
+    test_manager.generate_blocks_and_poll(n).await;
+    test_manager
+        .generate_blocks_and_poll_indexer(0, &zaino_subscriber)
+        .await;
+    test_manager
+        .generate_blocks_and_poll_indexer(0, &zcashd_subscriber)
+        .await;
 }
 
 async fn launch_json_server_check_info() {
@@ -289,8 +305,13 @@ async fn z_get_address_balance_inner() {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     clients.recipient.sync_and_await().await.unwrap();
     let recipient_balance = clients
@@ -382,8 +403,13 @@ async fn get_raw_mempool_inner() {
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     clients.faucet.sync_and_await().await.unwrap();
 
@@ -421,8 +447,13 @@ async fn get_mempool_info_inner() {
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     clients.faucet.sync_and_await().await.unwrap();
 
@@ -464,8 +495,13 @@ async fn z_get_treestate_inner() {
         .await
         .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     let zcashd_treestate = dbg!(zcashd_subscriber
         .z_get_treestate("2".to_string())
@@ -498,8 +534,13 @@ async fn z_get_subtrees_by_index_inner() {
         .await
         .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     let zcashd_subtrees = dbg!(zcashd_subscriber
         .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
@@ -532,8 +573,13 @@ async fn get_raw_transaction_inner() {
         .await
         .unwrap();
 
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     test_manager.local_net.print_stdout();
 
@@ -570,8 +616,13 @@ async fn get_address_tx_ids_inner() {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     let chain_height = zcashd_subscriber
         .block_cache
@@ -627,8 +678,13 @@ async fn z_get_address_utxos_inner() {
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
 
     clients.faucet.sync_and_await().await.unwrap();
 
@@ -665,27 +721,27 @@ mod zcashd {
 
         use super::*;
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn check_info_no_cookie() {
             launch_json_server_check_info().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn check_info_with_cookie() {
             launch_json_server_check_info().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn z_get_address_balance() {
             z_get_address_balance_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_best_blockhash() {
             get_best_blockhash_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_block_count() {
             get_block_count_inner().await;
         }
@@ -694,7 +750,7 @@ mod zcashd {
         ///
         /// This tests generates blocks and checks that the difficulty is the same between zcashd and zaino
         /// after each block is generated.
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_difficulty() {
             let (
                 mut test_manager,
@@ -712,13 +768,19 @@ mod zcashd {
 
                 assert_eq!(zcashd_difficulty, zaino_difficulty);
 
-                test_manager.local_net.generate_blocks(1).await.unwrap();
+                generate_blocks_and_poll_all_chain_indexes(
+                    1,
+                    &test_manager,
+                    zaino_subscriber.clone(),
+                    zcashd_subscriber.clone(),
+                )
+                .await;
             }
 
             test_manager.close().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_block_deltas() {
             let (
                 mut test_manager,
@@ -754,7 +816,7 @@ mod zcashd {
             test_manager.close().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_mining_info() {
             let (
                 mut test_manager,
@@ -778,7 +840,7 @@ mod zcashd {
             test_manager.close().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_peer_info() {
             let (
                 mut test_manager,
@@ -793,12 +855,18 @@ mod zcashd {
 
             assert_eq!(zcashd_peer_info, zaino_peer_info);
 
-            test_manager.local_net.generate_blocks(1).await.unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                zaino_subscriber.clone(),
+                zcashd_subscriber.clone(),
+            )
+            .await;
 
             test_manager.close().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_block_subsidy() {
             let (
                 mut test_manager,
@@ -808,7 +876,13 @@ mod zcashd {
                 zaino_subscriber,
             ) = create_test_manager_and_fetch_services(false).await;
 
-            test_manager.local_net.generate_blocks(1).await.unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                zaino_subscriber.clone(),
+                zcashd_subscriber.clone(),
+            )
+            .await;
 
             let zcashd_block_subsidy = zcashd_subscriber.get_block_subsidy(1).await.unwrap();
             let zaino_block_subsidy = zaino_subscriber.get_block_subsidy(1).await.unwrap();
@@ -818,13 +892,12 @@ mod zcashd {
             test_manager.close().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn validate_address() {
             validate_address_inner().await;
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-
         async fn z_validate_address() {
             let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, _zaino_sub) =
                 create_test_manager_and_fetch_services(false).await;
@@ -843,12 +916,12 @@ mod zcashd {
             test_manager.close().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn z_get_block() {
             z_get_block_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_block_header() {
             let (
                 test_manager,
@@ -887,37 +960,37 @@ mod zcashd {
             }
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_raw_mempool() {
             get_raw_mempool_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_mempool_info() {
             get_mempool_info_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn z_get_treestate() {
             z_get_treestate_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn z_get_subtrees_by_index() {
             z_get_subtrees_by_index_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_raw_transaction() {
             get_raw_transaction_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn get_address_tx_ids() {
             get_address_tx_ids_inner().await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(flavor = "multi_thread")]
         async fn z_get_address_utxos() {
             z_get_address_utxos_inner().await;
         }
