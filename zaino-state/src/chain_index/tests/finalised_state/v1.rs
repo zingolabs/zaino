@@ -154,10 +154,10 @@ async fn save_db_to_file_and_reload() {
     let source_clone = source.clone();
 
     let config_clone = config.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
-            let zaino_db = ZainoDB::spawn(config_clone, source).await.unwrap();
+    std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            let zaino_db = ZainoDB::spawn(config_clone, source).await?;
 
             crate::chain_index::tests::vectors::sync_db_with_blockdata(
                 zaino_db.router(),
@@ -167,39 +167,43 @@ async fn save_db_to_file_and_reload() {
             .await;
             zaino_db.wait_until_ready().await;
             dbg!(zaino_db.status());
-            dbg!(zaino_db.db_height().await.unwrap());
+            dbg!(zaino_db.db_height().await?);
 
-            dbg!(zaino_db.shutdown().await.unwrap());
-        });
+            dbg!(zaino_db.shutdown().await?);
+            Ok(())
+        })
     })
     .join()
-    .unwrap();
+    .expect("Thread panicked")
+    .expect("First DB session failed");
 
     std::thread::sleep(std::time::Duration::from_millis(1000));
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
+    std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
             dbg!(config
                 .storage
                 .database
                 .path
-                .read_dir()
-                .unwrap()
+                .read_dir()?
                 .collect::<Vec<_>>());
-            let zaino_db_2 = ZainoDB::spawn(config, source_clone).await.unwrap();
+            let zaino_db_2 = ZainoDB::spawn(config, source_clone).await?;
 
             zaino_db_2.wait_until_ready().await;
             dbg!(zaino_db_2.status());
-            let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
+            let db_height = dbg!(zaino_db_2.db_height().await?)
+                .ok_or("DB height was None")?;
 
             assert_eq!(db_height.0, 200);
 
-            dbg!(zaino_db_2.shutdown().await.unwrap());
-        });
+            dbg!(zaino_db_2.shutdown().await?);
+            Ok(())
+        })
     })
     .join()
-    .unwrap();
+    .expect("Thread panicked")
+    .expect("Second DB session (reload) failed");
 }
 
 #[tokio::test(flavor = "multi_thread")]

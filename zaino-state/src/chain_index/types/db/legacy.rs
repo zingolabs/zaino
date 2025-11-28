@@ -34,10 +34,13 @@ use hex::{FromHex, ToHex};
 use primitive_types::U256;
 use std::{fmt, io::Cursor};
 
-use crate::chain_index::encoding::{
-    read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
-    read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
-    write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
+use crate::{
+    chain_index::encoding::{
+        read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le,
+        read_u64_le, read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be,
+        write_u32_be, write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
+    },
+    read_fixed_be, write_fixed_be,
 };
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
@@ -269,7 +272,7 @@ impl ZainoVersionedSerde for TransactionHash {
     const VERSION: u8 = version::V1;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.0)
+        write_fixed_be::<32, _>(w, &self.0)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -277,7 +280,7 @@ impl ZainoVersionedSerde for TransactionHash {
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let bytes = read_fixed_le::<32, _>(r)?;
+        let bytes = read_fixed_be::<32, _>(r)?;
         Ok(TransactionHash(bytes))
     }
 }
