@@ -1132,6 +1132,7 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
 /// - unified: `uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36`
 /// - invalid (length shorter than expected by 1 char): `t1123456789ABCDEFGHJKLMNPQRSTUVWXY`
 /// - invalid (all zeroes): `t1000000000000000000000000000000000`
+#[allow(deprecated)]
 async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
     let (mut test_manager, _fetch_service, fetch_service_subscriber) =
         create_test_manager_and_fetch_service(validator, None, true, true, true).await;
