@@ -1134,8 +1134,20 @@ async fn fetch_service_validate_address(validator: &ValidatorKind) {
 /// - invalid (all zeroes): `t1000000000000000000000000000000000`
 #[allow(deprecated)]
 async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
-    let (mut test_manager, _fetch_service, fetch_service_subscriber) =
-        create_test_manager_and_fetch_service(validator, None, true, true, true).await;
+    let mut test_manager = TestManager::<FetchService>::launch(
+        validator,
+        &BackendType::Fetch,
+        None,
+        None,
+        None,
+        true,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
     let rpc_call = |addr: String| {
         let subscriber = &fetch_service_subscriber;
