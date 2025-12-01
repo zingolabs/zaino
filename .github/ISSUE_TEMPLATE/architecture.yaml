@@ -1,0 +1,63 @@
+name: "Architecture Issue"
+description: Document structural concerns, design decisions, or refactoring needs
+labels: ["architecture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to document architectural concerns, design problems, or areas needing refactoring.
+
+        These issues help track technical debt and guide future development.
+
+  - type: textarea
+    id: observation
+    attributes:
+      label: Observation
+      description: What architectural concern have you identified?
+      placeholder: |
+        The X module is tightly coupled with Y...
+        The current design makes it difficult to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Location in codebase
+      description: Which modules, files, or components are affected?
+      placeholder: |
+        - `zaino-state/src/...`
+        - `chain_index::finalized_state::...`
+    validations:
+      required: true
+
+  - type: dropdown
+    id: concern_type
+    attributes:
+      label: Type of concern
+      description: What category best describes this?
+      multiple: true
+      options:
+        - Coupling / Dependencies
+        - Abstraction boundaries
+        - Separation of concerns
+        - API design
+        - Module organization
+        - Type system / Safety
+        - Persistence layer
+        - Error handling
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: How does this affect development, maintenance, or correctness?
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested direction
+      description: Any ideas on how to address this? (optional)

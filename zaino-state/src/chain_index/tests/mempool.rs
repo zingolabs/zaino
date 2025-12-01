@@ -97,7 +97,7 @@ async fn get_filtered_mempool() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
     mockchain.mine_blocks(150);
-    let active_chain_height = dbg!(mockchain.active_height());
+    let active_chain_height = mockchain.active_height();
 
     sleep(Duration::from_millis(2000)).await;
 
@@ -108,24 +108,15 @@ async fn get_filtered_mempool() {
         .unwrap_or_default();
 
     let exclude_hash = mempool_transactions[0].hash();
-    // Reverse format to client type.
-    let client_exclude_txid: String = exclude_hash
-        .to_string()
-        .chars()
-        .collect::<Vec<_>>()
-        .chunks(2)
-        .rev()
-        .map(|chunk| chunk.iter().collect::<String>())
-        .collect();
 
     let subscriber_tx = subscriber
-        .get_filtered_mempool(vec![client_exclude_txid])
+        .get_filtered_mempool(vec![exclude_hash.to_string()])
         .await;
 
     println!("Checking transactions..");
 
     for transaction in mempool_transactions.into_iter() {
-        let transaction_hash = dbg!(transaction.hash());
+        let transaction_hash = transaction.hash();
         if transaction_hash == exclude_hash {
             // check tx is *not* in mempool transactions
             let maybe_subscriber_tx = subscriber_tx

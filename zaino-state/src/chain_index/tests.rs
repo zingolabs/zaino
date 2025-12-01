@@ -391,22 +391,7 @@ mod mockchain_tests {
             })
             .unwrap_or_default();
         let exclude_tx = mempool_transactions.pop().unwrap();
-        dbg!(&exclude_tx.hash());
-
-        // Reverse format to client type.
-        //
-        // TODO: Explore whether this is the correct byte order or whether we
-        // replicated a bug in old code.
-        let exclude_txid: String = exclude_tx
-            .hash()
-            .to_string()
-            .chars()
-            .collect::<Vec<_>>()
-            .chunks(2)
-            .rev()
-            .map(|chunk| chunk.iter().collect::<String>())
-            .collect();
-        dbg!(&exclude_txid);
+        let exclude_txid = exclude_tx.hash().to_string();
         mempool_transactions.sort_by_key(|a| a.hash());
 
         let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions & Discussion
+    url: https://github.com/zingolabs/zaino/discussions
+    about: Ask questions or start a discussion (if Discussions is enabled)
+  - name: Zcash Community Forum
+    url: https://forum.zcashcommunity.com/
+    about: General Zcash ecosystem questions
