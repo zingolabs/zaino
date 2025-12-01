@@ -13,7 +13,7 @@ pub struct GrpcClient<Indexer: ZcashIndexer + LightWalletIndexer> {
 }
 
 #[derive(Clone)]
-/// Zaino gRPC service.
+/// Zaino JSONRPC service.
 pub struct JsonRpcClient<Indexer: ZcashIndexer + LightWalletIndexer> {
     /// Chain fetch service subscriber.
     pub service_subscriber: IndexerSubscriber<Indexer>,

@@ -11,7 +11,9 @@ publish = false
 
 [dependencies]
 # Zaino
-zaino-state = { workspace = true, features = ["bench"] }
+zaino-proto = { workspace = true }
+zaino-state = { workspace = true, features = ["test_dependencies"] }
+zaino-serve.workspace = true
 zaino-testvectors.workspace = true
 zaino-common.workspace = true
 zainod = { workspace = true }
@@ -24,6 +26,7 @@ zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d
 
 # Zebra
 zebra-chain = { workspace = true }
+zebra-state.workspace = true
 
 # Zingo-infra
 zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
@@ -31,18 +34,17 @@ zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", 
 
 # Zingo-common
 zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [ "for_test" ]}
+zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0"  }
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "f88e1d76ea244d6cc48d7fd4c3a609c6598318dc", features = [
-    "testutils",
-] }
+zingolib = { workspace = true }
 
 # Miscellaneous
 http = { workspace = true }
 once_cell = { workspace = true }
 portpicker = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true }
+tonic = { version = "0.13" } # TODO: unify in the workspace
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
     "fmt",
@@ -61,6 +63,3 @@ tracing-subscriber = { workspace = true, features = [
 proptest = { workspace = true }
 lazy_static = { workspace = true }
 zip32 = {workspace = true}
-
-[dev-dependencies]
-zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0"  }

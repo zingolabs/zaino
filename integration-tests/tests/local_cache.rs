@@ -1,43 +1,36 @@
-use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
+#[allow(deprecated)]
+use zaino_state::FetchService;
 use zaino_state::{
-    bench::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
+    test_dependencies::{BlockCache, BlockCacheConfig, BlockCacheSubscriber},
     BackendType,
 };
 use zaino_testutils::{TestManager, ValidatorKind};
-use zaino_testutils::{Validator as _, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
+use zcash_local_net::validator::Validator as _;
 use zebra_chain::{block::Height, parameters::NetworkKind};
 use zebra_state::HashOrHeight;
 
+#[allow(deprecated)]
 async fn create_test_manager_and_block_cache(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
-    zaino_no_sync: bool,
-    zaino_no_db: bool,
     enable_clients: bool,
 ) -> (
-    TestManager,
+    TestManager<FetchService>,
     JsonRpSeeConnector,
     BlockCache,
     BlockCacheSubscriber,
 ) {
-    let activation_heights = match validator {
-        ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
-        ValidatorKind::Zcashd => ActivationHeights::default(),
-    };
-
-    let test_manager = TestManager::launch(
+    let test_manager = TestManager::<FetchService>::launch(
         validator,
         &BackendType::Fetch,
         None,
-        Some(activation_heights),
+        None,
         chain_cache,
         enable_zaino,
         false,
-        false,
-        zaino_no_sync,
-        zaino_no_db,
         enable_clients,
     )
     .await
@@ -45,8 +38,7 @@ async fn create_test_manager_and_block_cache(
 
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.zebrad_rpc_listen_address,
-            false,
+            test_manager.full_node_rpc_listen_address,
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -59,9 +51,9 @@ async fn create_test_manager_and_block_cache(
     .unwrap();
 
     let network = match test_manager.network {
-        NetworkKind::Regtest => {
-            zebra_chain::parameters::Network::new_regtest(activation_heights.into())
-        }
+        NetworkKind::Regtest => zebra_chain::parameters::Network::new_regtest(
+            test_manager.local_net.get_activation_heights(),
+        ),
         NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
         NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
     };
@@ -76,8 +68,6 @@ async fn create_test_manager_and_block_cache(
         },
         db_version: 1,
         network: network.into(),
-        no_sync: zaino_no_sync,
-        no_db: zaino_no_db,
     };
 
     let block_cache = BlockCache::spawn(&json_service, None, block_cache_config)
@@ -94,33 +84,20 @@ async fn create_test_manager_and_block_cache(
     )
 }
 
-async fn launch_local_cache(validator: &ValidatorKind, no_db: bool) {
-    let (_test_manager, _json_service, _block_cache, block_cache_subscriber) =
-        create_test_manager_and_block_cache(validator, None, false, true, no_db, false).await;
-
-    dbg!(block_cache_subscriber.status());
+async fn launch_local_cache(validator: &ValidatorKind) {
+    create_test_manager_and_block_cache(validator, None, false, false).await;
 }
 
 /// Launches a testmanager and block cache and generates `n*100` blocks, checking blocks are stored and fetched correctly.
 async fn launch_local_cache_process_n_block_batches(validator: &ValidatorKind, batches: u32) {
     let (test_manager, json_service, mut block_cache, mut block_cache_subscriber) =
-        create_test_manager_and_block_cache(validator, None, false, true, false, false).await;
+        create_test_manager_and_block_cache(validator, None, true, false).await;
 
     let finalised_state = block_cache.finalised_state.take().unwrap();
     let finalised_state_subscriber = block_cache_subscriber.finalised_state.take().unwrap();
 
     for _ in 1..=batches {
-        // Generate blocks
-        //
-        // NOTE: Generating blocks with zcashd blocks the tokio main thread???, stopping background processes from running,
-        //       for this reason we generate blocks 1 at a time and sleep to let other tasks run.
-        for height in 1..=100 {
-            println!("Generating block at height: {height}");
-            test_manager.local_net.generate_blocks(1).await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        test_manager.generate_blocks_and_poll(100).await;
 
         // Check chain height in validator, non-finalised state and finalised state.
         let validator_height = dbg!(json_service.get_blockchain_info().await.unwrap().blocks.0);
@@ -169,13 +146,8 @@ mod zcashd {
     use crate::{launch_local_cache, launch_local_cache_process_n_block_batches};
 
     #[tokio::test]
-    async fn launch_no_db() {
-        launch_local_cache(&ValidatorKind::Zcashd, true).await;
-    }
-
-    #[tokio::test]
-    async fn launch_with_db() {
-        launch_local_cache(&ValidatorKind::Zcashd, false).await;
+    async fn launch_local_cache_zcashd() {
+        launch_local_cache(&ValidatorKind::Zcashd).await;
     }
 
     #[tokio::test]
@@ -195,13 +167,8 @@ mod zebrad {
     use crate::{launch_local_cache, launch_local_cache_process_n_block_batches};
 
     #[tokio::test]
-    async fn launch_no_db() {
-        launch_local_cache(&ValidatorKind::Zebrad, true).await;
-    }
-
-    #[tokio::test]
-    async fn launch_with_db() {
-        launch_local_cache(&ValidatorKind::Zebrad, false).await;
+    async fn launch_local_cache_zebrad() {
+        launch_local_cache(&ValidatorKind::Zebrad).await;
     }
 
     #[tokio::test]

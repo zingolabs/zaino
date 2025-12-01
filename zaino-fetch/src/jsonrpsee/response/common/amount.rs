@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// Zatoshis per ZEC.
 pub const ZATS_PER_ZEC: u64 = 100_000_000;
 /// Represents an amount in Zatoshis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -41,6 +42,7 @@ impl<'de> Deserialize<'de> for Zatoshis {
 pub struct ZecAmount(u64);
 
 impl ZecAmount {
+    /// Returns the amount in zatoshis.
     pub fn as_zatoshis(self) -> u64 {
         self.0
     }

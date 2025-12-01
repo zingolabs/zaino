@@ -1,6 +1,6 @@
 //! Zingo-Indexer daemon
 
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use std::path::PathBuf;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -26,12 +26,6 @@ async fn main() {
         .init();
 
     let args = Args::parse();
-
-    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
-        let cmd = Args::command();
-        println!("{}", cmd.get_version().unwrap());
-        return;
-    }
 
     let config_path = args
         .config

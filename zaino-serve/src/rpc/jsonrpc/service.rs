@@ -1,6 +1,9 @@
 //! Zcash RPC implementations.
 
+use zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas;
+use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
+use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
 use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
@@ -65,6 +68,12 @@ pub trait ZcashIndexerRpc {
     #[method(name = "getmempoolinfo")]
     async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, ErrorObjectOwned>;
 
+    /// Returns a json object containing mining-related information.
+    ///
+    /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
+    #[method(name = "getmininginfo")]
+    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, ErrorObjectOwned>;
+
     /// Returns the hash of the best block (tip) of the longest chain.
     /// zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
     /// method: post
@@ -87,6 +96,14 @@ pub trait ZcashIndexerRpc {
     /// tags: blockchain
     #[method(name = "getdifficulty")]
     async fn get_difficulty(&self) -> Result<f64, ErrorObjectOwned>;
+
+    /// Returns information about the given block and its transactions.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "getblockdeltas")]
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, ErrorObjectOwned>;
 
     /// Returns data about each connected network node as a json array of objects.
     ///
@@ -210,6 +227,26 @@ pub trait ZcashIndexerRpc {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, ErrorObjectOwned>;
+
+    /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
+    /// If verbose is true, returns an Object with information about blockheader `hash`.
+    ///
+    /// # Parameters
+    ///
+    /// - hash: (string, required) The block hash
+    /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// zcashd implementation [here](https://github.com/zcash/zcash/blob/16ac743764a513e41dafb2cd79c2417c5bb41e81/src/rpc/blockchain.cpp#L668)
+    ///
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "getblockheader")]
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, ErrorObjectOwned>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
@@ -370,6 +407,21 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             })
     }
 
+    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, ErrorObjectOwned> {
+        Ok(self
+            .service_subscriber
+            .inner_ref()
+            .get_mining_info()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })?)
+    }
+
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
@@ -416,6 +468,20 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_difficulty()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_block_deltas(hash)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(
@@ -527,6 +593,24 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .z_get_block(hash_or_height, verbosity)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_block_header(hash, verbose)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

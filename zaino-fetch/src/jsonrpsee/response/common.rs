@@ -1,13 +1,17 @@
+//! Common types used across jsonrpsee responses
+
 pub mod amount;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// The identifier for a Zcash node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeId(pub i64);
 
+/// The height of a Zcash block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BlockHeight(pub u32);
@@ -18,6 +22,7 @@ impl From<u32> for BlockHeight {
     }
 }
 
+/// The height of a Zcash block, or None if unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MaybeHeight(pub Option<BlockHeight>);
 
@@ -46,10 +51,13 @@ impl<'de> Deserialize<'de> for MaybeHeight {
     }
 }
 
+/// Unix timestamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UnixTime(pub i64);
+
 impl UnixTime {
+    /// Converts to a [`SystemTime`].
     pub fn as_system_time(self) -> SystemTime {
         if self.0 >= 0 {
             UNIX_EPOCH + Duration::from_secs(self.0 as u64)
@@ -59,23 +67,29 @@ impl UnixTime {
     }
 }
 
+/// Duration in seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecondsF64(pub f64);
+
 impl SecondsF64 {
+    /// Converts to a [`Duration`].
     pub fn as_duration(self) -> Duration {
         Duration::from_secs_f64(self.0)
     }
 }
 
+/// Protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProtocolVersion(pub i64);
 
+/// A byte array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Bytes(pub u64);
 
+/// Time offset in seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TimeOffsetSeconds(pub i64);

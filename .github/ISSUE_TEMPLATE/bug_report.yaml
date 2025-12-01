@@ -1,0 +1,88 @@
+name: "Bug Report"
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+
+        **Before submitting**, please check if a similar issue already exists.
+
+  - type: dropdown
+    id: usage
+    attributes:
+      label: Usage mode
+      description: How are you using Zaino?
+      options:
+        - zainod (running the daemon)
+        - Library integration (using zaino-* crates)
+        - Both / Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: List the steps to reproduce the issue.
+      placeholder: |
+        1. Start zainod with config...
+        2. Send request to...
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please include:
+        - Zaino version or commit hash
+        - Backend version (zebra/zcashd)
+        - OS and platform
+      placeholder: |
+        Zaino: v0.x.x or commit abc123
+        Backend: Zebra 27.0.0
+        OS: Linux x86_64 / macOS ARM64
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Paste your zainod config file (redact any sensitive values).
+      render: toml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Relevant log output. Use debug logging if possible (`level = "debug"` in config).
+        Wrap long logs in `<details>` tags.
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other relevant information (config snippets, block heights, tx ids, etc.)

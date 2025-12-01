@@ -35,7 +35,7 @@ pub mod version {
 ///
 /// ### Initial release (`VERSION = 1`)
 /// 1. `pub struct TxV1 { … }`   // layout frozen forever
-/// 2. `impl ZainoVersionedSerialise for TxV1`
+/// 2. `impl ZainoVersionedSerde for TxV1`
 ///    * `const VERSION = 1`
 ///    * `encode_body` – **v1** layout
 ///    * `decode_v1` – parses **v1** bytes
@@ -44,7 +44,7 @@ pub mod version {
 /// ### Bump to v2
 /// 1. `pub struct TxV2 { … }`   // new “current” layout
 /// 2. `impl From<TxV1> for TxV2` // loss-less upgrade path
-/// 3. `impl ZainoVersionedSerialise for TxV2`
+/// 3. `impl ZainoVersionedSerde for TxV2`
 ///    * `const VERSION = 2`
 ///    * `encode_body` – **v2** layout
 ///    * `decode_v1` – `TxV1::decode_latest(r).map(Self::from)`
@@ -67,7 +67,7 @@ pub mod version {
 ///
 /// Historical helpers (`decode_v1`, `decode_v2`, …) must be implemented
 /// for compatibility with historical versions
-pub trait ZainoVersionedSerialise: Sized {
+pub trait ZainoVersionedSerde: Sized {
     /// Tag this build writes.
     const VERSION: u8;
 

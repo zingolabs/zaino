@@ -64,7 +64,7 @@ impl ZainoDB {
             x => {
                 return Err(FinalisedStateError::Custom(format!(
                     "unsupported database version: DbV{x}"
-                )))
+                )));
             }
         };
 
@@ -77,7 +77,7 @@ impl ZainoDB {
                     _ => {
                         return Err(FinalisedStateError::Custom(format!(
                             "unsupported database version: DbV{version}"
-                        )))
+                        )));
                     }
                 }
             }
@@ -89,7 +89,7 @@ impl ZainoDB {
                     _ => {
                         return Err(FinalisedStateError::Custom(format!(
                             "unsupported database version: DbV{target_version}"
-                        )))
+                        )));
                     }
                 }
             }
@@ -354,5 +354,10 @@ impl ZainoDB {
     /// Returns metadata for the running ZainoDB.
     pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         self.db.get_metadata().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn router(&self) -> &Router {
+        &self.db
     }
 }
