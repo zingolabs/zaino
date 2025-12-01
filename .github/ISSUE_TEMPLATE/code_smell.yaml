@@ -1,0 +1,67 @@
+name: "Code Smell"
+description: Flag anti-patterns, naming issues, or code that needs attention
+labels: ["code-smell"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this to flag code that works but has problems worth addressing.
+
+        Code smells are indicators of deeper issues - they may or may not need immediate action.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What's the smell?
+      description: Describe the problematic pattern or code.
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Location
+      description: Where is this code? (file paths, module names, function names)
+      placeholder: |
+        `chain_index/src/finalized_state/entry.rs:42`
+    validations:
+      required: true
+
+  - type: dropdown
+    id: smell_type
+    attributes:
+      label: Category
+      description: What type of smell is this?
+      multiple: true
+      options:
+        - Naming confusion
+        - Duplication
+        - Long function / God object
+        - Primitive obsession
+        - Feature envy
+        - Inappropriate intimacy (tight coupling)
+        - Dead code
+        - Magic numbers / strings
+        - Missing abstraction
+        - Test smell
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Severity
+      description: How urgently should this be addressed?
+      options:
+        - Low - Nice to fix eventually
+        - Medium - Should fix when touching this code
+        - High - Actively causing problems
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: How might this be improved? (optional)
