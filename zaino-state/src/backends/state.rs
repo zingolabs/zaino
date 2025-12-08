@@ -5,6 +5,7 @@ use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
+        types as chain_types, ChainIndex, NonFinalizedSnapshot,
     },
     config::StateServiceConfig,
     error::{BlockCacheError, StateServiceError},
@@ -713,7 +714,8 @@ impl StateServiceSubscriber {
         e: BlockCacheError,
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
-        let chain_height = self.block_cache.get_chain_height().await?.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let chain_height = snapshot.best_chaintip().height.0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
@@ -1971,16 +1973,38 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
+
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+
+        // Convert HashOrHeight to chain_types::Height
+        let block_height = match hash_or_height {
+            HashOrHeight::Height(h) => chain_types::Height(h.0),
+            HashOrHeight::Hash(h) => self
+                .indexer
+                .get_block_height(&snapshot, chain_types::BlockHash(h.0))
+                .await
+                .map_err(|e| StateServiceError::ChainIndexError(e))?
+                .ok_or_else(|| {
+                    StateServiceError::TonicStatusError(tonic::Status::not_found(
+                        "Error: Block not found for given hash.",
+                    ))
+                })?,
+        };
+
         match self
-            .block_cache
-            .get_compact_block(hash_or_height.to_string())
+            .indexer
+            .get_compact_block(&snapshot, block_height)
             .await
         {
-            Ok(block) => Ok(block),
-            Err(e) => {
-                self.error_get_block(BlockCacheError::Custom(e.to_string()), height as u32)
-                    .await
+            Ok(Some(block)) => Ok(block),
+            Ok(None) => {
+                self.error_get_block(
+                    BlockCacheError::Custom("Block not found".to_string()),
+                    height as u32,
+                )
+                .await
             }
+            Err(e) => Err(StateServiceError::ChainIndexError(e)),
         }
     }
 
