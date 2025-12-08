@@ -1485,11 +1485,11 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
         Ok(self
-            .mempool
-            .get_mempool()
-            .await
+            .indexer
+            .get_mempool_txids()
+            .await?
             .into_iter()
-            .map(|(key, _)| key.txid)
+            .map(|txid| txid.to_string())
             .collect())
     }
 
