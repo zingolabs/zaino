@@ -25,7 +25,7 @@ pub mod rpc {
         use std::future::Future;
 
         use zaino_fetch::jsonrpsee::response::z_validate_address::{
-            IsMine, KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
+            KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
         };
         use zaino_testutils::ValidatorKind;
 
@@ -50,22 +50,14 @@ pub mod rpc {
             }
         }
 
-        pub async fn run_z_validate_suite<F, Fut>(rpc_call: &F, validator: ValidatorKind)
+        pub async fn run_z_validate_suite<F, Fut>(rpc_call: &F)
         where
             // Any callable that takes an address and returns the response (you can unwrap inside)
             F: Fn(String) -> Fut,
             Fut: Future<Output = ZValidateAddressResponse>,
         {
-            tracing::debug!("Testing expected ValidateAddresses with ValidatorKind {validator:?}.");
-
-            let expected_is_mine = match validator {
-                ValidatorKind::Zcashd => IsMine::NotMine,
-                ValidatorKind::Zebrad => IsMine::Unknown,
-            };
-
             // P2PKH
-            let expected_p2pkh = ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string())
-                .with_is_mine(expected_is_mine.clone());
+            let expected_p2pkh = ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
             assert_known_valid_eq(
                 rpc_call(VALID_P2PKH_ADDRESS.to_string()).await,
                 expected_p2pkh,
@@ -73,8 +65,7 @@ pub mod rpc {
             );
 
             // P2SH
-            let expected_p2sh = ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string())
-                .with_is_mine(expected_is_mine.clone());
+            let expected_p2sh = ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string());
             assert_known_valid_eq(
                 rpc_call(VALID_P2SH_ADDRESS.to_string()).await,
                 expected_p2sh,
@@ -97,8 +88,7 @@ pub mod rpc {
                 VALID_SAPLING_ADDRESS.to_string(),
                 Some(VALID_DIVERSIFIER.to_string()),
                 Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-            )
-            .with_is_mine(expected_is_mine.clone());
+            );
             assert_known_valid_eq(
                 rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
                 expected_sapling,
@@ -107,8 +97,7 @@ pub mod rpc {
 
             // Unified (differs by validator)
             let expected_unified =
-                ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string())
-                    .with_is_mine(expected_is_mine.clone());
+                ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string());
             assert_known_valid_eq(
                 rpc_call(VALID_UNIFIED_ADDRESS.to_string()).await,
                 expected_unified,

@@ -169,7 +169,6 @@ impl ValidZValidateAddress {
     pub fn p2pkh(address: impl Into<String>) -> Self {
         Self(AddressData::P2pkh {
             common: CommonFields::valid(address, ZValidateAddressType::P2pkh),
-            is_mine: IsMine::Unknown,
         })
     }
 
@@ -177,7 +176,6 @@ impl ValidZValidateAddress {
     pub fn p2sh(address: impl Into<String>) -> Self {
         Self(AddressData::P2sh {
             common: CommonFields::valid(address, ZValidateAddressType::P2sh),
-            is_mine: IsMine::Unknown,
         })
     }
 
@@ -191,7 +189,6 @@ impl ValidZValidateAddress {
             common: CommonFields::valid(address, ZValidateAddressType::Sprout),
             paying_key: paying_key.map(|x| x.into()),
             transmission_key: transmission_key.map(|x| x.into()),
-            is_mine: IsMine::Unknown,
         })
     }
 
@@ -205,7 +202,6 @@ impl ValidZValidateAddress {
             common: CommonFields::valid(address, ZValidateAddressType::Sapling),
             diversifier: diversifier.map(|x| x.into()),
             diversified_transmission_key: diversified_transmission_key.map(|x| x.into()),
-            is_mine: IsMine::Unknown,
         })
     }
 
@@ -219,18 +215,6 @@ impl ValidZValidateAddress {
     /// Optional setters (mirror zcashd’s conditional fields)
     pub fn with_legacy_type(mut self, t: ZValidateAddressType) -> Self {
         self.common_mut().legacy_type = Some(t);
-        self
-    }
-
-    /// Adds an `ismine` field.
-    pub fn with_is_mine(mut self, v: IsMine) -> Self {
-        match &mut self.0 {
-            AddressData::P2pkh { is_mine, .. }
-            | AddressData::P2sh { is_mine, .. }
-            | AddressData::Sprout { is_mine, .. }
-            | AddressData::Sapling { is_mine, .. } => *is_mine = v,
-            AddressData::Unified { .. } => {}
-        }
         self
     }
 
@@ -253,17 +237,6 @@ impl ValidZValidateAddress {
     /// Returns the legacy field for the address type.
     pub fn legacy_type(&self) -> Option<ZValidateAddressType> {
         self.common().legacy_type
-    }
-
-    /// Returns the `ismine` field.
-    pub fn is_mine(&self) -> IsMine {
-        match &self.0 {
-            AddressData::P2pkh { is_mine, .. }
-            | AddressData::P2sh { is_mine, .. }
-            | AddressData::Sprout { is_mine, .. }
-            | AddressData::Sapling { is_mine, .. } => is_mine.clone(),
-            AddressData::Unified { .. } => IsMine::Unknown,
-        }
     }
 
     /// Returns the `payingkey` and `transmissionkey` fields.
@@ -346,42 +319,6 @@ impl CommonFields {
     }
 }
 
-/// `ismine` wrapper. Originally used by `zcashd`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(from = "Option<bool>", into = "Option<bool>")]
-#[derive(Default)]
-pub enum IsMine {
-    /// The address is in the wallet.
-    Mine,
-
-    /// The address is not in the wallet.
-    NotMine,
-
-    /// Unknown.
-    #[default]
-    Unknown,
-}
-
-impl From<Option<bool>> for IsMine {
-    fn from(b: Option<bool>) -> Self {
-        match b {
-            Some(true) => IsMine::Mine,
-            Some(false) => IsMine::NotMine,
-            None => IsMine::Unknown,
-        }
-    }
-}
-
-impl From<IsMine> for Option<bool> {
-    fn from(v: IsMine) -> Self {
-        match v {
-            IsMine::Mine => Some(true),
-            IsMine::NotMine => Some(false),
-            IsMine::Unknown => None,
-        }
-    }
-}
-
 /// Response for the Valid branch of the `z_validateaddress` RPC.
 /// Note that the `ismine` field is only present for `zcashd`.
 #[derive(Clone, Debug, PartialEq)]
@@ -390,18 +327,12 @@ pub enum AddressData {
     P2pkh {
         /// Common address fields.
         common: CommonFields,
-
-        /// Whether the address is in the wallet or not.
-        is_mine: IsMine,
     },
 
     /// Transparent P2SH
     P2sh {
         /// Common address fields
         common: CommonFields,
-
-        /// Whether the address is in the wallet or not.
-        is_mine: IsMine,
     },
 
     /// Sprout address type
@@ -414,9 +345,6 @@ pub enum AddressData {
 
         /// The hex value of the transmission key, pk_enc
         transmission_key: Option<String>,
-
-        /// Whether the address is in the wallet or not.
-        is_mine: IsMine,
     },
 
     /// Sapling address type
@@ -429,9 +357,6 @@ pub enum AddressData {
 
         /// Hex of `pk_d`
         diversified_transmission_key: Option<String>,
-
-        /// Whether the address is in the wallet or not.
-        is_mine: IsMine,
     },
 
     /// Unified Address (UA). `zcashd` currently returns no extra fields for UA.
@@ -479,15 +404,10 @@ impl Serialize for AddressData {
 
         // Different variants
         match self {
-            AddressData::P2pkh { is_mine, .. } | AddressData::P2sh { is_mine, .. } => {
-                if let Some(b) = Option::<bool>::from(is_mine.clone()) {
-                    map.serialize_entry("ismine", &b)?;
-                }
-            }
+            AddressData::P2pkh { .. } | AddressData::P2sh { .. } => (),
             AddressData::Sprout {
                 paying_key,
                 transmission_key,
-                is_mine,
                 ..
             } => {
                 if let Some(pk) = paying_key {
@@ -496,14 +416,10 @@ impl Serialize for AddressData {
                 if let Some(tk) = transmission_key {
                     map.serialize_entry("transmissionkey", tk)?;
                 }
-                if let Some(b) = Option::<bool>::from(is_mine.clone()) {
-                    map.serialize_entry("ismine", &b)?;
-                }
             }
             AddressData::Sapling {
                 diversifier,
                 diversified_transmission_key,
-                is_mine,
                 ..
             } => {
                 dbg!(&diversifier);
@@ -513,9 +429,6 @@ impl Serialize for AddressData {
                 }
                 if let Some(dtk) = diversified_transmission_key {
                     map.serialize_entry("diversifiedtransmissionkey", dtk)?;
-                }
-                if let Some(b) = Option::<bool>::from(is_mine.clone()) {
-                    map.serialize_entry("ismine", &b)?;
                 }
             }
             AddressData::Unified { .. } => (),
@@ -593,11 +506,9 @@ impl<'de> Deserialize<'de> for AddressData {
             legacy_type: Some(tag),
         };
 
-        let is_mine = IsMine::from(obj.get("ismine").and_then(|b| b.as_bool()));
-
         Ok(match tag {
-            ZValidateAddressType::P2pkh => AddressData::P2pkh { common, is_mine },
-            ZValidateAddressType::P2sh => AddressData::P2sh { common, is_mine },
+            ZValidateAddressType::P2pkh => AddressData::P2pkh { common },
+            ZValidateAddressType::P2sh => AddressData::P2sh { common },
             ZValidateAddressType::Sprout => {
                 let paying_key = obj
                     .get("payingkey")
@@ -611,7 +522,6 @@ impl<'de> Deserialize<'de> for AddressData {
                     common,
                     paying_key,
                     transmission_key,
-                    is_mine,
                 }
             }
             ZValidateAddressType::Sapling => {
@@ -630,7 +540,6 @@ impl<'de> Deserialize<'de> for AddressData {
                     common,
                     diversifier,
                     diversified_transmission_key,
-                    is_mine,
                 }
             }
             ZValidateAddressType::Unified => AddressData::Unified { common },
@@ -691,9 +600,8 @@ mod tests {
 
     #[test]
     fn valid_p2pkh_roundtrip_and_fields() {
-        let valid = ValidZValidateAddress::p2pkh("t1abc")
-            .with_is_mine(IsMine::Mine)
-            .with_legacy_type(ZValidateAddressType::P2pkh);
+        let valid =
+            ValidZValidateAddress::p2pkh("t1abc").with_legacy_type(ZValidateAddressType::P2pkh);
 
         let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
@@ -716,7 +624,6 @@ mod tests {
             assert_eq!(v.address(), "t1abc");
             assert_eq!(v.address_type(), ZValidateAddressType::P2pkh);
             assert_eq!(v.legacy_type(), Some(ZValidateAddressType::P2pkh));
-            assert_eq!(v.is_mine(), IsMine::Mine);
             assert!(v.sprout_keys().is_none());
             assert!(v.sapling_keys().is_none());
         } else {
@@ -726,7 +633,7 @@ mod tests {
 
     #[test]
     fn valid_p2sh_with_notmine() {
-        let valid = ValidZValidateAddress::p2sh("t3zzz").with_is_mine(IsMine::NotMine);
+        let valid = ValidZValidateAddress::p2sh("t3zzz");
         let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
@@ -744,14 +651,12 @@ mod tests {
 
         if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::P2sh);
-            assert_eq!(v.is_mine(), IsMine::NotMine);
         }
     }
 
     #[test]
     fn valid_sprout_roundtrip_and_fields() {
-        let valid = ValidZValidateAddress::sprout("zc1qq", Some("apkhex"), Some("pkenc"))
-            .with_is_mine(IsMine::Mine);
+        let valid = ValidZValidateAddress::sprout("zc1qq", Some("apkhex"), Some("pkenc"));
         let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
 
@@ -771,7 +676,6 @@ mod tests {
 
         if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::Sprout);
-            assert_eq!(v.is_mine(), IsMine::Mine);
             assert_eq!(v.sprout_keys(), Some(("apkhex", "pkenc")));
             assert!(v.sapling_keys().is_none());
         }
@@ -780,7 +684,6 @@ mod tests {
     #[test]
     fn valid_sapling_roundtrip_and_fields() {
         let valid = ValidZValidateAddress::sapling("zs1xx", Some("dhex"), Some("pkdhex"))
-            .with_is_mine(IsMine::NotMine)
             .with_legacy_type(ZValidateAddressType::Sapling);
         let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
@@ -801,7 +704,6 @@ mod tests {
 
         if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::Sapling);
-            assert_eq!(v.is_mine(), IsMine::NotMine);
             assert_eq!(v.sapling_keys(), Some(("dhex", "pkdhex")));
             assert!(v.sprout_keys().is_none());
         }
@@ -827,7 +729,6 @@ mod tests {
 
         if let ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(v)) = top {
             assert_eq!(v.address_type(), ZValidateAddressType::Unified);
-            assert_eq!(v.is_mine(), IsMine::Unknown);
             assert_eq!(v.legacy_type(), Some(ZValidateAddressType::Unified));
         }
     }
@@ -885,10 +786,10 @@ mod tests {
 
         // True/false encoded when set
         let v_true = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
-            ValidZValidateAddress::p2pkh("t1mine").with_is_mine(IsMine::Mine),
+            ValidZValidateAddress::p2pkh("t1mine"),
         ));
         let v_false = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(
-            ValidZValidateAddress::p2pkh("t1not").with_is_mine(IsMine::NotMine),
+            ValidZValidateAddress::p2pkh("t1not"),
         ));
         let j_true = serde_json::to_value(&v_true).unwrap();
         let j_false = serde_json::to_value(&v_false).unwrap();
@@ -899,8 +800,7 @@ mod tests {
     #[test]
     fn helpers_return_expected_values() {
         let sapling_with_ismine =
-            ValidZValidateAddress::sapling("zs1addr", Some("dhex"), Some("pkdhex"))
-                .with_is_mine(IsMine::Mine);
+            ValidZValidateAddress::sapling("zs1addr", Some("dhex"), Some("pkdhex"));
         assert_eq!(sapling_with_ismine.address(), "zs1addr");
         assert_eq!(
             sapling_with_ismine.address_type(),
@@ -910,7 +810,6 @@ mod tests {
             sapling_with_ismine.legacy_type(),
             Some(ZValidateAddressType::Sapling)
         );
-        assert_eq!(sapling_with_ismine.is_mine(), IsMine::Mine);
         assert_eq!(sapling_with_ismine.sapling_keys(), Some(("dhex", "pkdhex")));
         assert!(sapling_with_ismine.sprout_keys().is_none());
     }

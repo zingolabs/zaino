@@ -1154,7 +1154,7 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
         async move { subscriber.z_validate_address(addr).await.unwrap() }
     };
 
-    integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call, *validator).await;
+    integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
 
     test_manager.close().await;
 }

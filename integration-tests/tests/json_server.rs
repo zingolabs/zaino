@@ -907,11 +907,7 @@ mod zcashd {
                 async move { subscriber.z_validate_address(addr).await.unwrap() }
             };
 
-            integration_tests::rpc::z_validate_address::run_z_validate_suite(
-                &rpc_call,
-                ValidatorKind::Zcashd,
-            )
-            .await;
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
 
             test_manager.close().await;
         }

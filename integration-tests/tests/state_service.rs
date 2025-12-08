@@ -1639,11 +1639,7 @@ mod zebra {
                     async move { subscriber.z_validate_address(addr).await.unwrap() }
                 };
 
-                integration_tests::rpc::z_validate_address::run_z_validate_suite(
-                    &rpc_call,
-                    ValidatorKind::Zebrad,
-                )
-                .await;
+                integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
 
                 test_manager.close().await;
             }
