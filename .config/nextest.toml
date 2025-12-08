@@ -23,13 +23,13 @@ path = "junit.xml"
 # Use this profile for a fast check verifying the absence of regressions. Our best assurance against
 # false negatives is to run the entire test suite.
 test-threads = "num-cpus"
-fail-fast = true # If a test fails against this profile, that's a surprise to be investigated
+fail-fast = false # If a test fails against this profile, that's a surprise to be investigated
 slow-timeout = { period = "60s", terminate-after = "10" }
 # Excludes tests that fail in low-resource environments. Flakey test are listed at the beginning
 # of the expression, slow at the end.  If a slow and flakey test is discovered it should be included
 # in the flakey category.
 #  On a developer laptop:
-#  flakey 54 ==  tests fail at least once
+#  flakey 59 ==  tests fail at least once
 #  slow   32 ==  >60s runtime
 default-filter = """
     not (
@@ -86,7 +86,12 @@ default-filter = """
         test(/^zebrad::get::block_raw$/) |
         test(/^zebrad::lightwallet_indexer::get_subtree_roots$/) |
         test(/^launch_testmanager::zcashd::zaino_clients$/) |
-        test(/^zcashd::zcash_indexer::get_block_subsidy$/)
+        test(/^zcashd::zcash_indexer::get_block_subsidy$/) |
+        test(/^zebra::get::address_deltas$/) |
+        test(/^zebra::get::z::subtrees_by_index_regtest$/) |
+        test(/^zebrad::get::mining_info$/) |
+        test(/^zebra::get::address_balance_regtest$/) |
+        test(/^zebra::get::raw_transaction_regtest$/)
     )
     &
     not (
@@ -124,3 +129,6 @@ default-filter = """
         test(/^zebrad::get::peer_info$/)
     )
 """
+
+[profile.quick.junit]
+path = "junit.xml"
