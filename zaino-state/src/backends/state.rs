@@ -569,143 +569,93 @@ impl StateServiceSubscriber {
     async fn get_block_range_inner(
         &self,
         request: BlockRange,
-        trim_non_nullifier: bool,
+        nullifiers_only: bool,
     ) -> Result<CompactBlockStream, StateServiceError> {
-        let mut start: u32 = match request.start {
-            Some(block_id) => match block_id.height.try_into() {
-                Ok(height) => height,
-                Err(_) => {
-                    return Err(StateServiceError::TonicStatusError(
-                        tonic::Status::invalid_argument(
-                            "Error: Start height out of range. Failed to convert to u32.",
-                        ),
-                    ));
-                }
-            },
-            None => {
-                return Err(StateServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument("Error: No start height given."),
-                ));
-            }
-        };
-        let mut end: u32 = match request.end {
-            Some(block_id) => match block_id.height.try_into() {
-                Ok(height) => height,
-                Err(_) => {
-                    return Err(StateServiceError::TonicStatusError(
-                        tonic::Status::invalid_argument(
-                            "Error: End height out of range. Failed to convert to u32.",
-                        ),
-                    ));
-                }
-            },
-            None => {
-                return Err(StateServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument("Error: No start height given."),
-                ));
-            }
-        };
-        let lowest_to_highest = if start > end {
+        let mut start: u32 = request
+            .start
+            .ok_or_else(|| {
+                StateServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                    "Error: No start height given.",
+                ))
+            })?
+            .height
+            .try_into()
+            .map_err(|_| {
+                StateServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                    "Error: Start height out of range. Failed to convert to u32.",
+                ))
+            })?;
+
+        let mut end: u32 = request
+            .end
+            .ok_or_else(|| {
+                StateServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                    "Error: No end height given.",
+                ))
+            })?
+            .height
+            .try_into()
+            .map_err(|_| {
+                StateServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                    "Error: End height out of range. Failed to convert to u32.",
+                ))
+            })?;
+
+        // Ensure start <= end
+        if start > end {
             (start, end) = (end, start);
-            false
-        } else {
-            true
-        };
-        let chain_height = self.block_cache.get_chain_height().await?.0;
-        let fetch_service_clone = self.clone();
+        }
+
+        let indexer = self.indexer.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+
         tokio::spawn(async move {
-            let timeout = timeout(
+            let result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let mut blocks = NonEmpty::new(
-                        match fetch_service_clone
-                            .block_cache
-                            .get_compact_block(end.to_string())
-                            .await
-                        {
-                            Ok(mut block) => {
-                                if trim_non_nullifier {
+                    let snapshot = indexer.snapshot_nonfinalized_state();
+                    let chain_height = snapshot.best_chaintip().height.0;
+
+                    for height in start..=end {
+                        let block_result = indexer
+                            .get_compact_block(&snapshot, chain_types::Height(height))
+                            .await;
+
+                        let block = match block_result {
+                            Ok(Some(mut block)) => {
+                                if nullifiers_only {
                                     block = compact_block_to_nullifiers(block);
                                 }
                                 Ok(block)
                             }
-                            Err(e) => {
-                                if end >= chain_height {
-                                    Err(tonic::Status::out_of_range(format!(
-                                        "Error: Height out of range [{end}]. Height \
-                                            requested is greater than the best \
-                                            chain tip [{chain_height}].",
-                                    )))
-                                } else {
-                                    Err(tonic::Status::unknown(e.to_string()))
-                                }
-                            }
-                        },
-                    );
-                    for i in start..end {
-                        let Ok(child_block) = blocks.last() else {
-                            break;
+                            Ok(None) => Err(tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{height}]. Height requested \
+                                 is greater than the best chain tip [{chain_height}].",
+                            ))),
+                            Err(e) => Err(tonic::Status::internal(format!(
+                                "Error fetching block at height {height}: {e}"
+                            ))),
                         };
-                        let Ok(hash_or_height) =
-                            <[u8; 32]>::try_from(child_block.prev_hash.as_slice())
-                                .map(zebra_chain::block::Hash)
-                                .map(HashOrHeight::from)
-                        else {
-                            break;
-                        };
-                        blocks.push(
-                            match fetch_service_clone
-                                .block_cache
-                                .get_compact_block(hash_or_height.to_string())
-                                .await
-                            {
-                                Ok(mut block) => {
-                                    if trim_non_nullifier {
-                                        block = compact_block_to_nullifiers(block);
-                                    }
-                                    Ok(block)
-                                }
-                                Err(e) => {
-                                    let height = end - (i - start);
-                                    if height >= chain_height {
-                                        Err(tonic::Status::out_of_range(format!(
-                                            "Error: Height out of range [{height}]. Height requested \
-                                            is greater than the best chain tip [{chain_height}].",
-                                        )))
-                                    } else {
-                                        Err(tonic::Status::unknown(e.to_string()))
-                                    }
-                                }
-                            },
-                        );
-                    }
-                    if lowest_to_highest {
-                        blocks = NonEmpty::from_vec(blocks.into_iter().rev().collect::<Vec<_>>())
-                            .expect("known to be non-empty")
-                    }
-                    for block in blocks {
-                        if let Err(e) = channel_tx.send(block).await {
-                            warn!("GetBlockRange channel closed unexpectedly: {e}");
+
+                        if channel_tx.send(block).await.is_err() {
+                            warn!("GetBlockRange channel closed unexpectedly");
                             break;
                         }
                     }
                 },
             )
             .await;
-            match timeout {
-                Ok(_) => {}
-                Err(_) => {
-                    channel_tx
-                        .send(Err(tonic::Status::deadline_exceeded(
-                            "Error: get_block_range gRPC request timed out.",
-                        )))
-                        .await
-                        .ok();
-                }
+
+            if result.is_err() {
+                let _ = channel_tx
+                    .send(Err(tonic::Status::deadline_exceeded(
+                        "Error: get_block_range gRPC request timed out.",
+                    )))
+                    .await;
             }
         });
+
         Ok(CompactBlockStream::new(channel_rx))
     }
 
