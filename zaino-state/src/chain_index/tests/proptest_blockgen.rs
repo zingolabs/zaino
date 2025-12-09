@@ -9,7 +9,6 @@ use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageC
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
     fmt::SummaryDebug,
-    parameters::NetworkUpgrade,
     LedgerState,
 };
 use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
@@ -27,8 +26,9 @@ use crate::{
 #[test]
 fn make_chain() {
     init_tracing();
+    let network = Network::Regtest(ActivationHeights::default());
     // default is 256. As each case takes multiple seconds, this seems too many.
-    proptest::proptest!(proptest::test_runner::Config::with_cases(32), |(segments in make_branching_chain(2, 12))| {
+    proptest::proptest!(proptest::test_runner::Config::with_cases(32), |(segments in make_branching_chain(2, 12, network))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
             let (genesis_segment, branching_segments) = segments;
@@ -48,10 +48,8 @@ fn make_chain() {
                     ..Default::default()
                 },
                 db_version: 1,
-                network: Network::Regtest(ActivationHeights::default()),
+                network ,
 
-                no_sync: false,
-                no_db: false,
             };
 
             let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
@@ -189,9 +187,9 @@ impl BlockchainSource for ProptestMockchain {
                 .fold((None, None), |(mut sapling, mut orchard), block| {
                     for transaction in &block.transactions {
                         for sap_commitment in transaction.sapling_note_commitments() {
-                            let sap_commitment = zebra_chain::sapling::tree::Node::from_bytes(
-                                sap_commitment.to_bytes(),
-                            );
+                            let sap_commitment =
+                                sapling_crypto::Node::from_bytes(sap_commitment.to_bytes())
+                                    .unwrap();
 
                             sapling = Some(sapling.unwrap_or_else(|| {
                                 incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
@@ -221,7 +219,7 @@ impl BlockchainSource for ProptestMockchain {
         Ok((
             sapling.map(|sap_front| {
                 (
-                    zebra_chain::sapling::tree::Root::from_bytes(sap_front.root().as_ref()),
+                    zebra_chain::sapling::tree::Root::from_bytes(sap_front.root().to_bytes()),
                     sap_front.tree_size(),
                 )
             }),
@@ -237,7 +235,7 @@ impl BlockchainSource for ProptestMockchain {
     /// Returns the sapling and orchard treestate by hash
     async fn get_treestate(
         &self,
-        id: BlockHash,
+        _id: BlockHash,
     ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
         // I don't think this is used for sync?
         unimplemented!()
@@ -299,23 +297,29 @@ impl BlockchainSource for ProptestMockchain {
 fn make_branching_chain(
     num_branches: usize,
     chain_size: usize,
+    network_override: Network,
 ) -> BoxedStrategy<(
     SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>,
     Vec<SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>>,
 )> {
-    add_segment(SummaryDebug(Vec::new()), NetworkUpgrade::Genesis, 1)
-        .prop_flat_map(|segment| add_segment(segment, NetworkUpgrade::Canopy, 1))
-        .prop_flat_map(move |segment| add_segment(segment, NetworkUpgrade::Nu6, chain_size))
-        .prop_flat_map(|segment| {
+    let network_override = Some(network_override.to_zebra_network());
+    // these feel like they shouldn't be needed. The closure lifetimes are fighting me
+    let n_o_clone = network_override.clone();
+    let n_o_clone_2 = network_override.clone();
+    add_segment(SummaryDebug(Vec::new()), network_override.clone(), 1)
+        .prop_flat_map(move |segment| add_segment(segment, n_o_clone.clone(), 1))
+        .prop_flat_map(move |segment| add_segment(segment, n_o_clone_2.clone(), chain_size))
+        .prop_flat_map(move |segment| {
             (
                 Just(segment.clone()),
                 LedgerState::arbitrary_with(LedgerStateOverride {
                     height_override: segment.last().unwrap().coinbase_height().unwrap() + 1,
                     previous_block_hash_override: Some(segment.last().unwrap().hash()),
-                    network_upgrade_override: Some(NetworkUpgrade::Nu6),
+                    network_upgrade_override: None,
                     transaction_version_override: None,
                     transaction_has_valid_network_upgrade: true,
                     always_has_coinbase: true,
+                    network_override: network_override.clone(),
                 }),
             )
         })
@@ -340,7 +344,6 @@ fn make_branching_chain(
 type ProptestChainSegment = SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>;
 
 mod proptest_helpers {
-    use std::sync::Arc;
 
     use proptest::prelude::{Arbitrary, BoxedStrategy, Strategy};
     use zebra_chain::{
@@ -348,8 +351,7 @@ mod proptest_helpers {
             arbitrary::{allow_all_transparent_coinbase_spends, LedgerStateOverride},
             Block, Height,
         },
-        fmt::HexDebug,
-        parameters::{NetworkUpgrade, GENESIS_PREVIOUS_BLOCK_HASH},
+        parameters::{Network, GENESIS_PREVIOUS_BLOCK_HASH},
         LedgerState,
     };
 
@@ -357,7 +359,7 @@ mod proptest_helpers {
 
     pub(super) fn add_segment(
         previous_chain: ProptestChainSegment,
-        start_nu: NetworkUpgrade,
+        network_override: Option<Network>,
         segment_length: usize,
     ) -> BoxedStrategy<ProptestChainSegment> {
         LedgerState::arbitrary_with(LedgerStateOverride {
@@ -373,10 +375,11 @@ mod proptest_helpers {
                     .map(|block| block.hash())
                     .unwrap_or(GENESIS_PREVIOUS_BLOCK_HASH),
             ),
-            network_upgrade_override: Some(start_nu),
+            network_upgrade_override: None,
             transaction_version_override: None,
             transaction_has_valid_network_upgrade: true,
             always_has_coinbase: true,
+            network_override,
         })
         .prop_flat_map(move |ledger| {
             Block::partial_chain_strategy(
@@ -386,18 +389,7 @@ mod proptest_helpers {
                 true,
             )
         })
-        .prop_map(move |mut new_segment| {
-            if start_nu == NetworkUpgrade::Canopy {
-                // We need to manually set the commitment to ChainHistoryActivationReserved
-                // as arbitrary block generation doesn'r enforce this
-                Arc::get_mut(
-                    &mut Arc::get_mut(new_segment.first_mut().unwrap())
-                        .unwrap()
-                        .header,
-                )
-                .unwrap()
-                .commitment_bytes = HexDebug([0; 32]);
-            }
+        .prop_map(move |new_segment| {
             let mut full_chain = previous_chain.clone();
             full_chain.extend_from_slice(&new_segment);
             full_chain
