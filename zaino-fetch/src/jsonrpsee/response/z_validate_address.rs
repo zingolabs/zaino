@@ -320,7 +320,7 @@ impl CommonFields {
 }
 
 /// Response for the Valid branch of the `z_validateaddress` RPC.
-/// Note that the `ismine` field is only present for `zcashd`.
+/// Note that the `ismine` field is present for `zcashd` but intentionally omitted here.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AddressData {
     /// Transparent P2PKH.
@@ -616,7 +616,6 @@ mod tests {
                 "address": "t1abc",
                 "type": "p2pkh",
                 "address_type": "p2pkh",
-                "ismine": true
             })
         );
 
@@ -632,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_p2sh_with_notmine() {
+    fn valid_p2sh() {
         let valid = ValidZValidateAddress::p2sh("t3zzz");
         let top = ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(valid.clone()));
         roundtrip(&top);
@@ -645,7 +644,6 @@ mod tests {
                 "address": "t3zzz",
                 "address_type": "p2sh",
                 "type": "p2sh",
-                "ismine": false
             })
         );
 
@@ -670,7 +668,6 @@ mod tests {
                 "type": "sprout",
                 "payingkey": "apkhex",
                 "transmissionkey": "pkenc",
-                "ismine": true
             })
         );
 
@@ -698,7 +695,6 @@ mod tests {
                 "address_type": "sapling",
                 "diversifier": "dhex",
                 "diversifiedtransmissionkey": "pkdhex",
-                "ismine": false
             })
         );
 
@@ -793,8 +789,8 @@ mod tests {
         ));
         let j_true = serde_json::to_value(&v_true).unwrap();
         let j_false = serde_json::to_value(&v_false).unwrap();
-        assert_eq!(j_true.get("ismine"), Some(&Value::Bool(true)));
-        assert_eq!(j_false.get("ismine"), Some(&Value::Bool(false)));
+        assert_eq!(j_true.get("ismine"), None);
+        assert_eq!(j_false.get("ismine"), None);
     }
 
     #[test]
