@@ -21,9 +21,8 @@ use crate::{
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
     BackendType, MempoolKey,
 };
-use crate::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State};
+use crate::{error::ChainIndexError, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State};
 
-use nonempty::NonEmpty;
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
@@ -1725,25 +1724,23 @@ impl ZcashIndexer for StateServiceSubscriber {
                             // This should be None for sidechain transactions,
                             // which currently aren't returned by ReadResponse::Transaction
                             let best_chain_height = Some(tx.height);
-                            GetRawTransaction::Object(Box::new(
-                                TransactionObject::from_transaction(
-                                    tx.tx.clone(),
-                                    best_chain_height,
-                                    Some(tx.confirmations),
-                                    &self.config.network.into(),
-                                    Some(tx.block_time),
-                                    Some(zebra_chain::block::Hash::from_bytes(
-                                        self.block_cache
-                                            .get_compact_block(
-                                                HashOrHeight::Height(tx.height).to_string(),
-                                            )
-                                            .await?
-                                            .hash,
-                                    )),
-                                    Some(best_chain_height.is_some()),
-                                    tx.tx.hash(),
-                                ),
-                            ))
+                            let snapshot = self.indexer.snapshot_nonfinalized_state();
+                            let compact_block = self
+                                .indexer
+                                .get_compact_block(&snapshot, chain_types::Height(tx.height.0))
+                                .await?
+                                .ok_or_else(|| ChainIndexError::database_hole(tx.height.0))?;
+                            let tx_object = TransactionObject::from_transaction(
+                                tx.tx.clone(),
+                                best_chain_height,
+                                Some(tx.confirmations),
+                                &self.config.network.into(),
+                                Some(tx.block_time),
+                                Some(zebra_chain::block::Hash::from_bytes(compact_block.hash)),
+                                Some(best_chain_height.is_some()),
+                                tx.tx.hash(),
+                            );
+                            GetRawTransaction::Object(Box::new(tx_object))
                         }
                         None => GetRawTransaction::Raw(tx.tx.into()),
                     }),
