@@ -1155,6 +1155,7 @@ async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
     };
 
     integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+    integration_tests::rpc::z_validate_address::run_z_validate_sapling_legacy(&rpc_call).await;
 
     test_manager.close().await;
 }

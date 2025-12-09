@@ -84,16 +84,6 @@ pub mod rpc {
             // assert_eq!(fs_sprout, expected_sprout);
 
             // Sapling (differs by validator)
-            let expected_sapling = ValidZValidateAddress::sapling(
-                VALID_SAPLING_ADDRESS.to_string(),
-                Some(VALID_DIVERSIFIER.to_string()),
-                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-            );
-            assert_known_valid_eq(
-                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
-                expected_sapling,
-                "Sapling",
-            );
 
             // Unified (differs by validator)
             let expected_unified =
@@ -109,6 +99,34 @@ pub mod rpc {
             let all_zeroes = rpc_call("t1000000000000000000000000000000000".to_string()).await;
             assert_eq!(by_len, ZValidateAddressResponse::invalid());
             assert_eq!(all_zeroes, ZValidateAddressResponse::invalid());
+        }
+
+        pub async fn run_z_validate_sapling<F, Fut>(rpc_call: &F)
+        where
+            // Any callable that takes an address and returns the response (you can unwrap inside)
+            F: Fn(String) -> Fut,
+            Fut: Future<Output = ZValidateAddressResponse>,
+        {
+            // Sapling (differs by validator)
+            let expected_sapling = ValidZValidateAddress::sapling(
+                VALID_SAPLING_ADDRESS.to_string(),
+                Some(VALID_DIVERSIFIER.to_string()),
+                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
+            );
+        }
+
+        pub async fn run_z_validate_sapling_legacy<F, Fut>(rpc_call: &F)
+        where
+            // Any callable that takes an address and returns the response (you can unwrap inside)
+            F: Fn(String) -> Fut,
+            Fut: Future<Output = ZValidateAddressResponse>,
+        {
+            // Sapling (differs by validator)
+            let expected_sapling = ValidZValidateAddress::sapling(
+                VALID_SAPLING_ADDRESS.to_string(),
+                None::<String>,
+                None::<String>,
+            );
         }
     }
 }

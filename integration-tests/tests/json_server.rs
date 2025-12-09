@@ -908,6 +908,7 @@ mod zcashd {
             };
 
             integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_sapling(&rpc_call).await;
 
             test_manager.close().await;
         }
