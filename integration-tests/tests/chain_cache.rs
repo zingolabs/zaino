@@ -347,9 +347,9 @@ mod chain_query_interface {
 
             assert_eq!(
                 branch_id,
-                if height == Some(chain_index::types::GENESIS_HEIGHT) {
+                if height == chain_index::types::GENESIS_HEIGHT {
                     None
-                } else if height == Some(Height::try_from(1).unwrap()) {
+                } else if height == Height::try_from(1).unwrap() {
                     zebra_chain::parameters::NetworkUpgrade::Canopy
                         .branch_id()
                         .map(u32::from)
@@ -406,7 +406,7 @@ mod chain_query_interface {
                 .unwrap();
             assert_eq!(
                 transaction_status_best_chain.unwrap(),
-                BestChainLocation::Block(*block_hash, height.unwrap())
+                BestChainLocation::Block(*block_hash, height)
             );
             assert!(transaction_status_nonbest_chain.is_empty());
         }

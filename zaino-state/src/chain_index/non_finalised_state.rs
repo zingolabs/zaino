@@ -101,6 +101,9 @@ impl From<UpdateError> for SyncError {
             UpdateError::ReceiverDisconnected => SyncError::StagingChannelClosed,
             UpdateError::StaleSnapshot => SyncError::CompetingSyncProcess,
             UpdateError::FinalizedStateCorruption => SyncError::CannotReadFinalizedState,
+            UpdateError::DisconnectedChaintip => SyncError::ZebradConnectionError(
+                NodeConnectionError::UnrecoverableError(Box::new(value)),
+            ),
         }
     }
 }
@@ -151,7 +154,7 @@ impl StagingChannel {
 impl BestTip {
     /// Create a BestTip from an IndexedBlock
     fn from_block(block: &IndexedBlock) -> Result<Self, InitError> {
-        let height = block.height().ok_or(InitError::InitalBlockMissingHeight)?;
+        let height = block.height();
         let blockhash = *block.hash();
         Ok(Self { height, blockhash })
     }
@@ -398,7 +401,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             match initial_state
                 .blocks
                 .values()
-                .find(|block| block.height() == Some(next_height_down))
+                .find(|block| block.height() == next_height_down)
                 .map(IndexedBlock::hash)
             {
                 Some(hash) => break hash,
@@ -581,36 +584,57 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 .map(|(hash, block)| (*hash, block.clone())),
         );
 
-        let finalized_height = finalized_db
-            .to_reader()
-            .db_height()
-            .await
-            .map_err(|_e| UpdateError::FinalizedStateCorruption)?
-            .unwrap_or(Height(0));
+        let truncate_below_height = std::cmp::min(
+            finalized_db
+                .to_reader()
+                .db_height()
+                .await
+                .map_err(|_e| UpdateError::FinalizedStateCorruption)?
+                .unwrap_or(Height(0)),
+            snapshot.best_tip.height,
+        );
 
         let (_finalized_blocks, blocks): (HashMap<_, _>, HashMap<BlockHash, _>) = new
             .into_iter()
-            .partition(|(_hash, block)| match block.index().height() {
-                Some(height) => height < finalized_height,
-                None => false,
+            .partition(|(_hash, block)| block.index().height() < truncate_below_height);
+
+        let mut best_difficulty = snapshot
+            .blocks
+            .get(&snapshot.best_tip.blockhash)
+            .expect("snapshot should contain its own tip")
+            .chainwork();
+
+        let best_tip = blocks
+            .iter()
+            .fold(snapshot.best_tip, |acc, (_hash, block)| {
+                if block.index().chainwork() > best_difficulty {
+                    best_difficulty = block.index().chainwork();
+                    BestTip {
+                        height: block.height(),
+                        blockhash: *block.hash(),
+                    }
+                } else {
+                    acc
+                }
             });
 
-        let best_tip = blocks.iter().fold(snapshot.best_tip, |acc, (hash, block)| {
-            match block.index().height() {
-                Some(working_height) if working_height > acc.height => BestTip {
-                    height: working_height,
-                    blockhash: *hash,
-                },
-                _ => acc,
+        let mut heights_to_hashes = HashMap::new();
+        let mut next_hash = best_tip.blockhash;
+        loop {
+            let next_block = blocks
+                .get(&next_hash)
+                .ok_or(UpdateError::DisconnectedChaintip)?;
+            heights_to_hashes.insert(next_block.height(), *next_block.hash());
+            if next_hash
+                == *snapshot
+                    .heights_to_hashes
+                    .get(&truncate_below_height)
+                    .ok_or(UpdateError::DisconnectedChaintip)?
+            {
+                break;
             }
-        });
-
-        let heights_to_hashes = blocks
-            .iter()
-            .filter_map(|(hash, chainblock)| {
-                chainblock.index().height().map(|height| (height, *hash))
-            })
-            .collect();
+            next_hash = *next_block.index().parent_hash();
+        }
 
         // Need to get best hash at some point in this process
         let stored = self.current.compare_and_swap(
@@ -673,6 +697,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .get_tree_roots_from_source(block.hash().into())
             .await
             .map_err(|e| {
+                dbg!(&e);
                 SyncError::ZebradConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
                     InvalidData(format!("{}", e)),
                 )))
@@ -685,6 +710,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             self.network.clone(),
         )
         .map_err(|e| {
+            dbg!(&e);
             SyncError::ZebradConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
                 InvalidData(e),
             )))
@@ -734,14 +760,27 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 }
 
 /// Errors that occur during a snapshot update
+#[derive(Debug, thiserror::Error)]
+// The error messages are the documentation
+#[allow(missing_docs)]
 pub enum UpdateError {
-    /// The block reciever disconnected. This should only happen during shutdown.
+    #[error("The block reciever disconnected. This should only happen during shutdown.")]
     ReceiverDisconnected,
-    /// The snapshot was already updated by a different process, between when this update started
-    /// and when it completed.
+    #[error(
+        "The snapshot was already updated by a \
+        different process, between when this update started \
+        and when it completed."
+    )]
     StaleSnapshot,
 
-    /// Something has gone unrecoverably wrong in the finalized
-    /// state. A full rebuild is likely needed
+    #[error(
+        "Something has gone unrecoverably wrong in the finalized \
+    state. A full rebuild is likely needed"
+    )]
     FinalizedStateCorruption,
+    #[error(
+        "The blocks we're syncing have a best tip that does \
+not connect to the starting chain"
+    )]
+    DisconnectedChaintip,
 }

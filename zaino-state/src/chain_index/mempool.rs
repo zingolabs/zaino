@@ -69,6 +69,7 @@ impl<T: BlockchainSource> Mempool<T> {
             }
         }
 
+        println!("get block hash");
         let best_block_hash: BlockHash = match fetcher.get_best_block_hash().await {
             Ok(block_hash_opt) => match block_hash_opt {
                 Some(hash) => hash.into(),

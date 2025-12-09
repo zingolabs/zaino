@@ -477,10 +477,15 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 if status.load() == StatusType::Closing {
                     break;
                 }
+                let handle_error = |e| {
+                    tracing::error!("Sync failure: {e:?}. Shutting down.");
+                    status.store(StatusType::CriticalError);
+                    e
+                };
 
                 status.store(StatusType::Syncing);
                 // Sync nfs to chain tip, trimming blocks to finalized tip.
-                nfs.sync(fs.clone()).await?;
+                nfs.sync(fs.clone()).await.map_err(handle_error)?;
 
                 // Sync fs to chain tip - 100.
                 {
@@ -490,7 +495,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             .to_reader()
                             .db_height()
                             .await
-                            .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                            .map_err(|_e| handle_error(SyncError::CannotReadFinalizedState))?
                             .unwrap_or(types::Height(0))
                             .0
                             + 100)
@@ -499,7 +504,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             .to_reader()
                             .db_height()
                             .await
-                            .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                            .map_err(|_e| handle_error(SyncError::CannotReadFinalizedState))?
                             .map(|height| height + 1)
                             .unwrap_or(types::Height(0));
                         let next_finalized_block = snapshot
@@ -510,11 +515,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                     .get(&(next_finalized_height))
                                     .ok_or(SyncError::CompetingSyncProcess)?,
                             )
-                            .ok_or(SyncError::CompetingSyncProcess)?;
+                            .ok_or_else(|| handle_error(SyncError::CompetingSyncProcess))?;
                         // TODO: Handle write errors better (fix db and continue)
                         fs.write_block(next_finalized_block.clone())
                             .await
-                            .map_err(|_e| SyncError::CompetingSyncProcess)?;
+                            .map_err(|_e| handle_error(SyncError::CompetingSyncProcess))?;
                     }
                 }
                 status.store(StatusType::Ready);
@@ -634,7 +639,19 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         hash: types::BlockHash,
     ) -> Result<Option<types::Height>, Self::Error> {
         match nonfinalized_snapshot.blocks.get(&hash).cloned() {
-            Some(block) => Ok(block.index().height()),
+            Some(block) => {
+                // check to see if the hash is on the best chain
+                if *nonfinalized_snapshot
+                    .heights_to_hashes
+                    .get(&block.index().height())
+                    .ok_or(ChainIndexError::database_hole(hash))?
+                    == hash
+                {
+                    Ok(Some(block.height()))
+                } else {
+                    Ok(None)
+                }
+            }
             None => match self.finalized_state.get_block_height(hash).await {
                 Ok(height) => Ok(height),
                 Err(_e) => Err(ChainIndexError::database_hole(hash)),
@@ -704,13 +721,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
         let Some(block) = snapshot.as_ref().get_chainblock_by_hash(block_hash) else {
             // No fork point found. This is not an error,
-            // as zaino does not guarentee knowledge of all sidechain data.
+            // as zaino does not guarentee knowledge of all
+            // non-best-chain data.
             return Ok(None);
         };
-        if let Some(height) = block.height() {
-            Ok(Some((*block.hash(), height)))
-        } else {
-            self.find_fork_point(snapshot, block.index().parent_hash())
+        match snapshot.is_in_best_chain_in_nonfinalized_state(block_hash) {
+            Some(true) | None => Ok(Some((*block.hash(), block.height()))),
+            Some(false) => self.find_fork_point(snapshot, block.index().parent_hash()),
         }
     }
 
@@ -751,7 +768,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 .blocks
                 .iter()
                 .find(|(hash, _block)| **hash == self.mempool.mempool_chain_tip())
-                .and_then(|(_hash, block)| block.height());
+                .map(|(_hash, block)| block.height());
             let mempool_branch_id = mempool_height.and_then(|height| {
                 ConsensusBranchId::current(
                     &self.non_finalized_state.network,
@@ -820,11 +837,17 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .collect::<Vec<_>>();
         let mut best_chain_block = blocks_containing_transaction
             .iter()
-            .find_map(|block| BestChainLocation::try_from(block).ok());
+            .find(|block| {
+                snapshot.is_in_best_chain_in_nonfinalized_state(block.hash()) != Some(false)
+            })
+            .map(|block| BestChainLocation::Block(*block.hash(), block.height()));
         let mut non_best_chain_blocks: HashSet<NonBestChainLocation> =
             blocks_containing_transaction
                 .iter()
-                .filter_map(|block| NonBestChainLocation::try_from(block).ok())
+                .filter(|block| {
+                    snapshot.is_in_best_chain_in_nonfinalized_state(block.hash()) == Some(false)
+                })
+                .map(|block| NonBestChainLocation::Block(*block.hash(), block.height()))
                 .collect();
         let in_mempool = self
             .mempool
@@ -832,6 +855,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 txid: txid.to_string(),
             })
             .await;
+
         if in_mempool {
             let mempool_tip_hash = self.mempool.mempool_chain_tip();
             if mempool_tip_hash == snapshot.best_tip.blockhash {
@@ -855,12 +879,11 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .iter()
                     .find_map(|(hash, block)| {
                         if *hash == mempool_tip_hash {
-                            Some(block.height().map(|height| height + 1))
+                            Some(block.height() + 1)
                         } else {
                             None
                         }
-                    })
-                    .flatten();
+                    });
                 non_best_chain_blocks.insert(NonBestChainLocation::Mempool(target_height));
             }
         }
@@ -984,6 +1007,15 @@ pub trait NonFinalizedSnapshot {
     fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock>;
     /// Get the tip of the best chain, according to the snapshot
     fn best_chaintip(&self) -> BestTip;
+
+    /// Whether the provided block hash is on the best chain in the
+    /// nonfinalized state
+    /// returns None if the hash is not in the nonfinalized state
+    fn is_in_best_chain_in_nonfinalized_state(&self, hash: &types::BlockHash) -> Option<bool> {
+        let block = self.get_chainblock_by_hash(hash)?;
+        let best_chain_block_at_target_height = self.get_chainblock_by_height(&block.height())?;
+        Some(best_chain_block_at_target_height.hash() == hash)
+    }
 }
 
 impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
