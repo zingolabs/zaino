@@ -28,7 +28,8 @@ fn make_chain() {
     init_tracing();
     let network = Network::Regtest(ActivationHeights::default());
     // default is 256. As each case takes multiple seconds, this seems too many.
-    proptest::proptest!(proptest::test_runner::Config::with_cases(32), |(segments in make_branching_chain(2, 12, network))| {
+    // TODO: this should be higher than 1. Currently set to 1 for ease of iteration
+    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(2, 12, network))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
             let (genesis_segment, branching_segments) = segments;
@@ -59,6 +60,8 @@ fn make_chain() {
             let index_reader = indexer.subscriber().await;
             let snapshot = index_reader.snapshot_nonfinalized_state();
             dbg!(snapshot.best_chaintip());
+            dbg!(snapshot.blocks.len());
+            dbg!(snapshot.heights_to_hashes.len());
         });
     });
 }
