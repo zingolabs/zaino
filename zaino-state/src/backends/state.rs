@@ -2313,7 +2313,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let mempool_height = self.block_cache.get_chain_height().await?.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let mempool_height = snapshot.best_chaintip().height.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
