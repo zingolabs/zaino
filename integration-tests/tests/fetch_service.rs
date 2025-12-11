@@ -1658,6 +1658,12 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
     let mut sorted_exclude_fetch_mempool_tx = exclude_fetch_mempool_tx.clone();
     sorted_exclude_fetch_mempool_tx.sort_by_key(|tx| tx.hash.clone());
 
+    dbg!(&sorted_exclude_fetch_mempool_tx
+        .iter()
+        .map(|tx| tx.hash.clone())
+        .collect::<Vec<_>>());
+    dbg!(&sorted_txids);
+
     assert_eq!(sorted_exclude_fetch_mempool_tx[0].hash, sorted_txids[1]);
     assert_eq!(sorted_exclude_fetch_mempool_tx.len(), 1);
 
