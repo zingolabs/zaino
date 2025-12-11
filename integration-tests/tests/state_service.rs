@@ -1,41 +1,42 @@
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
-use zaino_state::BackendType;
+use zaino_state::{LightWalletService, ZcashService};
 
 #[allow(deprecated)]
 use zaino_state::{
     FetchService, FetchServiceConfig, FetchServiceSubscriber, LightWalletIndexer, StateService,
-    StateServiceConfig, StateServiceSubscriber, ZcashIndexer, ZcashService as _,
+    StateServiceConfig, StateServiceSubscriber, ZcashIndexer,
 };
-use zaino_testutils::from_inputs;
-use zaino_testutils::Validator as _;
+use zaino_testutils::{from_inputs, ValidatorExt};
 use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
+use zainodlib::config::ZainodConfig;
+use zainodlib::error::IndexerError;
+use zcash_local_net::validator::{zebrad::Zebrad, Validator};
 use zebra_chain::parameters::NetworkKind;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
-use zebra_rpc::methods::{AddressStrings, GetAddressTxIdsRequest, GetInfo};
+use zebra_rpc::methods::{GetAddressBalanceRequest, GetAddressTxIdsRequest, GetInfo};
 use zip32::AccountId;
 
 #[allow(deprecated)]
 // NOTE: the fetch and state services each have a seperate chain index to the instance of zaino connected to the lightclients and may be out of sync
 // the test manager now includes a service subscriber but not both fetch *and* state which are necessary for these tests.
 // syncronicity is ensured in the following tests by calling `generate_blocks_and_poll_all_chain_indexes`.
-async fn create_test_manager_and_services(
+async fn create_test_manager_and_services<V: ValidatorExt>(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
     network: Option<NetworkKind>,
 ) -> (
-    TestManager<FetchService>,
+    TestManager<V, StateService>,
     FetchService,
     FetchServiceSubscriber,
     StateService,
     StateServiceSubscriber,
 ) {
-    let test_manager = TestManager::<FetchService>::launch(
+    let test_manager = TestManager::<V, StateService>::launch(
         validator,
-        &BackendType::Fetch,
         network,
         None,
         chain_cache.clone(),
@@ -57,7 +58,21 @@ async fn create_test_manager_and_services(
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
             zaino_common::Network::Testnet
         }
-        _ => zaino_common::Network::Regtest(ActivationHeights::default()),
+        _ => zaino_common::Network::Regtest({
+            let activation_heights = test_manager.local_net.get_activation_heights().await;
+            ActivationHeights {
+                before_overwinter: activation_heights.before_overwinter,
+                overwinter: activation_heights.overwinter,
+                sapling: activation_heights.sapling,
+                blossom: activation_heights.blossom,
+                heartwood: activation_heights.heartwood,
+                canopy: activation_heights.canopy,
+                nu5: activation_heights.nu5,
+                nu6: activation_heights.nu6,
+                nu6_1: activation_heights.nu6_1,
+                nu7: activation_heights.nu7,
+            }
+        }),
     };
 
     test_manager.local_net.print_stdout();
@@ -99,6 +114,7 @@ async fn create_test_manager_and_services(
             delete_old_database: true,
             debug_stop_at_height: None,
             debug_validity_check_interval: None,
+            should_backup_non_finalized_state: false,
         },
         test_manager.full_node_rpc_listen_address,
         test_manager.full_node_grpc_listen_address,
@@ -138,12 +154,17 @@ async fn create_test_manager_and_services(
 }
 
 #[allow(deprecated)]
-async fn generate_blocks_and_poll_all_chain_indexes(
+async fn generate_blocks_and_poll_all_chain_indexes<V, Service>(
     n: u32,
-    test_manager: &TestManager<FetchService>,
+    test_manager: &TestManager<V, Service>,
     fetch_service_subscriber: FetchServiceSubscriber,
     state_service_subscriber: StateServiceSubscriber,
-) {
+) where
+    V: ValidatorExt,
+    Service: LightWalletService + Send + Sync + 'static,
+    Service::Config: From<ZainodConfig>,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
     test_manager.generate_blocks_and_poll(n).await;
     test_manager
         .generate_blocks_and_poll_indexer(0, &fetch_service_subscriber)
@@ -152,8 +173,7 @@ async fn generate_blocks_and_poll_all_chain_indexes(
         .generate_blocks_and_poll_indexer(0, &state_service_subscriber)
         .await;
 }
-
-async fn state_service_check_info(
+async fn state_service_check_info<V: ValidatorExt>(
     validator: &ValidatorKind,
     chain_cache: Option<std::path::PathBuf>,
     network: NetworkKind,
@@ -164,7 +184,8 @@ async fn state_service_check_info(
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, chain_cache, true, false, Some(network)).await;
+    ) = create_test_manager_and_services::<V>(validator, chain_cache, false, false, Some(network))
+        .await;
 
     if dbg!(network.to_string()) == *"Regtest" {
         generate_blocks_and_poll_all_chain_indexes(
@@ -286,14 +307,14 @@ async fn state_service_check_info(
     test_manager.close().await;
 }
 
-async fn state_service_get_address_balance(validator: &ValidatorKind) {
+async fn state_service_get_address_balance<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
         _fetch_service,
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, None, true, true, None).await;
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
     let mut clients = test_manager
         .clients
@@ -345,12 +366,12 @@ async fn state_service_get_address_balance(validator: &ValidatorKind) {
         .unwrap();
 
     let fetch_service_balance = fetch_service_subscriber
-        .z_get_address_balance(AddressStrings::new(vec![recipient_taddr.clone()]))
+        .z_get_address_balance(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
 
     let state_service_balance = state_service_subscriber
-        .z_get_address_balance(AddressStrings::new(vec![recipient_taddr]))
+        .z_get_address_balance(GetAddressBalanceRequest::new(vec![recipient_taddr]))
         .await
         .unwrap();
 
@@ -384,7 +405,7 @@ async fn state_service_get_address_balance_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -395,7 +416,7 @@ async fn state_service_get_address_balance_testnet() {
 
     let address = "tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i";
 
-    let address_request = AddressStrings::new(vec![address.to_string()]);
+    let address_request = GetAddressBalanceRequest::new(vec![address.to_string()]);
 
     let fetch_service_balance = dbg!(
         fetch_service_subscriber
@@ -427,7 +448,14 @@ async fn state_service_get_block_raw(
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
+    ) = create_test_manager_and_services::<Zebrad>(
+        validator,
+        chain_cache,
+        false,
+        false,
+        Some(network),
+    )
+    .await;
 
     let height = match network {
         NetworkKind::Regtest => "1".to_string(),
@@ -460,7 +488,14 @@ async fn state_service_get_block_object(
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, chain_cache, false, false, Some(network)).await;
+    ) = create_test_manager_and_services::<Zebrad>(
+        validator,
+        chain_cache,
+        false,
+        false,
+        Some(network),
+    )
+    .await;
 
     let height = match network {
         NetworkKind::Regtest => "1".to_string(),
@@ -492,14 +527,14 @@ async fn state_service_get_block_object(
     test_manager.close().await;
 }
 
-async fn state_service_get_raw_mempool(validator: &ValidatorKind) {
+async fn state_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
         _fetch_service,
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, None, true, true, None).await;
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
     let mut clients = test_manager
         .clients
@@ -576,7 +611,7 @@ async fn state_service_get_raw_mempool_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -599,14 +634,14 @@ async fn state_service_get_raw_mempool_testnet() {
     test_manager.close().await;
 }
 
-async fn state_service_z_get_treestate(validator: &ValidatorKind) {
+async fn state_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
         _fetch_service,
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, None, true, true, None).await;
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
     let mut clients = test_manager
         .clients
@@ -669,7 +704,7 @@ async fn state_service_z_get_treestate_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -697,14 +732,14 @@ async fn state_service_z_get_treestate_testnet() {
     test_manager.close().await;
 }
 
-async fn state_service_z_get_subtrees_by_index(validator: &ValidatorKind) {
+async fn state_service_z_get_subtrees_by_index<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
         _fetch_service,
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, None, true, true, None).await;
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
     let mut clients = test_manager
         .clients
@@ -767,7 +802,7 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -817,14 +852,17 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
     test_manager.close().await;
 }
 
-async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
+use zcash_local_net::logs::LogsToStdoutAndStderr;
+async fn state_service_get_raw_transaction<V: ValidatorExt + LogsToStdoutAndStderr>(
+    validator: &ValidatorKind,
+) {
     let (
         mut test_manager,
         _fetch_service,
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, None, true, true, None).await;
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
     let mut clients = test_manager
         .clients
@@ -852,7 +890,7 @@ async fn state_service_get_raw_transaction(validator: &ValidatorKind) {
         clients.faucet.sync_and_await().await.unwrap();
     };
 
-    let recipient_ua = clients.get_recipient_address("unified").await;
+    let recipient_ua = clients.get_recipient_address("unified").await.to_string();
     let tx = from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
         .await
         .unwrap();
@@ -889,7 +927,7 @@ async fn state_service_get_raw_transaction_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -919,14 +957,14 @@ async fn state_service_get_raw_transaction_testnet() {
     test_manager.close().await;
 }
 
-async fn state_service_get_address_tx_ids(validator: &ValidatorKind) {
+async fn state_service_get_address_tx_ids<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
         _fetch_service,
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, None, true, true, None).await;
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
     let mut clients = test_manager
         .clients
@@ -1012,7 +1050,7 @@ async fn state_service_get_address_tx_ids_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -1045,14 +1083,14 @@ async fn state_service_get_address_tx_ids_testnet() {
     test_manager.close().await;
 }
 
-async fn state_service_get_address_utxos(validator: &ValidatorKind) {
+async fn state_service_get_address_utxos<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
         _fetch_service,
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(validator, None, true, true, None).await;
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
     let mut clients = test_manager
         .clients
@@ -1098,13 +1136,13 @@ async fn state_service_get_address_utxos(validator: &ValidatorKind) {
     clients.faucet.sync_and_await().await.unwrap();
 
     let fetch_service_utxos = fetch_service_subscriber
-        .z_get_address_utxos(AddressStrings::new(vec![recipient_taddr.clone()]))
+        .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
     let (_, fetch_service_txid, ..) = fetch_service_utxos[0].into_parts();
 
     let state_service_utxos = state_service_subscriber
-        .z_get_address_utxos(AddressStrings::new(vec![recipient_taddr]))
+        .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
         .await
         .unwrap();
     let (_, state_service_txid, ..) = state_service_utxos[0].into_parts();
@@ -1130,7 +1168,7 @@ async fn state_service_get_address_utxos_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -1141,7 +1179,7 @@ async fn state_service_get_address_utxos_testnet() {
 
     let address = "tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i";
 
-    let address_request = AddressStrings::new(vec![address.to_string()]);
+    let address_request = GetAddressBalanceRequest::new(vec![address.to_string()]);
 
     let fetch_service_utxos = dbg!(
         fetch_service_subscriber
@@ -1169,7 +1207,7 @@ async fn state_service_get_address_deltas_testnet() {
         fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = create_test_manager_and_services(
+    ) = create_test_manager_and_services::<Zebrad>(
         &ValidatorKind::Zebrad,
         ZEBRAD_TESTNET_CACHE_DIR.clone(),
         false,
@@ -1234,10 +1272,12 @@ mod zebra {
 
         use super::*;
         use zaino_testutils::ZEBRAD_CHAIN_CACHE_DIR;
+        use zcash_local_net::validator::zebrad::Zebrad;
 
         #[tokio::test(flavor = "multi_thread")]
         async fn regtest_no_cache() {
-            state_service_check_info(&ValidatorKind::Zebrad, None, NetworkKind::Regtest).await;
+            state_service_check_info::<Zebrad>(&ValidatorKind::Zebrad, None, NetworkKind::Regtest)
+                .await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -1248,7 +1288,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1282,7 +1322,7 @@ mod zebra {
         #[tokio::test(flavor = "multi_thread")]
         #[ignore = "We no longer use chain caches. See zcashd::check_info::regtest_no_cache."]
         async fn regtest_with_cache() {
-            state_service_check_info(
+            state_service_check_info::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_CHAIN_CACHE_DIR.clone(),
                 NetworkKind::Regtest,
@@ -1293,7 +1333,7 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn testnet() {
-            state_service_check_info(
+            state_service_check_info::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 ZEBRAD_TESTNET_CACHE_DIR.clone(),
                 NetworkKind::Testnet,
@@ -1304,13 +1344,13 @@ mod zebra {
 
     pub(crate) mod get {
 
-        use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasResponse;
-
         use super::*;
+        use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasResponse;
+        use zcash_local_net::validator::zebrad::Zebrad;
 
         #[tokio::test(flavor = "multi_thread")]
         async fn address_utxos() {
-            state_service_get_address_utxos(&ValidatorKind::Zebrad).await;
+            state_service_get_address_utxos::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
         #[ignore = "requires fully synced testnet."]
@@ -1321,7 +1361,7 @@ mod zebra {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn address_tx_ids_regtest() {
-            state_service_get_address_tx_ids(&ValidatorKind::Zebrad).await;
+            state_service_get_address_tx_ids::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
         #[ignore = "requires fully synced testnet."]
@@ -1332,7 +1372,7 @@ mod zebra {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn raw_transaction_regtest() {
-            state_service_get_raw_transaction(&ValidatorKind::Zebrad).await;
+            state_service_get_raw_transaction::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
         #[ignore = "requires fully synced testnet."]
@@ -1349,7 +1389,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1380,7 +1420,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1413,7 +1453,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 false,
@@ -1455,7 +1495,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1501,7 +1541,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 false,
@@ -1539,7 +1579,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 false,
@@ -1566,7 +1606,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1596,11 +1636,13 @@ mod zebra {
         }
 
         mod z {
+            use zcash_local_net::validator::zebrad::Zebrad;
+
             use super::*;
 
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn subtrees_by_index_regtest() {
-                state_service_z_get_subtrees_by_index(&ValidatorKind::Zebrad).await;
+                state_service_z_get_subtrees_by_index::<Zebrad>(&ValidatorKind::Zebrad).await;
             }
 
             #[ignore = "requires fully synced testnet."]
@@ -1611,7 +1653,7 @@ mod zebra {
 
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn treestate_regtest() {
-                state_service_z_get_treestate(&ValidatorKind::Zebrad).await;
+                state_service_z_get_treestate::<Zebrad>(&ValidatorKind::Zebrad).await;
             }
 
             #[ignore = "requires fully synced testnet."]
@@ -1623,7 +1665,7 @@ mod zebra {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn raw_mempool_regtest() {
-            state_service_get_raw_mempool(&ValidatorKind::Zebrad).await;
+            state_service_get_raw_mempool::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
         /// `getmempoolinfo` computed from local Broadcast state
@@ -1636,8 +1678,14 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(&ValidatorKind::Zebrad, None, true, true, None)
-                .await;
+            ) = create_test_manager_and_services::<Zebrad>(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                true,
+                None,
+            )
+            .await;
 
             let mut clients = test_manager
                 .clients
@@ -1753,7 +1801,7 @@ mod zebra {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn address_balance_regtest() {
-            state_service_get_address_balance(&ValidatorKind::Zebrad).await;
+            state_service_get_address_balance::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
         #[ignore = "requires fully synced testnet."]
@@ -1792,7 +1840,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1823,7 +1871,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1875,7 +1923,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 false,
@@ -1924,7 +1972,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -1966,7 +2014,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -2015,7 +2063,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -2049,7 +2097,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -2127,7 +2175,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -2192,7 +2240,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -2236,7 +2284,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -2301,7 +2349,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,
@@ -2361,7 +2409,7 @@ mod zebra {
                 fetch_service_subscriber,
                 _state_service,
                 state_service_subscriber,
-            ) = create_test_manager_and_services(
+            ) = create_test_manager_and_services::<Zebrad>(
                 &ValidatorKind::Zebrad,
                 None,
                 true,

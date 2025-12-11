@@ -232,9 +232,7 @@ impl BlockchainSource for ValidatorConnector {
                     .final_state()
                     .as_ref()
                     .map(|final_state| {
-                        read_commitment_tree::<zebra_chain::sapling::tree::Node, _, 32>(
-                            final_state.as_slice(),
-                        )
+                        read_commitment_tree::<sapling_crypto::Node, _, 32>(final_state.as_slice())
                     })
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
@@ -251,7 +249,7 @@ impl BlockchainSource for ValidatorConnector {
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let sapling_root = sapling_frontier
                     .map(|tree| {
-                        zebra_chain::sapling::tree::Root::try_from(*tree.root().as_ref())
+                        zebra_chain::sapling::tree::Root::try_from(tree.root().to_bytes())
                             .map(|root| (root, tree.size() as u64))
                     })
                     .transpose()

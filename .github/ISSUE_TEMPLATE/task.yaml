@@ -1,0 +1,54 @@
+name: "Task"
+description: Track implementation work, todos, or specific deliverables
+labels: ["tracking"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for tracking specific work items, implementation tasks, or deliverables.
+
+        Tasks are actionable items with a clear definition of done.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Task description
+      description: What needs to be done?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why is this needed? Link to parent issues or discussions if relevant.
+      placeholder: |
+        Part of #123
+        Related to the X migration...
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How do we know when this is done?
+      placeholder: |
+        - [ ] Implement X
+        - [ ] Add tests for Y
+        - [ ] Update documentation
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the codebase?
+      multiple: true
+      options:
+        - zainod
+        - zaino-state
+        - zaino-serve
+        - zaino-fetch
+        - zaino-proto
+        - chain_index
+        - Testing / CI
+        - Documentation
+        - Other

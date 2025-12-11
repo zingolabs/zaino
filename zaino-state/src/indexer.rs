@@ -22,12 +22,15 @@ use zaino_proto::proto::{
         TxFilter,
     },
 };
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::{
+    block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
+};
 use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
-        AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-        GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
+        AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos,
+        GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
+        SentTransactionHash,
     },
 };
 
@@ -256,7 +259,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
     async fn z_get_address_balance(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, Self::Error>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
@@ -480,7 +483,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// <https://github.com/zcash/lightwalletd/blob/master/frontend/service.go#L402>
     async fn z_get_address_utxos(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error>;
 
     /// Returns a json object containing mining-related information.

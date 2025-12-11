@@ -35,9 +35,6 @@ tower = { workspace = true, features = ["buffer", "util"] }
 # Runtime
 tokio = { workspace = true }
 
-# ZingoLib
-zingolib = { workspace = true }
-
 # Zingo-infra
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }

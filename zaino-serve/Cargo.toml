@@ -10,6 +10,7 @@ version = { workspace = true }
 
 [features]
 state_service = []
+no_tls_use_unencrypted_traffic = ["tonic/tls-roots"]
 
 [dependencies]
 zaino-proto = { workspace = true }

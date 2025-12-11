@@ -1,21 +1,25 @@
 use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
-use zaino_state::BackendType;
-#[allow(deprecated)]
-use zaino_state::FetchService;
-use zaino_testutils::{TestManager, Validator as _, ValidatorKind};
+use zaino_state::{ZcashIndexer, ZcashService};
+use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
+use zainodlib::config::ZainodConfig;
+use zainodlib::error::IndexerError;
 
 #[allow(deprecated)]
-async fn create_test_manager_and_connector(
+async fn create_test_manager_and_connector<T, Service>(
     validator: &ValidatorKind,
     activation_heights: Option<ActivationHeights>,
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-) -> (TestManager<FetchService>, JsonRpSeeConnector) {
-    let test_manager = TestManager::<FetchService>::launch(
+) -> (TestManager<T, Service>, JsonRpSeeConnector)
+where
+    T: ValidatorExt,
+    Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+{
+    let test_manager = TestManager::<T, Service>::launch(
         validator,
-        &BackendType::Fetch,
         None,
         activation_heights,
         chain_cache,
@@ -62,27 +66,36 @@ mod chain_query_interface {
         },
         Height, StateService, StateServiceConfig, ZcashService,
     };
+    use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
     use zebra_chain::{
-        parameters::NetworkKind,
+        parameters::{
+            testnet::{ConfiguredActivationHeights, RegtestParameters},
+            NetworkKind,
+        },
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
     };
 
     use super::*;
 
     #[allow(deprecated)]
-    async fn create_test_manager_and_chain_index(
+    async fn create_test_manager_and_chain_index<C, Service>(
         validator: &ValidatorKind,
         chain_cache: Option<std::path::PathBuf>,
         enable_zaino: bool,
         enable_clients: bool,
     ) -> (
-        TestManager<FetchService>,
+        TestManager<C, Service>,
         JsonRpSeeConnector,
         Option<StateService>,
         NodeBackedChainIndex,
         NodeBackedChainIndexSubscriber,
-    ) {
-        let (test_manager, json_service) = create_test_manager_and_connector(
+    )
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
+        let (test_manager, json_service) = create_test_manager_and_connector::<C, Service>(
             validator,
             None,
             chain_cache.clone(),
@@ -99,8 +112,11 @@ mod chain_query_interface {
                 };
                 let network = match test_manager.network {
                     NetworkKind::Regtest => zebra_chain::parameters::Network::new_regtest(
-                        test_manager.local_net.get_activation_heights(),
+                        RegtestParameters::from(ConfiguredActivationHeights::from(
+                            test_manager.local_net.get_activation_heights().await,
+                        )),
                     ),
+
                     NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
                     NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
                 };
@@ -111,6 +127,8 @@ mod chain_query_interface {
                         delete_old_database: true,
                         debug_stop_at_height: None,
                         debug_validity_check_interval: None,
+                        // todo: does this matter?
+                        should_backup_non_finalized_state: true,
                     },
                     test_manager.full_node_rpc_listen_address,
                     test_manager.full_node_grpc_listen_address,
@@ -122,12 +140,7 @@ mod chain_query_interface {
                     StorageConfig {
                         cache: CacheConfig::default(),
                         database: DatabaseConfig {
-                            path: test_manager
-                                .local_net
-                                .data_dir()
-                                .path()
-                                .to_path_buf()
-                                .join("zaino"),
+                            path: test_manager.data_dir.as_path().to_path_buf().join("zaino"),
                             ..Default::default()
                         },
                     },
@@ -146,9 +159,9 @@ mod chain_query_interface {
                         ..Default::default()
                     },
                     db_version: 1,
-                    network: zaino_common::Network::Regtest(
-                        test_manager.local_net.get_activation_heights().into(),
-                    ),
+                    network: zaino_common::Network::Regtest(ActivationHeights::from(
+                        test_manager.local_net.get_activation_heights().await,
+                    )),
                 };
                 let chain_index = NodeBackedChainIndex::new(
                     ValidatorConnector::State(chain_index::source::State {
@@ -184,7 +197,7 @@ mod chain_query_interface {
                     },
                     db_version: 1,
                     network: zaino_common::Network::Regtest(
-                        test_manager.local_net.get_activation_heights().into(),
+                        test_manager.local_net.get_activation_heights().await.into(),
                     ),
                 };
                 let chain_index = NodeBackedChainIndex::new(
@@ -204,18 +217,23 @@ mod chain_query_interface {
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_zebrad() {
-        get_block_range(&ValidatorKind::Zebrad).await
+        get_block_range::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_zcashd() {
-        get_block_range(&ValidatorKind::Zcashd).await
+        get_block_range::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
     }
 
-    async fn get_block_range(validator: &ValidatorKind) {
+    async fn get_block_range<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
@@ -249,18 +267,23 @@ mod chain_query_interface {
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn find_fork_point_zebrad() {
-        find_fork_point(&ValidatorKind::Zebrad).await
+        find_fork_point::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn find_fork_point_zcashd() {
-        find_fork_point(&ValidatorKind::Zcashd).await
+        find_fork_point::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
     }
 
-    async fn find_fork_point(validator: &ValidatorKind) {
+    async fn find_fork_point<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
@@ -284,18 +307,23 @@ mod chain_query_interface {
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_transaction_zebrad() {
-        get_raw_transaction(&ValidatorKind::Zebrad).await
+        get_raw_transaction::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_transaction_zcashd() {
-        get_raw_transaction(&ValidatorKind::Zcashd).await
+        get_raw_transaction::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
     }
 
-    async fn get_raw_transaction(validator: &ValidatorKind) {
+    async fn get_raw_transaction<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
@@ -341,18 +369,23 @@ mod chain_query_interface {
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_status_zebrad() {
-        get_transaction_status(&ValidatorKind::Zebrad).await
+        get_transaction_status::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_status_zcashd() {
-        get_transaction_status(&ValidatorKind::Zcashd).await
+        get_transaction_status::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
     }
 
-    async fn get_transaction_status(validator: &ValidatorKind) {
+    async fn get_transaction_status<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
         let snapshot = indexer.snapshot_nonfinalized_state();
         assert_eq!(snapshot.as_ref().blocks.len(), 3);
 
@@ -382,18 +415,23 @@ mod chain_query_interface {
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain_zebrad() {
-        sync_large_chain(&ValidatorKind::Zebrad).await
+        sync_large_chain::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain_zcashd() {
-        sync_large_chain(&ValidatorKind::Zcashd).await
+        sync_large_chain::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
     }
 
-    async fn sync_large_chain(validator: &ValidatorKind) {
+    async fn sync_large_chain<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
         let (test_manager, json_service, option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
@@ -401,7 +439,7 @@ mod chain_query_interface {
         if let Some(state_service) = option_state_service.as_ref() {
             test_manager
                 .generate_blocks_and_poll_indexer(0, state_service.get_subscriber().inner_ref())
-                .await;
+                .await
         }
         {
             let chain_height =

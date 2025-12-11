@@ -33,6 +33,7 @@ use core2::io::{self, Read, Write};
 use hex::{FromHex, ToHex};
 use primitive_types::U256;
 use std::{fmt, io::Cursor};
+use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use crate::chain_index::encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,

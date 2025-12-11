@@ -25,11 +25,11 @@ FROM electriccoinco/zcashd:v${ZCASH_VERSION} AS zcashd-downloader
 # === BUILDERS ===
 ########################
 
-FROM rust:${RUST_VERSION}-bookworm AS zebra-builder
+FROM rust:${RUST_VERSION}-trixie AS zebra-builder
 
 ARG ZEBRA_VERSION
 RUN apt-get update
-RUN apt-get install -y git clang cmake pkg-config libssl-dev protobuf-compiler
+RUN apt-get install -y git clang cmake pkg-config libssl-dev protobuf-compiler libstdc++6
 WORKDIR /zebra
 RUN git clone https://github.com/ZcashFoundation/zebra .
 RUN git checkout "${ZEBRA_VERSION}" 
@@ -40,7 +40,7 @@ RUN git checkout "${ZEBRA_VERSION}"
 RUN cargo build --release --bin zebrad
 RUN cp target/release/zebrad /tmp/zebrad
 
-FROM debian:bookworm AS zcashd-builder
+FROM debian:trixie AS zcashd-builder
 
 ARG ZCASH_VERSION
 RUN apt-get update && apt-get install -y \
@@ -56,7 +56,7 @@ RUN cp src/zcashd src/zcash-cli /tmp/
 # === BASE RUNTIME IMAGE ===
 ########################
 
-FROM rust:${RUST_VERSION}-bookworm AS base
+FROM rust:${RUST_VERSION}-trixie AS base
 
 ARG UID
 ARG GID
@@ -86,6 +86,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblz4-dev \
     libzstd-dev \
     protobuf-compiler \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create container_user

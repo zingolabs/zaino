@@ -53,20 +53,21 @@ use zebra_chain::{
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
-    serialization::ZcashSerialize,
+    serialization::{BytesInDisplayOrder as _, ZcashSerialize},
     subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
     client::{
-        GetBlockchainInfoBalance, GetSubtreesByIndexResponse, GetTreestateResponse, HexData, Input,
-        SubtreeRpcData, TransactionObject, ValidateAddressResponse,
+        GetAddressBalanceRequest, GetBlockchainInfoBalance, GetSubtreesByIndexResponse,
+        GetTreestateResponse, HexData, Input, SubtreeRpcData, TransactionObject,
+        ValidateAddressResponse,
     },
     methods::{
-        chain_tip_difficulty, AddressBalance, AddressStrings, ConsensusBranchIdHex,
-        GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHash,
-        GetBlockHeader as GetBlockHeaderZebra, GetBlockHeaderObject, GetBlockTransaction,
-        GetBlockTrees, GetBlockchainInfoResponse, GetInfo, GetRawTransaction, NetworkUpgradeInfo,
-        NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
+        chain_tip_difficulty, AddressBalance, ConsensusBranchIdHex, GetAddressTxIdsRequest,
+        GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader as GetBlockHeaderZebra,
+        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
+        GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
+        TipConsensusBranch, ValidateAddresses as _,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
@@ -228,6 +229,7 @@ impl ZcashService for StateService {
         info!("Using Zcash build: {}", data);
 
         info!("Launching Chain Syncer..");
+        info!("{}", config.validator_rpc_address);
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_state_config.clone(),
@@ -1271,7 +1273,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn z_get_address_balance(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, Self::Error> {
         let mut state = self.read_state_service.clone();
 
@@ -1622,7 +1624,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                     .values()
                     .map(|subtree| {
                         SubtreeRpcData {
-                            root: subtree.root.encode_hex(),
+                            root: subtree.root.to_bytes().encode_hex(),
                             end_height: subtree.end_height,
                         }
                         .into()
@@ -1814,7 +1816,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         }
 
         let request = ReadRequest::TransactionIdsByAddresses {
-            addresses: AddressStrings::new(addresses)
+            addresses: GetAddressBalanceRequest::new(addresses)
                 .valid_addresses()
                 .map_err(|e| RpcError::new_from_errorobject(e, "invalid adddress"))?,
 
@@ -1848,7 +1850,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn z_get_address_utxos(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
         let mut state = self.read_state_service.clone();
 
@@ -2087,7 +2089,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         &self,
         request: AddressList,
     ) -> Result<zaino_proto::proto::service::Balance, Self::Error> {
-        let taddrs = AddressStrings::new(request.addresses);
+        let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let balance = self.z_get_address_balance(taddrs).await?;
         let checked_balance: i64 = match i64::try_from(balance.balance()) {
             Ok(balance) => balance,
@@ -2120,7 +2122,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     loop {
                         match channel_rx.recv().await {
                             Some(taddr) => {
-                                let taddrs = AddressStrings::new(vec![taddr]);
+                                let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
                                 let balance =
                                     fetch_service_clone.z_get_address_balance(taddrs).await?;
                                 total_balance += balance.balance();

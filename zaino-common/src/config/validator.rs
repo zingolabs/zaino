@@ -8,8 +8,8 @@ use std::path::PathBuf;
 /// Validator (full-node) type for Zaino configuration.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ValidatorConfig {
-    /// Full node / validator gprc listen port.
-    pub validator_grpc_listen_address: SocketAddr,
+    /// Full node / validator gprc listen port. Only exists for zebra
+    pub validator_grpc_listen_address: Option<SocketAddr>,
     /// Full node / validator listen port.
     pub validator_jsonrpc_listen_address: SocketAddr,
     /// Path to the validator cookie file. Enable validator rpc cookie authentication with Some.

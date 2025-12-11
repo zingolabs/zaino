@@ -18,7 +18,7 @@ path = "src/lib.rs"
 
 [features]
 # Removes network restrictions.
-no_tls_use_unencrypted_traffic = []
+no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 
 [dependencies]
 zaino-common = { workspace = true }

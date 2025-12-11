@@ -19,25 +19,28 @@ zaino-common.workspace = true
 zainod = { workspace = true }
 
 # Librustzcash
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = [
+zcash_protocol = { version = "0.7.0", features = [
   "local-consensus",
 ] }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d387aed7e04e881dbe30c6ff8b26a96c834c094b", features = ["lightwalletd-tonic"] }
+zcash_client_backend = { version = "0.20", features = ["lightwalletd-tonic"] }
 
 # Zebra
 zebra-chain = { workspace = true }
 zebra-state.workspace = true
 
 # Zingo-infra
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0"  }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }
 
 # Zingo-common
 zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [ "for_test" ]}
-zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0"  }
+zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "b64dfd6d6a2a597a5456d1cc7b2bc9b649328187"  }
 
 # ZingoLib
-zingolib = { workspace = true }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "dev", features = [
+    "testutils",
+] }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "dev" }
 
 # Miscellaneous
 http = { workspace = true }
@@ -46,6 +49,7 @@ portpicker = { workspace = true }
 tokio = { workspace = true }
 tonic = { version = "0.13" } # TODO: unify in the workspace
 tempfile = { workspace = true }
+tracing.workspace = true
 tracing-subscriber = { workspace = true, features = [
     "fmt",
     "env-filter",
