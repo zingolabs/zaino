@@ -12,11 +12,14 @@ use zebra_chain::{
     block::Height, serialization::ZcashDeserialize as _, subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
-    client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
+    client::{
+        GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse,
+        ValidateAddressResponse,
+    },
     methods::{
-        AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-        GetBlockHashResponse, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
-        SentTransactionHash,
+        AddressBalance, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHashResponse,
+        GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
+        ValidateAddresses as _,
     },
 };
 
@@ -45,7 +48,6 @@ use zaino_proto::proto::{
     },
 };
 
-use crate::TransactionHash;
 #[allow(deprecated)]
 use crate::{
     chain_index::{source::ValidatorConnector, types},
@@ -325,17 +327,24 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
     async fn z_get_address_balance(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, Self::Error> {
         Ok(self
             .fetcher
-            .get_address_balance(address_strings.valid_address_strings().map_err(|error| {
-                FetchServiceError::RpcError(RpcError {
-                    code: error.code() as i64,
-                    message: "Invalid address provided".to_string(),
-                    data: None,
-                })
-            })?)
+            .get_address_balance(
+                address_strings
+                    .valid_addresses()
+                    .map_err(|error| {
+                        FetchServiceError::RpcError(RpcError {
+                            code: error.code() as i64,
+                            message: "Invalid address provided".to_string(),
+                            data: None,
+                        })
+                    })?
+                    .into_iter()
+                    .map(|address| address.to_string())
+                    .collect(),
+            )
             .await?
             .into())
     }
@@ -627,17 +636,24 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// <https://github.com/zcash/lightwalletd/blob/master/frontend/service.go#L402>
     async fn z_get_address_utxos(
         &self,
-        address_strings: AddressStrings,
+        addresses: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
         Ok(self
             .fetcher
-            .get_address_utxos(address_strings.valid_address_strings().map_err(|error| {
-                FetchServiceError::RpcError(RpcError {
-                    code: error.code() as i64,
-                    message: "Invalid address provided".to_string(),
-                    data: None,
-                })
-            })?)
+            .get_address_utxos(
+                addresses
+                    .valid_addresses()
+                    .map_err(|error| {
+                        FetchServiceError::RpcError(RpcError {
+                            code: error.code() as i64,
+                            message: "Invalid address provided".to_string(),
+                            data: None,
+                        })
+                    })?
+                    .into_iter()
+                    .map(|address| address.to_string())
+                    .collect(),
+            )
             .await?
             .into_iter()
             .map(|utxos| utxos.into())
@@ -1219,7 +1235,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
     /// Returns the total balance for a list of taddrs
     async fn get_taddress_balance(&self, request: AddressList) -> Result<Balance, Self::Error> {
-        let taddrs = AddressStrings::new(request.addresses);
+        let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let balance = self.z_get_address_balance(taddrs).await?;
         let checked_balance: i64 = match i64::try_from(balance.balance()) {
             Ok(balance) => balance,
@@ -1252,7 +1268,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     loop {
                         match channel_rx.recv().await {
                             Some(taddr) => {
-                                let taddrs = AddressStrings::new(vec![taddr]);
+                                let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
                                 let balance =
                                     fetch_service_clone.z_get_address_balance(taddrs).await?;
                                 total_balance += balance.balance();
@@ -1607,7 +1623,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
-        let taddrs = AddressStrings::new(request.addresses);
+        let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
         let mut entries: u32 = 0;
@@ -1659,7 +1675,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<UtxoReplyStream, Self::Error> {
-        let taddrs = AddressStrings::new(request.addresses);
+        let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);

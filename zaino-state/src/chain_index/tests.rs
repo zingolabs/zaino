@@ -154,7 +154,7 @@ mod mockchain_tests {
                         .branch_id()
                         .map(u32::from)
                 } else {
-                    zebra_chain::parameters::NetworkUpgrade::Nu6
+                    zebra_chain::parameters::NetworkUpgrade::Nu6_1
                         .branch_id()
                         .map(u32::from)
                 }
@@ -270,7 +270,7 @@ mod mockchain_tests {
             assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
             assert_eq!(
                 branch_id,
-                zebra_chain::parameters::NetworkUpgrade::Nu6
+                zebra_chain::parameters::NetworkUpgrade::Nu6_1
                     .branch_id()
                     .map(u32::from)
             );

@@ -191,7 +191,7 @@ impl Default for ZainodConfig {
                 tls: None,
             },
             validator_settings: ValidatorConfig {
-                validator_grpc_listen_address: "127.0.0.1:18230".parse().unwrap(),
+                validator_grpc_listen_address: Some("127.0.0.1:18230".parse().unwrap()),
                 validator_jsonrpc_listen_address: "127.0.0.1:18232".parse().unwrap(),
                 validator_cookie_path: None,
                 validator_user: Some("xxxxxx".to_string()),
@@ -362,9 +362,13 @@ impl From<ZainodConfig> for StateServiceConfig {
                 delete_old_database: true,
                 debug_stop_at_height: None,
                 debug_validity_check_interval: None,
+                should_backup_non_finalized_state: true,
             },
             validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
-            validator_grpc_address: cfg.validator_settings.validator_grpc_listen_address,
+            validator_grpc_address: cfg
+                .validator_settings
+                .validator_grpc_listen_address
+                .expect("Zebra config with no grpc_listen_address"),
             validator_cookie_auth: cfg.validator_settings.validator_cookie_path.is_some(),
             validator_cookie_path: cfg.validator_settings.validator_cookie_path,
             validator_rpc_user: cfg

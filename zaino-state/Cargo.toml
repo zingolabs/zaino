@@ -59,10 +59,10 @@ arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }
+sapling-crypto = "0.5.0"
 
 
 [dev-dependencies]
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.1.0" }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }

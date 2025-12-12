@@ -94,7 +94,7 @@ impl GetAddressDeltasResponse {
                             input,
                             input_index as u32,
                             &input_txid,
-                            height,
+                            height as u32, // Height is known to be non-negative
                             target_addresses,
                             None,
                         )
@@ -108,7 +108,7 @@ impl GetAddressDeltasResponse {
                         AddressDelta::from_output(
                             output,
                             &output_txid,
-                            height,
+                            height as u32, // Height is known to be non-negative
                             target_addresses,
                             None,
                         )
