@@ -263,7 +263,7 @@ docker run --rm \
   -w /home/container_user/zaino \
   -u container_user \
   "${IMAGE_NAME}:$TAG" \
-  cargo nextest run --profile ci "${@}" &
+  cargo nextest run "${@}" &
 
 # Capture the background job PID
 DOCKER_PID=$!

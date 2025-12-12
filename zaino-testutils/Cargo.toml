@@ -37,10 +37,10 @@ zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git
 zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "b64dfd6d6a2a597a5456d1cc7b2bc9b649328187"  }
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "e0eb2b85f4f8754d5597bc2bcd1ce67238728de0", features = [
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "dev", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "e0eb2b85f4f8754d5597bc2bcd1ce67238728de0" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "dev" }
 
 # Miscellaneous
 http = { workspace = true }

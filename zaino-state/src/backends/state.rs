@@ -1164,33 +1164,36 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let upgrades = IndexMap::from_iter(
-            dbg!(self
-                .config
+            self.config
                 .network
                 .to_zebra_network()
-                .full_activation_list())
-            .into_iter()
-            .filter_map(|(activation_height, network_upgrade)| {
-                // Zebra defines network upgrades based on incompatible consensus rule changes,
-                // but zcashd defines them based on ZIPs.
-                //
-                // All the network upgrades with a consensus branch ID
-                // are the same in Zebra and zcashd.
-                network_upgrade.branch_id().map(|branch_id| {
-                    // zcashd's RPC seems to ignore Disabled network upgrades,
-                    // so Zebra does too.
-                    let status = if height >= activation_height {
-                        NetworkUpgradeStatus::Active
-                    } else {
-                        NetworkUpgradeStatus::Pending
-                    };
+                .full_activation_list()
+                .into_iter()
+                .filter_map(|(activation_height, network_upgrade)| {
+                    // Zebra defines network upgrades based on incompatible consensus rule changes,
+                    // but zcashd defines them based on ZIPs.
+                    //
+                    // All the network upgrades with a consensus branch ID
+                    // are the same in Zebra and zcashd.
+                    network_upgrade.branch_id().map(|branch_id| {
+                        // zcashd's RPC seems to ignore Disabled network upgrades,
+                        // so Zebra does too.
+                        let status = if height >= activation_height {
+                            NetworkUpgradeStatus::Active
+                        } else {
+                            NetworkUpgradeStatus::Pending
+                        };
 
-                    (
-                        ConsensusBranchIdHex::new(branch_id.into()),
-                        NetworkUpgradeInfo::from_parts(network_upgrade, activation_height, status),
-                    )
-                })
-            }),
+                        (
+                            ConsensusBranchIdHex::new(branch_id.into()),
+                            NetworkUpgradeInfo::from_parts(
+                                network_upgrade,
+                                activation_height,
+                                status,
+                            ),
+                        )
+                    })
+                }),
         );
 
         let next_block_height =

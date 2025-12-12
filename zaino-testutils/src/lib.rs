@@ -38,7 +38,6 @@ use zcash_local_net::{
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zcash_protocol::PoolType;
 use zebra_chain::parameters::{testnet::ConfiguredActivationHeights, NetworkKind};
-//use zebra_chain_zingolib_testutils_compat::parameters::testnet::ConfiguredActivationHeights;
 use zingo_netutils::{GetClientError, GrpcConnector, UnderlyingService};
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
