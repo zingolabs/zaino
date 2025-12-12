@@ -1636,12 +1636,11 @@ async fn fetch_service_get_mempool_tx(validator: &ValidatorKind) {
     assert_eq!(sorted_fetch_mempool_tx[1].hash, sorted_txids[1]);
     assert_eq!(sorted_fetch_mempool_tx.len(), 2);
 
-    // For the exclude list, we need to provide the transaction ID in RPC format (reversed),
-    // because the backend will reverse it again and the mempool stores keys in RPC format
-    let mut exclude_txid_bytes = sorted_txids[0];
-    exclude_txid_bytes.reverse();
+    // For the exclude list, we send bytes in internal order. The backend (fetch.rs)
+    // will reverse them to RPC format before matching against mempool keys (which are stored in RPC format).
+    // We take the last 8 bytes of internal order, which after reversal becomes the first 8 bytes of RPC format.
     let exclude_list = Exclude {
-        txid: vec![exclude_txid_bytes[..8].to_vec()],
+        txid: vec![sorted_txids[0][24..].to_vec()],
     };
 
     let exclude_fetch_service_stream = fetch_service_subscriber
