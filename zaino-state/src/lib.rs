@@ -27,7 +27,6 @@ pub use backends::{
     state::{StateService, StateServiceSubscriber},
 };
 
-// NOTE: This will replace local_cache. Currently WIP.
 pub mod chain_index;
 
 // Core ChainIndex trait and implementations
@@ -51,8 +50,6 @@ pub use chain_index::types::{
     TreeRootData, TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
 
-pub(crate) mod local_cache;
-
 pub use chain_index::mempool::{MempoolKey, MempoolValue};
 
 #[cfg(feature = "test_dependencies")]
@@ -62,7 +59,6 @@ pub mod test_dependencies {
     pub mod chain_index {
         pub use crate::chain_index::*;
     }
-    pub use crate::{config::BlockCacheConfig, local_cache::*};
 }
 
 pub(crate) mod config;
