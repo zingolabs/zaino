@@ -20,7 +20,10 @@ use crate::{
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
     BackendType, MempoolKey,
 };
-use crate::{error::ChainIndexError, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State};
+use crate::{
+    error::ChainIndexError, utils::compact_block_to_nullifiers, NodeBackedChainIndex,
+    NodeBackedChainIndexSubscriber, State,
+};
 
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
