@@ -59,6 +59,8 @@ pub mod test_dependencies {
     pub mod chain_index {
         pub use crate::chain_index::*;
     }
+
+    pub use crate::BlockCacheConfig;
 }
 
 pub(crate) mod config;
