@@ -1,4 +1,7 @@
-extend = "makefiles/lints.toml"
+extend = [
+    { path = "makefiles/lints.toml" },
+    { path = "makefiles/notify.toml" },
+]
 env_files = [".env.testing-artifacts"]
 
 [config]
@@ -263,7 +266,7 @@ docker run --rm \
   -w /home/container_user/zaino \
   -u container_user \
   "${IMAGE_NAME}:$TAG" \
-  cargo nextest run --profile ci "${@}" &
+  cargo nextest run "${@}" &
 
 # Capture the background job PID
 DOCKER_PID=$!
@@ -271,6 +274,7 @@ DOCKER_PID=$!
 # Wait for the docker process
 wait $DOCKER_PID
 '''
+script.post = "makers notify"
 
 # -------------------------------------------------------------------
 
