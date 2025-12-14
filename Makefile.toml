@@ -32,6 +32,8 @@ echo ""
 echo "Available commands:"
 echo ""
 echo "  container-test             Run integration tests using the local image"
+echo "  container-test-save-failures    Run tests, save failures to .failed-tests"
+echo "  container-test-retry-failures   Rerun only the previously failed tests"
 echo "  build-image                Build the Docker image with current artifact versions"
 echo "  push-image                 Push the image (used in CI, can be used manually)"
 echo "  compute-image-tag          Compute the tag for the Docker image based on versions"
@@ -262,6 +264,7 @@ docker run --rm \
   -v "$PWD/docker_cargo/git":/home/container_user/.cargo/git \
   -v "$PWD/docker_cargo/registry":/home/container_user/.cargo/registry \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
+  -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "CARGO_TARGET_DIR=/home/container_user/zaino/target" \
   -w /home/container_user/zaino \
   -u container_user \
@@ -527,3 +530,76 @@ git diff --no-index /dev/null .github/workflows/ci.yml 2>/dev/null | grep "^[+-]
 # Cleanup temp files
 rm "$NEXTEST_TARGETS"
 '''
+
+# -------------------------------------------------------------------
+
+[tasks.container-test-save-failures]
+description = "Run container-test and save failed test names for later retry"
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -uo pipefail
+
+FAILURES_FILE=".failed-tests"
+
+info "Running container-test with failure tracking..."
+
+# Run container-test with libtest-json, tee output for parsing
+makers container-test --no-fail-fast --message-format libtest-json "${@}" 2>&1 | tee /tmp/nextest-output.json || true
+
+# Extract failed test names
+grep '"event":"failed"' /tmp/nextest-output.json 2>/dev/null | \
+    jq -r '.name // empty' | sort -u > "$FAILURES_FILE"
+
+FAIL_COUNT=$(wc -l < "$FAILURES_FILE" | tr -d ' ')
+
+if [[ "$FAIL_COUNT" -gt 0 ]]; then
+    warn "💾 Saved $FAIL_COUNT failed test(s) to $FAILURES_FILE"
+    cat "$FAILURES_FILE"
+    echo ""
+    info "Run 'makers container-test-retry-failures' to rerun them"
+else
+    info "✅ All tests passed!"
+    rm -f "$FAILURES_FILE"
+fi
+'''
+script.post = "makers notify"
+
+# -------------------------------------------------------------------
+
+[tasks.container-test-retry-failures]
+description = "Rerun only failed tests from previous container-test-save-failures"
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+FAILURES_FILE=".failed-tests"
+
+if [[ ! -f "$FAILURES_FILE" ]]; then
+    err "No $FAILURES_FILE found. Run 'makers container-test-save-failures' first."
+    exit 1
+fi
+
+FAIL_COUNT=$(wc -l < "$FAILURES_FILE" | tr -d ' ')
+if [[ "$FAIL_COUNT" -eq 0 ]]; then
+    info "No failed tests to retry!"
+    exit 0
+fi
+
+info "Retrying $FAIL_COUNT failed test(s)..."
+
+# Build filter from libtest-json format: "package::binary$testname"
+# Output format: (package(P) & binary(B) & test(=T)) | ...
+FILTER=$(while IFS= read -r line; do
+    pkg="${line%%::*}"
+    rest="${line#*::}"
+    bin="${rest%%\$*}"
+    test="${rest#*\$}"
+    echo "(package($pkg) & binary($bin) & test(=$test))"
+done < "$FAILURES_FILE" | tr '\n' '|' | sed 's/|$//; s/|/ | /g')
+
+info "Filter: $FILTER"
+makers container-test -E "$FILTER" "${@}"
+'''
+script.post = "makers notify"

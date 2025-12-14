@@ -13,3 +13,4 @@ docker_cargo/**/*
 !docker_cargo/**/.gitkeep
 container-target/
 .local/
+.failed-tests
