@@ -109,7 +109,7 @@ macro_rules! implement_client_methods {
                 'life: 'async_trait,
                 Self: 'async_trait,
             {
-                info!("[TEST] Received call of {}.", stringify!($method_name));
+                // info!("[TEST] Received call of {}.", stringify!($method_name));
                 Box::pin(async {
                     Ok(
                         // here we pass in pinbox, to optionally add
@@ -219,7 +219,7 @@ where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        info!("[TEST] Received call of get_taddress_balance_stream.");
+        // info!("[TEST] Received call of get_taddress_balance_stream.");
         Box::pin(async {
             let (channel_tx, channel_rx) =
                 tokio::sync::mpsc::channel::<Result<Address, tonic::Status>>(32);
