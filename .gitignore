@@ -14,3 +14,4 @@ docker_cargo/**/*
 container-target/
 .local/
 build/
+.failed-tests
