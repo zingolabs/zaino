@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod probing;
+pub mod status;
 
 // Re-export commonly used config types at crate root for backward compatibility.
 // This allows existing code using `use zaino_common::Network` to continue working.
