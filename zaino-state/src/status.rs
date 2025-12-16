@@ -7,7 +7,7 @@ use std::sync::{
     Arc,
 };
 
-pub use zaino_common::status::StatusType;
+pub use zaino_common::status::{Status, StatusType};
 
 /// Holds a thread-safe representation of a [`StatusType`].
 #[derive(Debug, Clone)]
@@ -31,5 +31,11 @@ impl AtomicStatus {
     /// Sets the value held in the AtomicStatus.
     pub fn store(&self, status: StatusType) {
         self.inner.store(status.into(), Ordering::SeqCst);
+    }
+}
+
+impl Status for AtomicStatus {
+    fn status(&self) -> StatusType {
+        self.load()
     }
 }
