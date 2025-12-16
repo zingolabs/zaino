@@ -1,8 +1,15 @@
-//! Service status types.
+//! Service status types and traits.
 //!
-//! This module provides [`StatusType`], an enum representing service operational states.
+//! This module provides:
+//! - [`StatusType`]: An enum representing service operational states
+//! - [`Status`]: A trait for types that can report their status
+//!
+//! Types implementing [`Status`] automatically gain [`Liveness`](crate::probing::Liveness)
+//! and [`Readiness`](crate::probing::Readiness) implementations via blanket impls.
 
 use std::fmt;
+
+use crate::probing::{Liveness, Readiness};
 
 /// Status of a service component.
 ///
@@ -104,5 +111,36 @@ impl StatusType {
             // Otherwise, return Ready.
             _ => StatusType::Ready,
         }
+    }
+
+    /// Returns `true` if this status indicates the component is alive (liveness probe).
+    pub fn is_live(self) -> bool {
+        !matches!(self, StatusType::Offline | StatusType::CriticalError)
+    }
+
+    /// Returns `true` if this status indicates the component is ready to serve (readiness probe).
+    pub fn is_ready(self) -> bool {
+        matches!(self, StatusType::Ready | StatusType::Busy)
+    }
+}
+
+/// Trait for types that can report their [`StatusType`].
+///
+/// Implementing this trait automatically provides [`Liveness`] and [`Readiness`]
+/// implementations via blanket impls.
+pub trait Status {
+    /// Returns the current status of this component.
+    fn status(&self) -> StatusType;
+}
+
+impl<T: Status> Liveness for T {
+    fn is_live(&self) -> bool {
+        self.status().is_live()
+    }
+}
+
+impl<T: Status> Readiness for T {
+    fn is_ready(&self) -> bool {
+        self.status().is_ready()
     }
 }
