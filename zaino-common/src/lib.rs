@@ -4,6 +4,7 @@
 //! and common utilities used across the Zaino blockchain indexer ecosystem.
 
 pub mod config;
+pub mod probing;
 
 // Re-export commonly used config types at crate root for backward compatibility.
 // This allows existing code using `use zaino_common::Network` to continue working.
