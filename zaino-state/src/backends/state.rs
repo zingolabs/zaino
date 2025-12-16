@@ -84,7 +84,7 @@ use chrono::{DateTime, Utc};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashSet, error::Error, fmt, future::poll_fn, str::FromStr, sync::Arc};
+use std::{collections::HashSet, error::Error, fmt, str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -144,29 +144,7 @@ pub struct StateService {
     status: AtomicStatus,
 }
 
-// #[allow(deprecated)]
 impl StateService {
-    /// Uses poll_ready to update the status of the `ReadStateService`.
-    async fn fetch_status_from_validator(&self) -> StatusType {
-        let mut read_state_service = self.read_state_service.clone();
-        poll_fn(|cx| match read_state_service.poll_ready(cx) {
-            std::task::Poll::Ready(Ok(())) => {
-                self.status.store(StatusType::Ready);
-                std::task::Poll::Ready(StatusType::Ready)
-            }
-            std::task::Poll::Ready(Err(e)) => {
-                eprintln!("Service readiness error: {e:?}");
-                self.status.store(StatusType::CriticalError);
-                std::task::Poll::Ready(StatusType::CriticalError)
-            }
-            std::task::Poll::Pending => {
-                self.status.store(StatusType::Busy);
-                std::task::Poll::Pending
-            }
-        })
-        .await
-    }
-
     #[cfg(feature = "test_dependencies")]
     /// Helper for tests
     pub fn read_state_service(&self) -> &ReadStateService {
@@ -318,15 +296,12 @@ impl ZcashService for StateService {
     }
 
     /// Returns the StateService's Status.
-    ///
-    /// We first check for `status = StatusType::Closing` as this signifies a shutdown order
-    /// from an external process.
-    async fn status(&self) -> StatusType {
+    fn status(&self) -> StatusType {
         let current_status = self.status.load();
         if current_status == StatusType::Closing {
             current_status
         } else {
-            self.fetch_status_from_validator().await
+            self.indexer.status()
         }
     }
 

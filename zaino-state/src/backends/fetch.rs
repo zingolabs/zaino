@@ -133,7 +133,7 @@ impl ZcashService for FetchService {
             config,
         };
 
-        while fetch_service.status().await != StatusType::Ready {
+        while fetch_service.status() != StatusType::Ready {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
@@ -150,8 +150,8 @@ impl ZcashService for FetchService {
         })
     }
 
-    /// Fetches the current status
-    async fn status(&self) -> StatusType {
+    /// Returns the current status.
+    fn status(&self) -> StatusType {
         self.indexer.status()
     }
 

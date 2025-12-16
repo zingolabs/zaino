@@ -98,8 +98,8 @@ pub trait ZcashService: Sized {
     /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
 
-    /// Fetches the current status
-    async fn status(&self) -> StatusType;
+    /// Returns the current status.
+    fn status(&self) -> StatusType;
 
     /// Shuts down the StateService.
     fn close(&mut self);
