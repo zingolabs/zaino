@@ -56,7 +56,7 @@ use crate::{
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    status::StatusType,
+    status::{Status, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
@@ -90,6 +90,13 @@ pub struct FetchService {
     /// StateService config data.
     #[allow(deprecated)]
     config: FetchServiceConfig,
+}
+
+#[allow(deprecated)]
+impl Status for FetchService {
+    fn status(&self) -> StatusType {
+        self.indexer.status()
+    }
 }
 
 #[async_trait]
@@ -148,11 +155,6 @@ impl ZcashService for FetchService {
             data: self.data.clone(),
             config: self.config.clone(),
         })
-    }
-
-    /// Returns the current status.
-    fn status(&self) -> StatusType {
-        self.indexer.status()
     }
 
     /// Shuts down the StateService.

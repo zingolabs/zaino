@@ -12,7 +12,7 @@ use crate::{
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    status::{AtomicStatus, StatusType},
+    status::{AtomicStatus, Status, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
@@ -149,6 +149,17 @@ impl StateService {
     /// Helper for tests
     pub fn read_state_service(&self) -> &ReadStateService {
         &self.read_state_service
+    }
+}
+
+impl Status for StateService {
+    fn status(&self) -> StatusType {
+        let current_status = self.status.load();
+        if current_status == StatusType::Closing {
+            current_status
+        } else {
+            self.indexer.status()
+        }
     }
 }
 
@@ -293,16 +304,6 @@ impl ZcashService for StateService {
             config: self.config.clone(),
             chain_tip_change: self.chain_tip_change.clone(),
         })
-    }
-
-    /// Returns the StateService's Status.
-    fn status(&self) -> StatusType {
-        let current_status = self.status.load();
-        if current_status == StatusType::Closing {
-            current_status
-        } else {
-            self.indexer.status()
-        }
     }
 
     /// Shuts down the StateService.

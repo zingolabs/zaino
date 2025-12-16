@@ -35,7 +35,7 @@ use zebra_rpc::{
 };
 
 use crate::{
-    status::StatusType,
+    status::Status,
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
@@ -80,8 +80,11 @@ where
 }
 
 /// Zcash Service functionality.
+///
+/// Implementors automatically gain [`Liveness`](zaino_common::probing::Liveness) and
+/// [`Readiness`](zaino_common::probing::Readiness) via the [`Status`] supertrait.
 #[async_trait]
-pub trait ZcashService: Sized {
+pub trait ZcashService: Sized + Status {
     /// Backend type. Read state or fetch service.
     const BACKEND_TYPE: BackendType;
 
@@ -97,9 +100,6 @@ pub trait ZcashService: Sized {
 
     /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
-
-    /// Returns the current status.
-    fn status(&self) -> StatusType;
 
     /// Shuts down the StateService.
     fn close(&mut self);
