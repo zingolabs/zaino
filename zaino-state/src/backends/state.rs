@@ -352,6 +352,12 @@ pub struct StateServiceSubscriber {
     pub data: ServiceMetadata,
 }
 
+impl Status for StateServiceSubscriber {
+    fn status(&self) -> StatusType {
+        self.indexer.status()
+    }
+}
+
 /// A subscriber to any chaintip updates
 #[derive(Clone)]
 pub struct ChainTipSubscriber {

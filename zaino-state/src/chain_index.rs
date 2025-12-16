@@ -15,6 +15,7 @@ use crate::chain_index::non_finalised_state::BestTip;
 use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
+use crate::status::Status;
 use crate::{AtomicStatus, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
@@ -571,8 +572,8 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
-    /// Displays the status of the chain_index
-    pub fn status(&self) -> StatusType {
+    /// Returns the combined status of all chain index components.
+    pub fn combined_status(&self) -> StatusType {
         let finalized_status = self.finalized_state.status();
         let mempool_status = self.mempool.status();
         let combined_status = self
@@ -638,6 +639,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 }
                 .into_iter(),
             ))
+    }
+}
+
+impl<Source: BlockchainSource> Status for NodeBackedChainIndexSubscriber<Source> {
+    fn status(&self) -> StatusType {
+        self.combined_status()
     }
 }
 

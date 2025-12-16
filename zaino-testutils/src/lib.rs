@@ -18,6 +18,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use zaino_common::{
     network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
+    probing::Readiness,
     validator::ValidatorConfig,
     CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
@@ -61,6 +62,28 @@ pub fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
     format!("http://127.0.0.1:{indexer_port}")
         .try_into()
         .unwrap()
+}
+
+/// Polls until the given component reports ready.
+///
+/// Returns `true` if the component became ready within the timeout,
+/// `false` if the timeout was reached.
+pub async fn poll_until_ready(
+    component: &impl Readiness,
+    poll_interval: std::time::Duration,
+    timeout: std::time::Duration,
+) -> bool {
+    tokio::time::timeout(timeout, async {
+        let mut interval = tokio::time::interval(poll_interval);
+        loop {
+            interval.tick().await;
+            if component.is_ready() {
+                return;
+            }
+        }
+    })
+    .await
+    .is_ok()
 }
 
 // temporary until activation heights are unified to zebra-chain type.
@@ -457,8 +480,15 @@ where
             test_manager.local_net.generate_blocks(1).await.unwrap();
         }
 
-        // FIXME: zaino's status can still be syncing instead of ready at this point
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // Wait for zaino to be ready to serve requests
+        if let Some(ref subscriber) = test_manager.service_subscriber {
+            poll_until_ready(
+                subscriber,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+        }
 
         Ok(test_manager)
     }

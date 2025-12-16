@@ -10,7 +10,7 @@ use zaino_proto::proto::service::{
 use zaino_state::ChainIndex;
 use zaino_state::FetchServiceSubscriber;
 #[allow(deprecated)]
-use zaino_state::{FetchService, LightWalletIndexer, StatusType, ZcashIndexer};
+use zaino_state::{FetchService, LightWalletIndexer, Status, StatusType, ZcashIndexer};
 use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;

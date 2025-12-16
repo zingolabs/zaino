@@ -89,7 +89,7 @@ pub trait ZcashService: Sized + Status {
     const BACKEND_TYPE: BackendType;
 
     /// A subscriber to the service, used to fetch chain data.
-    type Subscriber: Clone + ZcashIndexer + LightWalletIndexer;
+    type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + Status;
 
     /// Service Config.
     type Config: Clone;

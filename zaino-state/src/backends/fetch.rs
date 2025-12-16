@@ -191,9 +191,16 @@ pub struct FetchServiceSubscriber {
     config: FetchServiceConfig,
 }
 
+impl Status for FetchServiceSubscriber {
+    fn status(&self) -> StatusType {
+        self.indexer.status()
+    }
+}
+
 impl FetchServiceSubscriber {
     /// Fetches the current status
-    pub fn status(&self) -> StatusType {
+    #[deprecated(note = "Use the Status trait method instead")]
+    pub fn get_status(&self) -> StatusType {
         self.indexer.status()
     }
 
