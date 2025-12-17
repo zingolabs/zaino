@@ -697,7 +697,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
-        dbg!(&tip);
+        // dbg!(&tip);
 
         Ok(BlockId {
             height: tip.height.0 as u64,
