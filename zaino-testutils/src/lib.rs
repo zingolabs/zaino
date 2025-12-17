@@ -77,7 +77,7 @@ pub async fn poll_until_ready(
         let mut interval = tokio::time::interval(poll_interval);
         loop {
             interval.tick().await;
-            if component.is_ready() {
+            if dbg!(component.is_ready()) {
                 return;
             }
         }
@@ -535,11 +535,13 @@ where
     }
 
     /// Generate `n` blocks for the local network and poll zaino's fetch/state subscriber until the chain index is synced to the target height.
-    pub async fn generate_blocks_and_poll_indexer(
+    pub async fn generate_blocks_and_poll_indexer<I>(
         &self,
         n: u32,
-        indexer: &impl LightWalletIndexer,
-    ) {
+        indexer: &I,
+    ) where
+        I: LightWalletIndexer + Readiness,
+    {
         let chain_height = self.local_net.get_chain_height().await;
         let mut next_block_height = u64::from(chain_height) + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
@@ -561,6 +563,24 @@ where
                     interval.tick().await;
                 }
                 next_block_height += 1;
+            }
+        }
+
+        // After height is reached, wait for readiness and measure if it adds time
+        if !indexer.is_ready() {
+            let start = std::time::Instant::now();
+            poll_until_ready(
+                indexer,
+                std::time::Duration::from_millis(50),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            let elapsed = start.elapsed();
+            if elapsed.as_millis() > 0 {
+                info!(
+                    "Readiness wait after height poll took {:?} (height polling alone was insufficient)",
+                    elapsed
+                );
             }
         }
     }
@@ -597,6 +617,24 @@ where
                     interval.tick().await;
                 }
                 next_block_height += 1;
+            }
+        }
+
+        // After height is reached, wait for readiness and measure if it adds time
+        if !chain_index.is_ready() {
+            let start = std::time::Instant::now();
+            poll_until_ready(
+                chain_index,
+                std::time::Duration::from_millis(50),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            let elapsed = start.elapsed();
+            if elapsed.as_millis() > 0 {
+                info!(
+                    "Readiness wait after height poll took {:?} (height polling alone was insufficient)",
+                    elapsed
+                );
             }
         }
     }
