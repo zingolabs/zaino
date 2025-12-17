@@ -1867,17 +1867,10 @@ impl ZcashIndexer for StateServiceSubscriber {
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let mut state = self.read_state_service.clone();
-        let response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::Tip))
-            .await?;
-        let (chain_height, chain_hash) = expected_read_response!(response, Tip).ok_or(
-            RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
-        )?;
+        let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
         Ok(BlockId {
-            height: chain_height.as_usize() as u64,
-            hash: chain_hash.0.to_vec(),
+            height: tip.height.0 as u64,
+            hash: tip.blockhash.0.to_vec(),
         })
     }
 
