@@ -248,6 +248,48 @@ pub struct GetAddressUtxosReplyList {
     #[prost(message, repeated, tag = "1")]
     pub address_utxos: ::prost::alloc::vec::Vec<GetAddressUtxosReply>,
 }
+/// Request for paginated transparent address transaction lookup.
+/// Results are sorted by height, enabling cursor-based pagination.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetTaddressTxidsPaginatedArg {
+    /// t-address to query
+    #[prost(string, tag = "1")]
+    pub address: ::prost::alloc::string::String,
+    /// Start height (inclusive), 0 = genesis
+    #[prost(uint64, tag = "2")]
+    pub start_height: u64,
+    /// End height (inclusive), 0 = chain tip
+    #[prost(uint64, tag = "3")]
+    pub end_height: u64,
+    /// Max transactions to return, 0 = unlimited
+    #[prost(uint32, tag = "4")]
+    pub max_entries: u32,
+    /// If true, return newest transactions first
+    #[prost(bool, tag = "5")]
+    pub reverse: bool,
+}
+/// Response for paginated transparent address transaction lookup.
+/// The first response in the stream includes total_count; subsequent responses have 0.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaginatedTxidsResponse {
+    /// The transaction data
+    #[prost(message, optional, tag = "1")]
+    pub transaction: ::core::option::Option<RawTransaction>,
+    /// Height where tx was mined (for cursor)
+    #[prost(uint64, tag = "2")]
+    pub block_height: u64,
+    /// Index within block
+    #[prost(uint32, tag = "3")]
+    pub tx_index: u32,
+    /// Total transactions matching query (only in first response)
+    #[prost(uint64, tag = "4")]
+    pub total_count: u64,
+    /// Transaction ID (32 bytes, little-endian)
+    #[prost(bytes = "vec", tag = "5")]
+    pub txid: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ShieldedProtocol {
@@ -546,6 +588,32 @@ pub mod compact_tx_streamer_client {
             req.extensions_mut().insert(GrpcMethod::new(
                 "cash.z.wallet.sdk.rpc.CompactTxStreamer",
                 "GetTaddressTxids",
+            ));
+            self.inner.server_streaming(req, path, codec).await
+        }
+        /// Return paginated transactions for a t-address within a block range.
+        /// Supports limiting results, reverse ordering, and includes total count for pagination UI.
+        pub async fn get_taddress_txids_paginated(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetTaddressTxidsPaginatedArg>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::PaginatedTxidsResponse>>,
+            tonic::Status,
+        > {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTxidsPaginated",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "cash.z.wallet.sdk.rpc.CompactTxStreamer",
+                "GetTaddressTxidsPaginated",
             ));
             self.inner.server_streaming(req, path, codec).await
         }
@@ -888,6 +956,20 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::TransparentAddressBlockFilter>,
         ) -> std::result::Result<tonic::Response<Self::GetTaddressTxidsStream>, tonic::Status>;
+        /// Server streaming response type for the GetTaddressTxidsPaginated method.
+        type GetTaddressTxidsPaginatedStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::PaginatedTxidsResponse, tonic::Status>,
+            > + Send
+            + 'static;
+        /// Return paginated transactions for a t-address within a block range.
+        /// Supports limiting results, reverse ordering, and includes total count for pagination UI.
+        async fn get_taddress_txids_paginated(
+            &self,
+            request: tonic::Request<super::GetTaddressTxidsPaginatedArg>,
+        ) -> std::result::Result<
+            tonic::Response<Self::GetTaddressTxidsPaginatedStream>,
+            tonic::Status,
+        >;
         async fn get_taddress_balance(
             &self,
             request: tonic::Request<super::AddressList>,
@@ -1376,6 +1458,54 @@ pub mod compact_tx_streamer_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = GetTaddressTxidsSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTxidsPaginated" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetTaddressTxidsPaginatedSvc<T: CompactTxStreamer>(pub Arc<T>);
+                    impl<T: CompactTxStreamer>
+                        tonic::server::ServerStreamingService<super::GetTaddressTxidsPaginatedArg>
+                        for GetTaddressTxidsPaginatedSvc<T>
+                    {
+                        type Response = super::PaginatedTxidsResponse;
+                        type ResponseStream = T::GetTaddressTxidsPaginatedStream;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetTaddressTxidsPaginatedArg>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as CompactTxStreamer>::get_taddress_txids_paginated(
+                                    &inner, request,
+                                )
+                                .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = GetTaddressTxidsPaginatedSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -3,7 +3,7 @@
 use tokio_stream::wrappers::ReceiverStream;
 use zaino_proto::proto::{
     compact_formats::{CompactBlock, CompactTx},
-    service::{Address, GetAddressUtxosReply, RawTransaction, SubtreeRoot},
+    service::{Address, GetAddressUtxosReply, PaginatedTxidsResponse, RawTransaction, SubtreeRoot},
 };
 
 /// Stream of RawTransactions, output type of get_taddress_txids.
@@ -187,6 +187,41 @@ impl futures::Stream for AddressStream {
         let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
         match poll {
             std::task::Poll::Ready(Some(Ok(address))) => std::task::Poll::Ready(Some(Ok(address))),
+            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+/// Stream of PaginatedTxidsResponse, output type of get_taddress_txids_paginated.
+pub struct PaginatedTxidsStream {
+    inner: ReceiverStream<Result<PaginatedTxidsResponse, tonic::Status>>,
+}
+
+impl PaginatedTxidsStream {
+    /// Returns new instance of PaginatedTxidsStream.
+    pub fn new(
+        rx: tokio::sync::mpsc::Receiver<Result<PaginatedTxidsResponse, tonic::Status>>,
+    ) -> Self {
+        PaginatedTxidsStream {
+            inner: ReceiverStream::new(rx),
+        }
+    }
+}
+
+impl futures::Stream for PaginatedTxidsStream {
+    type Item = Result<PaginatedTxidsResponse, tonic::Status>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
+        match poll {
+            std::task::Poll::Ready(Some(Ok(response))) => {
+                std::task::Poll::Ready(Some(Ok(response)))
+            }
             std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
             std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
             std::task::Poll::Pending => std::task::Poll::Pending,

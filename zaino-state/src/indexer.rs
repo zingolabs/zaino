@@ -17,9 +17,9 @@ use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
         AddressList, Balance, BlockId, BlockRange, Duration, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, ShieldedProtocol, SubtreeRoot, TransparentAddressBlockFilter, TreeState,
-        TxFilter,
+        GetAddressUtxosReplyList, GetSubtreeRootsArg, GetTaddressTxidsPaginatedArg, LightdInfo,
+        PingResponse, RawTransaction, SendResponse, ShieldedProtocol, SubtreeRoot,
+        TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
 use zebra_chain::{
@@ -37,8 +37,8 @@ use zebra_rpc::{
 use crate::{
     status::StatusType,
     stream::{
-        AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-        SubtreeRootReplyStream, UtxoReplyStream,
+        AddressStream, CompactBlockStream, CompactTransactionStream, PaginatedTxidsStream,
+        RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
     },
     BackendType,
 };
@@ -608,6 +608,13 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         &self,
         request: TransparentAddressBlockFilter,
     ) -> Result<RawTransactionStream, Self::Error>;
+
+    /// Return paginated transactions for a t-address within a block range.
+    /// Supports limiting results, reverse ordering, and includes total count for pagination UI.
+    async fn get_taddress_txids_paginated(
+        &self,
+        request: GetTaddressTxidsPaginatedArg,
+    ) -> Result<PaginatedTxidsStream, Self::Error>;
 
     /// Returns the total balance for a list of taddrs
     async fn get_taddress_balance(&self, request: AddressList) -> Result<Balance, Self::Error>;

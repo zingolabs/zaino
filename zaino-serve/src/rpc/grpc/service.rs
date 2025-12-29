@@ -9,13 +9,15 @@ use zaino_proto::proto::{
     service::{
         compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
         BlockRange, ChainSpec, Duration, Empty, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
+        GetAddressUtxosReplyList, GetSubtreeRootsArg, GetTaddressTxidsPaginatedArg, LightdInfo,
+        PingResponse, RawTransaction, SendResponse, TransparentAddressBlockFilter, TreeState,
+        TxFilter,
     },
 };
 use zaino_state::{
     AddressStream, CompactBlockStream, CompactTransactionStream, LightWalletIndexer,
-    RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream, ZcashIndexer,
+    PaginatedTxidsStream, RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
+    ZcashIndexer,
 };
 
 /// A helper macro invoked by implement_client_methods, as the
@@ -144,6 +146,9 @@ where
         send_transaction(RawTransaction) -> SendResponse,
         "This name is misleading, returns the full transactions that have either inputs or outputs connected to the given transparent address."
         get_taddress_txids(TransparentAddressBlockFilter) -> Self::GetTaddressTxidsStream as streaming,
+        "Return paginated transactions for a t-address within a block range. \
+        Supports limiting results, reverse ordering, and includes total count for pagination UI."
+        get_taddress_txids_paginated(GetTaddressTxidsPaginatedArg) -> Self::GetTaddressTxidsPaginatedStream as streaming,
         "Returns the total balance for a list of taddrs"
         get_taddress_balance(AddressList) -> Balance,
         "Return the compact transactions currently in the mempool; the results \
@@ -202,6 +207,10 @@ where
     /// Server streaming response type for the GetTaddressTxids method.
     #[doc = "Server streaming response type for the GetTaddressTxids method."]
     type GetTaddressTxidsStream = std::pin::Pin<Box<RawTransactionStream>>;
+
+    /// Server streaming response type for the GetTaddressTxidsPaginated method.
+    #[doc = "Server streaming response type for the GetTaddressTxidsPaginated method."]
+    type GetTaddressTxidsPaginatedStream = std::pin::Pin<Box<PaginatedTxidsStream>>;
 
     /// Returns the total balance for a list of taddrs
     #[allow(clippy::type_complexity, clippy::type_repetition_in_bounds)]

@@ -1827,7 +1827,8 @@ mod zebra {
     pub(crate) mod lightwallet_indexer {
         use futures::StreamExt as _;
         use zaino_proto::proto::service::{
-            AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetSubtreeRootsArg, TxFilter,
+            AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetSubtreeRootsArg,
+            GetTaddressTxidsPaginatedArg, TxFilter,
         };
         use zebra_rpc::methods::{GetAddressTxIdsRequest, GetBlock};
 
@@ -2274,6 +2275,249 @@ mod zebra {
                 .unwrap();
             dbg!(&fetch_service_taddress_txids);
             assert_eq!(fetch_service_taddress_txids, state_service_taddress_txids);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_taddress_txids_paginated() {
+            let (
+                mut test_manager,
+                _fetch_service,
+                fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services::<Zebrad>(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                true,
+                Some(NetworkKind::Regtest),
+            )
+            .await;
+
+            let mut clients = test_manager
+                .clients
+                .take()
+                .expect("Clients are not initialized");
+            let recipient_taddr = clients.get_recipient_address("transparent").await;
+
+            clients.faucet.sync_and_await().await.unwrap();
+
+            generate_blocks_and_poll_all_chain_indexes(
+                100,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+            clients.faucet.sync_and_await().await.unwrap();
+            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+            clients.faucet.sync_and_await().await.unwrap();
+
+            // Send 2 transactions to test pagination
+            let tx1 = zaino_testutils::from_inputs::quick_send(
+                &mut clients.faucet,
+                vec![(&recipient_taddr, 250_000, None)],
+            )
+            .await
+            .unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+            clients.faucet.sync_and_await().await.unwrap();
+
+            let tx2 = zaino_testutils::from_inputs::quick_send(
+                &mut clients.faucet,
+                vec![(&recipient_taddr, 250_000, None)],
+            )
+            .await
+            .unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+
+            let chain_height = fetch_service_subscriber
+                .block_cache
+                .get_chain_height()
+                .await
+                .unwrap()
+                .0;
+            dbg!(&chain_height);
+
+            // Test 1: Basic paginated request - compare both services
+            let paginated_arg = GetTaddressTxidsPaginatedArg {
+                address: recipient_taddr.clone(),
+                start_height: 0,
+                end_height: chain_height as u64,
+                max_entries: 0,
+                reverse: false,
+            };
+
+            let fetch_service_stream = fetch_service_subscriber
+                .get_taddress_txids_paginated(paginated_arg.clone())
+                .await
+                .unwrap();
+            let fetch_service_tx: Vec<_> = fetch_service_stream.map(Result::unwrap).collect().await;
+
+            let state_service_stream = state_service_subscriber
+                .get_taddress_txids_paginated(paginated_arg.clone())
+                .await
+                .unwrap();
+            let state_service_tx: Vec<_> = state_service_stream.map(Result::unwrap).collect().await;
+
+            dbg!(&fetch_service_tx);
+            dbg!(&state_service_tx);
+
+            // Compare the results from both services
+            assert_eq!(
+                fetch_service_tx.len(),
+                state_service_tx.len(),
+                "FetchService and StateService should return the same number of transactions"
+            );
+            assert!(
+                fetch_service_tx.len() >= 2,
+                "Should have at least 2 transactions"
+            );
+
+            // Compare each transaction
+            for (fetch_tx, state_tx) in fetch_service_tx.iter().zip(state_service_tx.iter()) {
+                assert_eq!(fetch_tx.txid, state_tx.txid, "Transaction IDs should match");
+                assert_eq!(
+                    fetch_tx.block_height, state_tx.block_height,
+                    "Block heights should match"
+                );
+            }
+
+            // Verify the transactions match what we sent
+            let fetch_txids: Vec<_> = fetch_service_tx.iter().map(|t| t.txid.clone()).collect();
+            assert!(
+                fetch_txids.contains(&tx1.first().as_ref().to_vec()),
+                "Should contain tx1"
+            );
+            assert!(
+                fetch_txids.contains(&tx2.first().as_ref().to_vec()),
+                "Should contain tx2"
+            );
+
+            // Test 2: Test with max_entries limit
+            let paginated_arg_limited = GetTaddressTxidsPaginatedArg {
+                address: recipient_taddr.clone(),
+                start_height: 0,
+                end_height: chain_height as u64,
+                max_entries: 1,
+                reverse: false,
+            };
+
+            let fetch_service_stream_limited = fetch_service_subscriber
+                .get_taddress_txids_paginated(paginated_arg_limited.clone())
+                .await
+                .unwrap();
+            let fetch_service_tx_limited: Vec<_> = fetch_service_stream_limited
+                .map(Result::unwrap)
+                .collect()
+                .await;
+
+            let state_service_stream_limited = state_service_subscriber
+                .get_taddress_txids_paginated(paginated_arg_limited.clone())
+                .await
+                .unwrap();
+            let state_service_tx_limited: Vec<_> = state_service_stream_limited
+                .map(Result::unwrap)
+                .collect()
+                .await;
+
+            assert_eq!(
+                fetch_service_tx_limited.len(),
+                state_service_tx_limited.len(),
+                "Both services should return the same number of limited results"
+            );
+            assert_eq!(
+                fetch_service_tx_limited.len(),
+                1,
+                "max_entries=1 should limit results to 1"
+            );
+
+            // Test 3: Test with reverse=true
+            let paginated_arg_reverse = GetTaddressTxidsPaginatedArg {
+                address: recipient_taddr.clone(),
+                start_height: 0,
+                end_height: chain_height as u64,
+                max_entries: 0,
+                reverse: true,
+            };
+
+            let fetch_service_stream_reverse = fetch_service_subscriber
+                .get_taddress_txids_paginated(paginated_arg_reverse.clone())
+                .await
+                .unwrap();
+            let fetch_service_tx_reverse: Vec<_> = fetch_service_stream_reverse
+                .map(Result::unwrap)
+                .collect()
+                .await;
+
+            let state_service_stream_reverse = state_service_subscriber
+                .get_taddress_txids_paginated(paginated_arg_reverse.clone())
+                .await
+                .unwrap();
+            let state_service_tx_reverse: Vec<_> = state_service_stream_reverse
+                .map(Result::unwrap)
+                .collect()
+                .await;
+
+            dbg!(&fetch_service_tx_reverse);
+            dbg!(&state_service_tx_reverse);
+
+            // Compare reversed results from both services
+            assert_eq!(
+                fetch_service_tx_reverse.len(),
+                state_service_tx_reverse.len(),
+                "Both services should return the same number of reversed results"
+            );
+
+            for (fetch_tx, state_tx) in fetch_service_tx_reverse
+                .iter()
+                .zip(state_service_tx_reverse.iter())
+            {
+                assert_eq!(
+                    fetch_tx.txid, state_tx.txid,
+                    "Reversed transaction IDs should match"
+                );
+                assert_eq!(
+                    fetch_tx.block_height, state_tx.block_height,
+                    "Reversed block heights should match"
+                );
+            }
+
+            // Verify reverse order: newest (tx2) should be first
+            assert_eq!(
+                fetch_service_tx_reverse[0].txid,
+                tx2.first().as_ref().to_vec(),
+                "reverse=true should return newest transaction first"
+            );
+
+            // Compare total_count between services (first response should have it)
+            if !fetch_service_tx.is_empty() && !state_service_tx.is_empty() {
+                assert_eq!(
+                    fetch_service_tx[0].total_count, state_service_tx[0].total_count,
+                    "total_count should match between services"
+                );
+            }
+
+            test_manager.close().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]

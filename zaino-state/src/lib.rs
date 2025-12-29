@@ -84,8 +84,8 @@ pub use status::{AtomicStatus, StatusType};
 pub(crate) mod stream;
 
 pub use stream::{
-    AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-    SubtreeRootReplyStream, UtxoReplyStream,
+    AddressStream, CompactBlockStream, CompactTransactionStream, PaginatedTxidsStream,
+    RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
 };
 
 pub(crate) mod broadcast;

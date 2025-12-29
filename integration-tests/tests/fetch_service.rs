@@ -4,7 +4,7 @@ use futures::StreamExt as _;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, Exclude, GetAddressUtxosArg, GetSubtreeRootsArg,
-    TransparentAddressBlockFilter, TxFilter,
+    GetTaddressTxidsPaginatedArg, TransparentAddressBlockFilter, TxFilter,
 };
 use zaino_state::FetchServiceSubscriber;
 #[allow(deprecated)]
@@ -1284,6 +1284,210 @@ async fn fetch_service_get_taddress_txids<V: ValidatorExt>(validator: &Validator
 }
 
 #[allow(deprecated)]
+async fn fetch_service_get_taddress_txids_paginated<V: ValidatorExt>(validator: &ValidatorKind) {
+    let mut test_manager =
+        TestManager::<V, FetchService>::launch(validator, None, None, None, true, false, true)
+            .await
+            .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    let recipient_taddr = clients.get_recipient_address("transparent").await;
+
+    clients.faucet.sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        test_manager
+            .generate_blocks_and_poll_indexer(100, &fetch_service_subscriber)
+            .await;
+        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        test_manager
+            .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+            .await;
+        clients.faucet.sync_and_await().await.unwrap();
+    };
+
+    // Send 3 transactions to test pagination
+    let tx1 = zaino_testutils::from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(&recipient_taddr, 250_000, None)],
+    )
+    .await
+    .unwrap();
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
+    clients.faucet.sync_and_await().await.unwrap();
+
+    let tx2 = zaino_testutils::from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(&recipient_taddr, 250_000, None)],
+    )
+    .await
+    .unwrap();
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
+    clients.faucet.sync_and_await().await.unwrap();
+
+    let tx3 = zaino_testutils::from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(&recipient_taddr, 250_000, None)],
+    )
+    .await
+    .unwrap();
+    test_manager
+        .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
+        .await;
+
+    let chain_height = fetch_service_subscriber
+        .block_cache
+        .get_chain_height()
+        .await
+        .unwrap()
+        .0;
+    dbg!(&chain_height);
+
+    // Test 1: max_entries=2 limits results
+    let paginated_arg = GetTaddressTxidsPaginatedArg {
+        address: recipient_taddr.clone(),
+        start_height: 0,
+        end_height: chain_height as u64,
+        max_entries: 2,
+        reverse: false,
+    };
+
+    let fetch_service_stream = fetch_service_subscriber
+        .get_taddress_txids_paginated(paginated_arg.clone())
+        .await
+        .unwrap();
+    let fetch_service_tx: Vec<_> = fetch_service_stream.collect().await;
+
+    let fetch_tx: Vec<_> = fetch_service_tx
+        .into_iter()
+        .filter_map(|result| result.ok())
+        .collect();
+
+    dbg!(&fetch_tx);
+    assert_eq!(fetch_tx.len(), 2, "max_entries=2 should limit results to 2");
+
+    // Test 2: total_count is set only in first response (>= 3 on first, 0 on rest)
+    assert!(
+        fetch_tx[0].total_count >= 3,
+        "First response should have total_count >= 3, got {}",
+        fetch_tx[0].total_count
+    );
+    assert_eq!(
+        fetch_tx[1].total_count, 0,
+        "Subsequent responses should have total_count = 0"
+    );
+
+    // Test 3: reverse=true returns newest first
+    let paginated_arg_reverse = GetTaddressTxidsPaginatedArg {
+        address: recipient_taddr.clone(),
+        start_height: 0,
+        end_height: chain_height as u64,
+        max_entries: 0,
+        reverse: true,
+    };
+
+    let fetch_service_stream_reverse = fetch_service_subscriber
+        .get_taddress_txids_paginated(paginated_arg_reverse.clone())
+        .await
+        .unwrap();
+    let fetch_service_tx_reverse: Vec<_> = fetch_service_stream_reverse.collect().await;
+
+    let fetch_tx_reverse: Vec<_> = fetch_service_tx_reverse
+        .into_iter()
+        .filter_map(|result| result.ok())
+        .collect();
+
+    dbg!(&fetch_tx_reverse);
+
+    // Verify reverse order - newest (tx3) should be first
+    assert_eq!(
+        fetch_tx_reverse[0].txid,
+        tx3.first().as_ref().to_vec(),
+        "reverse=true should return newest transaction first"
+    );
+    assert_eq!(
+        fetch_tx_reverse[2].txid,
+        tx1.first().as_ref().to_vec(),
+        "reverse=true should return oldest transaction last"
+    );
+
+    // Test 4: Compare with non-paginated get_taddress_txids when unlimited
+    let paginated_arg_unlimited = GetTaddressTxidsPaginatedArg {
+        address: recipient_taddr.clone(),
+        start_height: 0,
+        end_height: chain_height as u64,
+        max_entries: 0,
+        reverse: false,
+    };
+
+    let fetch_service_stream_unlimited = fetch_service_subscriber
+        .get_taddress_txids_paginated(paginated_arg_unlimited.clone())
+        .await
+        .unwrap();
+    let fetch_service_tx_unlimited: Vec<_> = fetch_service_stream_unlimited.collect().await;
+
+    let fetch_tx_unlimited: Vec<_> = fetch_service_tx_unlimited
+        .into_iter()
+        .filter_map(|result| result.ok())
+        .collect();
+
+    let block_filter = TransparentAddressBlockFilter {
+        address: recipient_taddr,
+        range: Some(BlockRange {
+            start: Some(BlockId {
+                height: 0,
+                hash: Vec::new(),
+            }),
+            end: Some(BlockId {
+                height: chain_height as u64,
+                hash: Vec::new(),
+            }),
+        }),
+    };
+
+    let fetch_service_stream_non_paginated = fetch_service_subscriber
+        .get_taddress_txids(block_filter.clone())
+        .await
+        .unwrap();
+    let fetch_service_tx_non_paginated: Vec<_> = fetch_service_stream_non_paginated.collect().await;
+
+    let fetch_tx_non_paginated: Vec<_> = fetch_service_tx_non_paginated
+        .into_iter()
+        .filter_map(|result| result.ok())
+        .collect();
+
+    // Compare transactions from paginated and non-paginated endpoints
+    assert_eq!(
+        fetch_tx_unlimited.len(),
+        fetch_tx_non_paginated.len(),
+        "Paginated (unlimited) and non-paginated should return same number of transactions"
+    );
+
+    // Verify the transactions match
+    for (paginated, non_paginated) in fetch_tx_unlimited.iter().zip(fetch_tx_non_paginated.iter()) {
+        assert_eq!(
+            paginated.transaction.as_ref().map(|t| &t.data),
+            Some(&non_paginated.data),
+            "Transaction data should match between paginated and non-paginated"
+        );
+    }
+
+    dbg!(tx1, tx2, tx3);
+
+    test_manager.close().await;
+}
+
+#[allow(deprecated)]
 async fn fetch_service_get_taddress_balance<V: ValidatorExt>(validator: &ValidatorKind) {
     let mut test_manager =
         TestManager::<V, FetchService>::launch(validator, None, None, None, true, false, true)
@@ -1984,6 +2188,11 @@ mod zcashd {
         }
 
         #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn taddress_txids_paginated() {
+            fetch_service_get_taddress_txids_paginated::<Zcashd>(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_balance() {
             fetch_service_get_taddress_balance::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
@@ -2202,6 +2411,11 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn taddress_txids() {
             fetch_service_get_taddress_txids::<Zebrad>(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn taddress_txids_paginated() {
+            fetch_service_get_taddress_txids_paginated::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]

@@ -178,6 +178,26 @@ message GetAddressUtxosReplyList {
     repeated GetAddressUtxosReply addressUtxos = 1;
 }
 
+// Request for paginated transparent address transaction lookup.
+// Results are sorted by height, enabling cursor-based pagination.
+message GetTaddressTxidsPaginatedArg {
+    string address = 1;           // t-address to query
+    uint64 startHeight = 2;       // Start height (inclusive), 0 = genesis
+    uint64 endHeight = 3;         // End height (inclusive), 0 = chain tip
+    uint32 maxEntries = 4;        // Max transactions to return, 0 = unlimited
+    bool reverse = 5;             // If true, return newest transactions first
+}
+
+// Response for paginated transparent address transaction lookup.
+// The first response in the stream includes totalCount; subsequent responses have 0.
+message PaginatedTxidsResponse {
+    RawTransaction transaction = 1;  // The transaction data
+    uint64 blockHeight = 2;          // Height where tx was mined (for cursor)
+    uint32 txIndex = 3;              // Index within block
+    uint64 totalCount = 4;           // Total transactions matching query (only in first response)
+    bytes txid = 5;                  // Transaction ID (32 bytes, little-endian)
+}
+
 service CompactTxStreamer {
     // Return the BlockID of the block at the tip of the best chain
     rpc GetLatestBlock(ChainSpec) returns (BlockID) {}
@@ -202,6 +222,10 @@ service CompactTxStreamer {
 
     // Return the transactions corresponding to the given t-address within the given block range
     rpc GetTaddressTransactions(TransparentAddressBlockFilter) returns (stream RawTransaction) {}
+
+    // Return paginated transactions for a t-address within a block range.
+    // Supports limiting results, reverse ordering, and includes total count for pagination UI.
+    rpc GetTaddressTxidsPaginated(GetTaddressTxidsPaginatedArg) returns (stream PaginatedTxidsResponse) {}
 
     rpc GetTaddressBalance(AddressList) returns (Balance) {}
     rpc GetTaddressBalanceStream(stream Address) returns (Balance) {}

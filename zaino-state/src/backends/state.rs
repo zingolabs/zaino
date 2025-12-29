@@ -14,8 +14,8 @@ use crate::{
     local_cache::{compact_block_to_nullifiers, BlockCache, BlockCacheSubscriber},
     status::{AtomicStatus, StatusType},
     stream::{
-        AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-        UtxoReplyStream,
+        AddressStream, CompactBlockStream, CompactTransactionStream, PaginatedTxidsStream,
+        RawTransactionStream, UtxoReplyStream,
     },
     utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
     BackendType, MempoolKey,
@@ -42,8 +42,9 @@ use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
         AddressList, Balance, BlockId, BlockRange, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReply, GetAddressUtxosReplyList, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
+        GetAddressUtxosReply, GetAddressUtxosReplyList, GetTaddressTxidsPaginatedArg, LightdInfo,
+        PaginatedTxidsResponse, PingResponse, RawTransaction, SendResponse,
+        TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
 
@@ -2082,6 +2083,115 @@ impl LightWalletIndexer for StateServiceSubscriber {
             }
         });
         Ok(RawTransactionStream::new(receiver))
+    }
+
+    /// Return paginated transactions for a t-address within a block range.
+    /// Supports limiting results, reverse ordering, and includes total count for pagination UI.
+    async fn get_taddress_txids_paginated(
+        &self,
+        request: GetTaddressTxidsPaginatedArg,
+    ) -> Result<PaginatedTxidsStream, Self::Error> {
+        let chain_height = self.chain_height().await?;
+
+        // Normalize heights
+        let start = if request.start_height == 0 {
+            0u32
+        } else {
+            (request.start_height as u32).min(chain_height.0)
+        };
+        let end = if request.end_height == 0 {
+            chain_height.0
+        } else {
+            (request.end_height as u32).min(chain_height.0)
+        };
+
+        // Get all txids in the range
+        let txids = self
+            .get_address_tx_ids(GetAddressTxIdsRequest::new(
+                vec![request.address.clone()],
+                Some(start),
+                Some(end),
+            ))
+            .await?;
+
+        // Store total count before any filtering
+        let total_count = txids.len() as u64;
+
+        // Apply reverse if requested
+        let txids: Vec<String> = if request.reverse {
+            txids.into_iter().rev().collect()
+        } else {
+            txids
+        };
+
+        // Apply max_entries limit
+        let txids: Vec<String> = if request.max_entries > 0 {
+            txids
+                .into_iter()
+                .take(request.max_entries as usize)
+                .collect()
+        } else {
+            txids
+        };
+
+        let service_clone = self.clone();
+        let service_timeout = self.config.service.timeout;
+        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
+
+        tokio::spawn(async move {
+            let timeout_result = timeout(
+                std::time::Duration::from_secs((service_timeout * 4) as u64),
+                async {
+                    let mut is_first = true;
+                    for txid in txids {
+                        let txid_bytes = hex::decode(&txid).unwrap_or_default();
+                        let transaction = service_clone.get_raw_transaction(txid, Some(1)).await;
+                        match transaction {
+                            Ok(GetRawTransaction::Object(tx_obj)) => {
+                                let height = tx_obj.height().unwrap_or(0);
+                                let response = PaginatedTxidsResponse {
+                                    transaction: Some(RawTransaction {
+                                        data: tx_obj.hex().as_ref().to_vec(),
+                                        height: height as u64,
+                                    }),
+                                    block_height: height as u64,
+                                    tx_index: 0,
+                                    total_count: if is_first { total_count } else { 0 },
+                                    txid: txid_bytes,
+                                };
+                                is_first = false;
+                                if transmitter.send(Ok(response)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(GetRawTransaction::Raw(_)) => {
+                                continue;
+                            }
+                            Err(e) => {
+                                let _ = transmitter
+                                    .send(Err(tonic::Status::internal(format!(
+                                        "Error fetching transaction: {}",
+                                        e
+                                    ))))
+                                    .await;
+                                break;
+                            }
+                        }
+                    }
+                },
+            )
+            .await;
+            if timeout_result.is_err() {
+                transmitter
+                    .send(Err(tonic::Status::deadline_exceeded(
+                        "Error: get_taddress_txids_paginated gRPC request timed out",
+                    )))
+                    .await
+                    .ok();
+            }
+        });
+
+        Ok(PaginatedTxidsStream::new(receiver))
     }
 
     /// Returns the total balance for a list of taddrs

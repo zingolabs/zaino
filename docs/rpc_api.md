@@ -9,6 +9,7 @@ Zaino Currently Serves the following gRPC services as defined in the [LightWalle
   - GetTransaction (TxFilter) returns (RawTransaction)
   - SendTransaction (RawTransaction) returns (SendResponse)
   - GetTaddressTxids (TransparentAddressBlockFilter) returns (stream RawTransaction)
+  - GetTaddressTxidsPaginated (GetTaddressTxidsPaginatedArg) returns (stream PaginatedTxidsResponse) - **Zaino Extension**, see [paginated-taddress-txids.md](./paginated-taddress-txids.md)
   - GetTaddressBalance (AddressList) returns (Balance)
   - GetTaddressBalanceStream (stream Address) returns (Balance) (**MARKED FOR DEPRECATION**)
   - GetMempoolTx (Exclude) returns (stream CompactTx)
