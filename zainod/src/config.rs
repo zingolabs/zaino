@@ -294,7 +294,7 @@ pub fn load_config(file_path: &PathBuf) -> Result<ZainodConfig, IndexerError> {
         // 2. Override with values from the TOML configuration file.
         .merge(Toml::file(file_path))
         // 3. Override with values from environment variables prefixed with "ZAINO_".
-        .merge(figment::providers::Env::prefixed("ZAINO_").split("-"));
+        .merge(figment::providers::Env::prefixed("ZAINO_").split("__"));
 
     match figment.extract::<ZainodConfig>() {
         Ok(mut parsed_config) => {
@@ -902,11 +902,11 @@ mod test {
             )?;
             jail.set_env("ZAINO_NETWORK", "Mainnet");
             jail.set_env(
-                "ZAINO_JSON_SERVER_SETTINGS-JSON_RPC_LISTEN_ADDRESS",
+                "ZAINO_JSON_SERVER_SETTINGS__JSON_RPC_LISTEN_ADDRESS",
                 "127.0.0.1:0",
             );
-            jail.set_env("ZAINO_JSON_SERVER_SETTINGS-COOKIE_DIR", "/env/cookie/path");
-            jail.set_env("ZAINO_STORAGE.CACHE.CAPACITY", "12345");
+            jail.set_env("ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR", "/env/cookie/path");
+            jail.set_env("ZAINO_STORAGE__CACHE__CAPACITY", "12345");
 
             let temp_toml_path = jail.directory().join("test_config.toml");
             let config = load_config(&temp_toml_path).expect("load_config should succeed");
@@ -972,7 +972,7 @@ mod test {
     pub(crate) fn test_figment_invalid_env_var_type() {
         Jail::expect_with(|jail| {
             jail.create_file("test_config.toml", "")?;
-            jail.set_env("ZAINO_STORAGE.CACHE.CAPACITY", "not_a_number");
+            jail.set_env("ZAINO_STORAGE__CACHE__CAPACITY", "not_a_number");
             let temp_toml_path = jail.directory().join("test_config.toml");
             let result = load_config(&temp_toml_path);
             assert!(result.is_err());
