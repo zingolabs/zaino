@@ -22,7 +22,7 @@ zainod = { workspace = true }
 zcash_protocol = { version = "0.7.0", features = [
   "local-consensus",
 ] }
-zcash_client_backend = { version = "0.20", features = ["lightwalletd-tonic"] }
+zcash_client_backend = { version = "0.21", features = ["lightwalletd-tonic"] }
 
 # Zebra
 zebra-chain = { workspace = true }
