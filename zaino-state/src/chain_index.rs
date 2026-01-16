@@ -503,59 +503,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
         tokio::task::spawn(async move {
-            let result: Result<(), SyncError> = async {
-                loop {
-                    if status.load() == StatusType::Closing {
-                        break;
-                    }
-
-                    status.store(StatusType::Syncing);
-                    // Sync nfs to chain tip, trimming blocks to finalized tip.
-                    nfs.sync(fs.clone()).await?;
-
-                    // Sync fs to chain tip - 100.
-                    {
-                        let snapshot = nfs.get_snapshot();
-                        while snapshot.best_tip.height.0
-                            > (fs
-                                .to_reader()
-                                .db_height()
-                                .await
-                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                                .unwrap_or(types::Height(0))
-                                .0
-                                + 100)
-                        {
-                            let next_finalized_height = fs
-                                .to_reader()
-                                .db_height()
-                                .await
-                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                                .map(|height| height + 1)
-                                .unwrap_or(types::Height(0));
-                            let next_finalized_block = snapshot
-                                .blocks
-                                .get(
-                                    snapshot
-                                        .heights_to_hashes
-                                        .get(&(next_finalized_height))
-                                        .ok_or(SyncError::CompetingSyncProcess)?,
-                                )
-                                .ok_or(SyncError::CompetingSyncProcess)?;
-                            // TODO: Handle write errors better (fix db and continue)
-                            fs.write_block(next_finalized_block.clone())
-                                .await
-                                .map_err(|_e| SyncError::CompetingSyncProcess)?;
-                        }
-                    }
-                    status.store(StatusType::Ready);
-                    // TODO: configure sleep duration?
-                    tokio::time::sleep(Duration::from_millis(500)).await
-                    // TODO: Check for shutdown signal.
-                }
-                Ok(())
-            }
-            .await;
+            let result = Self::run_sync_loop(nfs, fs, status.clone()).await;
 
             // If the sync loop exited unexpectedly with an error, set CriticalError
             // so that liveness checks can detect the failure.
@@ -566,6 +514,71 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
             result
         })
+    }
+
+    async fn run_sync_loop(
+        nfs: std::sync::Arc<crate::NonFinalizedState<Source>>,
+        fs: std::sync::Arc<finalised_state::ZainoDB>,
+        status: AtomicStatus,
+    ) -> Result<(), SyncError> {
+        loop {
+            if status.load() == StatusType::Closing {
+                break;
+            }
+
+            status.store(StatusType::Syncing);
+
+            nfs.sync(fs.clone()).await?;
+            Self::finalize_blocks_up_to_tip(&nfs, &fs).await?;
+
+            status.store(StatusType::Ready);
+            // TODO: configure sleep duration?
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            // TODO: Check for shutdown signal.
+        }
+        Ok(())
+    }
+
+    /// Writes blocks from the non-finalized state to the finalized database,
+    /// keeping the non-finalized state no more than 100 blocks ahead.
+    async fn finalize_blocks_up_to_tip(
+        nfs: &std::sync::Arc<crate::NonFinalizedState<Source>>,
+        fs: &std::sync::Arc<finalised_state::ZainoDB>,
+    ) -> Result<(), SyncError> {
+        let snapshot = nfs.get_snapshot();
+        let nfs_tip_height = snapshot.best_tip.height.0;
+
+        loop {
+            let db_height = fs
+                .to_reader()
+                .db_height()
+                .await
+                .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                .unwrap_or(types::Height(0))
+                .0;
+
+            // Keep non-finalized state at most 100 blocks ahead of finalized
+            if nfs_tip_height <= db_height + 100 {
+                break;
+            }
+
+            let next_height = types::Height(db_height + 1);
+            let block_hash = snapshot
+                .heights_to_hashes
+                .get(&next_height)
+                .ok_or(SyncError::CompetingSyncProcess)?;
+            let block = snapshot
+                .blocks
+                .get(block_hash)
+                .ok_or(SyncError::CompetingSyncProcess)?;
+
+            // TODO: Handle write errors better (fix db and continue)
+            fs.write_block(block.clone())
+                .await
+                .map_err(|_e| SyncError::CompetingSyncProcess)?;
+        }
+
+        Ok(())
     }
 }
 
