@@ -47,7 +47,7 @@ http = { workspace = true }
 once_cell = { workspace = true }
 portpicker = { workspace = true }
 tokio = { workspace = true }
-tonic = { version = "0.13" } # TODO: unify in the workspace
+tonic = { workspace = true }
 tempfile = { workspace = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = [

@@ -61,9 +61,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 tower = { version = "0.4", features = ["buffer", "util"] }
-tonic = "0.12"
-tonic-build = "0.12"
-prost = "0.13"
+tonic = "0.14"
+tonic-build = "0.14"
+prost = "0.14"
 serde = "1.0"
 serde_json = "1.0"
 jsonrpsee-core = "0.24"

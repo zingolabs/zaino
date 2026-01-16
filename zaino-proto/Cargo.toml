@@ -16,5 +16,5 @@ tonic = { workspace = true }
 prost = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true, features = ["prost"] }
+tonic-build = { workspace = true }
 which = { workspace = true }
