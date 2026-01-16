@@ -164,14 +164,9 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
 }
 
 impl Network {
-    /// Convert to Zebra's network type using default configurations.
-    pub fn to_zebra_default(&self) -> zebra_chain::parameters::Network {
-        self.into()
-    }
-
     /// Convert to Zebra's network type for internal use (alias for to_zebra_default).
     pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
-        self.to_zebra_default()
+        self.into()
     }
 
     /// Get the standard regtest activation heights used by Zaino.
@@ -278,9 +273,9 @@ impl From<zebra_chain::parameters::Network> for Network {
 impl From<Network> for zebra_chain::parameters::Network {
     fn from(val: Network) -> Self {
         match val {
-            Network::Regtest(activation_heights) => {
-                zebra_chain::parameters::Network::new_regtest(activation_heights.into())
-            }
+            Network::Regtest(activation_heights) => zebra_chain::parameters::Network::new_regtest(
+                Into::<ConfiguredActivationHeights>::into(activation_heights).into(),
+            ),
             Network::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
             Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
         }

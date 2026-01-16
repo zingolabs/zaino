@@ -32,9 +32,7 @@ pub enum BestChainLocation {
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum NonBestChainLocation {
     /// the block containing the transaction
-    // TODO: in this case, returning a consensus branch
-    // ID would be useful
-    Block(BlockHash),
+    Block(BlockHash, Height),
     /// if the transaction is in the mempool
     /// but the mempool does not match the
     /// snapshot's chaintip, return the target height if known
@@ -42,27 +40,6 @@ pub enum NonBestChainLocation {
     /// This likely means that the provided
     /// snapshot is out-of-date
     Mempool(Option<Height>),
-}
-
-impl TryFrom<&IndexedBlock> for NonBestChainLocation {
-    type Error = ();
-
-    fn try_from(value: &IndexedBlock) -> Result<Self, Self::Error> {
-        match value.height() {
-            Some(_) => Err(()),
-            None => Ok(NonBestChainLocation::Block(*value.hash())),
-        }
-    }
-}
-impl TryFrom<&IndexedBlock> for BestChainLocation {
-    type Error = ();
-
-    fn try_from(value: &IndexedBlock) -> Result<Self, Self::Error> {
-        match value.height() {
-            None => Err(()),
-            Some(height) => Ok(BestChainLocation::Block(*value.hash(), height)),
-        }
-    }
 }
 
 /// Wrapper for optional commitment tree roots from blockchain source
@@ -295,7 +272,10 @@ impl<'a> BlockWithMetadata<'a> {
         let block = self.block;
         let hash = BlockHash::from(block.hash());
         let parent_hash = BlockHash::from(block.header.previous_block_hash);
-        let height = block.coinbase_height().map(|height| Height(height.0));
+        let height = block
+            .coinbase_height()
+            .map(|height| Height(height.0))
+            .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
         let block_work = block.header.difficulty_threshold.to_work().ok_or_else(|| {
             "Failed to calculate block work from difficulty threshold".to_string()

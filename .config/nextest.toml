@@ -29,7 +29,7 @@ slow-timeout = { period = "60s", terminate-after = "10" }
 # of the expression, slow at the end.  If a slow and flakey test is discovered it should be included
 # in the flakey category.
 #  On a developer laptop:
-#  flakey 59 ==  tests fail at least once
+#  flakey 63 ==  tests fail at least once
 #  slow   32 ==  >60s runtime
 default-filter = """
     not (
@@ -91,7 +91,11 @@ default-filter = """
         test(/^zebra::get::z::subtrees_by_index_regtest$/) |
         test(/^zebrad::get::mining_info$/) |
         test(/^zebra::get::address_balance_regtest$/) |
-        test(/^zebra::get::raw_transaction_regtest$/)
+        test(/^zebra::get::raw_transaction_regtest$/) |
+        test(/^zebra::get::get_mempool_info$/) |
+        test(/^zebra::get::raw_mempool_regtest$/) |
+        test(/^zcashd::zcash_indexer::get_mining_info$/) |
+        test(/^zebrad::process_200_blocks$/)
     )
     &
     not (

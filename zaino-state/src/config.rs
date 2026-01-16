@@ -66,6 +66,10 @@ impl StateServiceConfig {
         storage: StorageConfig,
         network: Network,
     ) -> Self {
+        tracing::trace!(
+            "State service expecting NU activations:\n{:?}",
+            network.to_zebra_network().full_activation_list()
+        );
         StateServiceConfig {
             validator_state_config,
             validator_rpc_address,

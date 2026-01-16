@@ -15,7 +15,7 @@ use zebra_rpc::client::{
     ValidateAddressResponse,
 };
 use zebra_rpc::methods::{
-    AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
+    AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
     GetBlockHash, GetInfo, GetRawTransaction, SentTransactionHash,
 };
 
@@ -188,7 +188,7 @@ pub trait ZcashIndexerRpc {
     #[method(name = "getaddressbalance")]
     async fn z_get_address_balance(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, ErrorObjectOwned>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
@@ -385,7 +385,7 @@ pub trait ZcashIndexerRpc {
     #[method(name = "getaddressutxos")]
     async fn z_get_address_utxos(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, ErrorObjectOwned>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
@@ -586,7 +586,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
 
     async fn z_get_address_balance(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
@@ -741,7 +741,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
 
     async fn z_get_address_utxos(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()

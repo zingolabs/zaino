@@ -81,7 +81,8 @@ pub async fn sync_db_with_blockdata(
                     // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
                     nu6_1: None,
                     nu7: None,
-                },
+                }
+                .into(),
             ),
         );
 

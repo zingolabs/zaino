@@ -50,8 +50,10 @@ const EXPECTED_CHAIN_TIP: u32 = 104;
 const HEIGHT_BEYOND_TIP: u32 = 200;
 const NON_EXISTENT_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
 
-#[allow(deprecated)]
-async fn setup_chain(test_manager: &mut TestManager<FetchService>) -> (String, String) {
+#[allow(deprecated)] // StateService
+async fn setup_chain<V: Validator>(
+    test_manager: &mut TestManager<V, StateService>,
+) -> (String, String) {
     let mut clients = test_manager
         .clients
         .take()
@@ -237,8 +239,14 @@ pub(super) async fn main() {
         _fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = super::create_test_manager_and_services(&ValidatorKind::Zebrad, None, true, true, None)
-        .await;
+    ) = super::create_test_manager_and_services::<Zebrad>(
+        &ValidatorKind::Zebrad,
+        None,
+        true,
+        true,
+        None,
+    )
+    .await;
 
     let (recipient_taddr, faucet_taddr) = setup_chain(&mut test_manager).await;
 

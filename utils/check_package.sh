@@ -20,4 +20,4 @@ cargo check --tests --package "$PACKAGE_NAME" && \
 cargo check --tests --all-features --package "$PACKAGE_NAME" && \
 cargo fmt --package "$PACKAGE_NAME" && \
 cargo clippy --package "$PACKAGE_NAME" && \
-cargo nextest run --package "$PACKAGE_NAME"
+cargo nextest run --test-threads $(nproc) --package "$PACKAGE_NAME"
