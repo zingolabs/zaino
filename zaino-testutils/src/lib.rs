@@ -399,6 +399,8 @@ where
         }
 
         // Launch LocalNet:
+        let launch_start = std::time::Instant::now();
+        info!("[TIMING] TestManager::launch() starting");
 
         let mut config = C::Config::default();
         config.set_test_parameters(
@@ -414,6 +416,10 @@ where
         let (local_net, validator_settings) = C::launch_validator_and_return_config(config)
             .await
             .expect("to launch a default validator");
+        info!(
+            "[TIMING] Validator launched in {:?}",
+            launch_start.elapsed()
+        );
         let rpc_listen_port = local_net.get_port();
         let full_node_rpc_listen_address =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_listen_port);
@@ -469,12 +475,20 @@ where
                 network: zaino_network_kind,
             };
 
+            info!(
+                "[TIMING] Starting Zaino launch at {:?} after validator",
+                launch_start.elapsed()
+            );
             let (handle, service_subscriber) = Indexer::<Service>::launch_inner(
                 Service::Config::from(indexer_config.clone()),
                 indexer_config,
             )
             .await
             .unwrap();
+            info!(
+                "[TIMING] Zaino launch_inner completed in {:?}",
+                launch_start.elapsed()
+            );
 
             (
                 Some(handle),
@@ -544,19 +558,35 @@ where
         // NOTE: if this is removed when zebra fixes this issue we must replace with a generate_block_and_poll(0) when
         // zaino is enabled to ensure its ready and not still syncing
         if enable_zaino {
+            info!(
+                "[TIMING] Starting generate_blocks_and_poll(1) at {:?}",
+                launch_start.elapsed()
+            );
             test_manager.generate_blocks_and_poll(1).await;
+            info!(
+                "[TIMING] generate_blocks_and_poll(1) completed at {:?}",
+                launch_start.elapsed()
+            );
         } else {
             test_manager.local_net.generate_blocks(1).await.unwrap();
         }
 
         // Wait for zaino to be ready to serve requests
         if let Some(ref subscriber) = test_manager.service_subscriber {
+            info!(
+                "[TIMING] Starting final poll_until_ready at {:?}",
+                launch_start.elapsed()
+            );
             poll_until_ready(
                 subscriber,
                 std::time::Duration::from_millis(100),
                 std::time::Duration::from_secs(30),
             )
             .await;
+            info!(
+                "[TIMING] TestManager::launch() fully complete at {:?}",
+                launch_start.elapsed()
+            );
         }
 
         Ok(test_manager)

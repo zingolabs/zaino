@@ -109,6 +109,7 @@ impl ZcashService for FetchService {
 
     /// Initializes a new FetchService instance and starts sync process.
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
+        let spawn_start = std::time::Instant::now();
         info!("Launching Chain Fetch Service..");
 
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
@@ -118,8 +119,16 @@ impl ZcashService for FetchService {
             config.validator_cookie_path.clone(),
         )
         .await?;
+        info!(
+            "[TIMING] JsonRpSeeConnector created in {:?}",
+            spawn_start.elapsed()
+        );
 
         let zebra_build_data = fetcher.get_info().await?;
+        info!(
+            "[TIMING] get_info() completed in {:?}",
+            spawn_start.elapsed()
+        );
         let data = ServiceMetadata::new(
             get_build_info(),
             config.network.to_zebra_network(),
@@ -132,6 +141,10 @@ impl ZcashService for FetchService {
         let indexer = NodeBackedChainIndex::new(source, config.clone().into())
             .await
             .unwrap();
+        info!(
+            "[TIMING] NodeBackedChainIndex created in {:?}",
+            spawn_start.elapsed()
+        );
 
         let fetch_service = Self {
             fetcher,
@@ -140,9 +153,15 @@ impl ZcashService for FetchService {
             config,
         };
 
+        let ready_wait_start = std::time::Instant::now();
         while fetch_service.status() != StatusType::Ready {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
+        info!(
+            "[TIMING] FetchService ready after {:?} total ({:?} waiting for Ready status)",
+            spawn_start.elapsed(),
+            ready_wait_start.elapsed()
+        );
 
         Ok(fetch_service)
     }

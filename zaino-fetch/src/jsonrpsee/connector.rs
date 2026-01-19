@@ -878,6 +878,9 @@ pub async fn test_node_and_return_url(
     user: Option<String>,
     password: Option<String>,
 ) -> Result<Url, TransportError> {
+    let start = std::time::Instant::now();
+    tracing::info!("[TIMING] test_node_and_return_url starting for {addr}");
+
     let auth_method = match cookie_path.is_some() {
         true => {
             let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
@@ -900,17 +903,29 @@ pub async fn test_node_and_return_url(
     let url: Url = format!("http://{}:{}", host, addr.port()).parse()?;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-    for _ in 0..3 {
+    for attempt in 1..=3 {
+        tracing::info!(
+            "[TIMING] test_node_connection attempt {attempt}/3 at {:?}",
+            start.elapsed()
+        );
         match test_node_connection(url.clone(), auth_method.clone()).await {
             Ok(_) => {
+                tracing::info!(
+                    "[TIMING] test_node_and_return_url succeeded on attempt {attempt} after {:?}",
+                    start.elapsed()
+                );
                 return Ok(url);
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!(
+                    "[TIMING] test_node_connection attempt {attempt} failed after {:?}: {e:?}",
+                    start.elapsed()
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
         interval.tick().await;
     }
-    error!("Error: Could not establish connection with node. Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. Exiting..");
+    error!("Error: Could not establish connection with node after {:?}. Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. Exiting..", start.elapsed());
     std::process::exit(1);
 }

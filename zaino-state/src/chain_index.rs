@@ -429,11 +429,23 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     ) -> Result<Self, crate::InitError> {
         use futures::TryFutureExt as _;
 
+        let init_start = std::time::Instant::now();
+        info!("[TIMING] NodeBackedChainIndex::new() starting");
+
         let finalized_db =
             Arc::new(finalised_state::ZainoDB::spawn(config.clone(), source.clone()).await?);
+        info!(
+            "[TIMING] ZainoDB spawned in {:?}",
+            init_start.elapsed()
+        );
+
         let mempool_state = mempool::Mempool::spawn(source.clone(), None)
             .map_err(crate::InitError::MempoolInitialzationError)
             .await?;
+        info!(
+            "[TIMING] Mempool spawned in {:?}",
+            init_start.elapsed()
+        );
 
         let reader = finalized_db.to_reader();
         let top_of_finalized = if let Some(height) = reader.db_height().await? {
@@ -448,6 +460,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             top_of_finalized,
         )
         .await?;
+        info!(
+            "[TIMING] NonFinalizedState initialized in {:?}",
+            init_start.elapsed()
+        );
 
         let mut chain_index = Self {
             blockchain_source: Arc::new(source),
@@ -458,6 +474,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             status: AtomicStatus::new(StatusType::Spawning),
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
+        info!(
+            "[TIMING] NodeBackedChainIndex::new() completed in {:?}",
+            init_start.elapsed()
+        );
 
         Ok(chain_index)
     }
