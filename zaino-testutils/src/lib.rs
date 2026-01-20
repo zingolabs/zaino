@@ -715,9 +715,25 @@ where
 
     /// Closes the TestManager.
     pub async fn close(&mut self) {
+        info!("[SHUTDOWN] TestManager::close() starting");
+        let close_start = std::time::Instant::now();
+
+        // First, abort Zaino to stop it from trying to connect to the validator
         if let Some(handle) = self.zaino_handle.take() {
+            info!("[SHUTDOWN] Aborting Zaino handle");
             handle.abort();
+            info!(
+                "[SHUTDOWN] Zaino handle aborted at {:?}",
+                close_start.elapsed()
+            );
         }
+
+        // Note: local_net (validator) will be stopped when TestManager is dropped
+        // via the Validator's Drop implementation
+        info!(
+            "[SHUTDOWN] TestManager::close() completed at {:?}",
+            close_start.elapsed()
+        );
     }
 }
 
@@ -725,9 +741,15 @@ impl<C: Validator, Service: LightWalletService + Send + Sync + 'static> Drop
     for TestManager<C, Service>
 {
     fn drop(&mut self) {
+        info!("[SHUTDOWN] TestManager::drop() starting - fields will drop in declaration order");
+        info!("[SHUTDOWN] Aborting zaino_handle in Drop (if not already taken)");
         if let Some(handle) = &self.zaino_handle {
             handle.abort();
         };
+        info!("[SHUTDOWN] TestManager::drop() - zaino_handle handled, now local_net will drop");
+        // Note: After this, Rust will drop fields in declaration order:
+        // 1. local_net (validator) - this will call Zcashd/Zebrad::stop()
+        // 2. data_dir, network, addresses, etc.
     }
 }
 
