@@ -11,8 +11,6 @@ ARG UID=1000
 ARG GID=${UID}
 ARG USER=container_user
 ARG HOME="/home/container_user"
-ARG CARGO_HOME="${HOME}/.cargo"
-ARG CARGO_TARGET_DIR="${HOME}/target"
 
 ########################
 # === DOWNLOADERS ===
@@ -62,17 +60,23 @@ ARG UID
 ARG GID
 ARG USER
 ARG HOME
-ARG CARGO_HOME
-ARG CARGO_TARGET_DIR
 
-ENV CARGO_HOME=${CARGO_HOME}
-ENV CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
+# Keep RUSTUP_HOME from base image to use pre-installed toolchain.
+# Set CARGO_HOME to user-writable location for registry cache.
+ENV CARGO_HOME=/home/container_user/.cargo
+ENV CARGO_TARGET_DIR=/home/container_user/target
 ENV CARGO_TERM_COLOR=always
 ENV PROTOC=/usr/bin/protoc
 
-
 LABEL maintainer="nachog00"
 LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
+
+# Add components required by rust-toolchain.toml (keep in sync manually)
+# Also create symlink for minor version (1.92 -> 1.92.0) to prevent rustup from
+# trying to sync/download when rust-toolchain.toml uses "channel = 1.92"
+ARG RUST_VERSION
+RUN rustup component add rustfmt clippy && \
+    ln -s "${RUST_VERSION}.0-x86_64-unknown-linux-gnu" "/usr/local/rustup/toolchains/${RUST_VERSION}-x86_64-unknown-linux-gnu"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
@@ -91,10 +95,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create container_user
 RUN groupadd --gid ${GID} ${USER} && \
     useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
-
-# Install rustup (Rust toolchain manager) and set up the Rust toolchain
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-RUN rustup update stable
 
 # Create artifacts directory
 RUN mkdir -p /home/container_user/artifacts
