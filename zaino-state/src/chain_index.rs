@@ -778,8 +778,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
-    /// Finds the newest ancestor of the given block on the main
-    /// chain, or the block itself if it is on the main chain.
+    /// For a given block,
+    /// find its newest main-chain ancestor,
+    /// or the block itself if it is on the main-chain.
     /// Returns Ok(None) if no fork point found. This is not an error,
     /// as zaino does not guarentee knowledge of all sidechain data.
     async fn find_fork_point(
@@ -788,9 +789,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         block_hash: &types::BlockHash,
     ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
         let Some(block) = snapshot.as_ref().get_chainblock_by_hash(block_hash) else {
-            // We don't have the block in our non-finalized state,
-            // we'll only be aware of it if it's main-chain.
-            // Find it from the source, and return its height and hash
+            // At this point, we know that
+            // the block is NOT PENDING in the INDEXER.
+            // TODO check the INDEXER for finalized block
+            // Next, ask the VALIDATOR.
             return match self
                 .blockchain_source
                 .get_block(HashOrHeight::Hash(zebra_chain::block::Hash::from(
@@ -799,26 +801,26 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 .await
             {
                 Ok(Some(block))
-                    // We don't have the block in our non-finalized state
-                    // we can only passthrough assuming the block is finalized
                     if block.coinbase_height().unwrap()
                         <= snapshot.validator_finalized_height.into() =>
                 {
+                    // At this point, we know that
+                    // the block is FINALIZED in the VALIDATOR.
+                    // Return
                     Ok(Some((
                         types::BlockHash::from(block.hash()),
                         types::Height::from(block.coinbase_height().unwrap()),
                     )))
                 }
-                // The block is non-finalized, and we haven't synced it yet.
-                // We can't make any assertions about the best chain
-                // if it's not in our snapshot.
-                // TODO: Should this be an error?
+                // At this point, we know that
+                // the block is NOT FINALIZED in the VALIDATOR.
+                // Return Ok(None) = no block found.
                 Ok(_) => Ok(None),
                 Err(e) => Err(ChainIndexError::backing_validator(e)),
             };
         };
-        // If we have the block in our heights_to_hashes set, it's main-chain
-        // Return it's hash and height
+        // At this point, we know that
+        // The block is PENDING in the INDEXER
         if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
             Ok(Some((*block.hash(), block.height())))
             // Otherwise, it's non-best chain! Grab its parent, and recurse
