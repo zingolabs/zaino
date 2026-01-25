@@ -375,26 +375,37 @@ impl FinalisedState {
     /// - Re-populated the database from the NEXT block in the chain (`reorg_height + 1`).
     async fn sync_db_from_reorg(&self) -> Result<(), FinalisedStateError> {
         let network = self.config.network.to_zebra_network();
-
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
-        // let reorg_height_int = reorg_height.0.saturating_sub(100);
-        // reorg_height = Height(reorg_height_int);
-
         let mut reorg_hash = self.get_hash(reorg_height.0).unwrap_or(Hash([0u8; 32]));
-
-        let mut check_hash = match self
-            .fetcher
-            .get_block(reorg_height.0.to_string(), Some(1))
-            .await?
-        {
-            zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
-            _ => {
-                return Err(FinalisedStateError::Custom(
-                    "Unexpected block response type".to_string(),
-                ))
+        
+        // FIXED: Wait for initial block to exist instead of crashing
+        let mut check_hash = loop {
+            match self
+                .fetcher
+                .get_block(reorg_height.0.to_string(), Some(1))
+                .await
+            {
+                Ok(zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block)) => {
+                    break block.hash.0;
+                }
+                Ok(_) => {
+                    return Err(FinalisedStateError::Custom(
+                        "Unexpected block response type".to_string(),
+                    ))
+                }
+                Err(e) => {
+                    // Block doesn't exist yet - wait for it to be mined
+                    tracing::debug!(
+                        "Block at height {} not found yet, waiting for chain to populate: {}",
+                        reorg_height.0,
+                        e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
             }
         };
-
+        
         // Find reorg height.
         //
         // Here this is the latest height at which the internal block hash matches the server block hash.
@@ -413,31 +424,45 @@ impl FinalisedState {
                     break;
                 }
             };
-
             reorg_hash = self.get_hash(reorg_height.0).unwrap_or(Hash([0u8; 32]));
-
-            check_hash = match self
-                .fetcher
-                .get_block(reorg_height.0.to_string(), Some(1))
-                .await?
-            {
-                zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block) => block.hash.0,
-                _ => {
-                    return Err(FinalisedStateError::Custom(
-                        "Unexpected block response type".to_string(),
-                    ))
+            
+            // FIXED: Wait for block instead of crashing
+            check_hash = loop {
+                match self
+                    .fetcher
+                    .get_block(reorg_height.0.to_string(), Some(1))
+                    .await
+                {
+                    Ok(zaino_fetch::jsonrpsee::response::GetBlockResponse::Object(block)) => {
+                        break block.hash.0;
+                    }
+                    Ok(_) => {
+                        return Err(FinalisedStateError::Custom(
+                            "Unexpected block response type".to_string(),
+                        ))
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Block at height {} not found yet, waiting: {}",
+                            reorg_height.0,
+                            e
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        continue;
+                    }
                 }
             };
         }
-
+        
         // Refill from max(reorg_height[+1], sapling_activation_height) to current server (finalised state) height.
-        let mut sync_height = self
+        let sync_height = self
             .fetcher
             .get_blockchain_info()
             .await?
             .blocks
             .0
             .saturating_sub(99);
+        
         for block_height in ((reorg_height.0 + 1).max(
             self.config
                 .network
@@ -474,62 +499,7 @@ impl FinalisedState {
                 }
             }
         }
-
-        // Wait for server to sync to with p2p network and sync new blocks.
-        if !self.config.network.to_zebra_network().is_regtest() {
-            self.status.store(StatusType::Syncing);
-            loop {
-                let blockchain_info = self.fetcher.get_blockchain_info().await?;
-                let server_height = blockchain_info.blocks.0;
-                for block_height in (sync_height + 1)..(server_height - 99) {
-                    if self.get_hash(block_height).is_ok() {
-                        self.delete_block(Height(block_height))?;
-                    }
-                    loop {
-                        match fetch_block_from_node(
-                            self.state.as_ref(),
-                            Some(&network),
-                            &self.fetcher,
-                            HashOrHeight::Height(Height(block_height)),
-                        )
-                        .await
-                        {
-                            Ok((hash, block)) => {
-                                self.insert_block((Height(block_height), hash, block))?;
-                                info!(
-                                    "Block at height {} successfully inserted in finalised state.",
-                                    block_height
-                                );
-                                break;
-                            }
-                            Err(e) => {
-                                self.status.store(StatusType::RecoverableError);
-                                warn!("{e}");
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            }
-                        }
-                    }
-                }
-                sync_height = server_height - 99;
-                if (blockchain_info.blocks.0 as i64 - blockchain_info.estimated_height.0 as i64)
-                    .abs()
-                    <= 10
-                {
-                    break;
-                } else {
-                    info!(" - Validator syncing with network. ZainoDB chain height: {}, Validator chain height: {}, Estimated Network chain height: {}",
-                            &sync_height,
-                            &blockchain_info.blocks.0,
-                            &blockchain_info.estimated_height.0
-                        );
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                    continue;
-                }
-            }
-        }
-
-        self.status.store(StatusType::Ready);
-
+        
         Ok(())
     }
 
