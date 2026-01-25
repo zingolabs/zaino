@@ -455,14 +455,30 @@ impl FinalisedState {
         }
         
         // Refill from max(reorg_height[+1], sapling_activation_height) to current server (finalised state) height.
-        let sync_height = self
+        let current_chain_height = self
             .fetcher
             .get_blockchain_info()
             .await?
             .blocks
-            .0
-            .saturating_sub(99);
-        
+            .0;
+
+        let sync_height = current_chain_height.saturating_sub(99);
+        // FIXED: If cached height is beyond current chain, clear cache (fresh regtest chain)
+        if reorg_height.0 > current_chain_height {
+            tracing::warn!(
+                "Cached height {} is beyond current chain height {}. Clearing cache for fresh chain.",
+                reorg_height.0,
+                current_chain_height
+            );
+            {
+                let mut txn = self.database.begin_rw_txn()?;
+                txn.clear_db(self.heights_to_hashes)?;
+                txn.clear_db(self.hashes_to_blocks)?;
+                txn.commit()?;
+            }
+            // Start from sapling activation height on fresh chain
+            reorg_height = Height(self.config.network.to_zebra_network().sapling_activation_height().0);
+        }
         for block_height in ((reorg_height.0 + 1).max(
             self.config
                 .network
