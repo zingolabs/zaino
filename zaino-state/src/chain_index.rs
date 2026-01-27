@@ -416,7 +416,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
     finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
-    sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
+    sync_loop_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), SyncError>>>>,
     status: AtomicStatus,
 }
 
@@ -465,15 +465,15 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             init_start.elapsed()
         );
 
-        let mut chain_index = Self {
+        let chain_index = Self {
             blockchain_source: Arc::new(source),
             mempool: std::sync::Arc::new(mempool_state),
             non_finalized_state: std::sync::Arc::new(non_finalized_state),
             finalized_db,
-            sync_loop_handle: None,
+            sync_loop_handle: std::sync::Mutex::new(None),
             status: AtomicStatus::new(StatusType::Spawning),
         };
-        chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
+        *chain_index.sync_loop_handle.lock().unwrap() = Some(chain_index.start_sync_loop());
         info!(
             "[TIMING] NodeBackedChainIndex::new() completed in {:?}",
             init_start.elapsed()
@@ -494,13 +494,43 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         }
     }
 
-    /// Shut down the sync process, for a cleaner drop
-    /// an error indicates a failure to cleanly shutdown. Dropping the
-    /// chain index should still stop everything
+    /// Shut down the sync process, for a cleaner drop.
+    ///
+    /// This method:
+    /// 1. Signals shutdown via status so the sync loop can exit cleanly
+    /// 2. Waits for the sync loop to finish (with timeout)
+    /// 3. Tears down resources after the sync loop has stopped
+    ///
+    /// An error indicates a failure to cleanly shutdown. Dropping the
+    /// chain index should still stop everything.
     pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.finalized_db.shutdown().await?;
-        self.mempool.close();
+        // 1. Signal shutdown FIRST so sync loop can exit cleanly on next iteration
         self.status.store(StatusType::Closing);
+
+        // 2. Wait for sync loop to notice and exit (with timeout)
+        let handle = self.sync_loop_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(Ok(()))) => {
+                    tracing::debug!("Sync loop exited cleanly during shutdown");
+                }
+                Ok(Ok(Err(e))) => {
+                    // Sync loop returned an error - but we're shutting down, so just log it
+                    tracing::debug!("Sync loop exited with error during shutdown: {e:?}");
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("Sync loop task panicked during shutdown: {e}");
+                }
+                Err(_) => {
+                    tracing::warn!("Sync loop did not exit within timeout, proceeding with shutdown");
+                }
+            }
+        }
+
+        // 3. Now safe to tear down resources - sync loop is no longer using them
+        self.mempool.close();
+        self.finalized_db.shutdown().await?;
+
         Ok(())
     }
 
@@ -525,11 +555,15 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         tokio::task::spawn(async move {
             let result = Self::run_sync_loop(nfs, fs, status.clone()).await;
 
-            // If the sync loop exited unexpectedly with an error, set CriticalError
-            // so that liveness checks can detect the failure.
+            // Only set CriticalError if we're NOT shutting down.
+            // During shutdown, errors are expected as resources are torn down.
             if let Err(ref e) = result {
-                tracing::error!("Sync loop exited with error: {e:?}");
-                status.store(StatusType::CriticalError);
+                if status.load() == StatusType::Closing {
+                    tracing::debug!("Sync loop exited with error during shutdown: {e:?}");
+                } else {
+                    tracing::error!("Sync loop exited with error: {e:?}");
+                    status.store(StatusType::CriticalError);
+                }
             }
 
             result
