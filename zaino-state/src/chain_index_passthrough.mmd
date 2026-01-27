@@ -1,0 +1,19 @@
+flowchart TD
+    A(Receive call) --> B
+    subgraph "Finalized Index (&self)"
+        B[Is the requested data in the finalized Index?]
+    end
+    B --> |Yes| C[Return it]
+    B --> |No| D["Is the requested data in the SnapShot ``BestChain``?"]
+    D -->|Yes| C
+    subgraph "SnapShot (parameter)"
+        D --> |No| F["Is the requested data in the SnapShot ``NonBestChain``?"]
+    end
+    F -->|Yes| C
+    F --> |No| H
+    subgraph "Validator Passthrough (&self connection)"
+        H["Is the requested data finalized in the validator (passthrough) ?"]
+    end
+    H -->|Yes| C
+    H --> |No| J[Return None]
+
