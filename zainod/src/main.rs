@@ -1,9 +1,10 @@
 //! Zingo-Indexer daemon
 
 use clap::Parser;
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_throttle::{Policy, TracingRateLimitLayer};
 
 use zainodlib::{config::load_config, error::IndexerError, indexer::start_indexer};
 
@@ -17,12 +18,23 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    // Set up rate limiting for repeated log messages (e.g., connection failures)
+    // Uses exponential backoff: emits 1st, 2nd, 4th, 8th... occurrence
+    let rate_limit = TracingRateLimitLayer::builder()
+        .with_policy(Policy::exponential_backoff())
+        .with_summary_interval(Duration::from_secs(60))
+        .with_max_signatures(10_000)
+        .build()
+        .expect("failed to build rate limit layer");
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+                .with_target(true),
         )
-        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-        .with_target(true)
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(rate_limit)
         .init();
 
     let args = Args::parse();

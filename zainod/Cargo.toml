@@ -38,7 +38,8 @@ clap = { workspace = true, features = ["derive"] }
 
 # Tracing
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time"] }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time", "registry"] }
+tracing-throttle = { workspace = true }
 
 # Network / RPC
 http = { workspace = true }

@@ -13,9 +13,11 @@ use std::{
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
+    time::Duration,
 };
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_throttle::{Policy, TracingRateLimitLayer};
 use zaino_common::{
     network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
     probing::{Liveness, Readiness},
@@ -376,12 +378,24 @@ where
                 "Cannot use state backend with zcashd.",
             ));
         }
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+
+        // Set up rate limiting for repeated log messages (e.g., connection failures during shutdown)
+        // Uses exponential backoff: emits 1st, 2nd, 4th, 8th... occurrence
+        let rate_limit = TracingRateLimitLayer::builder()
+            .with_policy(Policy::exponential_backoff())
+            .with_summary_interval(Duration::from_secs(30))
+            .with_max_signatures(5_000)
+            .build()
+            .expect("failed to build rate limit layer");
+
+        let _ = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+                    .with_target(true),
             )
-            .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-            .with_target(true)
+            .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+            .with(rate_limit)
             .try_init();
 
         let activation_heights = activation_heights.unwrap_or_else(|| match validator {

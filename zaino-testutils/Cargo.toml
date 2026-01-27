@@ -54,7 +54,9 @@ tracing-subscriber = { workspace = true, features = [
     "fmt",
     "env-filter",
     "time",
+    "registry",
 ] }
+tracing-throttle = { workspace = true }
 
 # We don't need this as a direct dependency.
 # Rather, we need to pin this version of proptest.

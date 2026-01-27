@@ -50,8 +50,10 @@ tracing-subscriber = { version = "0.3.20", features = [
     "fmt",
     "env-filter",
     "time",
+    "registry",
 ] }
 tracing-futures = "0.2"
+tracing-throttle = "0.1"
 
 # Network / RPC
 http = "1.1"

@@ -1,19 +1,34 @@
 //! Zaino-State ChainIndex unit tests.
 
+use std::time::Duration;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_throttle::{Policy, TracingRateLimitLayer};
+
 pub(crate) mod finalised_state;
 pub(crate) mod mempool;
 pub(crate) mod vectors;
 
 pub(crate) fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Set up rate limiting for repeated log messages
+    let rate_limit = TracingRateLimitLayer::builder()
+        .with_policy(Policy::exponential_backoff())
+        .with_summary_interval(Duration::from_secs(30))
+        .with_max_signatures(5_000)
+        .build()
+        .expect("failed to build rate limit layer");
+
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+                .with_target(true),
+        )
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-        .with_target(true)
-        .try_init()
-        .unwrap();
+        .with(rate_limit)
+        .try_init();
 }
 
 mod mockchain_tests {

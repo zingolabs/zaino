@@ -57,6 +57,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "getrandom 0.3.4",
  "once_cell",
  "version_check",
  "zerocopy",
@@ -7449,6 +7450,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-throttle"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63d44fb45be029814632a4b049edc79038bb982735bbcf6def18619358b5b6ad"
+dependencies = [
+ "ahash 0.8.12",
+ "dashmap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "trait-variant"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8382,6 +8396,7 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "tracing-subscriber",
+ "tracing-throttle",
  "whoami",
  "zaino-common",
  "zaino-fetch",
@@ -8410,6 +8425,7 @@ dependencies = [
  "tonic 0.13.1",
  "tracing",
  "tracing-subscriber",
+ "tracing-throttle",
  "zaino-common",
  "zaino-proto",
  "zaino-serve",
@@ -8449,6 +8465,7 @@ dependencies = [
  "toml 0.5.11",
  "tracing",
  "tracing-subscriber",
+ "tracing-throttle",
  "zaino-common",
  "zaino-fetch",
  "zaino-serve",
