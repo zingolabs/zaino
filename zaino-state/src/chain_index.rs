@@ -582,13 +582,27 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
             status.store(StatusType::Syncing);
 
-            nfs.sync(fs.clone()).await?;
-            Self::finalize_blocks_up_to_tip(&nfs, &fs).await?;
+            if let Err(e) = nfs.sync(fs.clone()).await {
+                if e.is_recoverable() {
+                    tracing::debug!("Sync encountered recoverable error, retrying: {e:?}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                return Err(e);
+            }
+
+            if let Err(e) = Self::finalize_blocks_up_to_tip(&nfs, &fs).await {
+                if e.is_recoverable() {
+                    tracing::debug!("Finalization encountered recoverable error, retrying: {e:?}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                return Err(e);
+            }
 
             status.store(StatusType::Ready);
             // TODO: configure sleep duration?
             tokio::time::sleep(Duration::from_millis(500)).await;
-            // TODO: Check for shutdown signal.
         }
         Ok(())
     }
@@ -603,33 +617,37 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let nfs_tip_height = snapshot.best_tip.height.0;
 
         loop {
-            let db_height = fs
+            let maybe_db_height = fs
                 .to_reader()
                 .db_height()
                 .await
-                .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                .unwrap_or(types::Height(0))
-                .0;
+                .map_err(|_e| SyncError::CannotReadFinalizedState)?;
+
+            let db_height = maybe_db_height.map(|h| h.0).unwrap_or(0);
 
             // Keep non-finalized state at most 100 blocks ahead of finalized
             if nfs_tip_height <= db_height + 100 {
                 break;
             }
 
-            let next_height = types::Height(db_height + 1);
+            // When the DB is empty (None), start from genesis (height 0).
+            // When the DB has blocks, continue from the next height.
+            let next_height = match maybe_db_height {
+                Some(h) => types::Height(h.0 + 1),
+                None => types::Height(0),
+            };
             let block_hash = snapshot
                 .heights_to_hashes
                 .get(&next_height)
-                .ok_or(SyncError::CompetingSyncProcess)?;
+                .ok_or(SyncError::StaleSnapshot)?;
             let block = snapshot
                 .blocks
                 .get(block_hash)
-                .ok_or(SyncError::CompetingSyncProcess)?;
+                .ok_or(SyncError::StaleSnapshot)?;
 
-            // TODO: Handle write errors better (fix db and continue)
             fs.write_block(block.clone())
                 .await
-                .map_err(|_e| SyncError::CompetingSyncProcess)?;
+                .map_err(SyncError::FinalizedWriteError)?;
         }
 
         Ok(())

@@ -78,29 +78,42 @@ pub enum NodeConnectionError {
 #[derive(Debug)]
 /// An error occurred during sync of the NonFinalized State.
 pub enum SyncError {
-    /// The backing validator node returned corrupt, invalid, or incomplete data
-    /// TODO: This may not be correctly disambibuated from temporary network issues
+    /// The backing validator node returned corrupt, invalid, or incomplete data.
+    /// TODO: This may not be correctly disambiguated from temporary network issues
     /// in the fetchservice case.
     ZebradConnectionError(NodeConnectionError),
     /// The channel used to store new blocks has been closed. This should only happen
     /// during shutdown.
     StagingChannelClosed,
-    /// Sync has been called multiple times in parallel, or another process has
-    /// written to the block snapshot.
-    CompetingSyncProcess,
+    /// The in-memory snapshot became stale during sync — another sync cycle committed
+    /// changes, or the validator state advanced. Recoverable: retry with a fresh snapshot.
+    StaleSnapshot,
+    /// Lock contention on sync resources (e.g. the non-finalized change listener).
+    /// Recoverable: retry after a brief wait.
+    SyncLockContention,
+    /// Failed to write a block to the finalized database. This is a storage-layer
+    /// error and may or may not be recoverable depending on the underlying cause.
+    FinalizedWriteError(FinalisedStateError),
     /// Sync attempted a reorg, and something went wrong. Currently, this
     /// only happens when we attempt to reorg below the start of the chain,
-    /// indicating an entirely separate regtest/testnet chain to what we expected
+    /// indicating an entirely separate regtest/testnet chain to what we expected.
     ReorgFailure(String),
-    /// UnrecoverableFinalizedStateError
+    /// Unrecoverable finalized state error (e.g. corruption).
     CannotReadFinalizedState,
+}
+
+impl SyncError {
+    /// Returns `true` if this error is transient and the sync loop should retry.
+    pub fn is_recoverable(&self) -> bool {
+        matches!(self, SyncError::StaleSnapshot | SyncError::SyncLockContention)
+    }
 }
 
 impl From<UpdateError> for SyncError {
     fn from(value: UpdateError) -> Self {
         match value {
             UpdateError::ReceiverDisconnected => SyncError::StagingChannelClosed,
-            UpdateError::StaleSnapshot => SyncError::CompetingSyncProcess,
+            UpdateError::StaleSnapshot => SyncError::StaleSnapshot,
             UpdateError::FinalizedStateCorruption => SyncError::CannotReadFinalizedState,
         }
     }
@@ -442,8 +455,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         };
 
         let Some(mut listener) = listener.try_lock() else {
-            warn!("Error fetching non-finalized change listener");
-            return Err(SyncError::CompetingSyncProcess);
+            warn!("Non-finalized change listener is locked by another sync cycle");
+            return Err(SyncError::SyncLockContention);
         };
 
         loop {
