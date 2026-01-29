@@ -14,7 +14,7 @@
 use crate::chain_index::non_finalised_state::BestTip;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
-use crate::error::{ChainIndexError, FinalisedStateError};
+use crate::error::{ChainIndexError, DataInvalidError, FinalisedStateError};
 use crate::IndexedBlock;
 use crate::{AtomicStatus, StatusType, SyncError};
 use std::collections::HashSet;
@@ -572,7 +572,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             .source
             .get_block(id)
             .await?
-            .map(|bk| bk.zcash_serialize_to_vec())
+            .map(|bk| {
+                bk.zcash_serialize_to_vec().map_err(|e| {
+                    ChainIndexError::InvalidData(DataInvalidError::BlockSerialization(e))
+                })
+            })
             .transpose()
     }
 

@@ -507,6 +507,10 @@ pub enum ChainIndexError {
     ///
     #[error("Database error: {0}")]
     Database(#[from] FinalisedStateError),
+
+    ///
+    #[error("Invalid data: {0}")]
+    InvalidData(#[from] DataInvalidError),
 }
 
 // impl ChainIndexError {
@@ -533,4 +537,13 @@ impl From<crate::chain_index::source::BlockchainSourceError> for ChainIndexError
     fn from(e: crate::chain_index::source::BlockchainSourceError) -> Self {
         ChainIndexError::Database(FinalisedStateError::BlockchainSourceError(e))
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+/// The set of errors that can occur during the public API calls
+/// of a NodeBackedChainIndex
+pub enum DataInvalidError {
+    ///
+    #[error("Block Serialization: {0}")]
+    BlockSerialization(std::io::Error),
 }
