@@ -453,7 +453,7 @@ pub enum FinalisedStateError {
     #[error("feature unavailable: {0}")]
     FeatureUnavailable(&'static str),
 
-    /// Errors originating from the BlockchainSource in use.
+    /// Errors originating from the ``BlockchainSource`` in use. (``ValidatorConnector`` is a ``BlockchainSource``.)
     #[error("blockchain source error: {0}")]
     BlockchainSourceError(#[from] crate::chain_index::source::BlockchainSourceError),
 
@@ -528,3 +528,9 @@ pub enum ChainIndexError {
 //         }
 //     }
 // }
+
+impl From<crate::chain_index::source::BlockchainSourceError> for ChainIndexError {
+    fn from(e: crate::chain_index::source::BlockchainSourceError) -> Self {
+        ChainIndexError::Database(FinalisedStateError::BlockchainSourceError(e))
+    }
+}

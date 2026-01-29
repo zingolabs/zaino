@@ -571,12 +571,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         self.non_finalized_state
             .source
             .get_block(id)
-            .await
-            .map_err(ChainIndexError::backing_validator)?
-            .map(|bk| {
-                bk.zcash_serialize_to_vec()
-                    .map_err(ChainIndexError::backing_validator)
-            })
+            .await?
+            .map(|bk| bk.zcash_serialize_to_vec())
             .transpose()
     }
 
