@@ -14,7 +14,7 @@
 use crate::chain_index::non_finalised_state::BestTip;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
-use crate::error::{ChainIndexError, DataInvalidError, FinalisedStateError};
+use crate::error::{ChainIndexError, FinalisedStateError, InvalidDataError};
 use crate::IndexedBlock;
 use crate::{AtomicStatus, StatusType, SyncError};
 use std::collections::HashSet;
@@ -574,7 +574,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             .await?
             .map(|bk| {
                 bk.zcash_serialize_to_vec().map_err(|e| {
-                    ChainIndexError::InvalidData(DataInvalidError::BlockSerialization(e))
+                    ChainIndexError::InvalidData(InvalidDataError::BlockSerialization(e))
                 })
             })
             .transpose()
@@ -592,10 +592,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 .find(|h| **h == hash)
                 // Canonical height is None for blocks not on the best chain
                 .map(|_| block.index().height())),
-            None => match self.finalized_state.get_block_height(hash).await {
-                Ok(height) => Ok(height),
-                Err(_e) => Err(ChainIndexError::database_hole(hash)),
-            },
+            None => self.finalized_state.get_block_height(hash).await?,
         }
     }
 

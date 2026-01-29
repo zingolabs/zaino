@@ -509,8 +509,12 @@ pub enum ChainIndexError {
     Database(#[from] FinalisedStateError),
 
     ///
+    #[error("Missing data: {0}")]
+    MissingData(#[from] MissingDataError),
+
+    ///
     #[error("Invalid data: {0}")]
-    InvalidData(#[from] DataInvalidError),
+    InvalidData(#[from] InvalidDataError),
 }
 
 // impl ChainIndexError {
@@ -542,7 +546,16 @@ impl From<crate::chain_index::source::BlockchainSourceError> for ChainIndexError
 #[derive(Debug, thiserror::Error)]
 /// The set of errors that can occur during the public API calls
 /// of a NodeBackedChainIndex
-pub enum DataInvalidError {
+pub enum MissingDataError {
+    ///
+    #[error("Missing block: {0}")]
+    Block(types::BlockHash),
+}
+
+#[derive(Debug, thiserror::Error)]
+/// The set of errors that can occur during the public API calls
+/// of a NodeBackedChainIndex
+pub enum InvalidDataError {
     ///
     #[error("Block Serialization: {0}")]
     BlockSerialization(std::io::Error),
