@@ -493,143 +493,38 @@ pub struct StatusError {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("{kind}: {message}")]
 /// The set of errors that can occur during the public API calls
 /// of a NodeBackedChainIndex
-pub struct ChainIndexError {
-    pub(crate) kind: ChainIndexErrorKind,
-    pub(crate) message: String,
-    pub(crate) source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+pub enum ChainIndexError {
+    ///
+    #[error("Mempool error: {0}")]
+    Mempool(#[from] MempoolError),
+
+    ///
+    #[error("Child Process error: {0}")]
+    ChildProcess(StatusError),
+
+    ///
+    #[error("Database error: {0}")]
+    Database(#[from] FinalisedStateError),
 }
 
-#[derive(Debug)]
-/// The high-level kinds of thing that can fail
-pub enum ChainIndexErrorKind {
-    /// Zaino is in some way nonfunctional
-    InternalServerError,
-    /// The given snapshot contains invalid data.
-    // This variant isn't used yet...it should indicate
-    // that the provided snapshot contains information unknown to Zebra
-    // Unlike an internal server error, generating a new snapshot may solve
-    // whatever went wrong
-    #[allow(dead_code)]
-    InvalidSnapshot,
-}
+// impl ChainIndexError {
+//     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
+//         Self {
+//             kind: ChainIndexErrorKind::InternalServerError,
+//             message: "InternalServerError: error receiving data from backing node".to_string(),
+//             source: Some(Box::new(value)),
+//         }
+//     }
 
-impl Display for ChainIndexErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            ChainIndexErrorKind::InternalServerError => "internal server error",
-            ChainIndexErrorKind::InvalidSnapshot => "invalid snapshot",
-        })
-    }
-}
-
-impl ChainIndexError {
-    pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message: "InternalServerError: error receiving data from backing node".to_string(),
-            source: Some(Box::new(value)),
-        }
-    }
-
-    pub(crate) fn database_hole(missing_block: impl Display) -> Self {
-        Self {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message: format!(
-                "InternalServerError: hole in validator database, missing block {missing_block}"
-            ),
-            source: None,
-        }
-    }
-
-    pub(crate) fn child_process_status_error(process: &str, status_err: StatusError) -> Self {
-        use crate::status::StatusType;
-
-        let message = match status_err.server_status {
-            StatusType::Spawning => format!("{process} status: Spawning (not ready yet)"),
-            StatusType::Syncing => format!("{process} status: Syncing (not ready yet)"),
-            StatusType::Ready => format!("{process} status: Ready (unexpected error path)"),
-            StatusType::Busy => format!("{process} status: Busy (temporarily unavailable)"),
-            StatusType::Closing => format!("{process} status: Closing (shutting down)"),
-            StatusType::Offline => format!("{process} status: Offline (not available)"),
-            StatusType::RecoverableError => {
-                format!("{process} status: RecoverableError (retry may succeed)")
-            }
-            StatusType::CriticalError => {
-                format!("{process} status: CriticalError (requires operator action)")
-            }
-        };
-
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
-            source: Some(Box::new(status_err)),
-        }
-    }
-}
-impl From<FinalisedStateError> for ChainIndexError {
-    fn from(value: FinalisedStateError) -> Self {
-        let message = match &value {
-            FinalisedStateError::DataUnavailable(err) => format!("unhandled missing data: {err}"),
-            FinalisedStateError::FeatureUnavailable(err) => {
-                format!("unhandled missing feature: {err}")
-            }
-            FinalisedStateError::InvalidBlock {
-                height,
-                hash: _,
-                reason,
-            } => format!("invalid block at height {height}: {reason}"),
-            FinalisedStateError::Custom(err) | FinalisedStateError::Critical(err) => err.clone(),
-            FinalisedStateError::LmdbError(error) => error.to_string(),
-            FinalisedStateError::SerdeJsonError(error) => error.to_string(),
-            FinalisedStateError::StatusError(status_error) => status_error.to_string(),
-            FinalisedStateError::JsonRpcConnectorError(transport_error) => {
-                transport_error.to_string()
-            }
-            FinalisedStateError::IoError(error) => error.to_string(),
-            FinalisedStateError::BlockchainSourceError(blockchain_source_error) => {
-                blockchain_source_error.to_string()
-            }
-        };
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
-            source: Some(Box::new(value)),
-        }
-    }
-}
-
-impl From<MempoolError> for ChainIndexError {
-    fn from(value: MempoolError) -> Self {
-        // Construct a user-facing message depending on the variant
-        let message = match &value {
-            MempoolError::Critical(msg) => format!("critical mempool error: {msg}"),
-            MempoolError::IncorrectChainTip {
-                expected_chain_tip,
-                current_chain_tip,
-            } => {
-                format!(
-                    "incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
-                )
-            }
-            MempoolError::JsonRpcConnectorError(err) => {
-                format!("mempool json-rpc connector error: {err}")
-            }
-            MempoolError::BlockchainSourceError(err) => {
-                format!("mempool blockchain source error: {err}")
-            }
-            MempoolError::WatchRecvError(err) => format!("mempool watch receiver error: {err}"),
-            MempoolError::StatusError(status_err) => {
-                format!("mempool status error: {status_err:?}")
-            }
-        };
-
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
-            source: Some(Box::new(value)),
-        }
-    }
-}
+//     pub(crate) fn database_hole(missing_block: impl Display) -> Self {
+//         Self {
+//             kind: ChainIndexErrorKind::InternalServerError,
+//             message: format!(
+//                 "InternalServerError: hole in validator database, missing block {missing_block}"
+//             ),
+//             source: None,
+//         }
+//     }
+// }
