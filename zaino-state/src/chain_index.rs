@@ -790,6 +790,27 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         snapshot: &Self::Snapshot,
         block_hash: &types::BlockHash,
     ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
+        // Is the requested data in the finalized Index?
+        return match self
+            .blockchain_source
+            .get_block(HashOrHeight::Hash(zebra_chain::block::Hash::from(
+                *block_hash,
+            )))
+            .await
+        {
+            Ok(Some(block)) => match block.coinbase_height() {
+                Some(height) => Ok(Some((
+                    types::BlockHash::from(block.hash()),
+                    types::Height::from(height),
+                ))),
+                None => todo!(),
+            },
+            Ok(None) => {
+                todo!()
+            }
+            Err(e) => Err(ChainIndexError::backing_validator(e)),
+        };
+        todo!();
         let Some(block) = snapshot.as_ref().get_chainblock_by_hash(block_hash) else {
             // We don't have the block in our non-finalized state,
             // we'll only be aware of it if it's main-chain.
