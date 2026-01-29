@@ -87,6 +87,74 @@ pub async fn poll_until_ready(
     .is_ok()
 }
 
+/// Asserts that the given component is live, panicking with a descriptive message if not.
+///
+/// If `waiting_for_block` is provided, includes it in the panic message for context.
+fn assert_is_live<T: Liveness + Status>(component: &T, waiting_for_block: Option<u64>) {
+    if !component.is_live() {
+        let status = component.status();
+        match waiting_for_block {
+            Some(height) => panic!(
+                "Component is not live while waiting for block {height} (status: {status:?}). \
+                 The backing validator may have crashed or become unreachable."
+            ),
+            None => panic!(
+                "Component is not live (status: {status:?}). \
+                 The backing validator may have crashed or become unreachable."
+            ),
+        }
+    }
+}
+
+/// Asserts that the chain index is live, panicking with a descriptive message if not.
+///
+/// Uses `combined_status()` for a complete view of all chain index components.
+fn assert_chain_index_is_live(chain_index: &NodeBackedChainIndexSubscriber, waiting_for_block: Option<u32>) {
+    if !chain_index.is_live() {
+        let status = chain_index.combined_status();
+        match waiting_for_block {
+            Some(height) => panic!(
+                "Chain index is not live while waiting for block {height} (status: {status:?}). \
+                 The backing validator may have crashed or become unreachable."
+            ),
+            None => panic!(
+                "Chain index is not live (status: {status:?}). \
+                 The backing validator may have crashed or become unreachable."
+            ),
+        }
+    }
+}
+
+/// Waits for the component to become ready, logging if additional wait time was needed.
+async fn wait_for_readiness(component: &impl Readiness) {
+    if !component.is_ready() {
+        let start = std::time::Instant::now();
+        poll_until_ready(
+            component,
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        if elapsed.as_millis() > 0 {
+            info!(
+                "Readiness wait after height poll took {:?} (height polling alone was insufficient)",
+                elapsed
+            );
+        }
+    }
+}
+
+/// Returns the current best chain tip height from the chain index.
+fn get_chain_index_height(chain_index: &NodeBackedChainIndexSubscriber) -> u32 {
+    u32::from(
+        chain_index
+            .snapshot_nonfinalized_state()
+            .best_chaintip()
+            .height,
+    )
+}
+
 // temporary until activation heights are unified to zebra-chain type.
 // from/into impls not added in zaino-common to avoid unecessary addition of zcash-protocol dep to non-test code
 /// Convert zaino activation heights into zcash protocol type.
@@ -562,49 +630,21 @@ where
         //     hash: vec![],
         // }).await.is_err()
         while indexer.get_latest_block().await.unwrap().height < target_height {
-            // Check liveness - fail fast if the indexer is dead
-            if !indexer.is_live() {
-                let status = indexer.status();
-                panic!(
-                    "Indexer is not live (status: {status:?}). \
-                     The backing validator may have crashed or become unreachable."
-                );
-            }
+            assert_is_live(indexer, None);
 
             if n == 0 {
                 interval.tick().await;
             } else {
                 self.local_net.generate_blocks(1).await.unwrap();
                 while indexer.get_latest_block().await.unwrap().height != next_block_height {
-                    if !indexer.is_live() {
-                        let status = indexer.status();
-                        panic!(
-                            "Indexer is not live while waiting for block {next_block_height} (status: {status:?})."
-                        );
-                    }
+                    assert_is_live(indexer, Some(next_block_height));
                     interval.tick().await;
                 }
                 next_block_height += 1;
             }
         }
 
-        // After height is reached, wait for readiness and measure if it adds time
-        if !indexer.is_ready() {
-            let start = std::time::Instant::now();
-            poll_until_ready(
-                indexer,
-                std::time::Duration::from_millis(50),
-                std::time::Duration::from_secs(30),
-            )
-            .await;
-            let elapsed = start.elapsed();
-            if elapsed.as_millis() > 0 {
-                info!(
-                    "Readiness wait after height poll took {:?} (height polling alone was insufficient)",
-                    elapsed
-                );
-            }
-        }
+        wait_for_readiness(indexer).await;
     }
 
     /// Generate `n` blocks for the local network and poll zaino's chain index until the chain index is synced to the target height.
@@ -619,66 +659,28 @@ where
         chain_index: &NodeBackedChainIndexSubscriber,
     ) {
         let chain_height = self.local_net.get_chain_height().await;
+        let target_height = chain_height + n;
         let mut next_block_height = chain_height + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
-        while u32::from(
-            chain_index
-                .snapshot_nonfinalized_state()
-                .best_chaintip()
-                .height,
-        ) < chain_height + n
-        {
-            // Check liveness - fail fast if the chain index is dead
-            if !chain_index.is_live() {
-                let status = chain_index.combined_status();
-                panic!(
-                    "Chain index is not live (status: {status:?}). \
-                     The backing validator may have crashed or become unreachable."
-                );
-            }
+
+        while get_chain_index_height(chain_index) < target_height {
+            assert_chain_index_is_live(chain_index, None);
 
             if n == 0 {
                 interval.tick().await;
             } else {
                 self.local_net.generate_blocks(1).await.unwrap();
-                while u32::from(
-                    chain_index
-                        .snapshot_nonfinalized_state()
-                        .best_chaintip()
-                        .height,
-                ) != next_block_height
-                {
-                    if !chain_index.is_live() {
-                        let status = chain_index.combined_status();
-                        panic!(
-                            "Chain index is not live while waiting for block {next_block_height} (status: {status:?})."
-                        );
-                    }
+                while get_chain_index_height(chain_index) != next_block_height {
+                    assert_chain_index_is_live(chain_index, Some(next_block_height));
                     interval.tick().await;
                 }
                 next_block_height += 1;
             }
         }
 
-        // After height is reached, wait for readiness and measure if it adds time
-        if !chain_index.is_ready() {
-            let start = std::time::Instant::now();
-            poll_until_ready(
-                chain_index,
-                std::time::Duration::from_millis(50),
-                std::time::Duration::from_secs(30),
-            )
-            .await;
-            let elapsed = start.elapsed();
-            if elapsed.as_millis() > 0 {
-                info!(
-                    "Readiness wait after height poll took {:?} (height polling alone was insufficient)",
-                    elapsed
-                );
-            }
-        }
+        wait_for_readiness(chain_index).await;
     }
 
     /// Closes the TestManager.
