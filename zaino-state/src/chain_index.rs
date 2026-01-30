@@ -581,7 +581,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             .transpose()
     }
 
-    async fn get_snapshot_block_height(
+    async fn get_indexed_block_height(
         &self,
         nonfinalized_snapshot: &NonfinalizedBlockCacheSnapshot,
         hash: types::BlockHash,
@@ -708,10 +708,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         nonfinalized_snapshot: &Self::Snapshot,
         hash: types::BlockHash,
     ) -> Result<Option<types::Height>, Self::Error> {
-        let snapshot_block_height = self
-            .get_snapshot_block_height(nonfinalized_snapshot, hash)
+        let indexed_block_height = self
+            .get_indexed_block_height(nonfinalized_snapshot, hash)
             .await?;
-        match snapshot_block_height {
+        match indexed_block_height {
             Some(h) => Ok(Some(h)),
             None => {
                 self.get_block_height_passthrough(nonfinalized_snapshot, hash)
@@ -794,46 +794,64 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         snapshot: &Self::Snapshot,
         block_hash: &types::BlockHash,
     ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
-        let Some(block) = snapshot.as_ref().get_chainblock_by_hash(block_hash) else {
-            // At this point, we know that
-            // the block is NOT PENDING in the INDEXER.
-            // TODO check the INDEXER for finalized block
-            // Next, ask the VALIDATOR.
-            return match self
-                .blockchain_source
-                .get_block(HashOrHeight::Hash(zebra_chain::block::Hash::from(
-                    *block_hash,
-                )))
-                .await
-            {
-                Ok(Some(block))
-                    if block.coinbase_height().unwrap()
-                        <= snapshot.validator_finalized_height =>
-                {
-                    // At this point, we know that
-                    // the block is FINALIZED in the VALIDATOR.
-                    // Return
-                    Ok(Some((
-                        types::BlockHash::from(block.hash()),
-                        types::Height::from(block.coinbase_height().unwrap()),
-                    )))
-                }
+        match snapshot.as_ref().get_chainblock_by_hash(block_hash) {
+            Some(block) => {
                 // At this point, we know that
-                // the block is NOT FINALIZED in the VALIDATOR.
-                // Return Ok(None) = no block found.
-                Ok(_) => Ok(None),
-                Err(e) => Err(ChainIndexError::backing_validator(e)),
-            };
-        };
-        // At this point, we know that
-        // The block is PENDING in the INDEXER
-        if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
-            Ok(Some((*block.hash(), block.height())))
-            // Otherwise, it's non-best chain! Grab its parent, and recurse
-        } else {
-            // gotta pin recursive async functions to prevent infinite-sized
-            // Future-implementing types
-            Box::pin(self.find_fork_point(snapshot, block.index().parent_hash())).await
+                // The block is non-FINALIZED in the INDEXER
+                if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
+                    // The block is in the best chain.
+                    Ok(Some((*block.hash(), block.height())))
+                } else {
+                    // Otherwise, it's non-best chain! Grab its parent, and recurse
+                    Box::pin(self.find_fork_point(snapshot, block.index().parent_hash())).await
+                    // gotta pin recursive async functions to prevent infinite-sized
+                    // Future-implementing types
+                }
+            }
+            None => {
+                // At this point, we know that
+                // the block is NOT non-FINALIZED in the INDEXER.
+                // TODO check the INDEXER for finalized block
+                match self.finalized_state.get_block_height(*block_hash).await {
+                    Ok(Some(height)) => {
+                        // the block is FINALIZED in the INDEXER
+                        Ok(Some((*block_hash, height)))
+                    }
+                    Err(_e) => Err(ChainIndexError::database_hole(block_hash)),
+                    Ok(None) => {
+                        // At this point, we know that
+                        // the block is NOT FINALIZED in the INDEXER
+                        // (NEITHER is it non-FINALIZED in the INDEXER)
+
+                        // Now, we ask the VALIDATOR.
+                        return match self
+                            .blockchain_source
+                            .get_block(HashOrHeight::Hash(zebra_chain::block::Hash::from(
+                                *block_hash,
+                            )))
+                            .await
+                        {
+                            Ok(Some(block))
+                                if block.coinbase_height().unwrap()
+                                    <= snapshot.validator_finalized_height.into() =>
+                            {
+                                // At this point, we know that
+                                // the block is FINALIZED in the VALIDATOR.
+                                // Return
+                                Ok(Some((
+                                    types::BlockHash::from(block.hash()),
+                                    types::Height::from(block.coinbase_height().unwrap()),
+                                )))
+                            }
+                            // At this point, we know that
+                            // the block is NOT FINALIZED in the VALIDATOR.
+                            // Return Ok(None) = no block found.
+                            Ok(_) => Ok(None),
+                            Err(e) => Err(ChainIndexError::backing_validator(e)),
+                        };
+                    }
+                }
+            }
         }
     }
 
