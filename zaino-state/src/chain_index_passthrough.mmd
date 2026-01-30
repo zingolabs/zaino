@@ -1,0 +1,18 @@
+flowchart TD
+    R[Return it]
+    A(Receive call)
+    A --> B
+    B["Is the requested data in the NONFINALIZED SnapShot ``BestChain``?"]
+    B --> |Yes| R
+    B --> |No| C
+    C["Is the requested data in the NONFINALIZED SnapShot ``NonBestChain``?"]
+    C --> |Yes| R
+    C --> |No| D
+    D[Is the requested data in the FINALIZED index?]
+    D -->|Yes| R
+    D --> |No| E
+    E["Is the requested data FINALIZED in the validator (passthrough) ?"]
+    E -->|Yes| R
+    E --> |No| N
+    N[Return None]
+

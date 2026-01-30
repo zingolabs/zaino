@@ -164,6 +164,9 @@ mod tests;
 /// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
 /// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
 /// 3. Call `NodeBackedChainIndex::new(source, config).await`
+///
+/// When a call asks for info (e.g. a block), Zaino selects sources in this order:
+#[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
 pub trait ChainIndex {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
