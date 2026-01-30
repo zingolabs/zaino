@@ -240,7 +240,7 @@ impl<T: BlockchainSource> Mempool<T> {
         let mut transactions = Vec::new();
 
         let txids = self.fetcher.get_mempool_txids().await?.ok_or_else(|| {
-            MempoolError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+            MempoolError::BlockchainSourceError(BlockchainSourceError::Custom(
                 "could not fetch mempool data: mempool txid list was None".to_string(),
             ))
         })?;
@@ -252,7 +252,7 @@ impl<T: BlockchainSource> Mempool<T> {
                 .await?
                 .ok_or_else(|| {
                     MempoolError::BlockchainSourceError(
-                        crate::chain_index::source::BlockchainSourceError::Unrecoverable(format!(
+                        crate::chain_index::source::BlockchainSourceError::Custom(format!(
                             "could not fetch mempool data: transaction not found for txid {txid}"
                         )),
                     )

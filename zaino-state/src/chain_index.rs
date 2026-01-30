@@ -580,7 +580,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             .transpose()
     }
 
-    async fn get_snapshot_block_height(
+    async fn get_indexed_block_height(
         &self,
         nonfinalized_snapshot: &NonfinalizedBlockCacheSnapshot,
         hash: types::BlockHash,
@@ -705,7 +705,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         hash: types::BlockHash,
     ) -> Result<Option<types::Height>, Self::Error> {
         let snapshot_block_height = self
-            .get_snapshot_block_height(nonfinalized_snapshot, hash)
+            .get_indexed_block_height(nonfinalized_snapshot, hash)
             .await?;
         match snapshot_block_height {
             Some(h) => Ok(Some(h)),

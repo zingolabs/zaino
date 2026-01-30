@@ -531,7 +531,7 @@ impl ZainoDB {
                 Some(block) => block,
                 None => {
                     return Err(FinalisedStateError::BlockchainSourceError(
-                        BlockchainSourceError::Unrecoverable(format!(
+                        BlockchainSourceError::Custom(format!(
                             "error fetching block at height {} from validator",
                             height.0
                         )),
@@ -548,14 +548,14 @@ impl ZainoDB {
                     }
                     (None, _) => {
                         return Err(FinalisedStateError::BlockchainSourceError(
-                            BlockchainSourceError::Unrecoverable(format!(
+                            BlockchainSourceError::Custom(format!(
                                 "missing Sapling commitment tree root for block {block_hash}"
                             )),
                         ));
                     }
                     (_, None) => {
                         return Err(FinalisedStateError::BlockchainSourceError(
-                            BlockchainSourceError::Unrecoverable(format!(
+                            BlockchainSourceError::Custom(format!(
                                 "missing Orchard commitment tree root for block {block_hash}"
                             )),
                         ));
@@ -576,7 +576,7 @@ impl ZainoDB {
                 Ok(block) => block,
                 Err(_) => {
                     return Err(FinalisedStateError::BlockchainSourceError(
-                        BlockchainSourceError::Unrecoverable(format!(
+                        BlockchainSourceError::Custom(format!(
                             "error building block data at height {}",
                             height.0
                         )),

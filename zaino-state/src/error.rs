@@ -549,7 +549,7 @@ impl From<crate::chain_index::source::BlockchainSourceError> for ChainIndexError
 pub enum MissingDataError {
     ///
     #[error("Missing block: {0}")]
-    Block(types::BlockHash),
+    Block(crate::chain_index::types::BlockHash),
 }
 
 #[derive(Debug, thiserror::Error)]
