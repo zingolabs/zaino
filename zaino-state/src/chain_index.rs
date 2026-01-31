@@ -593,10 +593,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 .find(|h| **h == hash)
                 // Canonical height is None for blocks not on the best chain
                 .map(|_| block.index().height())),
-            None => match self.finalized_state.get_block_height(hash).await {
-                Ok(height) => Ok(height),
-                Err(_e) => Err(ChainIndexError::database_hole(hash)),
-            },
+            None => self
+                .finalized_state
+                .get_block_height(hash)
+                .await
+                .map_err(|_e| ChainIndexError::database_hole(hash)),
         }
     }
 
