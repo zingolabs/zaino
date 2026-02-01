@@ -634,8 +634,8 @@ pub struct BlockIndex {
     pub parent_hash: BlockHash,
     /// The cumulative proof-of-work of the blockchain up to this block, used for chain selection.
     pub chainwork: ChainWork,
-    /// The height of this block if it's in the current best chain. None if it's part of a fork.
-    pub height: Option<Height>,
+    /// The height of this block.
+    pub height: Height,
 }
 
 impl BlockIndex {
@@ -644,7 +644,7 @@ impl BlockIndex {
         hash: BlockHash,
         parent_hash: BlockHash,
         chainwork: ChainWork,
-        height: Option<Height>,
+        height: Height,
     ) -> Self {
         Self {
             hash,
@@ -670,7 +670,7 @@ impl BlockIndex {
     }
 
     /// Returns the height of this block if it’s part of the best chain.
-    pub fn height(&self) -> Option<Height> {
+    pub fn height(&self) -> Height {
         self.height
     }
 }
@@ -685,7 +685,7 @@ impl ZainoVersionedSerde for BlockIndex {
         self.parent_hash.serialize(&mut w)?;
         self.chainwork.serialize(&mut w)?;
 
-        write_option(&mut w, &self.height, |w, h| h.serialize(w))
+        write_option(&mut w, &Some(self.height), |w, h| h.serialize(w))
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -699,7 +699,12 @@ impl ZainoVersionedSerde for BlockIndex {
         let chainwork = ChainWork::deserialize(&mut r)?;
         let height = read_option(&mut r, |r| Height::deserialize(r))?;
 
-        Ok(BlockIndex::new(hash, parent_hash, chainwork, height))
+        Ok(BlockIndex::new(
+            hash,
+            parent_hash,
+            chainwork,
+            height.expect("blocks always have height"),
+        ))
     }
 }
 
@@ -1132,7 +1137,7 @@ impl IndexedBlock {
     }
 
     /// Returns the block height if available.
-    pub fn height(&self) -> Option<Height> {
+    pub fn height(&self) -> Height {
         self.index.height()
     }
 
@@ -1147,9 +1152,15 @@ impl IndexedBlock {
     }
 
     /// Converts this `IndexedBlock` into a CompactBlock protobuf message using proto v4 format.
+    ///
+    /// NOTE: This method currently includes transparent tx data in the compact block produced,
+    ///       `zaino-state::local_cache::compact_block_with_pool_types` should be used to selectively
+    ///       remove tx data by pool type. Alternatively this method could be updated to take a
+    ///       `zaino-proto::proto::utils::PoolTypeFilter` could be  added as an input to this method,
+    ///       with tx data being added selectively here.
     pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
         // NOTE: Returns u64::MAX if the block is not in the best chain.
-        let height: u64 = self.height().map(|h| h.0.into()).unwrap_or(u64::MAX);
+        let height: u64 = self.height().0.into();
 
         let hash = self.hash().0.to_vec();
         let prev_hash = self.index().parent_hash().0.to_vec();
@@ -1157,17 +1168,7 @@ impl IndexedBlock {
         let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = self
             .transactions()
             .iter()
-            .filter_map(|tx| {
-                let has_shielded = !tx.sapling().spends().is_empty()
-                    || !tx.sapling().outputs().is_empty()
-                    || !tx.orchard().actions().is_empty();
-
-                if !has_shielded {
-                    return None;
-                }
-
-                Some(tx.to_compact_tx(None))
-            })
+            .map(|tx| tx.to_compact_tx(None))
             .collect();
 
         let sapling_commitment_tree_size = self.commitment_tree_data().sizes().sapling();
@@ -1344,7 +1345,7 @@ impl
             BlockHash::from(hash),
             BlockHash::from(parent_hash),
             chainwork,
-            Some(height),
+            height,
         );
 
         Ok(IndexedBlock::new(
@@ -1465,13 +1466,19 @@ impl CompactTxData {
             )
             .collect();
 
+        let vout = self.transparent().compact_vout();
+
+        let vin = self.transparent().compact_vin();
+
         zaino_proto::proto::compact_formats::CompactTx {
             index: self.index(),
-            hash: self.txid().0.to_vec(),
+            txid: self.txid().0.to_vec(),
             fee,
             spends,
             outputs,
             actions,
+            vin,
+            vout,
         }
     }
 }
@@ -1674,6 +1681,23 @@ impl TransparentCompactTx {
     pub fn outputs(&self) -> &[TxOutCompact] {
         &self.vout
     }
+
+    /// Returns Proto CompactTxIn values, omitting the null prevout used by coinbase.
+    pub fn compact_vin(&self) -> Vec<zaino_proto::proto::compact_formats::CompactTxIn> {
+        self.inputs()
+            .iter()
+            .filter(|txin| !txin.is_null_prevout())
+            .map(|txin| txin.to_compact())
+            .collect()
+    }
+
+    /// Returns Proto TxOut values.
+    pub fn compact_vout(&self) -> Vec<zaino_proto::proto::compact_formats::TxOut> {
+        self.outputs()
+            .iter()
+            .map(|txout| txout.to_compact())
+            .collect()
+    }
 }
 
 /// A compact reference to a previously created transparent UTXO being spent.
@@ -1713,10 +1737,18 @@ impl TxInCompact {
         self.prevout_index
     }
 
-    /// `true` iff this input is the special “null” out-point used by a
+    /// `true` if this input is the special “null” out-point used by a
     /// coinbase transaction (all-zero txid, index 0xffff_ffff).
     pub fn is_null_prevout(&self) -> bool {
         self.prevout_txid == [0u8; 32] && self.prevout_index == u32::MAX
+    }
+
+    /// Creates a Proto CompactTxIn from this record.
+    pub fn to_compact(&self) -> zaino_proto::proto::compact_formats::CompactTxIn {
+        zaino_proto::proto::compact_formats::CompactTxIn {
+            prevout_txid: self.prevout_txid.to_vec(),
+            prevout_index: self.prevout_index,
+        }
     }
 }
 
@@ -1908,6 +1940,22 @@ impl TxOutCompact {
     /// Returns script type Enum.
     pub fn script_type_enum(&self) -> Option<ScriptType> {
         ScriptType::try_from(self.script_type).ok()
+    }
+
+    /// Creates a Proto TxOut from this record.
+    ///
+    /// Note: this reconstructs standard P2PKH / P2SH scripts. For NonStandard outputs,
+    /// this returns an empty script_pub_key.
+    pub fn to_compact(&self) -> zaino_proto::proto::compact_formats::TxOut {
+        let script_pub_key = self
+            .script_type_enum()
+            .and_then(|script_type| build_standard_script(self.script_hash, script_type))
+            .unwrap_or_default();
+
+        zaino_proto::proto::compact_formats::TxOut {
+            value: self.value,
+            script_pub_key,
+        }
     }
 }
 

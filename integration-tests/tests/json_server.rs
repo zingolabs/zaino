@@ -43,7 +43,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
 
     println!("Launching zcashd fetch service..");
     let zcashd_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.full_node_rpc_listen_address,
+        test_manager.full_node_rpc_listen_address.to_string(),
         None,
         None,
         None,
@@ -70,7 +70,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
 
     println!("Launching zaino fetch service..");
     let zaino_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.full_node_rpc_listen_address,
+        test_manager.full_node_rpc_listen_address.to_string(),
         test_manager.json_server_cookie_dir.clone(),
         None,
         None,

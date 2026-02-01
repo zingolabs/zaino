@@ -92,7 +92,7 @@ pub enum BlockchainSourceError {
 #[error("data from validator invalid: {0}")]
 pub struct InvalidData(String);
 
-type BlockchainSourceResult<T> = Result<T, BlockchainSourceError>;
+pub(crate) type BlockchainSourceResult<T> = Result<T, BlockchainSourceError>;
 
 /// ReadStateService based validator connector.
 ///

@@ -5,8 +5,12 @@ use crate::chain::{
     utils::{read_bytes, read_i64, read_u32, read_u64, skip_bytes, CompactSize, ParseFromSlice},
 };
 use std::io::Cursor;
-use zaino_proto::proto::compact_formats::{
-    CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
+use zaino_proto::proto::{
+    compact_formats::{
+        CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx, CompactTxIn,
+        TxOut as CompactTxOut,
+    },
+    utils::PoolTypeFilter,
 };
 
 /// Txin format as described in <https://en.bitcoin.it/wiki/Transaction>
@@ -26,6 +30,12 @@ pub struct TxIn {
 impl TxIn {
     fn into_inner(self) -> (Vec<u8>, u32, Vec<u8>) {
         (self.prev_txid, self.prev_index, self.script_sig)
+    }
+
+    /// Returns `true` if this `OutPoint` is "null" in the Bitcoin sense: it has txid set to
+    /// all-zeroes and output index set to `u32::MAX`.
+    fn is_null(&self) -> bool {
+        self.prev_txid.as_slice() == [0u8; 32] && self.prev_index == u32::MAX
     }
 }
 
@@ -1122,51 +1132,109 @@ impl FullTransaction {
     }
 
     /// Converts a zcash full transaction into a compact transaction.
+    #[deprecated]
     pub fn to_compact(self, index: u64) -> Result<CompactTx, ParseError> {
-        let hash = self.tx_id;
+        self.to_compact_tx(Some(index), &PoolTypeFilter::default())
+    }
 
-        // NOTE: LightWalletD currently does not return a fee and is not currently priority here. Please open an Issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer) if you require this functionality.
+    /// Converts a Zcash Transaction into a `CompactTx` of the Light wallet protocol.
+    /// if the transaction you want to convert is a mempool transaction you can specify `None`.
+    /// specify the `PoolType`s that the transaction should include in the `pool_types` argument
+    /// with a `PoolTypeFilter` indicating which pools the compact block should include.
+    pub fn to_compact_tx(
+        self,
+        index: Option<u64>,
+        pool_types: &PoolTypeFilter,
+    ) -> Result<CompactTx, ParseError> {
+        let hash = self.tx_id();
+
+        // NOTE: LightWalletD currently does not return a fee and is not currently priority here.
+        // Please open an Issue or PR at the Zingo-Indexer github (https://github.com/zingolabs/zingo-indexer)
+        // if you require this functionality.
         let fee = 0;
 
-        let spends = self
-            .raw_transaction
-            .shielded_spends
-            .iter()
-            .map(|spend| CompactSaplingSpend {
-                nf: spend.nullifier.clone(),
-            })
-            .collect();
+        let spends = if pool_types.includes_sapling() {
+            self.raw_transaction
+                .shielded_spends
+                .iter()
+                .map(|spend| CompactSaplingSpend {
+                    nf: spend.nullifier.clone(),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
-        let outputs = self
-            .raw_transaction
-            .shielded_outputs
-            .iter()
-            .map(|output| CompactSaplingOutput {
-                cmu: output.cmu.clone(),
-                ephemeral_key: output.ephemeral_key.clone(),
-                ciphertext: output.enc_ciphertext[..52].to_vec(),
-            })
-            .collect();
+        let outputs = if pool_types.includes_sapling() {
+            self.raw_transaction
+                .shielded_outputs
+                .iter()
+                .map(|output| CompactSaplingOutput {
+                    cmu: output.cmu.clone(),
+                    ephemeral_key: output.ephemeral_key.clone(),
+                    ciphertext: output.enc_ciphertext[..52].to_vec(),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
-        let actions = self
-            .raw_transaction
-            .orchard_actions
-            .iter()
-            .map(|action| CompactOrchardAction {
-                nullifier: action.nullifier.clone(),
-                cmx: action.cmx.clone(),
-                ephemeral_key: action.ephemeral_key.clone(),
-                ciphertext: action.enc_ciphertext[..52].to_vec(),
-            })
-            .collect();
+        let actions = if pool_types.includes_orchard() {
+            self.raw_transaction
+                .orchard_actions
+                .iter()
+                .map(|action| CompactOrchardAction {
+                    nullifier: action.nullifier.clone(),
+                    cmx: action.cmx.clone(),
+                    ephemeral_key: action.ephemeral_key.clone(),
+                    ciphertext: action.enc_ciphertext[..52].to_vec(),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let vout = if pool_types.includes_transparent() {
+            self.raw_transaction
+                .transparent_outputs
+                .iter()
+                .map(|t_out| CompactTxOut {
+                    value: t_out.value,
+                    script_pub_key: t_out.script_hash.clone(),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let vin = if pool_types.includes_transparent() {
+            self.raw_transaction
+                .transparent_inputs
+                .iter()
+                .filter_map(|t_in| {
+                    if t_in.is_null() {
+                        None
+                    } else {
+                        Some(CompactTxIn {
+                            prevout_txid: t_in.prev_txid.clone(),
+                            prevout_index: t_in.prev_index,
+                        })
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         Ok(CompactTx {
-            index,
-            hash,
+            index: index.unwrap_or(0), // this assumes that mempool txs have a zeroed index
+            txid: hash,
             fee,
             spends,
             outputs,
             actions,
+            vin,
+            vout,
         })
     }
 

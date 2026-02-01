@@ -229,9 +229,10 @@ impl JsonRpSeeConnector {
         })
     }
 
-    /// Helper function to create from parts of a StateServiceConfig or FetchServiceConfig
+    /// Helper function to create from parts of a StateServiceConfig or FetchServiceConfig.
+    /// Accepts both hostname:port (e.g., "zebra:18232") and ip:port (e.g., "127.0.0.1:18232") formats.
     pub async fn new_from_config_parts(
-        validator_rpc_address: SocketAddr,
+        validator_rpc_address: &str,
         validator_rpc_user: String,
         validator_rpc_password: String,
         validator_cookie_path: Option<PathBuf>,
@@ -871,13 +872,22 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
     Ok(())
 }
 
-/// Tries to connect to zebrad/zcashd using the provided SocketAddr and returns the correct URL.
+/// Resolves an address string (hostname:port or ip:port) to a SocketAddr.
+fn resolve_address(address: &str) -> Result<SocketAddr, TransportError> {
+    zaino_common::net::resolve_socket_addr(address)
+        .map_err(|e| TransportError::BadNodeData(Box::new(e), "address resolution"))
+}
+
+/// Tries to connect to zebrad/zcashd using the provided address and returns the correct URL.
+/// Accepts both hostname:port (e.g., "zebra:18232") and ip:port (e.g., "127.0.0.1:18232") formats.
 pub async fn test_node_and_return_url(
-    addr: SocketAddr,
+    address: &str,
     cookie_path: Option<PathBuf>,
     user: Option<String>,
     password: Option<String>,
 ) -> Result<Url, TransportError> {
+    let addr = resolve_address(address)?;
+
     let auth_method = match cookie_path.is_some() {
         true => {
             let cookie_file_path_str = cookie_path.expect("validator rpc cookie path missing");
@@ -911,6 +921,26 @@ pub async fn test_node_and_return_url(
         }
         interval.tick().await;
     }
-    error!("Error: Could not establish connection with node. Please check config and confirm node is listening at the correct address and the correct authorisation details have been entered. Exiting..");
+    error!("Error: Could not establish connection with node. Please check config and confirm node is listening at {url} and the correct authorisation details have been entered. Exiting..");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_address_wraps_common_function() {
+        // Verify the wrapper correctly converts io::Error to TransportError
+        let result = resolve_address("127.0.0.1:8080");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().port(), 8080);
+
+        let result = resolve_address("invalid");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TransportError::BadNodeData(_, "address resolution")
+        ));
+    }
 }

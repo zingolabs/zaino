@@ -115,9 +115,9 @@ zaino-common.path = "zaino-common"
 zaino-testutils = { path = "zaino-testutils" }
 zaino-testvectors = { path = "zaino-testvectors" }
 zainod = { path = "zainod" }
-figment = "0.10"
+config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
-proptest = "~1.2"
+proptest = "~1.6"
 zip32 = "0.2.1"
 
 # Patch for vulnerable dependency

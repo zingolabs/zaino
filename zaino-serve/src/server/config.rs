@@ -19,6 +19,7 @@ pub struct GrpcTls {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct GrpcServerConfig {
     /// gRPC server bind addr.
+    #[serde(alias = "grpc_listen_address")]
     pub listen_address: SocketAddr,
     /// Enables TLS.
     pub tls: Option<GrpcTls>,

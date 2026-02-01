@@ -8,8 +8,8 @@ use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
         compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
-        BlockRange, ChainSpec, Duration, Empty, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
+        BlockRange, ChainSpec, Duration, Empty, GetAddressUtxosArg, GetAddressUtxosReplyList,
+        GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
         SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
@@ -142,20 +142,26 @@ where
         get_transaction(TxFilter) -> RawTransaction,
         "submit the given transaction to the zcash network."
         send_transaction(RawTransaction) -> SendResponse,
+        "Return the transactions corresponding to the given t-address within the given block range"
+        get_taddress_transactions(TransparentAddressBlockFilter) -> Self::GetTaddressTransactionsStream as streaming,
         "This name is misleading, returns the full transactions that have either inputs or outputs connected to the given transparent address."
         get_taddress_txids(TransparentAddressBlockFilter) -> Self::GetTaddressTxidsStream as streaming,
         "Returns the total balance for a list of taddrs"
         get_taddress_balance(AddressList) -> Balance,
-        "Return the compact transactions currently in the mempool; the results \
-        can be a few seconds out of date. If the Exclude list is empty, return \
-        all transactions; otherwise return all *except* those in the Exclude list \
-        (if any); this allows the client to avoid receiving transactions that it \
-        already has (from an earlier call to this rpc). The transaction IDs in the \
-        Exclude list can be shortened to any number of bytes to make the request \
-        more bandwidth-efficient; if two or more transactions in the mempool \
-        match a shortened txid, they are all sent (none is excluded). Transactions \
-        in the exclude list that don't exist in the mempool are ignored."
-        get_mempool_tx(Exclude) -> Self::GetMempoolTxStream as streaming,
+
+        "Returns a stream of the compact transaction representation for transactions \
+        currently in the mempool. The results of this operation may be a few \
+        seconds out of date. If the `exclude_txid_suffixes` list is empty, \
+        return all transactions; otherwise return all *except* those in the \
+        `exclude_txid_suffixes` list (if any); this allows the client to avoid \
+        receiving transactions that it already has (from an earlier call to this \
+        RPC). The transaction IDs in the `exclude_txid_suffixes` list can be \
+        shortened to any number of bytes to make the request more \
+        bandwidth-efficient; if two or more transactions in the mempool match a \
+        txid suffix, none of the matching transactions are excluded. Txid \
+        suffixes in the exclude list that don't match any transactions in the \
+        mempool are ignored."
+        get_mempool_tx(GetMempoolTxRequest) -> Self::GetMempoolTxStream as streaming,
         "GetTreeState returns the note commitment tree state corresponding to the given block. \
         See section 3.7 of the Zcash protocol specification. It returns several other useful \
         values also (even though they can be obtained using GetBlock).
@@ -198,6 +204,10 @@ where
     /// Server streaming response type for the GetBlockRangeNullifiers method.
     #[doc = " Server streaming response type for the GetBlockRangeNullifiers method."]
     type GetBlockRangeNullifiersStream = std::pin::Pin<Box<CompactBlockStream>>;
+
+    /// Server streaming response type for the  GetTaddressTransactions method.
+    #[doc = "Server streaming response type for the GetTaddressTransactions method."]
+    type GetTaddressTransactionsStream = std::pin::Pin<Box<RawTransactionStream>>;
 
     /// Server streaming response type for the GetTaddressTxids method.
     #[doc = "Server streaming response type for the GetTaddressTxids method."]

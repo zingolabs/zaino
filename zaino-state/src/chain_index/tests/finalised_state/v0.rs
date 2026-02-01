@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::ZainoDB;
@@ -14,6 +15,7 @@ use crate::chain_index::tests::vectors::{
     build_mockchain_source, load_test_vectors, TestVectorBlockData, TestVectorData,
 };
 use crate::error::FinalisedStateError;
+use crate::local_cache::compact_block_with_pool_types;
 use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
 
 pub(crate) async fn spawn_v0_zaino_db(
@@ -262,8 +264,77 @@ async fn get_compact_blocks() {
 
         parent_chain_work = *chain_block.index().chainwork();
 
-        let reader_compact_block = db_reader.get_compact_block(Height(*height)).await.unwrap();
-        assert_eq!(compact_block, reader_compact_block);
+        let reader_compact_block_default = db_reader
+            .get_compact_block(Height(*height), PoolTypeFilter::default())
+            .await
+            .unwrap();
+        let default_compact_block = compact_block_with_pool_types(
+            compact_block.clone(),
+            &PoolTypeFilter::default().to_pool_types_vector(),
+        );
+        assert_eq!(default_compact_block, reader_compact_block_default);
+
+        let reader_compact_block_all_data = db_reader
+            .get_compact_block(Height(*height), PoolTypeFilter::includes_all())
+            .await
+            .unwrap();
+        let all_data_compact_block = compact_block_with_pool_types(
+            compact_block,
+            &PoolTypeFilter::includes_all().to_pool_types_vector(),
+        );
+        assert_eq!(all_data_compact_block, reader_compact_block_all_data);
+
         println!("CompactBlock at height {height} OK");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_compact_block_stream() {
+    use futures::StreamExt;
+
+    init_tracing();
+
+    let (TestVectorData { blocks, .. }, _db_dir, _zaino_db, db_reader) =
+        load_vectors_v0db_and_reader().await;
+
+    let start_height = Height(blocks.first().unwrap().height);
+    let end_height = Height(blocks.last().unwrap().height);
+
+    for pool_type_filter in [PoolTypeFilter::default(), PoolTypeFilter::includes_all()] {
+        let compact_block_stream = db_reader
+            .get_compact_block_stream(start_height, end_height, pool_type_filter.clone())
+            .await
+            .unwrap();
+
+        futures::pin_mut!(compact_block_stream);
+
+        let mut expected_next_height_u32: u32 = start_height.0;
+        let mut streamed_block_count: usize = 0;
+
+        while let Some(block_result) = compact_block_stream.next().await {
+            let streamed_compact_block = block_result.unwrap();
+
+            let streamed_height_u32: u32 = u32::try_from(streamed_compact_block.height).unwrap();
+
+            assert_eq!(streamed_height_u32, expected_next_height_u32);
+
+            let singular_compact_block = db_reader
+                .get_compact_block(Height(streamed_height_u32), pool_type_filter.clone())
+                .await
+                .unwrap();
+
+            assert_eq!(singular_compact_block, streamed_compact_block);
+
+            expected_next_height_u32 = expected_next_height_u32.saturating_add(1);
+            streamed_block_count = streamed_block_count.saturating_add(1);
+        }
+
+        let expected_block_count: usize = (end_height
+            .0
+            .saturating_sub(start_height.0)
+            .saturating_add(1)) as usize;
+
+        assert_eq!(streamed_block_count, expected_block_count);
+        assert_eq!(expected_next_height_u32, end_height.0.saturating_add(1));
     }
 }

@@ -1,4 +1,128 @@
-//! Migration management and implementations.
+//! Database version migration framework and implementations
+//!
+//! This file defines how `ZainoDB` migrates on-disk databases between database versions.
+//!
+//! Migrations are orchestrated by [`MigrationManager`], which is invoked from `ZainoDB::spawn` when
+//! `current_version < target_version`.
+//!
+//! The migration model is **stepwise**:
+//! - each migration maps one concrete `DbVersion` to the next supported `DbVersion`,
+//! - the manager iteratively applies steps until the target is reached.
+//!
+//! # Key concepts
+//!
+//! - [`Migration<T>`] trait:
+//!   - declares `CURRENT_VERSION` and `TO_VERSION` constants,
+//!   - provides an async `migrate(...)` entry point.
+//!
+//! - [`MigrationManager<T>`]:
+//!   - holds the router, config, current and target versions, and a `BlockchainSource`,
+//!   - repeatedly selects and runs the next migration via `get_migration()`.
+//!
+//! - [`MigrationStep`]:
+//!   - enum-based dispatch wrapper used by `MigrationManager` to select between multiple concrete
+//!     `Migration<T>` implementations (Rust cannot return different `impl Trait` types from a `match`).
+//!
+//! - [`capability::MigrationStatus`]:
+//!   - stored in `DbMetadata` and used to resume work safely after shutdown.
+//!
+//! # How major migrations work in this codebase
+//!
+//! This module is designed around the router’s **primary + shadow** model:
+//!
+//! - The *primary* DB continues serving read/write traffic.
+//! - A *shadow* DB (new schema version) is created and built in parallel.
+//! - Once the shadow DB is fully built and marked complete, it is promoted to primary.
+//! - The old primary DB is shut down and deleted from disk once all handles are dropped.
+//!
+//! This minimises downtime and allows migrations that require a full rebuild (rather than an
+//! in-place rewrite) without duplicating the entire DB indefinitely.
+//!
+//! It ia also possible (if migration allows) to partially build the new database version, switch
+//! specific functionality to the shadow, and partialy delete old the database version, rather than
+//! building the new database in full. This enables developers to minimise transient disk usage
+//! during migrations.
+//!
+//! # Implemented migrations
+//!
+//! ## v0.0.0 → v1.0.0
+//!
+//! `Migration0_0_0To1_0_0` performs a **full shadow rebuild from genesis**.
+//!
+//! Rationale (as enforced by code/comments):
+//! - The legacy v0 DB is a lightwallet-specific store that only builds compact blocks from Sapling
+//!   activation onwards.
+//! - v1 requires data from genesis (notably for transparent address history indices), therefore a
+//!   partial “continue from Sapling” build is insufficient.
+//!
+//! Mechanics:
+//! - Spawn v1 as a shadow backend.
+//! - Determine the current shadow tip (to resume if interrupted).
+//! - Fetch blocks and commitment tree roots from the `BlockchainSource` starting at either genesis
+//!   or `shadow_tip + 1`, building `BlockMetadata` and `IndexedBlock`.
+//! - Keep building until the shadow catches up to the primary tip (looping because the primary can
+//!   advance during the build).
+//! - Mark `migration_status = Complete` in shadow metadata.
+//! - Promote shadow to primary via `router.promote_shadow()`.
+//! - Delete the old v0 directory asynchronously once all strong references are dropped.
+//!
+//! ## v1.0.0 → v1.1.0
+//!
+//! `Migration1_0_0To1_1_0` is a **minor version bump** with **no schema changes**, but does include
+//! changes to the external ZainoDB API.
+//!
+//! It updates the stored `DbMetadata` version to reflect the v1.1.0 API contract:
+//! - `CompactBlockExt` now includes `get_compact_block_stream(...)`.
+//! - compact block transaction materialization is now selected via `PoolTypeFilter` (including
+//!   optional transparent data).
+//!
+//! This release also introduces [`MigrationStep`], the enum-based migration dispatcher used by
+//! [`MigrationManager`], to allow selecting between multiple concrete migration implementations.
+//!
+//! # Development: adding a new migration step
+//!
+//! 1. Introduce a new `struct MigrationX_Y_ZToA_B_C;` and implement `Migration<T>`.
+//! 2. Add a new `MigrationStep` variant and register it in `MigrationManager::get_migration()` by
+//!    matching on the *current* version.
+//! 3. Ensure the migration is:
+//!    - deterministic,
+//!    - resumable (use `DbMetadata::migration_status` and/or shadow tip),
+//!    - crash-safe (never leaves a partially promoted DB).
+//! 4. Add tests/fixtures for:
+//!    - starting from the old version,
+//!    - resuming mid-build if applicable,
+//!    - validating the promoted DB serves required capabilities.
+//!
+//! # Notes on MigrationType
+//! Database versioning (and migration) is split into three distinct types, dependant of the severity
+//! of changes being made to the database:
+//! - Major versions / migrations:
+//!   - Major schema / capability changes, notably changes that require refetching the complete
+//!     blockchain from the backing validator / finaliser to build / update database indices.
+//!   - Migrations should follow the "primary" database / "shadow" database model. The legacy database
+//!     should be spawned as the "primary" and set to carry on serving data during migration. The new
+//!     database version is then spawned as the "shadow" and built in a background process. Once the
+//!     "shadow" is built to "primary" db tip height it is promoted to primary, taking over serving
+//!     data from the legacy database, the demoted database can then be safely removed from disk. It is
+//!     also possible to partially build the new database version , promote specific database capability,
+//!     and delete specific tables from the legacy database, reducing transient disk usage.
+//! - Minor versions / migrations:
+//!   - Updates involving minor schema / capability changes, notably changes that can be rebuilt in place
+//!     (changes that do not require fetching new data from the backing validator / finaliser) or that can
+//!     rely on updates to the versioned serialisation / deserialisation of database structures.
+//!   - Migrations for minor patch bumps can follow several paths. If the database table being updated
+//!     holds variable length items, and the actual data being held is not changed (only format changes
+//!     being applied) then it may be possible to rely on serialisation / deserialisation updates to the
+//!     items being chenged, with the database table holding a mix of serialisation versions. However,
+//!     if the table being updated is of fixed length items, or the actual data held is being updated,
+//!     then it will be necessary to rebuild that table in full, possibly requiring database downtime for
+//!     the migration. Since this only involves moving data already held in the database (rather than
+//!     fetching new data from the backing validator) migration should be quick and short downtimes are
+//!     accepted.
+//! - Patch versions / migrations:
+//!   - Changes to database code that do not touch the database schema, these include bug fixes,
+//!     performance improvements etc.
+//!   - Migrations for patch updates only need to handle updating the stored DbMetadata singleton.
 
 use super::{
     capability::{
@@ -9,7 +133,9 @@ use super::{
 };
 
 use crate::{
-    chain_index::{source::BlockchainSource, types::GENESIS_HEIGHT},
+    chain_index::{
+        finalised_state::capability::DbMetadata, source::BlockchainSource, types::GENESIS_HEIGHT,
+    },
     config::BlockCacheConfig,
     error::FinalisedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock,
@@ -20,26 +146,70 @@ use std::sync::Arc;
 use tracing::info;
 use zebra_chain::parameters::NetworkKind;
 
+/// Broad categorisation of migration severity.
+///
+/// This enum exists as a design aid to communicate intent and constraints:
+/// - **Patch**: code-only changes; schema is unchanged; typically only `DbMetadata` needs updating.
+/// - **Minor**: compatible schema / encoding evolution; may require in-place rebuilds of selected tables.
+/// - **Major**: capability or schema changes that require rebuilding indices from the backing validator,
+///   typically using the router’s primary/shadow model.
+///
+/// Note: this enum is not currently used to dispatch behaviour in this file; concrete steps are
+/// selected by [`MigrationManager::get_migration`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrationType {
+    /// Patch-level changes: no schema change; metadata updates only.
     Patch,
+
+    /// Minor-level changes: compatible schema/encoding changes; may require in-place table rebuild.
     Minor,
+
+    /// Major-level changes: new schema/capabilities; usually requires shadow rebuild and promotion.
     Major,
 }
 
+/// A single migration step from one concrete on-disk version to the next.
+///
+/// Migrations are designed to be **composable** and **stepwise**: each implementation should map a
+/// specific `CURRENT_VERSION` to a specific `TO_VERSION`. The manager then iterates until the target
+/// version is reached.
+///
+/// ## Resumability and crash-safety
+/// Migration implementations are expected to be resumable where practical. In this codebase, major
+/// migrations typically use:
+/// - a shadow database that can be incrementally built,
+/// - the shadow tip height as an implicit progress marker,
+/// - and [`MigrationStatus`] in `DbMetadata` as an explicit progress marker.
+///
+/// Implementations must never promote a partially-correct database to primary.
 #[async_trait]
 pub trait Migration<T: BlockchainSource> {
+    /// The exact on-disk version this step migrates *from*.
     const CURRENT_VERSION: DbVersion;
+
+    /// The exact on-disk version this step migrates *to*.
     const TO_VERSION: DbVersion;
 
+    /// Returns the version this step migrates *from*.
     fn current_version(&self) -> DbVersion {
         Self::CURRENT_VERSION
     }
 
+    /// Returns the version this step migrates *to*.
     fn to_version(&self) -> DbVersion {
         Self::TO_VERSION
     }
 
+    /// Performs the migration step.
+    ///
+    /// Implementations may:
+    /// - spawn a shadow backend,
+    /// - build or rebuild indices,
+    /// - update metadata and migration status,
+    /// - and promote the shadow backend to primary via the router.
+    ///
+    /// # Errors
+    /// Returns `FinalisedStateError` if the migration cannot proceed safely or deterministically.
     async fn migrate(
         &self,
         router: Arc<Router>,
@@ -48,16 +218,43 @@ pub trait Migration<T: BlockchainSource> {
     ) -> Result<(), FinalisedStateError>;
 }
 
+/// Orchestrates a sequence of migration steps until `target_version` is reached.
+///
+/// `MigrationManager` is constructed by `ZainoDB::spawn` when it detects that the on-disk database
+/// is older than the configured target version.
+///
+/// The manager:
+/// - selects the next step based on the current version,
+/// - runs it,
+/// - then advances `current_version` to the step’s `TO_VERSION` and repeats.
+///
+/// The router is shared so that migration steps can use the primary/shadow routing model.
 pub(super) struct MigrationManager<T: BlockchainSource> {
+    /// Router controlling primary/shadow backends and capability routing.
     pub(super) router: Arc<Router>,
+
+    /// Block-cache configuration (paths, network, configured target DB version, etc.).
     pub(super) cfg: BlockCacheConfig,
+
+    /// The on-disk version currently detected/opened.
     pub(super) current_version: DbVersion,
+
+    /// The configured target version to migrate to.
     pub(super) target_version: DbVersion,
+
+    /// Backing data source used to fetch blocks / tree roots for rebuild-style migrations.
     pub(super) source: T,
 }
 
 impl<T: BlockchainSource> MigrationManager<T> {
     /// Iteratively performs each migration step from current version to target version.
+    ///
+    /// The manager applies steps in order, where each step maps one specific `DbVersion` to the next.
+    /// The loop terminates once `current_version >= target_version`.
+    ///
+    /// # Errors
+    /// Returns an error if a migration step is missing for the current version, or if any migration
+    /// step fails.
     pub(super) async fn migrate(&mut self) -> Result<(), FinalisedStateError> {
         while self.current_version < self.target_version {
             let migration = self.get_migration()?;
@@ -68,20 +265,24 @@ impl<T: BlockchainSource> MigrationManager<T> {
                     self.source.clone(),
                 )
                 .await?;
-            self.current_version = migration.to_version();
+            self.current_version = migration.to_version::<T>();
         }
 
         Ok(())
     }
 
-    /// Return the next migration for the current version.
-    fn get_migration(&self) -> Result<impl Migration<T>, FinalisedStateError> {
+    /// Returns the next migration step for the current on-disk version.
+    ///
+    /// This must be updated whenever a new supported DB version is introduced. The match is strict:
+    /// if a step is missing, migration is aborted rather than attempting an unsafe fallback.
+    fn get_migration(&self) -> Result<MigrationStep, FinalisedStateError> {
         match (
             self.current_version.major,
             self.current_version.minor,
             self.current_version.patch,
         ) {
-            (0, 0, 0) => Ok(Migration0_0_0To1_0_0),
+            (0, 0, 0) => Ok(MigrationStep::Migration0_0_0To1_0_0(Migration0_0_0To1_0_0)),
+            (1, 0, 0) => Ok(MigrationStep::Migration1_0_0To1_1_0(Migration1_0_0To1_1_0)),
             (_, _, _) => Err(FinalisedStateError::Custom(format!(
                 "Missing migration from version {}",
                 self.current_version
@@ -90,8 +291,50 @@ impl<T: BlockchainSource> MigrationManager<T> {
     }
 }
 
+/// Concrete migration step selector.
+///
+/// Rust cannot return `impl Migration<T>` from a `match` that selects between multiple concrete
+/// migration types. `MigrationStep` is the enum-based dispatch wrapper used by [`MigrationManager`]
+/// to select a step and call `migrate(...)`, and to read the step’s `TO_VERSION`.
+enum MigrationStep {
+    Migration0_0_0To1_0_0(Migration0_0_0To1_0_0),
+    Migration1_0_0To1_1_0(Migration1_0_0To1_1_0),
+}
+
+impl MigrationStep {
+    fn to_version<T: BlockchainSource>(&self) -> DbVersion {
+        match self {
+            MigrationStep::Migration0_0_0To1_0_0(_step) => {
+                <Migration0_0_0To1_0_0 as Migration<T>>::TO_VERSION
+            }
+            MigrationStep::Migration1_0_0To1_1_0(_step) => {
+                <Migration1_0_0To1_1_0 as Migration<T>>::TO_VERSION
+            }
+        }
+    }
+
+    async fn migrate<T: BlockchainSource>(
+        &self,
+        router: Arc<Router>,
+        cfg: BlockCacheConfig,
+        source: T,
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            MigrationStep::Migration0_0_0To1_0_0(step) => step.migrate(router, cfg, source).await,
+            MigrationStep::Migration1_0_0To1_1_0(step) => step.migrate(router, cfg, source).await,
+        }
+    }
+}
+
 // ***** Migrations *****
 
+/// Major migration: v0.0.0 → v1.0.0.
+///
+/// This migration performs a shadow rebuild of the v1 database from genesis, then promotes the
+/// completed shadow to primary and schedules deletion of the old v0 database directory once all
+/// handles are dropped.
+///
+/// See the module-level documentation for the detailed rationale and mechanics.
 struct Migration0_0_0To1_0_0;
 
 #[async_trait]
@@ -107,11 +350,21 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
         patch: 0,
     };
 
-    /// The V0 database that we are migrating from was a lightwallet specific database
-    /// that only built compact block data from sapling activation onwards.
-    /// DbV1 is required to be built from genasis to correctly build the transparent address indexes.
-    /// For this reason we do not do any partial builds in the V0 to V1 migration.
-    /// We just run V0 as primary until V1 is fully built in shadow, then switch primary, deleting V0.
+    /// Performs the v0 → v1 major migration using the router’s primary/shadow model.
+    ///
+    /// The legacy v0 database only supports compact block data from Sapling activation onwards.
+    /// DbV1 requires a complete rebuild from genesis to correctly build indices (notably transparent
+    /// address history). For this reason, this migration does not attempt partial incremental builds
+    /// from Sapling; it rebuilds v1 in full in a shadow backend, then promotes it.
+    ///
+    /// ## Resumption behaviour
+    /// If the process is shut down mid-migration:
+    /// - the v1 shadow DB directory may already exist,
+    /// - shadow tip height is used to resume from `shadow_tip + 1`,
+    /// - and `MigrationStatus` is used as a coarse progress marker.
+    ///
+    /// Promotion occurs only after the v1 build loop has caught up to the primary tip and the shadow
+    /// metadata is marked `Complete`.
     async fn migrate(
         &self,
         router: Arc<Router>,
@@ -268,6 +521,66 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
 
         info!("v0.0.0 to v1.0.0 migration complete.");
 
+        Ok(())
+    }
+}
+
+/// Minor migration: v1.0.0 → v1.1.0.
+///
+/// There are **no on-disk schema changes** in this step.
+///
+/// This release updates the *API contract* for compact blocks:
+/// - [`CompactBlockExt`] adds `get_compact_block_stream(...)`.
+/// - Compact block transaction materialization is selected via [`PoolTypeFilter`], which may include
+///   transparent data.
+///
+/// This release also introduces [`MigrationStep`], the enum-based migration dispatcher used by
+/// [`MigrationManager`], to allow selecting between multiple concrete migration implementations.
+///
+/// Because the persisted schema contract is unchanged, this migration only updates the stored
+/// [`DbMetadata::version`] from `1.0.0` to `1.1.0`.
+///
+/// Safety and resumability:
+/// - Idempotent: if run more than once, it will re-write the same metadata.
+/// - No shadow database and no table rebuild.
+/// - Clears any stale in-progress migration status.
+struct Migration1_0_0To1_1_0;
+
+#[async_trait]
+impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
+    const CURRENT_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 0,
+        patch: 0,
+    };
+
+    const TO_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 1,
+        patch: 0,
+    };
+
+    async fn migrate(
+        &self,
+        router: Arc<Router>,
+        _cfg: BlockCacheConfig,
+        _source: T,
+    ) -> Result<(), FinalisedStateError> {
+        info!("Starting v1.0.0 → v1.1.0 migration (metadata-only).");
+
+        let mut metadata: DbMetadata = router.get_metadata().await?;
+
+        // Preserve the schema hash because there are no schema changes in v1.1.0.
+        // Only advance the version marker to reflect the new API contract.
+        metadata.version = <Self as Migration<T>>::TO_VERSION;
+
+        // Outside of migrations this should be `Empty`. This step performs no build phases, so we
+        // ensure we do not leave a stale in-progress status behind.
+        metadata.migration_status = MigrationStatus::Empty;
+
+        router.update_metadata(metadata).await?;
+
+        info!("v1.0.0 to v1.1.0 migration complete.");
         Ok(())
     }
 }

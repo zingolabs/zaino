@@ -4,6 +4,10 @@
 //! and common utilities used across the Zaino blockchain indexer ecosystem.
 
 pub mod config;
+pub mod net;
+
+// Re-export network utilities
+pub use net::{resolve_socket_addr, try_resolve_address, AddressResolution};
 
 // Re-export commonly used config types at crate root for backward compatibility.
 // This allows existing code using `use zaino_common::Network` to continue working.

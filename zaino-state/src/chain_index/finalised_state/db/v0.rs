@@ -2,8 +2,43 @@
 //!
 //! WARNING: This is a legacy development database and should not be used in production environments.
 //!
-//! NOTE: This database version was implemented before zaino's `ZainoVersionedSerde` was defined,
-//! for this reason ZainoDB-V0 does not use the standard serialisation schema used elswhere in Zaino.
+//! This module implements the original “v0” finalised-state database backend. It exists primarily
+//! for backward compatibility and for development/testing scenarios where the historical v0
+//! on-disk layout must be opened.
+//!
+//! ## Important constraints
+//!
+//! - **Not schema-versioned in the modern sense:** this database version predates Zaino’s
+//!   `ZainoVersionedSerde` wire format, therefore it does not store version-tagged records and does
+//!   not participate in fine-grained schema evolution.
+//! - **Legacy encoding strategy:**
+//!   - keys and values are stored as JSON via `serde_json` for most types,
+//!   - `CompactBlock` values are encoded as raw Prost bytes via a custom `Serialize`/`Deserialize`
+//!     wrapper (`DbCompactBlock`) so they can still flow through `serde_json`.
+//! - **Limited feature surface:** v0 only supports the core height/hash mapping and compact block
+//!   retrieval. It does not provide the richer indices introduced in v1 (header data, transaction
+//!   locations, transparent history indexing, etc.).
+//!
+//! ## On-disk layout
+//!
+//! The v0 database uses the legacy network directory names:
+//! - mainnet: `live/`
+//! - testnet: `test/`
+//! - regtest: `local/`
+//!
+//! Each network directory contains an LMDB environment with (at minimum) these tables:
+//! - `heights_to_hashes`: `<block_height_be, block_hash_json>`
+//! - `hashes_to_blocks`: `<block_hash_json, compact_block_json>` (where the compact block is stored
+//!   as raw Prost bytes wrapped by JSON)
+//!
+//! ## Runtime model
+//!
+//! `DbV0` spawns a lightweight background maintenance task that:
+//! - publishes `StatusType::Ready` once spawned,
+//! - periodically calls `clean_trailing()` to reclaim stale LMDB reader slots.
+//!
+//! This backend uses `tokio::task::block_in_place` / `tokio::task::spawn_blocking` around LMDB
+//! operations to avoid blocking the async runtime.
 
 use crate::{
     chain_index::{
@@ -14,11 +49,12 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
+    local_cache::compact_block_with_pool_types,
     status::{AtomicStatus, StatusType},
-    Height, IndexedBlock,
+    CompactBlockStream, Height, IndexedBlock,
 };
 
-use zaino_proto::proto::compact_formats::CompactBlock;
+use zaino_proto::proto::{compact_formats::CompactBlock, service::PoolType, utils::PoolTypeFilter};
 
 use zebra_chain::{
     block::{Hash as ZebraHash, Height as ZebraHeight},
@@ -35,12 +71,21 @@ use tracing::{info, warn};
 
 // ───────────────────────── ZainoDb v0 Capabilities ─────────────────────────
 
+/// `DbRead` implementation for the legacy v0 backend.
+///
+/// Note: v0 exposes only a minimal read surface. Missing data is mapped to `Ok(None)` where the
+/// core trait expects optional results.
 #[async_trait]
 impl DbRead for DbV0 {
+    /// Returns the database tip height (`None` if empty).
     async fn db_height(&self) -> Result<Option<crate::Height>, FinalisedStateError> {
         self.tip_height().await
     }
 
+    /// Returns the block height for a given block hash, if known.
+    ///
+    /// For v0, absence is represented as either `DataUnavailable` or `FeatureUnavailable` from the
+    /// legacy helper; both are mapped to `Ok(None)` here.
     async fn get_block_height(
         &self,
         hash: crate::BlockHash,
@@ -55,6 +100,10 @@ impl DbRead for DbV0 {
         }
     }
 
+    /// Returns the block hash for a given block height, if known.
+    ///
+    /// For v0, absence is represented as either `DataUnavailable` or `FeatureUnavailable` from the
+    /// legacy helper; both are mapped to `Ok(None)` here.
     async fn get_block_hash(
         &self,
         height: crate::Height,
@@ -69,17 +118,27 @@ impl DbRead for DbV0 {
         }
     }
 
+    /// Returns synthetic metadata for v0.
+    ///
+    /// v0 does not persist `DbMetadata` on disk; this returns a constructed value describing
+    /// version `0.0.0` and a default schema hash.
     async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         self.get_metadata().await
     }
 }
 
+/// `DbWrite` implementation for the legacy v0 backend.
+///
+/// v0 supports append-only writes and pop-only deletes at the tip, enforced by explicit checks in
+/// the legacy methods.
 #[async_trait]
 impl DbWrite for DbV0 {
+    /// Writes a fully-validated finalised block, enforcing strict height monotonicity.
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.write_block(block).await
     }
 
+    /// Deletes a block at the given height, enforcing that it is the current tip.
     async fn delete_block_at_height(
         &self,
         height: crate::Height,
@@ -87,22 +146,37 @@ impl DbWrite for DbV0 {
         self.delete_block_at_height(height).await
     }
 
+    /// Deletes a block by explicit content.
+    ///
+    /// This is a fallback path used when tip-based deletion cannot safely determine the full set of
+    /// keys to delete (for example, when corruption is suspected).
     async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
         self.delete_block(block).await
     }
 
-    /// NOTE: V0 does not hold metadata!
+    /// Updates the metadata singleton.
+    ///
+    /// NOTE: v0 does not persist metadata on disk; this is a no-op to satisfy the trait.
     async fn update_metadata(&self, _metadata: DbMetadata) -> Result<(), FinalisedStateError> {
         Ok(())
     }
 }
 
+/// `DbCore` implementation for the legacy v0 backend.
+///
+/// The core lifecycle API is implemented in terms of a status flag and a lightweight background
+/// maintenance task.
 #[async_trait]
 impl DbCore for DbV0 {
+    /// Returns the current runtime status published by this backend.
     fn status(&self) -> StatusType {
         self.status.load()
     }
 
+    /// Requests shutdown of background tasks and syncs the LMDB environment before returning.
+    ///
+    /// This method is best-effort: background tasks are aborted after a timeout and the LMDB
+    /// environment is fsync’d before exit.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Closing);
 
@@ -120,44 +194,82 @@ impl DbCore for DbV0 {
     }
 }
 
+/// [`CompactBlockExt`] capability implementation for [`DbV0`].
+///
+/// Exposes `zcash_client_backend`-compatible compact blocks derived from stored header +
+/// transaction data.
 #[async_trait]
 impl CompactBlockExt for DbV0 {
     async fn get_compact_block(
         &self,
         height: Height,
+        pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
-        self.get_compact_block(height).await
+        self.get_compact_block(height, pool_types).await
+    }
+
+    async fn get_compact_block_stream(
+        &self,
+        start_height: Height,
+        end_height: Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<CompactBlockStream, FinalisedStateError> {
+        self.get_compact_block_stream(start_height, end_height, pool_types)
+            .await
     }
 }
 
-/// Finalised part of the chain, held in an LMDB database.
+/// Finalised part of the chain, held in an LMDB database (legacy v0).
+///
+/// `DbV0` maintains two simple indices:
+/// - height → hash
+/// - hash → compact block
+///
+/// It does **not** implement the richer v1 indices (header data, tx location maps, address history,
+/// commitment tree tables, etc.).
 #[derive(Debug)]
 pub struct DbV0 {
-    /// LMDB Database Environmant.
+    /// LMDB database environment handle.
+    ///
+    /// The environment is shared between tasks using `Arc` and is configured for high read
+    /// concurrency (`max_readers`) and reduced I/O overhead (`NO_READAHEAD`).
     env: Arc<Environment>,
 
-    /// LMDB Databas containing `<block_height, block_hash>`.
+    /// LMDB database containing `<block_height_be, block_hash_json>`.
+    ///
+    /// Heights are stored as 4-byte big-endian keys for correct lexicographic ordering.
     heights_to_hashes: Database,
 
-    /// LMDB Databas containing `<block_hash, compact_block>`.
+    /// LMDB database containing `<block_hash_json, compact_block_json>`.
+    ///
+    /// The compact block is stored via the `DbCompactBlock` wrapper: raw Prost bytes embedded in a
+    /// JSON payload.
     hashes_to_blocks: Database,
 
-    /// Database handler task handle.
+    /// Background maintenance task handle.
+    ///
+    /// This task periodically performs housekeeping (currently reader-slot cleanup).
     db_handler: Option<tokio::task::JoinHandle<()>>,
 
-    /// Non-finalised state status.
+    /// Backend lifecycle status.
     status: AtomicStatus,
-    /// BlockCache config data.
+
+    /// Configuration snapshot used for path/network selection and sizing parameters.
     config: BlockCacheConfig,
 }
 
 impl DbV0 {
-    /// Spawns a new [`DbV0`] and syncs the FinalisedState to the servers finalised state.
+    /// Spawns a new [`DbV0`] backend.
     ///
-    /// Uses ReadStateService to fetch chain data if given else uses JsonRPC client.
+    /// This:
+    /// - derives the v0 network directory name (`live` / `test` / `local`),
+    /// - opens or creates the LMDB environment and required databases,
+    /// - configures LMDB reader concurrency based on CPU count,
+    /// - spawns a background maintenance task,
+    /// - and returns the opened backend.
     ///
-    /// Inputs:
-    /// - config: ChainIndexConfig.
+    /// # Errors
+    /// Returns `FinalisedStateError` on any filesystem, LMDB, or task-spawn failure.
     pub(crate) async fn spawn(config: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
         info!("Launching ZainoDB");
 
@@ -214,7 +326,13 @@ impl DbV0 {
         Ok(zaino_db)
     }
 
-    /// Try graceful shutdown, fall back to abort after a timeout.
+    /// Attempts a graceful shutdown and falls back to aborting the maintenance task after a timeout.
+    ///
+    /// This is a legacy lifecycle method retained for v0 compatibility. Newer backends should
+    /// implement shutdown via the `DbCore` trait.
+    ///
+    /// # Errors
+    /// Returns `FinalisedStateError` if LMDB cleanup or sync fails.
     pub(crate) async fn close(&mut self) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Closing);
 
@@ -244,12 +362,15 @@ impl DbV0 {
         Ok(())
     }
 
-    /// Returns the status of ZainoDB.
+    /// Returns the current backend status.
     pub(crate) fn status(&self) -> StatusType {
         self.status.load()
     }
 
-    /// Awaits until the DB returns a Ready status.
+    /// Blocks until the backend reports `StatusType::Ready`.
+    ///
+    /// This is primarily used during startup sequencing so callers do not issue reads before the
+    /// backend is ready to serve queries.
     pub(crate) async fn wait_until_ready(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -264,13 +385,15 @@ impl DbV0 {
 
     // *** Internal Control Methods ***
 
-    /// Spawns the background validator / maintenance task.
+    /// Spawns the background maintenance task.
     ///
-    /// *   **Startup** – runs a full‐DB validation pass (`initial_root_scan` →
-    ///     `initial_block_scan`).
-    /// *   **Steady-state** – every 5 s tries to validate the next block that
-    ///     appeared after the current `validated_tip`.
-    ///     Every 60 s it also calls `clean_trailing()` to purge stale reader slots.
+    /// The v0 maintenance task is intentionally minimal:
+    /// - publishes `StatusType::Ready` after spawning,
+    /// - periodically calls `clean_trailing()` to purge stale LMDB reader slots,
+    /// - exits when status transitions to `StatusType::Closing`.
+    ///
+    /// Note: historical comments refer to validation passes; the current implementation only
+    /// performs maintenance and does not validate chain contents.
     async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
         // Clone everything the task needs so we can move it into the async block.
         let zaino_db = Self {
@@ -306,6 +429,10 @@ impl DbV0 {
     }
 
     /// Helper method to wait for the next loop iteration or perform maintenance.
+    ///
+    /// This selects between:
+    /// - a short sleep (steady-state pacing), and
+    /// - the maintenance tick (currently reader-slot cleanup).
     async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(5)) => {},
@@ -317,14 +444,19 @@ impl DbV0 {
         }
     }
 
-    /// Clears stale reader slots by opening and closing a read transaction.
+    /// Clears stale LMDB reader slots by opening and closing a read transaction.
+    ///
+    /// LMDB only reclaims reader slots when transactions are closed; this method is a cheap and safe
+    /// way to encourage reclamation in long-running services.
     async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
         let txn = self.env.begin_ro_txn()?;
         drop(txn);
         Ok(())
     }
 
-    /// Opens an lmdb database if present else creates a new one.
+    /// Opens an LMDB database if present, otherwise creates it.
+    ///
+    /// v0 uses this helper for all tables to make environment creation idempotent across restarts.
     async fn open_or_create_db(
         env: &Environment,
         name: &str,
@@ -342,16 +474,23 @@ impl DbV0 {
     // *** DB write / delete methods ***
     // These should only ever be used in a single DB control task.
 
-    /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
+    /// Writes a given (finalised) [`IndexedBlock`] to the v0 database.
+    ///
+    /// This method enforces the v0 write invariant:
+    /// - if the database is non-empty, the new block height must equal `current_tip + 1`,
+    /// - if the database is empty, the first write must be genesis (`GENESIS_HEIGHT`).
+    ///
+    /// The following records are written atomically in a single LMDB write transaction:
+    /// - `heights_to_hashes[height_be] = hash_json`
+    /// - `hashes_to_blocks[hash_json] = compact_block_json`
+    ///
+    /// On failure, the method attempts to delete the partially-written block (best effort) and
+    /// returns an `InvalidBlock` error that includes the height/hash context.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
 
         let compact_block: CompactBlock = block.to_compact_block();
-        let zebra_height: ZebraHeight = block
-            .index()
-            .height()
-            .expect("height always some in the finalised state")
-            .into();
+        let zebra_height: ZebraHeight = block.index().height().into();
         let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.index().hash());
 
         let height_key = DbHeight(zebra_height).to_be_bytes();
@@ -359,11 +498,7 @@ impl DbV0 {
         let block_value = serde_json::to_vec(&DbCompactBlock(compact_block))?;
 
         // check this is the *next* block in the chain.
-        let block_height = block
-            .index()
-            .height()
-            .expect("height always some in finalised state")
-            .0;
+        let block_height = block.index().height().0;
 
         tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
@@ -373,11 +508,7 @@ impl DbV0 {
             match cur.get(None, None, lmdb_sys::MDB_LAST) {
                 // Database already has blocks
                 Ok((last_height_bytes, _last_hash_bytes)) => {
-                    let block_height = block
-                        .index()
-                        .height()
-                        .expect("height always some in finalised state")
-                        .0;
+                    let block_height = block.index().height().0;
 
                     let last_height = DbHeight::from_be_bytes(
                         last_height_bytes.expect("Height is always some in the finalised state"),
@@ -462,7 +593,14 @@ impl DbV0 {
         }
     }
 
-    /// Deletes a block identified height from every finalised table.
+    /// Deletes the block at `height` from every v0 table.
+    ///
+    /// This method enforces the v0 delete invariant:
+    /// - the requested height must equal the current database tip.
+    ///
+    /// The method determines the tip hash from `heights_to_hashes`, then deletes:
+    /// - `heights_to_hashes[height_be]`
+    /// - `hashes_to_blocks[hash_json]`
     pub(crate) async fn delete_block_at_height(
         &self,
         height: crate::Height,
@@ -534,7 +672,9 @@ impl DbV0 {
         Ok(())
     }
 
-    /// This is used as a backup when delete_block_at_height fails.
+    /// Deletes the provided block’s entries from every v0 table.
+    ///
+    /// This is used as a backup when `delete_block_at_height` fails.
     ///
     /// Takes a IndexedBlock as input and ensures all data from this block is wiped from the database.
     ///
@@ -549,11 +689,7 @@ impl DbV0 {
         &self,
         block: &IndexedBlock,
     ) -> Result<(), FinalisedStateError> {
-        let zebra_height: ZebraHeight = block
-            .index()
-            .height()
-            .expect("height always some in the finalised state")
-            .into();
+        let zebra_height: ZebraHeight = block.index().height().into();
         let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.index().hash());
 
         let height_key = DbHeight(zebra_height).to_be_bytes();
@@ -592,8 +728,10 @@ impl DbV0 {
 
     // ***** DB fetch methods *****
 
-    // Returns the greatest `Height` stored in `headers`
-    /// (`None` if the DB is still empty).
+    /// Returns the greatest `Height` stored in `heights_to_hashes` (`None` if empty).
+    ///
+    /// Heights are stored as big-endian keys, so the LMDB `MDB_LAST` cursor position corresponds to
+    /// the maximum height.
     pub(crate) async fn tip_height(&self) -> Result<Option<crate::Height>, FinalisedStateError> {
         tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
@@ -616,7 +754,10 @@ impl DbV0 {
         })
     }
 
-    /// Fetch the block height in the main chain for a given block hash.
+    /// Fetches the block height for a given block hash.
+    ///
+    /// v0 resolves hash → compact block via `hashes_to_blocks` and then reads the embedded height
+    /// from the compact block message.
     async fn get_block_height_by_hash(
         &self,
         hash: crate::BlockHash,
@@ -635,6 +776,9 @@ impl DbV0 {
         })
     }
 
+    /// Fetches the block hash for a given block height.
+    ///
+    /// v0 resolves height → hash via `heights_to_hashes`.
     async fn get_block_hash_by_height(
         &self,
         height: crate::Height,
@@ -652,6 +796,12 @@ impl DbV0 {
         })
     }
 
+    /// Returns constructed metadata for v0.
+    ///
+    /// v0 does not persist real metadata. This method returns:
+    /// - version `0.0.0`,
+    /// - a zero schema hash,
+    /// - `MigrationStatus::Complete` (v0 does not participate in resumable migrations).
     async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         Ok(DbMetadata {
             version: DbVersion {
@@ -665,9 +815,14 @@ impl DbV0 {
         })
     }
 
+    /// Fetches the compact block for a given height.
+    ///
+    /// This resolves height → hash via `heights_to_hashes`, then hash → compact block via
+    /// `hashes_to_blocks`.
     async fn get_compact_block(
         &self,
         height: crate::Height,
+        pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
         let zebra_hash =
             zebra_chain::block::Hash::from(self.get_block_hash_by_height(height).await?);
@@ -678,23 +833,177 @@ impl DbV0 {
 
             let block_bytes: &[u8] = txn.get(self.hashes_to_blocks, &hash_key)?;
             let block: DbCompactBlock = serde_json::from_slice(block_bytes)?;
-            Ok(block.0)
+            Ok(compact_block_with_pool_types(
+                block.0,
+                &pool_types.to_pool_types_vector(),
+            ))
         })
+    }
+
+    /// Streams `CompactBlock` messages for an inclusive height range.
+    ///
+    /// Legacy implementation for backwards compatibility.
+    ///
+    /// Behaviour:
+    /// - The stream covers the inclusive range `[start_height, end_height]`.
+    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
+    /// - Blocks are fetched one-by-one by calling `get_compact_block(height, pool_types)` for
+    ///   each height in the range.
+    ///
+    /// Pool filtering:
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that have no elements in any requested pool type are omitted from `vtx`,
+    ///   and `CompactTx.index` preserves the original transaction index within the block.
+    ///
+    /// Notes:
+    /// - This is intentionally not optimised (no LMDB cursor walk, no batch/range reads).
+    /// - Any fetch/deserialize error terminates the stream after emitting a single `tonic::Status`.
+    async fn get_compact_block_stream(
+        &self,
+        start_height: Height,
+        end_height: Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<CompactBlockStream, FinalisedStateError> {
+        let is_ascending: bool = start_height <= end_height;
+
+        let (sender, receiver) =
+            tokio::sync::mpsc::channel::<Result<CompactBlock, tonic::Status>>(128);
+
+        let env = self.env.clone();
+        let heights_to_hashes_database: lmdb::Database = self.heights_to_hashes;
+        let hashes_to_blocks_database: lmdb::Database = self.hashes_to_blocks;
+
+        let pool_types_vector: Vec<PoolType> = pool_types.to_pool_types_vector();
+
+        tokio::task::spawn_blocking(move || {
+            fn lmdb_get_status(
+                database_name: &'static str,
+                height: Height,
+                error: lmdb::Error,
+            ) -> tonic::Status {
+                match error {
+                    lmdb::Error::NotFound => tonic::Status::not_found(format!(
+                        "missing db entry in {database_name} at height {}",
+                        height.0
+                    )),
+                    other_error => tonic::Status::internal(format!(
+                        "lmdb get({database_name}) failed at height {}: {other_error}",
+                        height.0
+                    )),
+                }
+            }
+
+            let mut current_height: Height = start_height;
+
+            loop {
+                let result: Result<CompactBlock, tonic::Status> = (|| {
+                    let txn = env.begin_ro_txn().map_err(|error| {
+                        tonic::Status::internal(format!("lmdb begin_ro_txn failed: {error}"))
+                    })?;
+
+                    // height -> hash (heights_to_hashes)
+                    let zebra_height: ZebraHeight = current_height.into();
+                    let height_key: [u8; 4] = DbHeight(zebra_height).to_be_bytes();
+
+                    let hash_bytes: &[u8] = txn
+                        .get(heights_to_hashes_database, &height_key)
+                        .map_err(|error| {
+                            lmdb_get_status("heights_to_hashes", current_height, error)
+                        })?;
+
+                    let db_hash: DbHash = serde_json::from_slice(hash_bytes).map_err(|error| {
+                        tonic::Status::internal(format!(
+                            "height->hash decode failed at height {}: {error}",
+                            current_height.0
+                        ))
+                    })?;
+
+                    // hash -> block (hashes_to_blocks)
+                    let hash_key: Vec<u8> =
+                        serde_json::to_vec(&DbHash(db_hash.0)).map_err(|error| {
+                            tonic::Status::internal(format!(
+                                "hash key encode failed at height {}: {error}",
+                                current_height.0
+                            ))
+                        })?;
+
+                    let block_bytes: &[u8] = txn
+                        .get(hashes_to_blocks_database, &hash_key)
+                        .map_err(|error| {
+                            lmdb_get_status("hashes_to_blocks", current_height, error)
+                        })?;
+
+                    let db_compact_block: DbCompactBlock = serde_json::from_slice(block_bytes)
+                        .map_err(|error| {
+                            tonic::Status::internal(format!(
+                                "block decode failed at height {}: {error}",
+                                current_height.0
+                            ))
+                        })?;
+
+                    Ok(compact_block_with_pool_types(
+                        db_compact_block.0,
+                        &pool_types_vector,
+                    ))
+                })();
+
+                if sender.blocking_send(result).is_err() {
+                    return;
+                }
+
+                if current_height == end_height {
+                    return;
+                }
+
+                if is_ascending {
+                    let next_value = match current_height.0.checked_add(1) {
+                        Some(value) => value,
+                        None => {
+                            let _ = sender.blocking_send(Err(tonic::Status::internal(
+                                "height overflow while iterating ascending".to_string(),
+                            )));
+                            return;
+                        }
+                    };
+                    current_height = Height(next_value);
+                } else {
+                    let next_value = match current_height.0.checked_sub(1) {
+                        Some(value) => value,
+                        None => {
+                            let _ = sender.blocking_send(Err(tonic::Status::internal(
+                                "height underflow while iterating descending".to_string(),
+                            )));
+                            return;
+                        }
+                    };
+                    current_height = Height(next_value);
+                }
+            }
+        });
+
+        Ok(CompactBlockStream::new(receiver))
     }
 }
 
-/// Wrapper for `Height`.
+/// Wrapper for `ZebraHeight` used for key encoding.
+///
+/// v0 stores heights as 4-byte **big-endian** keys to preserve numeric ordering under LMDB’s
+/// lexicographic key ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct DbHeight(pub ZebraHeight);
 
 impl DbHeight {
-    /// Converts `[DbHeight]` to 4-byte **big-endian** bytes.
-    /// Used when storing as an LMDB key.
+    /// Converts this height to 4-byte **big-endian** bytes.
+    ///
+    /// This is used when storing heights as LMDB keys so that increasing heights sort correctly.
     fn to_be_bytes(self) -> [u8; 4] {
         self.0 .0.to_be_bytes()
     }
 
-    /// Parse a 4-byte **big-endian** array into a `[DbHeight]`.
+    /// Parses a 4-byte **big-endian** key into a `DbHeight`.
+    ///
+    /// # Errors
+    /// Returns an error if the key is not exactly 4 bytes long.
     fn from_be_bytes(bytes: &[u8]) -> Result<Self, FinalisedStateError> {
         let arr: [u8; 4] = bytes
             .try_into()
@@ -703,15 +1012,23 @@ impl DbHeight {
     }
 }
 
-/// Wrapper for `Hash`.
+/// Wrapper for `ZebraHash` so it can be JSON-serialized as an LMDB value/key payload.
+///
+/// v0 stores hashes using `serde_json` rather than Zaino’s versioned binary encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct DbHash(pub ZebraHash);
 
-/// Wrapper for `CompactBlock`.
+/// Wrapper for `CompactBlock` for JSON storage.
+///
+/// `CompactBlock` is a Prost message; v0 stores it by encoding to raw bytes and embedding those
+/// bytes inside a serde payload.
 #[derive(Debug, Clone, PartialEq)]
 struct DbCompactBlock(pub CompactBlock);
 
 /// Custom `Serialize` implementation using Prost's `encode_to_vec()`.
+///
+/// This serializes the compact block as raw bytes so it can be stored via `serde_json` as a byte
+/// array payload.
 impl Serialize for DbCompactBlock {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -723,6 +1040,8 @@ impl Serialize for DbCompactBlock {
 }
 
 /// Custom `Deserialize` implementation using Prost's `decode()`.
+///
+/// This reverses the `Serialize` strategy by decoding the stored raw bytes into a `CompactBlock`.
 impl<'de> Deserialize<'de> for DbCompactBlock {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

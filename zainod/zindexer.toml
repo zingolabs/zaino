@@ -40,13 +40,11 @@ backend = "fetch"
 # Validator config:
 # Required for valid zainod config.
 [validator_settings]
-  # Full node / validator listen address.
+  # Full node / validator gRPC listen address (Zebra only).
   #
-  # Must be a "private" address as defined in [IETF RFC 1918] for ipv4 addreses and [IETF RFC 4193] for ipv6 addreses.
-  #
-  # Must use validator rpc cookie authentication when connecting to non localhost addresses.
-  # Required
-  validator_grpc_listen_address =  "127.0.0.1:18232"
+  # Must be a "private" address as defined in [IETF RFC 1918] for IPv4 or [IETF RFC 4193] for IPv6.
+  # Cookie or user/password authentication is recommended for non-localhost addresses.
+  validator_grpc_listen_address = "127.0.0.1:18232"
 
   # SocketAddr, Required.
   validator_jsonrpc_listen_address = "127.0.0.1:18230"

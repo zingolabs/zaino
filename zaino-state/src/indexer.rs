@@ -16,10 +16,10 @@ use zaino_fetch::jsonrpsee::response::{
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
-        AddressList, Balance, BlockId, BlockRange, Duration, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, ShieldedProtocol, SubtreeRoot, TransparentAddressBlockFilter, TreeState,
-        TxFilter,
+        AddressList, Balance, BlockId, BlockRange, Duration, GetAddressUtxosArg,
+        GetAddressUtxosReplyList, GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo,
+        PingResponse, RawTransaction, SendResponse, ShieldedProtocol, SubtreeRoot,
+        TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
 use zebra_chain::{
@@ -603,7 +603,15 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Submit the given transaction to the Zcash network
     async fn send_transaction(&self, request: RawTransaction) -> Result<SendResponse, Self::Error>;
 
+    /// Return the transactions corresponding to the given t-address within the given block range
+    async fn get_taddress_transactions(
+        &self,
+        request: TransparentAddressBlockFilter,
+    ) -> Result<RawTransactionStream, Self::Error>;
+
     /// Return the txids corresponding to the given t-address within the given block range
+    /// Note: This function is misnamed, it returns complete `RawTransaction` values, not TxIds.
+    /// Note: this method is deprecated, please use GetTaddressTransactions instead.
     async fn get_taddress_txids(
         &self,
         request: TransparentAddressBlockFilter,
@@ -620,18 +628,21 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         request: AddressStream,
     ) -> Result<Balance, Self::Error>;
 
-    /// Return the compact transactions currently in the mempool; the results
-    /// can be a few seconds out of date. If the Exclude list is empty, return
-    /// all transactions; otherwise return all *except* those in the Exclude list
-    /// (if any); this allows the client to avoid receiving transactions that it
-    /// already has (from an earlier call to this rpc). The transaction IDs in the
-    /// Exclude list can be shortened to any number of bytes to make the request
-    /// more bandwidth-efficient; if two or more transactions in the mempool
-    /// match a shortened txid, they are all sent (none is excluded). Transactions
-    /// in the exclude list that don't exist in the mempool are ignored.
+    /// Returns a stream of the compact transaction representation for transactions
+    /// currently in the mempool. The results of this operation may be a few
+    /// seconds out of date. If the `exclude_txid_suffixes` list is empty,
+    /// return all transactions; otherwise return all *except* those in the
+    /// `exclude_txid_suffixes` list (if any); this allows the client to avoid
+    /// receiving transactions that it already has (from an earlier call to this
+    /// RPC). The transaction IDs in the `exclude_txid_suffixes` list can be
+    /// shortened to any number of bytes to make the request more
+    /// bandwidth-efficient; if two or more transactions in the mempool match a
+    /// txid suffix, none of the matching transactions are excluded. Txid
+    /// suffixes in the exclude list that don't match any transactions in the
+    /// mempool are ignored.
     async fn get_mempool_tx(
         &self,
-        request: Exclude,
+        request: GetMempoolTxRequest,
     ) -> Result<CompactTransactionStream, Self::Error>;
 
     /// Return a stream of current Mempool transactions. This will keep the output stream open while

@@ -21,7 +21,11 @@ use zaino_fetch::{
         response::{GetBlockError, GetBlockResponse},
     },
 };
-use zaino_proto::proto::compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction};
+use zaino_proto::proto::{
+    compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction},
+    service::PoolType,
+    utils::PoolTypeFilter,
+};
 use zebra_chain::{
     block::{Hash, Height},
     parameters::Network,
@@ -278,9 +282,10 @@ async fn try_state_path(
                         block_hex.as_ref(),
                         Some(display_txids_to_server(txid_strings)?),
                     )?
-                    .into_compact(
+                    .into_compact_block(
                         u32::try_from(trees.sapling())?,
                         u32::try_from(trees.orchard())?,
+                        PoolTypeFilter::includes_all(),
                     )?,
                 ))
             }
@@ -331,7 +336,7 @@ async fn try_fetcher_path(
                         type_name::<GetBlockError>(),
                     ))
                 })?
-                .into_compact(
+                .into_compact_block(
                     u32::try_from(trees.sapling()).map_err(|e| {
                         RpcRequestError::Transport(TransportError::BadNodeData(
                             Box::new(e),
@@ -344,6 +349,7 @@ async fn try_fetcher_path(
                             type_name::<GetBlockError>(),
                         ))
                     })?,
+                    PoolTypeFilter::includes_all(),
                 )
                 .map_err(|e| {
                     RpcRequestError::Transport(TransportError::BadNodeData(
@@ -372,6 +378,56 @@ pub(crate) fn display_txids_to_server(txids: Vec<String>) -> Result<Vec<Vec<u8>>
         .collect::<Result<Vec<Vec<u8>>, _>>()
 }
 
+/// prunes a compact block from transaction in formation related to pools not included in the
+/// `pool_types` vector.
+/// Note: for backwards compatibility an empty vector will return Sapling and Orchard Tx info.
+pub(crate) fn compact_block_with_pool_types(
+    mut block: CompactBlock,
+    pool_types: &[PoolType],
+) -> CompactBlock {
+    if pool_types.is_empty() {
+        for compact_tx in &mut block.vtx {
+            // strip out transparent inputs if not Requested
+            compact_tx.vin.clear();
+            compact_tx.vout.clear();
+        }
+
+        // Omit transactions that have no Sapling/Orchard elements.
+        block.vtx.retain(|compact_tx| {
+            !compact_tx.spends.is_empty()
+                || !compact_tx.outputs.is_empty()
+                || !compact_tx.actions.is_empty()
+        });
+    } else {
+        for compact_tx in &mut block.vtx {
+            // strip out transparent inputs if not Requested
+            if !pool_types.contains(&PoolType::Transparent) {
+                compact_tx.vin.clear();
+                compact_tx.vout.clear();
+            }
+            // strip out sapling if not requested
+            if !pool_types.contains(&PoolType::Sapling) {
+                compact_tx.spends.clear();
+                compact_tx.outputs.clear();
+            }
+            // strip out orchard if not requested
+            if !pool_types.contains(&PoolType::Orchard) {
+                compact_tx.actions.clear();
+            }
+        }
+
+        // Omit transactions that have no elements in any requested pool type.
+        block.vtx.retain(|compact_tx| {
+            !compact_tx.vin.is_empty()
+                || !compact_tx.vout.is_empty()
+                || !compact_tx.spends.is_empty()
+                || !compact_tx.outputs.is_empty()
+                || !compact_tx.actions.is_empty()
+        });
+    }
+
+    block
+}
 /// Strips the ouputs and from all transactions, retains only
 /// the nullifier from all orcard actions, and clears the chain
 /// metadata from the block

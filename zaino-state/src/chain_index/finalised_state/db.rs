@@ -1,10 +1,64 @@
-//! Holds Database implementations by *major* version.
+//! Versioned database backends (DbBackend) and major-version dispatch
+//!
+//! This file defines the major-version split for the on-disk finalised database and provides
+//! [`DbBackend`], a version-erased enum used throughout the finalised-state subsystem.
+//!
+//! Concrete database implementations live in:
+//! - [`v0`]: legacy schema (compact-block streamer)
+//! - [`v1`]: current schema (expanded indices and query surface)
+//!
+//! `DbBackend` delegates the core DB traits (`DbCore`, `DbRead`, `DbWrite`) and all extension traits
+//! to the appropriate concrete implementation.
+//!
+//! # Capability model integration
+//!
+//! Each `DbBackend` instance declares its supported [`Capability`] set via `DbBackend::capability()`.
+//! This must remain consistent with:
+//! - [`capability::DbVersion::capability()`] (schema version → capability mapping), and
+//! - the extension trait impls in this file (unsupported methods must return `FeatureUnavailable`).
+//!
+//! In particular:
+//! - v0 supports READ/WRITE core + `CompactBlockExt`.
+//! - v1 supports the full current capability set (`Capability::LATEST`), including:
+//!   - block header/txid/location indexing,
+//!   - transparent + shielded compact tx access,
+//!   - indexed block retrieval,
+//!   - transparent address history indices.
+//!
+//! # On-disk directory layout (v1+)
+//!
+//! [`VERSION_DIRS`] enumerates the version subdirectory names used for versioned layouts under the
+//! per-network directory (`mainnet/`, `testnet/`, `regtest/`).
+//!
+//! **Important:** new versions must be appended to `VERSION_DIRS` in order, with no gaps, because
+//! discovery code assumes index+1 corresponds to the version number.
+//!
+//! # Adding a new major version (v2) — checklist
+//!
+//! 1. Create `db::v2` and implement `DbV2::spawn(cfg)`.
+//! 2. Add `V2(DbV2)` variant to [`DbBackend`].
+//! 3. Add `spawn_v2` constructor.
+//! 4. Append `"v2"` to [`VERSION_DIRS`].
+//! 5. Extend all trait delegation `match` arms in this file.
+//! 6. Update `DbBackend::capability()` and `DbVersion::capability()` for the new version.
+//! 7. Add a migration step in `migrations.rs` and register it with `MigrationManager`.
+//!
+//! # Development: adding new indices/queries
+//!
+//! Prefer implementing new indices in the latest DB version first (e.g. `v1`) and exposing them via:
+//! - a capability bit + extension trait in `capability.rs`,
+//! - routing via `DbReader` and `Router`,
+//! - and a migration/rebuild plan if the index requires historical backfill.
+//!
+//! Keep unsupported methods explicit: if a DB version does not provide a feature, return
+//! `FinalisedStateError::FeatureUnavailable(...)` rather than silently degrading semantics.
 
 pub(crate) mod v0;
 pub(crate) mod v1;
 
 use v0::DbV0;
 use v1::DbV1;
+use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::{
     chain_index::{
@@ -16,9 +70,9 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+    AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
 };
 
 use async_trait::async_trait;
@@ -27,29 +81,63 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use super::capability::Capability;
 
-/// New versions must be also be appended to this list and there must be no missing versions for correct functionality.
+/// Version subdirectory names for versioned on-disk layouts.
+///
+/// This list defines the supported major-version directory names under a per-network directory.
+/// For example, a v1 database is stored under `<network>/v1/`.
+///
+/// Invariants:
+/// - New versions must be appended to this list in order.
+/// - There must be no missing versions between entries.
+/// - Discovery code assumes `VERSION_DIRS[index]` corresponds to major version `index + 1`.
 pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
 
-/// All concrete database implementations.
+/// Version-erased database backend.
+///
+/// This enum is the central dispatch point for the finalised-state database:
+/// - It is constructed by spawning a concrete backend (for example, v0 or v1).
+/// - It implements the core database traits (`DbCore`, `DbRead`, `DbWrite`).
+/// - It implements capability extension traits by delegating to the concrete implementation, or by
+///   returning [`FinalisedStateError::FeatureUnavailable`] when unsupported.
+///
+/// Capability reporting is provided by [`DbBackend::capability`] and must match the methods that
+/// successfully dispatch in the extension trait implementations below.
 pub(crate) enum DbBackend {
+    /// Legacy schema backend.
     V0(DbV0),
+
+    /// Current schema backend.
     V1(DbV1),
 }
 
 // ***** Core database functionality *****
 
 impl DbBackend {
-    /// Spawn a v0 database.
+    /// Spawn a v0 database backend.
+    ///
+    /// This constructs and initializes the legacy schema implementation and returns it wrapped in
+    /// [`DbBackend::V0`].
     pub(crate) async fn spawn_v0(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
         Ok(Self::V0(DbV0::spawn(cfg).await?))
     }
 
-    /// Spawn a v1 database.
+    /// Spawn a v1 database backend.
+    ///
+    /// This constructs and initializes the current schema implementation and returns it wrapped in
+    /// [`DbBackend::V1`].
     pub(crate) async fn spawn_v1(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
         Ok(Self::V1(DbV1::spawn(cfg).await?))
     }
 
-    /// Waits until the ZainoDB returns a Ready status.
+    /// Wait until the database backend reports [`StatusType::Ready`].
+    ///
+    /// This polls `DbCore::status()` on a fixed interval. It is intended for startup sequencing in
+    /// components that require the database to be fully initialized before accepting requests.
+    ///
+    /// Notes:
+    /// - This method does not return an error. If the database never becomes ready, it will loop.
+    /// - The polling interval is intentionally small and uses `MissedTickBehavior::Delay` to avoid
+    ///   burst catch-up behavior under load.
     pub(crate) async fn wait_until_ready(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -62,7 +150,10 @@ impl DbBackend {
         }
     }
 
-    /// Returns the capabilities supported by this database instance.
+    /// Return the capabilities supported by this database instance.
+    ///
+    /// This is the authoritative runtime capability set for this backend and must remain consistent
+    /// with the dispatch behavior in the extension trait implementations below.
     pub(crate) fn capability(&self) -> Capability {
         match self {
             Self::V0(_) => {
@@ -74,12 +165,14 @@ impl DbBackend {
 }
 
 impl From<DbV0> for DbBackend {
+    /// Wrap an already-constructed v0 database backend.
     fn from(value: DbV0) -> Self {
         Self::V0(value)
     }
 }
 
 impl From<DbV1> for DbBackend {
+    /// Wrap an already-constructed v1 database backend.
     fn from(value: DbV1) -> Self {
         Self::V1(value)
     }
@@ -87,14 +180,19 @@ impl From<DbV1> for DbBackend {
 
 #[async_trait]
 impl DbCore for DbBackend {
+    /// Return the current status of the backend.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     fn status(&self) -> StatusType {
         match self {
-            // TODO private
             Self::V0(db) => db.status(),
             Self::V1(db) => db.status(),
         }
     }
 
+    /// Shut down the backend and release associated resources.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         match self {
             Self::V0(db) => db.shutdown().await,
@@ -105,6 +203,9 @@ impl DbCore for DbBackend {
 
 #[async_trait]
 impl DbRead for DbBackend {
+    /// Return the highest stored height in the database, if present.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
         match self {
             Self::V0(db) => db.db_height().await,
@@ -112,6 +213,9 @@ impl DbRead for DbBackend {
         }
     }
 
+    /// Resolve a block hash to its stored height, if present.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     async fn get_block_height(
         &self,
         hash: BlockHash,
@@ -122,6 +226,9 @@ impl DbRead for DbBackend {
         }
     }
 
+    /// Resolve a block height to its stored block hash, if present.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     async fn get_block_hash(
         &self,
         height: Height,
@@ -132,6 +239,10 @@ impl DbRead for DbBackend {
         }
     }
 
+    /// Read the database metadata record.
+    ///
+    /// This includes versioning and migration status and is used by the migration manager and
+    /// compatibility checks.
     async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         match self {
             Self::V0(db) => db.get_metadata().await,
@@ -142,6 +253,9 @@ impl DbRead for DbBackend {
 
 #[async_trait]
 impl DbWrite for DbBackend {
+    /// Write a fully-indexed block into the database.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         match self {
             Self::V0(db) => db.write_block(block).await,
@@ -149,6 +263,9 @@ impl DbWrite for DbBackend {
         }
     }
 
+    /// Delete the block at a given height, if present.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError> {
         match self {
             Self::V0(db) => db.delete_block_at_height(height).await,
@@ -156,6 +273,9 @@ impl DbWrite for DbBackend {
         }
     }
 
+    /// Delete a specific indexed block from the database.
+    ///
+    /// This is a thin delegation wrapper over the concrete implementation.
     async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
         match self {
             Self::V0(db) => db.delete_block(block).await,
@@ -163,6 +283,9 @@ impl DbWrite for DbBackend {
         }
     }
 
+    /// Update the database metadata record.
+    ///
+    /// This is used by migrations and schema management logic.
     async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError> {
         match self {
             Self::V0(db) => db.update_metadata(metadata).await,
@@ -172,6 +295,12 @@ impl DbWrite for DbBackend {
 }
 
 // ***** Database capability extension traits *****
+//
+// Each extension trait corresponds to a distinct capability group. The dispatch rules are:
+// - If the backend supports the capability, delegate to the concrete implementation.
+// - If unsupported, return `FinalisedStateError::FeatureUnavailable("<capability_name>")`.
+//
+// These names must remain consistent with the capability wiring in `capability.rs`.
 
 #[async_trait]
 impl BlockCoreExt for DbBackend {
@@ -354,11 +483,32 @@ impl CompactBlockExt for DbBackend {
     async fn get_compact_block(
         &self,
         height: Height,
+        pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
         #[allow(unreachable_patterns)]
         match self {
-            Self::V0(db) => db.get_compact_block(height).await,
-            Self::V1(db) => db.get_compact_block(height).await,
+            Self::V0(db) => db.get_compact_block(height, pool_types).await,
+            Self::V1(db) => db.get_compact_block(height, pool_types).await,
+            _ => Err(FinalisedStateError::FeatureUnavailable("compact_block")),
+        }
+    }
+
+    async fn get_compact_block_stream(
+        &self,
+        start_height: Height,
+        end_height: Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<CompactBlockStream, FinalisedStateError> {
+        #[allow(unreachable_patterns)]
+        match self {
+            Self::V0(db) => {
+                db.get_compact_block_stream(start_height, end_height, pool_types)
+                    .await
+            }
+            Self::V1(db) => {
+                db.get_compact_block_stream(start_height, end_height, pool_types)
+                    .await
+            }
             _ => Err(FinalisedStateError::FeatureUnavailable("compact_block")),
         }
     }

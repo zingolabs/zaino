@@ -5,11 +5,10 @@ use tracing::info;
 
 use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_serve::server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer};
-
 #[allow(deprecated)]
 use zaino_state::{
-    BackendConfig, FetchService, IndexerService, LightWalletService, StateService, StatusType,
-    ZcashIndexer, ZcashService,
+    BackendType, FetchService, FetchServiceConfig, IndexerService, LightWalletService,
+    StateService, StateServiceConfig, StatusType, ZcashIndexer, ZcashService,
 };
 
 use crate::{config::ZainodConfig, error::IndexerError};
@@ -38,14 +37,13 @@ pub async fn start_indexer(
 }
 
 /// Spawns a new Indexer server.
-#[allow(deprecated)]
 pub async fn spawn_indexer(
     config: ZainodConfig,
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.check_config()?;
     info!("Checking connection with node..");
     let zebrad_uri = test_node_and_return_url(
-        config.validator_settings.validator_jsonrpc_listen_address,
+        &config.validator_settings.validator_jsonrpc_listen_address,
         config.validator_settings.validator_cookie_path.clone(),
         config.validator_settings.validator_user.clone(),
         config.validator_settings.validator_password.clone(),
@@ -56,18 +54,21 @@ pub async fn spawn_indexer(
         " - Connected to node using JsonRPSee at address {}.",
         zebrad_uri
     );
-    match BackendConfig::try_from(config.clone()) {
-        Ok(BackendConfig::State(state_service_config)) => {
-            Indexer::<StateService>::launch_inner(state_service_config, config)
+
+    #[allow(deprecated)]
+    match config.backend {
+        BackendType::State => {
+            let state_config = StateServiceConfig::try_from(config.clone())?;
+            Indexer::<StateService>::launch_inner(state_config, config)
                 .await
                 .map(|res| res.0)
         }
-        Ok(BackendConfig::Fetch(fetch_service_config)) => {
-            Indexer::<FetchService>::launch_inner(fetch_service_config, config)
+        BackendType::Fetch => {
+            let fetch_config = FetchServiceConfig::try_from(config.clone())?;
+            Indexer::<FetchService>::launch_inner(fetch_config, config)
                 .await
                 .map(|res| res.0)
         }
-        Err(e) => Err(e),
     }
 }
 

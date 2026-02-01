@@ -1,4 +1,171 @@
-//! Holds the Finalised portion of the chain index on disk.
+//! Finalised ChainIndex database (ZainoDB)
+//!
+//! This module provides `ZainoDB`, the **on-disk** backing store for the *finalised* portion of the
+//! chain index.
+//!
+//! “Finalised” in this context means: All but the top 100 blocks in the blockchain. This follows
+//! Zebra's model where a reorg of depth greater than 100 would require a complete network restart.
+//!
+//! `ZainoDB` is a facade around a versioned LMDB-backed database implementation. It is responsible
+//! for:
+//! - opening or creating the correct on-disk database version,
+//! - coordinating **database version migrations** when the on-disk version is older than the configured
+//!   target,
+//! - exposing a small set of core read/write operations to the rest of `chain_index`,
+//! - and providing a read-only handle (`DbReader`) that should be used for all chain fetches.
+//!
+//! # Code layout (submodules)
+//!
+//! The finalised-state subsystem is split into the following files:
+//!
+//! - [`capability`]
+//!   - Defines the *capability model* used to represent which features a given DB version supports.
+//!   - Defines the core DB traits (`DbRead`, `DbWrite`, `DbCore`) and extension traits
+//!     (`BlockCoreExt`, `TransparentHistExt`, etc.).
+//!   - Defines versioned metadata (`DbMetadata`, `DbVersion`, `MigrationStatus`) persisted on disk.
+//!
+//! - [`db`]
+//!   - Houses concrete DB implementations by **major** version (`db::v0`, `db::v1`) and the
+//!     version-erased facade enum [`db::DbBackend`] that implements the capability traits.
+//!
+//! - [`router`]
+//!   - Implements [`router::Router`], a capability router that can direct calls to either the
+//!     primary DB or a shadow DB during major migrations.
+//!
+//! - [`migrations`]
+//!   - Implements migration orchestration (`MigrationManager`) and concrete migration steps.
+//!
+//! - [`reader`]
+//!   - Defines [`reader::DbReader`], a read-only view that routes each query through the router
+//!     using the appropriate capability request.
+//!
+//! - [`entry`]
+//!   - Defines integrity-preserving wrappers (`StoredEntryFixed`, `StoredEntryVar`) used by
+//!     versioned DB implementations for checksummed key/value storage.
+//!
+//! # Architecture overview
+//!
+//! At runtime the layering is:
+//!
+//! ```text
+//! ZainoDB (facade; owns config; exposes simple methods)
+//!   └─ Router (capability-based routing; primary + optional shadow)
+//!       └─ DbBackend (enum; V0 / V1; implements core + extension traits)
+//!           ├─ db::v0::DbV0 (legacy schema; compact-block streamer)
+//!           └─ db::v1::DbV1 (current schema; full indices incl. transparent history indexing)
+//! ```
+//!
+//! Consumers should avoid depending on the concrete DB version; they should prefer `DbReader`,
+//! which automatically routes each read to a backend that actually supports the requested feature.
+//!
+//! # Database types and serialization strategy
+//!
+//! The finalised database stores **only** types that are explicitly designed for persistence.
+//! Concretely, values written into LMDB are composed from the database-serializable types in
+//! [`crate::chain_index::types::db`] (re-exported via [`crate::chain_index::types`]).
+//!
+//! All persisted types implement [`crate::chain_index::encoding::ZainoVersionedSerde`], which
+//! defines Zaino’s on-disk wire format:
+//! - a **one-byte version tag** (`encoding::version::V1`, `V2`, …),
+//! - followed by a version-specific body (little-endian unless stated otherwise).
+//!
+//! This “version-tagged value” model allows individual record layouts to evolve while keeping
+//! backward compatibility via `decode_vN` implementations. Any incompatible change to persisted
+//! types must be coordinated with the database schema versioning in this module (see
+//! [`capability::DbVersion`]) and, where required, accompanied by a migration (see [`migrations`]).
+//!
+//! Database implementations additionally use the integrity wrappers in [`entry`] to store values
+//! with a BLAKE2b-256 checksum bound to the encoded key (`key || encoded_value`), providing early
+//! detection of corruption or key/value mismatches.
+//!
+//! # On-disk layout and version detection
+//!
+//! Database discovery is intentionally conservative: `try_find_current_db_version` returns the
+//! **oldest** detected version, because the process may have been terminated mid-migration, leaving
+//! multiple version directories on disk.
+//!
+//! The current logic recognises two layouts:
+//!
+//! - **Legacy v0 layout:** network directories `live/`, `test/`, `local/` containing LMDB
+//!   `data.mdb` + `lock.mdb`.
+//! - **Versioned v1+ layout:** network directories `mainnet/`, `testnet/`, `regtest/` containing
+//!   version subdirectories enumerated by [`db::VERSION_DIRS`] (e.g. `v1/`).
+//!
+//! # Versioning and migration strategy
+//!
+//! `ZainoDB::spawn` selects a **target version** from `BlockCacheConfig::db_version` and compares it
+//! against the **current on-disk version** read from `DbMetadata`.
+//!
+//! - If no database exists, a new DB is created at the configured target version.
+//! - If a database exists and `current_version < target_version`, the [`migrations::MigrationManager`]
+//!   is invoked to migrate the database.
+//!
+//! Major migrations are designed to be low-downtime and disk-conscious:
+//! - a *shadow* DB of the new version is built in parallel,
+//! - the router continues serving from the primary DB until the shadow is complete,
+//! - then the shadow is promoted to primary, and the old DB is deleted once all handles are dropped.
+//!
+//! Migration progress is tracked via `DbMetadata::migration_status` (see [`capability::MigrationStatus`])
+//! to support resumption after crashes.
+//!
+//! **Downgrades are not supported.** If a higher version exists on disk than the configured target,
+//! the code currently opens the on-disk DB as-is; do not rely on “forcing” an older version via
+//! config.
+//!
+//! # Core API and invariants
+//!
+//! `ZainoDB` provides:
+//!
+//! - Lifecycle:
+//!   - [`ZainoDB::spawn`], [`ZainoDB::shutdown`], [`ZainoDB::status`], [`ZainoDB::wait_until_ready`]
+//!
+//! - Writes:
+//!   - [`ZainoDB::write_block`]: append-only; **must** write `db_tip + 1`
+//!   - [`ZainoDB::delete_block_at_height`]/[`ZainoDB::delete_block`]: pop-only; **must** delete tip
+//!   - [`ZainoDB::sync_to_height`]: convenience sync loop that fetches blocks from a `BlockchainSource`
+//!
+//! - Reads:
+//!   - `db_height`, `get_block_height`, `get_block_hash`, `get_metadata`
+//!
+//! **Write invariants** matter for correctness across all DB versions:
+//! - `write_block` must be called in strictly increasing height order and must not skip heights.
+//! - `delete_block*` must only remove the current tip, and must keep all secondary indices consistent.
+//!
+//! # Usage (recommended pattern)
+//!
+//! - Construct the DB once at startup.
+//! - Await readiness.
+//! - Hand out `DbReader` handles for all read/query operations.
+//!
+//! ```rust,no_run
+//! use std::sync::Arc;
+//!
+//! let db = Arc::new(crate::chain_index::finalised_state::ZainoDB::spawn(cfg, source).await?);
+//! db.wait_until_ready().await;
+//!
+//! let reader = db.to_reader();
+//! let tip = reader.db_height().await?;
+//! ```
+//!
+//! # Development: extending the finalised DB safely
+//!
+//! Common tasks and where they belong:
+//!
+//! - **Add a new query/index:** implement it in the latest DB version (e.g. `db::v1`), then expose it
+//!   via a capability extension trait in [`capability`], route it via [`reader`], and gate it via
+//!   `Capability` / `DbVersion::capability`.
+//!
+//! - **Add a new DB major version (v2):**
+//!   1. Add `db::v2` module and `DbV2` implementation.
+//!   2. Extend [`db::DbBackend`] with a `V2(DbV2)` variant and delegate trait impls.
+//!   3. Append `"v2"` to [`db::VERSION_DIRS`] (no gaps; order matters for discovery).
+//!   4. Extend `ZainoDB::spawn` config mapping to accept `cfg.db_version == 2`.
+//!   5. Update [`capability::DbVersion::capability`] for `(2, 0)`.
+//!   6. Add a migration step in [`migrations`] and register it in `MigrationManager::get_migration`.
+//!
+//! - **Change an on-disk encoding:** treat it as a schema change. Either implement a migration or
+//!   bump the DB major version and rebuild in shadow.
+//!
 
 // TODO / FIX - REMOVE THIS ONCE CHAININDEX LANDS!
 #![allow(dead_code)]
@@ -30,17 +197,75 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use super::source::BlockchainSource;
 
+/// Handle to the finalised on-disk chain index.
+///
+/// `ZainoDB` is the owner-facing facade for the finalised portion of the ChainIndex:
+/// - it opens or creates the appropriate on-disk database version,
+/// - it coordinates migrations when `current_version < target_version`,
+/// - and it exposes a small set of lifecycle, write, and core read methods.
+///
+/// ## Concurrency model
+/// Internally, `ZainoDB` holds an [`Arc`] to a [`Router`]. The router provides lock-free routing
+/// between a primary database and (during major migrations) an optional shadow database.
+///
+/// Query paths should not call `ZainoDB` methods directly. Instead, construct a [`DbReader`] using
+/// [`ZainoDB::to_reader`] and perform all reads via that read-only API. This ensures capability-
+/// correct routing (especially during migrations).
+///
+/// ## Configuration
+/// `ZainoDB` stores the [`BlockCacheConfig`] used to:
+/// - determine network-specific on-disk paths,
+/// - select a target database version (`cfg.db_version`),
+/// - and compute per-block metadata (e.g., network selection for `BlockMetadata`).
 pub(crate) struct ZainoDB {
+    // Capability router for the active database backend(s).
+    ///
+    /// - In steady state, all requests route to the primary backend.
+    /// - During a major migration, some or all capabilities may route to a shadow backend until
+    ///   promotion completes.
     db: Arc<Router>,
+
+    /// Immutable configuration snapshot used for sync and metadata construction.
     cfg: BlockCacheConfig,
 }
 
+/// Lifecycle, migration control, and core read/write API for the finalised database.
+///
+/// This `impl` intentionally stays small and policy heavy:
+/// - version selection and migration orchestration lives in [`ZainoDB::spawn`],
+/// - the storage engine details are encapsulated behind [`DbBackend`] and the capability traits,
+/// - higher-level query routing is provided by [`DbReader`].
 impl ZainoDB {
     // ***** DB control *****
 
-    /// Spawns a ZainoDB, opens an existing database if a path is given in the config else creates a new db.
+    /// Spawns a `ZainoDB` instance.
     ///
-    /// Peeks at the db metadata store to load correct database version.
+    /// This method:
+    /// 1. Detects the on-disk database version (if any) using [`ZainoDB::try_find_current_db_version`].
+    /// 2. Selects a target schema version from `cfg.db_version`.
+    /// 3. Opens the existing database at the detected version, or creates a new database at the
+    ///    target version.
+    /// 4. If an existing database is older than the target (`current_version < target_version`),
+    ///    runs migrations using [`migrations::MigrationManager`].
+    ///
+    /// ## Version selection rules
+    /// - `cfg.db_version == 0` targets `DbVersion { 0, 0, 0 }` (legacy layout).
+    /// - `cfg.db_version == 1` targets `DbVersion { 1, 0, 0 }` (current layout).
+    /// - Any other value returns an error.
+    ///
+    /// ## Migrations
+    /// Migrations are invoked only when a database already exists on disk and the opened database
+    /// reports a lower version than the configured target.
+    ///
+    /// Migrations may require access to chain data to rebuild indices. For that reason, a
+    /// [`BlockchainSource`] is provided here and passed into the migration manager.
+    ///
+    /// ## Errors
+    /// Returns [`FinalisedStateError`] if:
+    /// - the configured target version is unsupported,
+    /// - the on-disk database version is unsupported,
+    /// - opening or creating the database fails,
+    /// - or any migration step fails.
     pub(crate) async fn spawn<T>(
         cfg: BlockCacheConfig,
         source: T,
@@ -116,17 +341,35 @@ impl ZainoDB {
         Ok(Self { db: router, cfg })
     }
 
-    /// Gracefully shuts down the running ZainoDB, closing all child processes.
+    /// Gracefully shuts down the running database backend(s).
+    ///
+    /// This delegates to the router, which shuts down:
+    /// - the primary backend, and
+    /// - any shadow backend currently present (during migrations).
+    ///
+    /// After this call returns `Ok(())`, database files may still remain on disk; shutdown does not
+    /// delete data. (Deletion of old versions is handled by migrations when applicable.)
     pub(crate) async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.db.shutdown().await
     }
 
-    /// Returns the status of the running ZainoDB.
+    /// Returns the runtime status of the serving database.
+    ///
+    /// This status is provided by the backend implementing [`capability::DbCore::status`]. During
+    /// migrations, the router determines which backend serves `READ_CORE`, and the status reflects
+    /// that routing decision.
     pub(crate) fn status(&self) -> StatusType {
         self.db.status()
     }
 
-    /// Waits until the ZainoDB returns a Ready status.
+    /// Waits until the database reports [`StatusType::Ready`].
+    ///
+    /// This polls the router at a fixed interval (100ms) using a Tokio timer. The polling loop uses
+    /// `MissedTickBehavior::Delay` to avoid catch-up bursts under load or when the runtime is
+    /// stalled.
+    ///
+    /// Call this after [`ZainoDB::spawn`] if downstream services require the database to be fully
+    /// initialised before handling requests.
     pub(crate) async fn wait_until_ready(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -138,21 +381,38 @@ impl ZainoDB {
         }
     }
 
-    /// Creates a read-only viewer onto the running ZainoDB.
+    /// Creates a read-only view onto the running database.
     ///
-    /// NOTE: **ALL** chain fetch should use DbReader instead of directly using ZainoDB.
+    /// All chain fetches should be performed through [`DbReader`] rather than calling read methods
+    /// directly on `ZainoDB`.
     pub(crate) fn to_reader(self: &Arc<Self>) -> DbReader {
         DbReader {
             inner: Arc::clone(self),
         }
     }
 
-    /// Look for known dirs to find current db version.
+    /// Attempts to detect the current on-disk database version from the filesystem layout.
     ///
-    /// The oldest version is returned as the database may have been closed mid migration.
+    /// The detection is intentionally conservative: it returns the **oldest** detected version,
+    /// because the process may have been terminated mid-migration, leaving both an older primary
+    /// and a newer shadow directory on disk.
     ///
-    /// * `Some(version)` – DB exists, version returned.
-    /// * `None`      – directory or key is missing -> fresh DB.
+    /// ## Recognised layouts
+    ///
+    /// - **Legacy v0 layout**
+    ///   - Network directories: `live/`, `test/`, `local/`
+    ///   - Presence check: both `data.mdb` and `lock.mdb` exist
+    ///   - Reported version: `Some(0)`
+    ///
+    /// - **Versioned v1+ layout**
+    ///   - Network directories: `mainnet/`, `testnet/`, `regtest/`
+    ///   - Version subdirectories: enumerated by [`db::VERSION_DIRS`] (e.g. `"v1"`)
+    ///   - Presence check: both `data.mdb` and `lock.mdb` exist within a version directory
+    ///   - Reported version: `Some(i + 1)` where `i` is the index in `VERSION_DIRS`
+    ///
+    /// Returns:
+    /// - `Some(version)` if a compatible database directory is found,
+    /// - `None` if no database is detected (fresh DB creation case).
     async fn try_find_current_db_version(cfg: &BlockCacheConfig) -> Option<u32> {
         let legacy_dir = match cfg.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "live",
@@ -185,9 +445,15 @@ impl ZainoDB {
         None
     }
 
-    /// Returns the internal db backend for the given db capability.
+    /// Returns the database backend that should serve the requested capability.
     ///
-    /// Used by DbReader to route calls to the correct database during major migrations.
+    /// This is used by [`DbReader`] to route calls to the correct database during major migrations.
+    /// The router may return either the primary or shadow backend depending on the current routing
+    /// masks.
+    ///
+    /// ## Errors
+    /// Returns [`FinalisedStateError::FeatureUnavailable`] if neither backend currently serves the
+    /// requested capability.
     #[inline]
     pub(crate) fn backend_for_cap(
         &self,
@@ -198,7 +464,32 @@ impl ZainoDB {
 
     // ***** Db Core Write *****
 
-    /// Sync the database to the given height using the given BlockchainSource.
+    /// Sync the database up to and including `height` using a [`BlockchainSource`].
+    ///
+    /// This method is a convenience ingestion loop that:
+    /// - determines the current database tip height,
+    /// - fetches each missing block from the source,
+    /// - fetches Sapling and Orchard commitment tree roots for each block,
+    /// - constructs [`BlockMetadata`] and an [`IndexedBlock`],
+    /// - and appends the block via [`ZainoDB::write_block`].
+    ///
+    /// ## Chainwork handling
+    /// For database versions that expose [`capability::BlockCoreExt`], chainwork is retrieved from
+    /// stored header data and threaded through `BlockMetadata`.
+    ///
+    /// Legacy v0 databases do not expose header/chainwork APIs; in that case, chainwork is set to
+    /// zero. This is safe only insofar as v0 consumers do not rely on chainwork-dependent features.
+    ///
+    /// ## Invariants
+    /// - Blocks are written strictly in height order.
+    /// - This method assumes the source provides consistent block and commitment tree data.
+    ///
+    /// ## Errors
+    /// Returns [`FinalisedStateError`] if:
+    /// - a block is missing from the source at a required height,
+    /// - commitment tree roots are missing for Sapling or Orchard,
+    /// - constructing an [`IndexedBlock`] fails,
+    /// - or any underlying database write fails.
     pub(crate) async fn sync_to_height<T>(
         &self,
         height: Height,
@@ -300,20 +591,27 @@ impl ZainoDB {
         Ok(())
     }
 
-    /// Writes a block to the database.
+    /// Appends a single fully constructed [`IndexedBlock`] to the database.
     ///
-    /// This **MUST** be the *next* block in the chain (db_tip_height + 1).
+    /// This **must** be the next block after the current database tip (`db_tip_height + 1`).
+    /// Database implementations may assume append-only semantics to maintain secondary index
+    /// consistency.
+    ///
+    /// For reorg handling, callers should delete tip blocks using [`ZainoDB::delete_block_at_height`]
+    /// or [`ZainoDB::delete_block`] before re-appending.
     pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.db.write_block(b).await
     }
 
-    /// Deletes a block from the database by height.
+    /// Deletes the block at height `h` from the database.
     ///
-    /// This **MUST** be the *top* block in the db.
+    /// This **must** be the current database tip. Deleting non-tip blocks is not supported because
+    /// it would require re-writing dependent indices for all higher blocks.
     ///
-    /// Uses `delete_block` internally, fails if the block to be deleted cannot be correctly built.
-    /// If this happens, the block to be deleted must be fetched from the validator and given to `delete_block`
-    /// to ensure the block has been completely wiped from the database.
+    /// This method delegates to the backend’s `delete_block_at_height` implementation. If that
+    /// deletion cannot be completed correctly (for example, if the backend cannot reconstruct all
+    /// derived index entries needed for deletion), callers must fall back to [`ZainoDB::delete_block`]
+    /// using an [`IndexedBlock`] fetched from the validator/source to ensure a complete wipe.
     pub(crate) async fn delete_block_at_height(
         &self,
         h: Height,
@@ -321,21 +619,33 @@ impl ZainoDB {
         self.db.delete_block_at_height(h).await
     }
 
-    /// Deletes a given block from the database.
+    /// Deletes the provided block from the database.
     ///
-    /// This **MUST** be the *top* block in the db.
+    /// This **must** be the current database tip. The provided [`IndexedBlock`] is used to ensure
+    /// all derived indices created by that block can be removed deterministically.
+    ///
+    /// Prefer [`ZainoDB::delete_block_at_height`] when possible; use this method when the backend
+    /// requires full block contents to correctly reverse all indices.
     pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), FinalisedStateError> {
         self.db.delete_block(b).await
     }
 
     // ***** DB Core Read *****
 
-    /// Returns the highest block height held in the database.
+    /// Returns the highest block height stored in the finalised database.
+    ///
+    /// Returns:
+    /// - `Ok(Some(height))` if at least one block is present,
+    /// - `Ok(None)` if the database is empty.
     pub(crate) async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
         self.db.db_height().await
     }
 
-    /// Returns the block height for the given block hash *if* present in the finalised state.
+    /// Returns the main-chain height for `hash` if the block is present in the finalised database.
+    ///
+    /// Returns:
+    /// - `Ok(Some(height))` if the hash is indexed,
+    /// - `Ok(None)` if the hash is not present (not an error).
     pub(crate) async fn get_block_height(
         &self,
         hash: BlockHash,
@@ -343,7 +653,11 @@ impl ZainoDB {
         self.db.get_block_height(hash).await
     }
 
-    /// Returns the block block hash for the given block height *if* present in the finlaised state.
+    /// Returns the main-chain block hash for `height` if the block is present in the finalised database.
+    ///
+    /// Returns:
+    /// - `Ok(Some(hash))` if the height is indexed,
+    /// - `Ok(None)` if the height is not present (not an error).
     pub(crate) async fn get_block_hash(
         &self,
         height: Height,
@@ -351,11 +665,17 @@ impl ZainoDB {
         self.db.get_block_hash(height).await
     }
 
-    /// Returns metadata for the running ZainoDB.
+    /// Returns the persisted database metadata.
+    ///
+    /// See [`capability::DbMetadata`] for the precise fields and on-disk encoding.
     pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         self.db.get_metadata().await
     }
 
+    /// Returns the internal router (test-only).
+    ///
+    /// This is intended for unit/integration tests that need to observe or manipulate routing state
+    /// during migrations. Production code should not depend on the router directly.
     #[cfg(test)]
     pub(crate) fn router(&self) -> &Router {
         &self.db

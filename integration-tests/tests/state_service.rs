@@ -1,6 +1,8 @@
+use futures::StreamExt;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
+use zaino_proto::proto::service::{BlockId, BlockRange, PoolType, TransparentAddressBlockFilter};
 use zaino_state::{LightWalletService, ZcashService};
 
 #[allow(deprecated)]
@@ -78,7 +80,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
     test_manager.local_net.print_stdout();
 
     let fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.full_node_rpc_listen_address,
+        test_manager.full_node_rpc_listen_address.to_string(),
         None,
         None,
         None,
@@ -116,7 +118,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             debug_validity_check_interval: None,
             should_backup_non_finalized_state: false,
         },
-        test_manager.full_node_rpc_listen_address,
+        test_manager.full_node_rpc_listen_address.to_string(),
         test_manager.full_node_grpc_listen_address,
         false,
         None,
@@ -162,7 +164,7 @@ async fn generate_blocks_and_poll_all_chain_indexes<V, Service>(
 ) where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     test_manager.generate_blocks_and_poll(n).await;
@@ -634,6 +636,311 @@ async fn state_service_get_raw_mempool_testnet() {
     test_manager.close().await;
 }
 
+/// Tests whether that calls to `get_block_range` with the same block range are the same when
+/// specifying the default `PoolType`s and passing and empty Vec to verify that the method falls
+/// back to the default pools when these are not explicitly specified.
+async fn state_service_get_block_range_returns_default_pools<V: ValidatorExt>(
+    validator: &ValidatorKind,
+) {
+    let (
+        mut test_manager,
+        _fetch_service,
+        fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    clients.faucet.sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        generate_blocks_and_poll_all_chain_indexes(
+            100,
+            &test_manager,
+            fetch_service_subscriber.clone(),
+            state_service_subscriber.clone(),
+        )
+        .await;
+        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        generate_blocks_and_poll_all_chain_indexes(
+            1,
+            &test_manager,
+            fetch_service_subscriber.clone(),
+            state_service_subscriber.clone(),
+        )
+        .await;
+        clients.faucet.sync_and_await().await.unwrap();
+    };
+
+    let recipient_ua = clients.get_recipient_address("unified").await;
+    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
+        .await
+        .unwrap();
+
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        fetch_service_subscriber.clone(),
+        state_service_subscriber.clone(),
+    )
+    .await;
+
+    let start_height: u64 = 100;
+    let end_height: u64 = 103;
+
+    let default_pools_request = BlockRange {
+        start: Some(BlockId {
+            height: start_height,
+            hash: vec![],
+        }),
+        end: Some(BlockId {
+            height: end_height,
+            hash: vec![],
+        }),
+        pool_types: vec![],
+    };
+
+    let fetch_service_get_block_range = fetch_service_subscriber
+        .get_block_range(default_pools_request.clone())
+        .await
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .await;
+
+    let explicit_default_pool_request = BlockRange {
+        start: Some(BlockId {
+            height: start_height,
+            hash: vec![],
+        }),
+        end: Some(BlockId {
+            height: end_height,
+            hash: vec![],
+        }),
+        pool_types: vec![PoolType::Sapling as i32, PoolType::Orchard as i32],
+    };
+
+    let fetch_service_get_block_range_specifying_pools = fetch_service_subscriber
+        .get_block_range(explicit_default_pool_request.clone())
+        .await
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .await;
+
+    assert_eq!(
+        fetch_service_get_block_range,
+        fetch_service_get_block_range_specifying_pools
+    );
+
+    let state_service_get_block_range_specifying_pools = state_service_subscriber
+        .get_block_range(explicit_default_pool_request)
+        .await
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .await;
+
+    let state_service_get_block_range = state_service_subscriber
+        .get_block_range(default_pools_request)
+        .await
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .await;
+
+    assert_eq!(
+        state_service_get_block_range,
+        state_service_get_block_range_specifying_pools
+    );
+
+    // check that the block range is the same between fetch service and state service
+    assert_eq!(fetch_service_get_block_range, state_service_get_block_range);
+
+    let compact_block = state_service_get_block_range.last().unwrap();
+
+    assert_eq!(compact_block.height, end_height);
+
+    // the compact block has 1 transactions
+    assert_eq!(compact_block.vtx.len(), 1);
+
+    let shielded_tx = compact_block.vtx.first().unwrap();
+    assert_eq!(shielded_tx.index, 1);
+    // tranparent data should not be present when no pool types are requested
+    assert_eq!(
+        shielded_tx.vin,
+        vec![],
+        "transparent data should not be present when no pool types are specified in the request."
+    );
+    assert_eq!(
+        shielded_tx.vout,
+        vec![],
+        "transparent data should not be present when no pool types are specified in the request."
+    );
+    test_manager.close().await;
+}
+
+/// tests whether the `GetBlockRange` RPC returns all pools when requested
+async fn state_service_get_block_range_returns_all_pools<V: ValidatorExt>(
+    validator: &ValidatorKind,
+) {
+    let (
+        mut test_manager,
+        _fetch_service,
+        fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    clients.faucet.sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        generate_blocks_and_poll_all_chain_indexes(
+            100,
+            &test_manager,
+            fetch_service_subscriber.clone(),
+            state_service_subscriber.clone(),
+        )
+        .await;
+        clients.faucet.sync_and_await().await.unwrap();
+        for _ in 1..4 {
+            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+
+            clients.faucet.sync_and_await().await.unwrap();
+        }
+    };
+
+    let recipient_transparent = clients.get_recipient_address("transparent").await;
+    let deshielding_txid = from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(&recipient_transparent, 250_000, None)],
+    )
+    .await
+    .unwrap()
+    .head;
+
+    let recipient_sapling = clients.get_recipient_address("sapling").await;
+    let sapling_txid = from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(&recipient_sapling, 250_000, None)],
+    )
+    .await
+    .unwrap()
+    .head;
+
+    let recipient_ua = clients.get_recipient_address("unified").await;
+    let orchard_txid =
+        from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
+            .await
+            .unwrap()
+            .head;
+
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        fetch_service_subscriber.clone(),
+        state_service_subscriber.clone(),
+    )
+    .await;
+
+    let start_height: u64 = 100;
+    let end_height: u64 = 106;
+
+    let block_range = BlockRange {
+        start: Some(BlockId {
+            height: start_height,
+            hash: vec![],
+        }),
+        end: Some(BlockId {
+            height: end_height,
+            hash: vec![],
+        }),
+        pool_types: vec![
+            PoolType::Transparent as i32,
+            PoolType::Sapling as i32,
+            PoolType::Orchard as i32,
+        ],
+    };
+
+    let fetch_service_get_block_range = fetch_service_subscriber
+        .get_block_range(block_range.clone())
+        .await
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .await;
+
+    let state_service_get_block_range = state_service_subscriber
+        .get_block_range(block_range)
+        .await
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .await;
+
+    // check that the block range is the same
+    assert_eq!(fetch_service_get_block_range, state_service_get_block_range);
+
+    let compact_block = state_service_get_block_range.last().unwrap();
+
+    assert_eq!(compact_block.height, end_height);
+
+    // the compact block has 3 transactions
+    assert_eq!(compact_block.vtx.len(), 3);
+
+    // transaction order is not guaranteed so it's necessary to look up for them by TXID
+    let deshielding_tx = compact_block
+        .vtx
+        .iter()
+        .find(|tx| tx.txid == deshielding_txid.as_ref().to_vec())
+        .unwrap();
+
+    assert!(
+        !deshielding_tx.vout.is_empty(),
+        "transparent data should be present when transaparent pool type is specified in the request."
+    );
+
+    // transaction order is not guaranteed so it's necessary to look up for them by TXID
+    let sapling_tx = compact_block
+        .vtx
+        .iter()
+        .find(|tx| tx.txid == sapling_txid.as_ref().to_vec())
+        .unwrap();
+
+    assert!(
+        !sapling_tx.outputs.is_empty(),
+        "sapling data should be present when all pool types are specified in the request."
+    );
+
+    let orchard_tx = compact_block
+        .vtx
+        .iter()
+        .find(|tx| tx.txid == orchard_txid.as_ref().to_vec())
+        .unwrap();
+
+    assert!(
+        !orchard_tx.actions.is_empty(),
+        "orchard data should be present when all pool types are specified in the request."
+    );
+
+    test_manager.close().await;
+}
+
 async fn state_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
@@ -957,6 +1264,80 @@ async fn state_service_get_raw_transaction_testnet() {
     test_manager.close().await;
 }
 
+async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
+    validator: &ValidatorKind,
+) {
+    let (
+        mut test_manager,
+        _fetch_service,
+        fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    let recipient_taddr = clients.get_recipient_address("transparent").await;
+    clients.faucet.sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        test_manager.local_net.generate_blocks(100).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        test_manager.local_net.generate_blocks(1).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        clients.faucet.sync_and_await().await.unwrap();
+    };
+
+    let tx = from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(recipient_taddr.as_str(), 250_000, None)],
+    )
+    .await
+    .unwrap();
+    test_manager.local_net.generate_blocks(1).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    let chain_height = fetch_service_subscriber
+        .block_cache
+        .get_chain_height()
+        .await
+        .unwrap()
+        .0;
+    dbg!(&chain_height);
+
+    let state_service_txids = state_service_subscriber
+        .get_taddress_transactions(TransparentAddressBlockFilter {
+            address: recipient_taddr,
+            range: Some(BlockRange {
+                start: Some(BlockId {
+                    height: (chain_height - 2) as u64,
+                    hash: vec![],
+                }),
+                end: Some(BlockId {
+                    height: chain_height as u64,
+                    hash: vec![],
+                }),
+                pool_types: vec![
+                    PoolType::Transparent as i32,
+                    PoolType::Sapling as i32,
+                    PoolType::Orchard as i32,
+                ],
+            }),
+        })
+        .await
+        .unwrap();
+
+    dbg!(&tx);
+
+    dbg!(&state_service_txids);
+    assert!(state_service_txids.count().await > 0);
+
+    test_manager.close().await;
+}
 async fn state_service_get_address_tx_ids<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
@@ -1359,7 +1740,12 @@ mod zebra {
             state_service_get_address_utxos_testnet().await;
         }
 
-        #[tokio::test(flavor = "multi_thread")]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn taddress_transactions_regtest() {
+            state_service_get_address_transactions_regtest::<Zebrad>(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn address_tx_ids_regtest() {
             state_service_get_address_tx_ids::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
@@ -1641,6 +2027,20 @@ mod zebra {
             use super::*;
 
             #[tokio::test(flavor = "multi_thread")]
+            pub(crate) async fn get_block_range_default_request_returns_no_t_data_regtest() {
+                state_service_get_block_range_returns_default_pools::<Zebrad>(
+                    &ValidatorKind::Zebrad,
+                )
+                .await;
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            pub(crate) async fn get_block_range_default_request_returns_all_pools_regtest() {
+                state_service_get_block_range_returns_all_pools::<Zebrad>(&ValidatorKind::Zebrad)
+                    .await;
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn subtrees_by_index_regtest() {
                 state_service_z_get_subtrees_by_index::<Zebrad>(&ValidatorKind::Zebrad).await;
             }
@@ -1826,8 +2226,12 @@ mod zebra {
 
     pub(crate) mod lightwallet_indexer {
         use futures::StreamExt as _;
-        use zaino_proto::proto::service::{
-            AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetSubtreeRootsArg, TxFilter,
+        use zaino_proto::proto::{
+            service::{
+                AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetSubtreeRootsArg, PoolType,
+                TxFilter,
+            },
+            utils::pool_types_into_i32_vec,
         };
         use zebra_rpc::methods::{GetAddressTxIdsRequest, GetBlock};
 
@@ -2036,7 +2440,7 @@ mod zebra {
                 max_entries: 0,
             };
             let fetch_service_sapling_subtree_roots = fetch_service_subscriber
-                .get_subtree_roots(sapling_subtree_roots_request.clone())
+                .get_subtree_roots(sapling_subtree_roots_request)
                 .await
                 .unwrap()
                 .map(Result::unwrap)
@@ -2121,7 +2525,15 @@ mod zebra {
                 height: 5,
                 hash: vec![],
             });
-            let request = BlockRange { start, end };
+            let request = BlockRange {
+                start,
+                end,
+                pool_types: vec![
+                    PoolType::Transparent as i32,
+                    PoolType::Sapling as i32,
+                    PoolType::Orchard as i32,
+                ],
+            };
             if nullifiers_only {
                 let fetch_service_get_block_range = fetch_service_subscriber
                     .get_block_range_nullifiers(request.clone())
@@ -2215,7 +2627,7 @@ mod zebra {
                 .await
                 .unwrap();
             let coinbase_tx = state_service_block_by_height.vtx.first().unwrap();
-            let hash = coinbase_tx.hash.clone();
+            let hash = coinbase_tx.txid.clone();
             let request = TxFilter {
                 block: None,
                 index: 0,
@@ -2444,6 +2856,86 @@ mod zebra {
                 fetch_service_taddress_balance,
                 state_service_taddress_balance
             );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_transparent_data_from_compact_block_when_requested() {
+            let (
+                mut test_manager,
+                _fetch_service,
+                fetch_service_subscriber,
+                _state_service,
+                state_service_subscriber,
+            ) = create_test_manager_and_services::<Zebrad>(
+                &ValidatorKind::Zebrad,
+                None,
+                true,
+                true,
+                Some(NetworkKind::Regtest),
+            )
+            .await;
+
+            let clients = test_manager.clients.take().unwrap();
+            let taddr = clients.get_faucet_address("transparent").await;
+            generate_blocks_and_poll_all_chain_indexes(
+                5,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+
+            let state_service_taddress_balance = state_service_subscriber
+                .get_taddress_balance(AddressList {
+                    addresses: vec![taddr.clone()],
+                })
+                .await
+                .unwrap();
+            let fetch_service_taddress_balance = fetch_service_subscriber
+                .get_taddress_balance(AddressList {
+                    addresses: vec![taddr],
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                fetch_service_taddress_balance,
+                state_service_taddress_balance
+            );
+
+            let chain_height = state_service_subscriber
+                .get_latest_block()
+                .await
+                .unwrap()
+                .height;
+
+            let compact_block_range = state_service_subscriber
+                .get_block_range(BlockRange {
+                    start: Some(BlockId {
+                        height: 0,
+                        hash: Vec::new(),
+                    }),
+                    end: Some(BlockId {
+                        height: chain_height,
+                        hash: Vec::new(),
+                    }),
+                    pool_types: pool_types_into_i32_vec(
+                        [PoolType::Transparent, PoolType::Sapling, PoolType::Orchard].to_vec(),
+                    ),
+                })
+                .await
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+                .await;
+
+            for cb in compact_block_range.into_iter() {
+                for tx in cb.vtx {
+                    // first transaction of a block is coinbase
+                    assert!(tx.vin.first().unwrap().prevout_txid.is_empty());
+                    // script pub key of this transaction is not empty
+                    assert!(!tx.vout.first().unwrap().script_pub_key.is_empty());
+                }
+            }
         }
     }
 }

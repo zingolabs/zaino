@@ -18,7 +18,7 @@ async fn connect_to_node_get_info_for_validator<V, Service>(validator: &Validato
 where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let mut test_manager =
@@ -40,7 +40,7 @@ async fn send_to_orchard<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let mut test_manager =
@@ -88,7 +88,7 @@ async fn send_to_sapling<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let mut test_manager =
@@ -136,7 +136,7 @@ async fn send_to_transparent<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let mut test_manager =
@@ -167,7 +167,7 @@ where
 
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.full_node_rpc_listen_address,
+            &test_manager.full_node_rpc_listen_address.to_string(),
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -234,7 +234,7 @@ async fn send_to_all<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let mut test_manager =
@@ -320,7 +320,7 @@ async fn shield_for_validator<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let mut test_manager =
@@ -388,7 +388,7 @@ async fn monitor_unverified_mempool_for_validator<V, Service>(validator: &Valida
 where
     V: ValidatorExt,
     Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: From<ZainodConfig>,
+    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let mut test_manager =
@@ -443,7 +443,7 @@ where
 
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.full_node_rpc_listen_address,
+            &test_manager.full_node_rpc_listen_address.to_string(),
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),

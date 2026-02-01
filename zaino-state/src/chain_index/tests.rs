@@ -2,6 +2,7 @@
 
 pub(crate) mod finalised_state;
 pub(crate) mod mempool;
+mod proptest_blockgen;
 pub(crate) mod vectors;
 
 pub(crate) fn init_tracing() {
@@ -195,6 +196,7 @@ mod mockchain_tests {
                 )
                 .await
                 .unwrap();
+            assert!(transaction_status_nonbest_chain.is_empty());
             assert_eq!(
                 transaction_status_best_chain.unwrap(),
                 BestChainLocation::Block(
@@ -202,7 +204,6 @@ mod mockchain_tests {
                     crate::Height(block_height.unwrap().0)
                 )
             );
-            assert!(transaction_status_nonbest_chain.is_empty());
         }
     }
 

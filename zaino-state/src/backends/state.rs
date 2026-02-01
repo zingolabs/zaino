@@ -11,16 +11,18 @@ use crate::{
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    local_cache::{compact_block_to_nullifiers, BlockCache, BlockCacheSubscriber},
+    local_cache::{
+        compact_block_to_nullifiers, compact_block_with_pool_types, BlockCache,
+        BlockCacheSubscriber,
+    },
     status::{AtomicStatus, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
     },
-    utils::{blockid_to_hashorheight, get_build_info, ServiceMetadata},
+    utils::{get_build_info, ServiceMetadata},
     BackendType, MempoolKey,
 };
-
 use nonempty::NonEmpty;
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
@@ -41,9 +43,13 @@ use zaino_fetch::{
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
-        AddressList, Balance, BlockId, BlockRange, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReply, GetAddressUtxosReplyList, LightdInfo, PingResponse, RawTransaction,
+        AddressList, Balance, BlockId, BlockRange, GetAddressUtxosArg, GetAddressUtxosReply,
+        GetAddressUtxosReplyList, GetMempoolTxRequest, LightdInfo, PingResponse, RawTransaction,
         SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
+    },
+    utils::{
+        blockid_to_hashorheight, pool_types_from_vector, PoolTypeError, PoolTypeFilter,
+        ValidatedBlockRangeRequest,
     },
 };
 
@@ -184,7 +190,7 @@ impl ZcashService for StateService {
         info!("Spawning State Service..");
 
         let rpc_client = JsonRpSeeConnector::new_from_config_parts(
-            config.validator_rpc_address,
+            &config.validator_rpc_address,
             config.validator_rpc_user.clone(),
             config.validator_rpc_password.clone(),
             config.validator_cookie_path.clone(),
@@ -550,50 +556,38 @@ impl StateServiceSubscriber {
         request: BlockRange,
         trim_non_nullifier: bool,
     ) -> Result<CompactBlockStream, StateServiceError> {
-        let mut start: u32 = match request.start {
-            Some(block_id) => match block_id.height.try_into() {
-                Ok(height) => height,
-                Err(_) => {
-                    return Err(StateServiceError::TonicStatusError(
-                        tonic::Status::invalid_argument(
-                            "Error: Start height out of range. Failed to convert to u32.",
-                        ),
-                    ));
-                }
-            },
-            None => {
-                return Err(StateServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument("Error: No start height given."),
-                ));
-            }
-        };
-        let mut end: u32 = match request.end {
-            Some(block_id) => match block_id.height.try_into() {
-                Ok(height) => height,
-                Err(_) => {
-                    return Err(StateServiceError::TonicStatusError(
-                        tonic::Status::invalid_argument(
-                            "Error: End height out of range. Failed to convert to u32.",
-                        ),
-                    ));
-                }
-            },
-            None => {
-                return Err(StateServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument("Error: No start height given."),
-                ));
-            }
-        };
-        let lowest_to_highest = if start > end {
-            (start, end) = (end, start);
+        let mut validated_request = ValidatedBlockRangeRequest::new_from_block_range(&request)
+            .map_err(StateServiceError::from)?;
+
+        // FIXME: this should be changed but this logic is hard to understand and we lack tests.
+        // we will maintain the behaviour with less smelly code
+        let lowest_to_highest = if validated_request.is_reverse_ordered() {
+            validated_request.reverse();
             false
         } else {
             true
         };
-        let chain_height = self.block_cache.get_chain_height().await?.0;
+
+        let start = validated_request.start();
+        let end = validated_request.end();
+        let chain_height: u64 = self.block_cache.get_chain_height().await?.0 as u64;
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+
+        let pool_types = match pool_types_from_vector(&request.pool_types) {
+            Ok(p) => Ok(p),
+            Err(e) => Err(match e {
+                PoolTypeError::InvalidPoolType => StateServiceError::UnhandledRpcError(
+                    "PoolType::Invalid specified as argument in `BlockRange`.".to_string(),
+                ),
+                PoolTypeError::UnknownPoolType(t) => StateServiceError::UnhandledRpcError(format!(
+                    "Unknown value specified in `BlockRange`. Value '{}' is not a known PoolType.",
+                    t
+                )),
+            }),
+        }?;
+        // FIX: find out why there's repeated code fetching the chain tip and then the rest
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -605,10 +599,12 @@ impl StateServiceSubscriber {
                             .await
                         {
                             Ok(mut block) => {
-                                if trim_non_nullifier {
-                                    block = compact_block_to_nullifiers(block);
-                                }
-                                Ok(block)
+                                    if trim_non_nullifier {
+                                        block = compact_block_to_nullifiers(block);
+                                    } else {
+                                        block = compact_block_with_pool_types(block, &pool_types);
+                                    }
+                                    Ok(block)
                             }
                             Err(e) => {
                                 if end >= chain_height {
@@ -643,6 +639,8 @@ impl StateServiceSubscriber {
                                 Ok(mut block) => {
                                     if trim_non_nullifier {
                                         block = compact_block_to_nullifiers(block);
+                                    } else {
+                                        block = compact_block_with_pool_types(block, &pool_types);
                                     }
                                     Ok(block)
                                 }
@@ -2039,8 +2037,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
         })
     }
 
-    /// Return the txids corresponding to the given t-address within the given block range
-    async fn get_taddress_txids(
+    /// Return the transactions corresponding to the given t-address within the given block range
+    async fn get_taddress_transactions(
         &self,
         request: TransparentAddressBlockFilter,
     ) -> Result<RawTransactionStream, Self::Error> {
@@ -2082,6 +2080,15 @@ impl LightWalletIndexer for StateServiceSubscriber {
             }
         });
         Ok(RawTransactionStream::new(receiver))
+    }
+
+    /// Return the txids corresponding to the given t-address within the given block range
+    /// This function is deprecated. Use `get_taddress_transactions`.
+    async fn get_taddress_txids(
+        &self,
+        request: TransparentAddressBlockFilter,
+    ) -> Result<RawTransactionStream, Self::Error> {
+        self.get_taddress_transactions(request).await
     }
 
     /// Returns the total balance for a list of taddrs
@@ -2213,16 +2220,42 @@ impl LightWalletIndexer for StateServiceSubscriber {
     /// in the exclude list that don't exist in the mempool are ignored.
     async fn get_mempool_tx(
         &self,
-        request: Exclude,
+        request: GetMempoolTxRequest,
     ) -> Result<CompactTransactionStream, Self::Error> {
-        let exclude_txids: Vec<String> = request
-            .txid
-            .iter()
-            .map(|txid_bytes| {
-                let reversed_txid_bytes: Vec<u8> = txid_bytes.iter().cloned().rev().collect();
-                hex::encode(&reversed_txid_bytes)
-            })
-            .collect();
+        let mut exclude_txids: Vec<String> = vec![];
+
+        for (i, excluded_id) in request.exclude_txid_suffixes.iter().enumerate() {
+            if excluded_id.len() > 32 {
+                return Err(StateServiceError::TonicStatusError(
+                    tonic::Status::invalid_argument(format!(
+                        "Error: excluded txid {} is larger than 32 bytes",
+                        i
+                    )),
+                ));
+            }
+
+            // NOTE: the TransactionHash methods cannot be used for this hex encoding as exclusions could be truncated to less than 32 bytes
+            let reversed_txid_bytes: Vec<u8> = excluded_id.iter().cloned().rev().collect();
+            let hex_string_txid: String = hex::encode(&reversed_txid_bytes);
+            exclude_txids.push(hex_string_txid);
+        }
+
+        let pool_types = match PoolTypeFilter::new_from_slice(&request.pool_types) {
+            Ok(pool_type_filter) => pool_type_filter,
+            Err(PoolTypeError::InvalidPoolType) => {
+                return Err(StateServiceError::TonicStatusError(
+                    tonic::Status::invalid_argument("Error: An invalid `PoolType' was found".to_string()),
+                ))
+            }
+            Err(PoolTypeError::UnknownPoolType(unknown_pool_type)) => {
+                return Err(StateServiceError::TonicStatusError(
+                    tonic::Status::invalid_argument(format!(
+                        "Error: Unknown `PoolType' {} was found",
+                        unknown_pool_type
+                    )),
+                ))
+            }
+        };
 
         let mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
@@ -2261,7 +2294,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                                         .send(
                                             transaction
                                                 .1
-                                                .to_compact(0)
+                                                .to_compact_tx(None, &pool_types)
                                                 .map_err(|e| tonic::Status::unknown(e.to_string())),
                                         )
                                         .await
@@ -2524,6 +2557,16 @@ impl LightWalletIndexer for StateServiceSubscriber {
         )
         .to_string();
 
+        let nu_info = blockchain_info
+            .upgrades()
+            .last()
+            .expect("Expected validator to have a consenus activated.")
+            .1
+            .into_parts();
+
+        let nu_name = nu_info.0;
+        let nu_height = nu_info.1;
+
         Ok(LightdInfo {
             version: self.data.build_info().version(),
             vendor: "ZingoLabs ZainoD".to_string(),
@@ -2539,6 +2582,10 @@ impl LightWalletIndexer for StateServiceSubscriber {
             estimated_height: blockchain_info.estimated_height().0 as u64,
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
+            donation_address: "".to_string(),
+            upgrade_name: nu_name.to_string(),
+            upgrade_height: nu_height.0 as u64,
+            lightwallet_protocol_version: "v0.4.0".to_string(),
         })
     }
 

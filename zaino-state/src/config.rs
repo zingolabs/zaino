@@ -3,13 +3,14 @@
 use std::path::PathBuf;
 use zaino_common::{Network, ServiceConfig, StorageConfig};
 
-#[derive(Debug, Clone, serde::Deserialize, PartialEq, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 /// Type of backend to be used.
 pub enum BackendType {
     /// Uses ReadStateService (Zebrad)
     State,
     /// Uses JsonRPC client (Zcashd. Zainod)
+    #[default]
     Fetch,
 }
 
@@ -29,9 +30,9 @@ pub enum BackendConfig {
 pub struct StateServiceConfig {
     /// Zebra [`zebra_state::ReadStateService`] config data
     pub validator_state_config: zebra_state::Config,
-    /// Validator JsonRPC address.
-    pub validator_rpc_address: std::net::SocketAddr,
-    /// Validator gRPC address.
+    /// Validator JsonRPC address (supports hostname:port or ip:port format).
+    pub validator_rpc_address: String,
+    /// Validator gRPC address (requires ip:port format for Zebra state sync).
     pub validator_grpc_address: std::net::SocketAddr,
     /// Validator cookie auth.
     pub validator_cookie_auth: bool,
@@ -56,7 +57,7 @@ impl StateServiceConfig {
     // TODO: replace with struct-literal init only?
     pub fn new(
         validator_state_config: zebra_state::Config,
-        validator_rpc_address: std::net::SocketAddr,
+        validator_rpc_address: String,
         validator_grpc_address: std::net::SocketAddr,
         validator_cookie_auth: bool,
         validator_cookie_path: Option<PathBuf>,
@@ -89,8 +90,8 @@ impl StateServiceConfig {
 #[derive(Debug, Clone)]
 #[deprecated]
 pub struct FetchServiceConfig {
-    /// Validator JsonRPC address.
-    pub validator_rpc_address: std::net::SocketAddr,
+    /// Validator JsonRPC address (supports hostname:port or ip:port format).
+    pub validator_rpc_address: String,
     /// Enable validator rpc cookie authentification with Some: path to the validator cookie file.
     pub validator_cookie_path: Option<PathBuf>,
     /// Validator JsonRPC user.
@@ -110,7 +111,7 @@ impl FetchServiceConfig {
     /// Returns a new instance of [`FetchServiceConfig`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        validator_rpc_address: std::net::SocketAddr,
+        validator_rpc_address: String,
         validator_cookie_path: Option<PathBuf>,
         validator_rpc_user: Option<String>,
         validator_rpc_password: Option<String>,

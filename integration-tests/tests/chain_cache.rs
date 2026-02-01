@@ -15,7 +15,10 @@ async fn create_test_manager_and_connector<T, Service>(
 ) -> (TestManager<T, Service>, JsonRpSeeConnector)
 where
     T: ValidatorExt,
-    Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+    Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+        + Send
+        + Sync
+        + 'static,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let test_manager = TestManager::<T, Service>::launch(
@@ -32,7 +35,7 @@ where
 
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.full_node_rpc_listen_address,
+            &test_manager.full_node_rpc_listen_address.to_string(),
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -68,10 +71,7 @@ mod chain_query_interface {
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
     use zebra_chain::{
-        parameters::{
-            testnet::{ConfiguredActivationHeights, RegtestParameters},
-            NetworkKind,
-        },
+        parameters::{testnet::RegtestParameters, NetworkKind},
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
     };
 
@@ -92,7 +92,10 @@ mod chain_query_interface {
     )
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, json_service) = create_test_manager_and_connector::<C, Service>(
@@ -111,11 +114,11 @@ mod chain_query_interface {
                     None => test_manager.data_dir.clone(),
                 };
                 let network = match test_manager.network {
-                    NetworkKind::Regtest => zebra_chain::parameters::Network::new_regtest(
-                        RegtestParameters::from(ConfiguredActivationHeights::from(
+                    NetworkKind::Regtest => {
+                        zebra_chain::parameters::Network::new_regtest(RegtestParameters::from(
                             test_manager.local_net.get_activation_heights().await,
-                        )),
-                    ),
+                        ))
+                    }
 
                     NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
                     NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
@@ -130,7 +133,7 @@ mod chain_query_interface {
                         // todo: does this matter?
                         should_backup_non_finalized_state: true,
                     },
-                    test_manager.full_node_rpc_listen_address,
+                    test_manager.full_node_rpc_listen_address.to_string(),
                     test_manager.full_node_grpc_listen_address,
                     false,
                     None,
@@ -229,7 +232,10 @@ mod chain_query_interface {
     async fn get_block_range<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -279,7 +285,10 @@ mod chain_query_interface {
     async fn find_fork_point<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -319,7 +328,10 @@ mod chain_query_interface {
     async fn get_raw_transaction<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -347,9 +359,9 @@ mod chain_query_interface {
 
             assert_eq!(
                 branch_id,
-                if height == Some(chain_index::types::GENESIS_HEIGHT) {
+                if height == chain_index::types::GENESIS_HEIGHT {
                     None
-                } else if height == Some(Height::try_from(1).unwrap()) {
+                } else if height == Height::try_from(1).unwrap() {
                     zebra_chain::parameters::NetworkUpgrade::Canopy
                         .branch_id()
                         .map(u32::from)
@@ -381,7 +393,10 @@ mod chain_query_interface {
     async fn get_transaction_status<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -406,7 +421,7 @@ mod chain_query_interface {
                 .unwrap();
             assert_eq!(
                 transaction_status_best_chain.unwrap(),
-                BestChainLocation::Block(*block_hash, height.unwrap())
+                BestChainLocation::Block(*block_hash, height)
             );
             assert!(transaction_status_nonbest_chain.is_empty());
         }
@@ -427,7 +442,10 @@ mod chain_query_interface {
     async fn sync_large_chain<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, json_service, option_state_service, _chain_index, indexer) =
