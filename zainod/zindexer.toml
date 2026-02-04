@@ -6,15 +6,24 @@
 # - "fetch" - Uses JsonRPC client to fetch data (Zcashd, Zainod).
 # - "state" - Uses ReadStateService to fetch data (Zebrad).
 backend = "fetch"
+#  ZebraDB location.
+#  PathBuf, Required. Only used in state backend
+# TODO: make it so this is only required when state backend is used
+#  zebra_db_path = ""
+#
+#  Network chain type.
+#  Required.
+#  Network chain type (Mainnet, Testnet, Regtest).
+network = "Testnet"
 
 # Zainod JsonRPC server config:
-# Optional: Some enables Zaino's JsonRPC server.
+# Optional: enables Zaino's JsonRPC server.
 [json_server_settings]
-  # JsonRPC server listen addr. Required if json_server_settings is Some.
+  # JsonRPC server listen addr. Required if json_server_settings exists.
   json_rpc_listen_address = "127.0.0.1:8237"
 
-  # Some enables cookie-based authentication for JsonRPC server.
-  # An empty PathBuf that is still Some will have a default emphemeral path assigned to it when zaino loads the config.
+  # Optional enables cookie-based authentication for JsonRPC server.
+  # An empty value will have a default emphemeral path assigned to it when zaino loads the config.
   # (e.g., /tmp/zaino/.cookie or XDG_RUNTIME_DIR) will be used.
   # Directory to store authentication cookie file.
   # cookie_dir = ""
@@ -62,45 +71,28 @@ backend = "fetch"
     #
 #  Service-level configuration (timeout, channel size).
 #  Required.
+# 
 #  [service]
-#  ...
+  # RPC service timeout (in seconds) 
+  # timeout
+  # RPC maximum channel (queue) size
+  # channel_size
 
 #  Storage configuration (cache and database).
 #  Required.
-#  [storage]
 #
-#  ZebraDB location.
-#  PathBuf, Required.
-#  zebra_db_path = ""
-#
-#  Network chain type.
-#  Required.
-#  Network chain type (Mainnet, Testnet, Regtest).
-#  network = "Testnet"
+# Database config (required)
+# [storage.database]
+## the location of zaino's database file
+# path = ""
+## the database size limit, in GB (defaults to 128)
+# size = 128
+# 
+# Cache config. Optional, primarily for developer use
+#  [storage.cache]
+## capacity of the DashMaps used for caching
+# capacity = 10000
+## how large the shards the dash map is split into,
+## in powers of 2
+# shard_power = 4  
 
-# ----
-
-# Capacity of the Dashmaps used for the Mempool.
-# Also used by the BlockCache::NonFinalisedState when using the FetchService.
-# If omitted, Zaino uses an internal default or relies on library defaults.
-# map_capacity = 10000
-
-# Number of shard used in the DashMap used for the Mempool.
-# Also used by the BlockCache::NonFinalisedState when using the FetchService.
-#
-# shard_amount should greater than 0 and be a power of two.
-# If omitted, Zaino uses an internal default or relies on library defaults.
-# map_shard_amount = 16
-
-# Zaino Block Cache database file path.
-# If omitted, this defaults to $HOME/.cache/zaino/ (platform dependent).
-# zaino_db_path = "/path/to/zaino_db"
-
-# Zebra Block Cache database file path.
-# If omitted, this defaults to $HOME/.cache/zebra/ (platform dependent).
-# zebra_db_path = "/path/to/zebra_db"
-
-# Block Cache database maximum size in gb.
-# Only used by the FetchService.
-# If omitted, no specific limit may be enforced by Zaino for this setting initially.
-# db_size = 100
