@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use tonic_prost_build::{configure, compile_protos};
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
 const PROPOSAL_PROTO: &str = "proto/proposal.proto";
@@ -27,7 +28,7 @@ fn build() -> io::Result<()> {
         .into();
 
     // Build the compact format types.
-    tonic_build::compile_protos(COMPACT_FORMATS_PROTO)?;
+    compile_protos(COMPACT_FORMATS_PROTO)?;
 
     // Copy the generated types into the source tree so changes can be committed.
     fs::copy(
@@ -36,7 +37,7 @@ fn build() -> io::Result<()> {
     )?;
 
     // Build the gRPC types and client.
-    tonic_build::configure()
+    configure()
         .build_server(true)
         // .client_mod_attribute(
         //     "cash.z.wallet.sdk.rpc",
@@ -69,7 +70,7 @@ fn build() -> io::Result<()> {
         .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
     // Build the proposal types.
-    tonic_build::compile_protos(PROPOSAL_PROTO)?;
+    compile_protos(PROPOSAL_PROTO)?;
 
     // Copy the generated types into the source tree so changes can be committed.
     fs::copy(

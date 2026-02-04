@@ -21,7 +21,7 @@ tracing = { workspace = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls-native-roots"] }
 http = { workspace = true }
 thiserror = { workspace = true }
 

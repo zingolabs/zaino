@@ -10,7 +10,7 @@ version = { workspace = true }
 
 [features]
 state_service = []
-no_tls_use_unencrypted_traffic = ["tonic/tls-roots"]
+no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 
 [dependencies]
 zaino-proto = { workspace = true }
@@ -26,7 +26,7 @@ tracing = { workspace = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
-tonic = { workspace = true, features = ["tls"] }
+tonic = { workspace = true, features = ["tls-native-roots"] }
 thiserror = { workspace = true }
 futures = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server", "macros"] }

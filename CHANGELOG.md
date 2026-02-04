@@ -11,8 +11,9 @@ and this library adheres to Rust's notion of
 ### Added 
 ### Changed
 - zaino-proto now references v0.4.0 files
+- `zaino_fetch::jsonrpsee::response::ErrorsTimestamp` no longer supports a String
+  variant. 
 ### Removed
-- `
 
 ### Deprecated
 - `zaino-fetch::chain:to_compact` in favor of `to_compact_tx` which takes an 

@@ -241,7 +241,7 @@ async fn state_service_check_info<V: ValidatorExt>(
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     let (
@@ -272,7 +272,7 @@ async fn state_service_check_info<V: ValidatorExt>(
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     assert_eq!(cleaned_fetch_info, cleaned_state_info);
