@@ -268,6 +268,14 @@ pub trait ChainIndex {
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
 
+    /// Returns the subtree roots
+    fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>>;
+
     /// given a transaction id, returns the transaction, along with
     /// its consensus branch ID if available
     #[allow(clippy::type_complexity)]
@@ -1470,6 +1478,33 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// - usage: Total memory usage for the mempool
     async fn get_mempool_info(&self) -> MempoolInfo {
         self.mempool.get_mempool_info().await
+    }
+
+    async fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> Result<(), Self::Error> {
+        self.source().get_subtree_roots()
+    }
+}
+
+/// The available shielded pools
+#[non_exhaustive]
+pub enum ShieldedPool {
+    /// Sapling
+    Sapling,
+    /// Orchard
+    Orchard,
+}
+
+impl ShieldedPool {
+    fn pool_string(&self) -> String {
+        match self {
+            ShieldedPool::Sapling => "sapling".to_string(),
+            ShieldedPool::Orchard => "orchard".to_string(),
+        }
     }
 }
 

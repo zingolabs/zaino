@@ -2,7 +2,10 @@
 
 use std::{error::Error, str::FromStr as _, sync::Arc};
 
-use crate::chain_index::types::{BlockHash, TransactionHash};
+use crate::chain_index::{
+    types::{BlockHash, TransactionHash},
+    ShieldedPool,
+};
 use async_trait::async_trait;
 use futures::{future::join, TryFutureExt as _};
 use tower::{Service, ServiceExt as _};
@@ -12,7 +15,9 @@ use zaino_fetch::jsonrpsee::{
     response::{GetBlockError, GetBlockResponse, GetTransactionResponse, GetTreestateResponse},
 };
 use zcash_primitives::merkle_tree::read_commitment_tree;
-use zebra_chain::{block::TryIntoHeight, serialization::ZcashDeserialize};
+use zebra_chain::{
+    block::TryIntoHeight, serialization::ZcashDeserialize, subtree::NoteCommitmentSubtreeIndex,
+};
 use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
 
 macro_rules! expected_read_response {
@@ -85,6 +90,13 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         >,
         Box<dyn Error + Send + Sync>,
     >;
+
+    async fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    );
 }
 
 /// An error originating from a blockchain source.
@@ -662,6 +674,42 @@ impl BlockchainSource for ValidatorConnector {
                 }
             }
             ValidatorConnector::Fetch(_fetch) => Ok(None),
+        }
+    }
+
+    async fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        match self {
+            ValidatorConnector::State(state) => {
+                let start_index = NoteCommitmentSubtreeIndex(start_index);
+                let limit = max_entries.map(NoteCommitmentSubtreeIndex);
+                let request = match pool {
+                    ShieldedPool::Sapling => ReadRequest::SaplingSubtrees { start_index, limit },
+                    ShieldedPool::Orchard => ReadRequest::OrchardSubtrees { start_index, limit },
+                };
+                state
+                    .read_state_service
+                    .clone()
+                    .call(request)
+                    .await
+                    .and_then(|response| match pool {
+                        ShieldedPool::Sapling => {
+                            expected_read_response!(response, SaplingSubtrees)
+                        }
+                        ShieldedPool::Orchard => {
+                            expected_read_response!(response, OrchardSubtrees)
+                        }
+                    })?
+            }
+
+            ValidatorConnector::Fetch(json_rp_see_connector) => Ok(json_rp_see_connector
+                .get_subtrees_by_index(pool.pool_string(), start_index, max_entries)
+                .await
+                .map_err(|e| e)?),
         }
     }
 }
