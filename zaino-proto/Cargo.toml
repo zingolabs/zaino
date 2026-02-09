@@ -9,6 +9,9 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
+zebra-state = { workspace = true }
+zebra-chain = { workspace = true }
+
 # Miscellaneous Workspace
 tonic = { workspace = true }
 

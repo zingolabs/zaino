@@ -7,7 +7,10 @@ use crate::chain::{
 };
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
-use zaino_proto::proto::compact_formats::{ChainMetadata, CompactBlock};
+use zaino_proto::proto::{
+    compact_formats::{ChainMetadata, CompactBlock},
+    utils::PoolTypeFilter,
+};
 
 /// A block header, containing metadata about a block.
 ///
@@ -362,17 +365,20 @@ impl FullBlock {
             return Err(ParseError::InvalidData(format!(
                 "Error decoding full block - {} bytes of Remaining data. Compact Block Created: ({:?})",
                 remaining_data.len(),
-                full_block.into_compact(0, 0)
+                full_block.into_compact_block(0, 0, PoolTypeFilter::includes_all())
             )));
         }
         Ok(full_block)
     }
 
-    /// Converts a zcash full block into a compact block.
-    pub fn into_compact(
+    /// Turns this Block into a Compact Block according to the Lightclient protocol [ZIP-307](https://zips.z.cash/zip-0307)
+    /// callers can choose which pools to include in this compact block by specifying a
+    /// `PoolTypeFilter` accordingly.
+    pub fn into_compact_block(
         self,
         sapling_commitment_tree_size: u32,
         orchard_commitment_tree_size: u32,
+        pool_types: PoolTypeFilter,
     ) -> Result<CompactBlock, ParseError> {
         let vtx = self
             .vtx
@@ -380,7 +386,7 @@ impl FullBlock {
             .enumerate()
             .filter_map(|(index, tx)| {
                 if tx.has_shielded_elements() {
-                    Some(tx.to_compact(index as u64))
+                    Some(tx.to_compact_tx(Some(index as u64), &pool_types))
                 } else {
                     None
                 }
@@ -406,6 +412,20 @@ impl FullBlock {
         };
 
         Ok(compact_block)
+    }
+
+    #[deprecated]
+    /// Converts a zcash full block into a compact block.
+    pub fn into_compact(
+        self,
+        sapling_commitment_tree_size: u32,
+        orchard_commitment_tree_size: u32,
+    ) -> Result<CompactBlock, ParseError> {
+        self.into_compact_block(
+            sapling_commitment_tree_size,
+            orchard_commitment_tree_size,
+            PoolTypeFilter::default(),
+        )
     }
 
     /// Extracts the block height from the coinbase transaction.

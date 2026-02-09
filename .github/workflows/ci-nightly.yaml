@@ -17,9 +17,161 @@ env:
 jobs:
   pr-checks:
     uses: ./.github/workflows/ci.yml
+    with:
+      nextest-profile: ci
 
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
+
+  check:
+    name: Cargo Check
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
+
+      - name: Cargo Check
+        run: |
+          cargo check --all-features
+          cargo check --tests --all-features
+
+  fmt:
+    name: Rustfmt
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- --deny warnings
+
+  doc:
+    name: Cargo Doc
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
+
+      - name: Check documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+
+  whitespace:
+    name: Whitespace check
+    runs-on: arc-sh-runners
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check trailing whitespace
+        run: ./utils/trailing-whitespace.sh reject
+        working-directory: .
+
+  cargo-hack-check:
+    name: Cargo Hack Check
+    needs: compute-tag
+    container:
+      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: MinIO Cache (cargo + target)
+        uses: tespkg/actions-cache@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target
+
+      - name: Install protoc
+        run: |
+          if ! command -v protoc; then
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
+          fi
+
+      - name: Run cargo-hack
+        uses: zingolabs/infrastructure/.github/actions/cargo-hack@20485fed7a080e381130ed8120419dc81acae641
+        with:
+          hack-subcommand: check
 
   cargo-hack-build:
     name: Cargo Hack Build

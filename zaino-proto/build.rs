@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
 const PROPOSAL_PROTO: &str = "proto/proposal.proto";
@@ -67,7 +66,7 @@ fn build() -> io::Result<()> {
             ".cash.z.wallet.sdk.rpc.CompactOrchardAction",
             "crate::proto::compact_formats::CompactOrchardAction",
         )
-        .compile(&[SERVICE_PROTO], &["proto/"])?;
+        .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
     // Build the proposal types.
     tonic_build::compile_protos(PROPOSAL_PROTO)?;

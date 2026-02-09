@@ -1,0 +1,17 @@
+[tasks.notify]
+description = "Play a sound notification (used after long-running tasks)"
+script_runner = "bash"
+script = '''
+SOUNDS="/usr/share/sounds/freedesktop/stereo/complete.oga /usr/share/sounds/freedesktop/stereo/bell.oga"
+
+for player in paplay pw-play aplay; do
+    if command -v "$player" &>/dev/null; then
+        for sound in $SOUNDS; do
+            [[ -f "$sound" ]] && "$player" "$sound" 2>/dev/null && exit 0
+        done
+    fi
+done
+
+# Terminal bell as last resort
+printf '\a'
+'''

@@ -9,6 +9,7 @@ license = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
+zaino-common = { workspace = true }
 zaino-proto = { workspace = true }
 
 # Zebra

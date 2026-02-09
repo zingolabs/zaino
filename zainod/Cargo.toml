@@ -49,4 +49,5 @@ thiserror = { workspace = true }
 
 # Formats
 toml = { workspace = true }
-figment= { workspace = true, features = ["toml", "env", "test"] }
+config = { workspace = true }
+tempfile = { workspace = true }

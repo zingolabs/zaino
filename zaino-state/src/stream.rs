@@ -7,6 +7,7 @@ use zaino_proto::proto::{
 };
 
 /// Stream of RawTransactions, output type of get_taddress_txids.
+#[derive(Debug)]
 pub struct RawTransactionStream {
     inner: ReceiverStream<Result<RawTransaction, tonic::Status>>,
 }

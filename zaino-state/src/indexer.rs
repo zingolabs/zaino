@@ -16,18 +16,21 @@ use zaino_fetch::jsonrpsee::response::{
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
-        AddressList, Balance, BlockId, BlockRange, Duration, Exclude, GetAddressUtxosArg,
-        GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, ShieldedProtocol, SubtreeRoot, TransparentAddressBlockFilter, TreeState,
-        TxFilter,
+        AddressList, Balance, BlockId, BlockRange, Duration, GetAddressUtxosArg,
+        GetAddressUtxosReplyList, GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo,
+        PingResponse, RawTransaction, SendResponse, ShieldedProtocol, SubtreeRoot,
+        TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
-use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
+use zebra_chain::{
+    block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
+};
 use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
-        AddressBalance, AddressStrings, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-        GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
+        AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos,
+        GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
+        SentTransactionHash,
     },
 };
 
@@ -256,7 +259,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
     async fn z_get_address_balance(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, Self::Error>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
@@ -480,7 +483,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// <https://github.com/zcash/lightwalletd/blob/master/frontend/service.go#L402>
     async fn z_get_address_utxos(
         &self,
-        address_strings: AddressStrings,
+        address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error>;
 
     /// Returns a json object containing mining-related information.
@@ -600,7 +603,15 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Submit the given transaction to the Zcash network
     async fn send_transaction(&self, request: RawTransaction) -> Result<SendResponse, Self::Error>;
 
+    /// Return the transactions corresponding to the given t-address within the given block range
+    async fn get_taddress_transactions(
+        &self,
+        request: TransparentAddressBlockFilter,
+    ) -> Result<RawTransactionStream, Self::Error>;
+
     /// Return the txids corresponding to the given t-address within the given block range
+    /// Note: This function is misnamed, it returns complete `RawTransaction` values, not TxIds.
+    /// Note: this method is deprecated, please use GetTaddressTransactions instead.
     async fn get_taddress_txids(
         &self,
         request: TransparentAddressBlockFilter,
@@ -617,18 +628,21 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         request: AddressStream,
     ) -> Result<Balance, Self::Error>;
 
-    /// Return the compact transactions currently in the mempool; the results
-    /// can be a few seconds out of date. If the Exclude list is empty, return
-    /// all transactions; otherwise return all *except* those in the Exclude list
-    /// (if any); this allows the client to avoid receiving transactions that it
-    /// already has (from an earlier call to this rpc). The transaction IDs in the
-    /// Exclude list can be shortened to any number of bytes to make the request
-    /// more bandwidth-efficient; if two or more transactions in the mempool
-    /// match a shortened txid, they are all sent (none is excluded). Transactions
-    /// in the exclude list that don't exist in the mempool are ignored.
+    /// Returns a stream of the compact transaction representation for transactions
+    /// currently in the mempool. The results of this operation may be a few
+    /// seconds out of date. If the `exclude_txid_suffixes` list is empty,
+    /// return all transactions; otherwise return all *except* those in the
+    /// `exclude_txid_suffixes` list (if any); this allows the client to avoid
+    /// receiving transactions that it already has (from an earlier call to this
+    /// RPC). The transaction IDs in the `exclude_txid_suffixes` list can be
+    /// shortened to any number of bytes to make the request more
+    /// bandwidth-efficient; if two or more transactions in the mempool match a
+    /// txid suffix, none of the matching transactions are excluded. Txid
+    /// suffixes in the exclude list that don't match any transactions in the
+    /// mempool are ignored.
     async fn get_mempool_tx(
         &self,
-        request: Exclude,
+        request: GetMempoolTxRequest,
     ) -> Result<CompactTransactionStream, Self::Error>;
 
     /// Return a stream of current Mempool transactions. This will keep the output stream open while

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 /// Cache configuration for DashMaps.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
 pub struct CacheConfig {
     /// Capacity of the DashMaps used for caching
     pub capacity: usize,
@@ -69,6 +70,7 @@ impl DatabaseSize {
 /// Configures the file path and size limits for persistent storage
 /// used by Zaino services.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
 pub struct DatabaseConfig {
     /// Database file path.
     pub path: PathBuf,
