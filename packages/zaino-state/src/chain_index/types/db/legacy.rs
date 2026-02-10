@@ -747,7 +747,7 @@ impl BlockIndex {
 }
 
 impl ZainoVersionedSerde for BlockIndex {
-    const VERSION: u8 = version::V1;
+    const VERSION: u8 = version::V2;
 
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
@@ -755,12 +755,11 @@ impl ZainoVersionedSerde for BlockIndex {
         self.hash.serialize(&mut w)?;
         self.parent_hash.serialize(&mut w)?;
         self.chainwork.serialize(&mut w)?;
-
-        write_option(&mut w, &Some(self.height), |w, h| h.serialize(w))
+        self.height.serialize(&mut *w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
+        Self::decode_v2(r)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -768,14 +767,19 @@ impl ZainoVersionedSerde for BlockIndex {
         let hash = BlockHash::deserialize(&mut r)?;
         let parent_hash = BlockHash::deserialize(&mut r)?;
         let chainwork = ChainWork::deserialize(&mut r)?;
-        let height = read_option(&mut r, |r| Height::deserialize(r))?;
+        let height =
+            read_option(&mut r, |r| Height::deserialize(r))?.expect("blocks always have height");
 
-        Ok(BlockIndex::new(
-            hash,
-            parent_hash,
-            chainwork,
-            height.expect("blocks always have height"),
-        ))
+        Ok(BlockIndex::new(hash, parent_hash, chainwork, height))
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        let mut r = r;
+        let hash = BlockHash::deserialize(&mut r)?;
+        let parent_hash = BlockHash::deserialize(&mut r)?;
+        let chainwork = ChainWork::deserialize(&mut r)?;
+        let height = Height::deserialize(&mut r)?;
+        Ok(BlockIndex::new(hash, parent_hash, chainwork, height))
     }
 }
 
