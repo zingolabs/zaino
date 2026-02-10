@@ -377,7 +377,13 @@ impl FinalisedState {
         let network = self.config.network.to_zebra_network();
         let mut reorg_height = self.get_db_height().unwrap_or(Height(0));
         
-        // FIXED: Check if cached height is beyond current chain BEFORE trying to fetch
+        // Check if cached height exceeds current chain height.
+        // This can occur when:
+        // - Switching between networks (mainnet/testnet/regtest)
+        // - Chain has reset or been pruned
+        // - Database persisted from a previous chain state
+        // Without this check, attempting to fetch non-existent blocks would cause a crash.
+        // If detected, clear the cache and resync from genesis.
         let current_chain_height = self
             .fetcher
             .get_blockchain_info()
@@ -403,7 +409,10 @@ impl FinalisedState {
         
         let mut reorg_hash = self.get_hash(reorg_height.0).unwrap_or(Hash([0u8; 32]));
         
-        // FIXED: Wait for initial block to exist instead of crashing
+        // Wait for initial block to exist instead of crashing.
+        // On fresh chains or during initial sync, blocks may not be available immediately.
+        // This loop polls until the block at reorg_height is available, preventing
+        // crashes when the indexer starts before the chain has any blocks.
         let mut check_hash = loop {
             match self
                 .fetcher
@@ -451,7 +460,10 @@ impl FinalisedState {
             };
             reorg_hash = self.get_hash(reorg_height.0).unwrap_or(Hash([0u8; 32]));
             
-            // FIXED: Wait for block instead of crashing
+            // Wait for block to exist instead of crashing.
+            // During reorg detection, we walk backwards through the chain to find the
+            // last valid block. If we're near the chain tip and blocks haven't been
+            // mined yet, this prevents crashes by waiting for blocks to become available.
             check_hash = loop {
                 match self
                     .fetcher
@@ -519,6 +531,7 @@ impl FinalisedState {
             }
         }
         
+        self.status.store(StatusType::Ready);
         Ok(())
     }
 
