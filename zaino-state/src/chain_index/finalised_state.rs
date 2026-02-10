@@ -186,7 +186,10 @@ use tracing::info;
 use zebra_chain::parameters::NetworkKind;
 
 use crate::{
-    chain_index::{source::BlockchainSourceError, types::GENESIS_HEIGHT},
+    chain_index::{
+        finalised_state::db::v1::DB_VERSION_V1, source::BlockchainSourceError,
+        types::GENESIS_HEIGHT,
+    },
     config::BlockCacheConfig,
     error::FinalisedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, StatusType,
@@ -250,7 +253,7 @@ impl ZainoDB {
     ///
     /// ## Version selection rules
     /// - `cfg.db_version == 0` targets `DbVersion { 0, 0, 0 }` (legacy layout).
-    /// - `cfg.db_version == 1` targets `DbVersion { 1, 0, 0 }` (current layout).
+    /// - `cfg.db_version == 1` targets the latest v1 DB version (`DB_VERSION_V1`).
     /// - Any other value returns an error.
     ///
     /// ## Migrations
@@ -281,11 +284,7 @@ impl ZainoDB {
                 minor: 0,
                 patch: 0,
             },
-            1 => DbVersion {
-                major: 1,
-                minor: 0,
-                patch: 0,
-            },
+            1 => DB_VERSION_V1,
             x => {
                 return Err(FinalisedStateError::Custom(format!(
                     "unsupported database version: DbV{x}"
