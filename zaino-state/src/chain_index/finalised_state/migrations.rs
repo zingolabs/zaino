@@ -79,6 +79,12 @@
 //! This release also introduces [`MigrationStep`], the enum-based migration dispatcher used by
 //! [`MigrationManager`], to allow selecting between multiple concrete migration implementations.
 //!
+//! Important note: `BlockIndex` now has a V2 wire layout. Because `BlockHeaderData` is stored
+//! as a `StoredEntryVar` and `BlockIndex` is itself versioned, the `headers` table can hold
+//! either `BlockIndex` v1 or v2 entries without a full table rewrite (in-place update). This
+//! migration is metadata-only: it advances the `DbMetadata::version` and refreshes the recorded
+//! on-disk schema checksum so persisted metadata matches the repository's updated schema text.
+//!
 //! # Development: adding a new migration step
 //!
 //! 1. Introduce a new `struct MigrationX_Y_ZToA_B_C;` and implement `Migration<T>`.
@@ -538,7 +544,8 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
 /// [`MigrationManager`], to allow selecting between multiple concrete migration implementations.
 ///
 /// Because the persisted schema contract is unchanged, this migration only updates the stored
-/// [`DbMetadata::version`] from `1.0.0` to `1.1.0`.
+/// [`DbMetadata`]. Updating [`DbMetadata::version`] from `1.0.0` to `1.1.0` and
+/// [`DbMetadata::schema_hash`] to the new on disk schema layout.
 ///
 /// Safety and resumability:
 /// - Idempotent: if run more than once, it will re-write the same metadata.
@@ -570,9 +577,12 @@ impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
 
         let mut metadata: DbMetadata = router.get_metadata().await?;
 
-        // Preserve the schema hash because there are no schema changes in v1.1.0.
-        // Only advance the version marker to reflect the new API contract.
+        // Advance the version marker to reflect the new API contract (v1.1.0), and refresh the
+        // persisted schema hash to match the repository's recorded schema contract.
+        // There are no on-disk layout changes; BlockIndex V2 is supported in-place because the
+        // headers table stores a variable-length BlockHeaderData which nests a versioned BlockIndex.
         metadata.version = <Self as Migration<T>>::TO_VERSION;
+        metadata.schema_hash = crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
 
         // Outside of migrations this should be `Empty`. This step performs no build phases, so we
         // ensure we do not leave a stale in-progress status behind.

@@ -103,19 +103,24 @@ Date: 2026-01-27
 --------------------------------------------------------------------------------
 
 Summary
-- Minor version bump to reflect updated compact block API contract (streaming + pool filtering semantics).
-- No schema or encoding changes; metadata-only migration updates persisted DB version marker.
+- BlockIndex v2 introduced; because relevant tables (notably `headers` / `BlockHeaderData`) use
+   variable-length encodings and `BlockIndex` is nested/versioned, existing tables are updated
+   in-place: DB values may contain either v1 or v2 `BlockIndex` entries.
+- Recorded on-disk schema text was clarified; migration refreshes persisted `DbMetadata.schema_hash`
+   so the metadata matches the repository's schema contract.
+- Updated compact block API contract (streaming + pool filtering semantics).
 
 On-disk schema
 - Layout:
-  - No changes.
+  - Updated [`BlockHeaderData`] table by introducing [`BlockIndex::V2`], this table may now hold either V1 or V2
+     [`BlockIndex`] structs, with serde handles internally.
 - Tables:
   - Added: None.
   - Removed: None.
   - Renamed: None.
 - Encoding:
   - Keys: No changes.
-  - Values: No changes.
+  - Values: Introduced `[BlockIndex::V2]`.
   - Checksums / validation: No changes.
 - Invariants:
   - No changes.
@@ -142,6 +147,7 @@ Migration
 - Backfill: None.
 - Completion criteria:
   - DbMetadata.version updated from 1.0.0 to 1.1.0.
+  - DbMetadata.schema_hash updated to match repository `DB_SCHEMA_V1_HASH`.
   - DbMetadata.migration_status reset to Empty.
 - Failure handling:
   - Idempotent: re-running re-writes the same metadata; no partial state beyond metadata.
