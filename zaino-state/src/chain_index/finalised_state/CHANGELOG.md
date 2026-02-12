@@ -103,24 +103,23 @@ Date: 2026-01-27
 --------------------------------------------------------------------------------
 
 Summary
-- BlockIndex v2 introduced; because relevant tables (notably `headers` / `BlockHeaderData`) use
-   variable-length encodings and `BlockIndex` is nested/versioned, existing tables are updated
-   in-place: DB values may contain either v1 or v2 `BlockIndex` entries.
+- BlockHeaderData v2 introduced (internally using new BlockIndex::V2 format); because relevant tables (notably `headers` / `BlockHeaderData`) use
+   variable-length encodings existing tables are updated in-place: DB values may contain either v1 or v2 `BlockHeaderData` entries.
 - Recorded on-disk schema text was clarified; migration refreshes persisted `DbMetadata.schema_hash`
    so the metadata matches the repository's schema contract.
 - Updated compact block API contract (streaming + pool filtering semantics).
 
 On-disk schema
 - Layout:
-  - Updated [`BlockHeaderData`] table by introducing [`BlockIndex::V2`], this table may now hold either V1 or V2
-     [`BlockIndex`] structs, with serde handles internally.
+  - Updated [`BlockHeaderData`] table by introducing [`BlockHeaderData::V2`] (and internally [`BlockIndex::V2`]), this table may now hold either V1 or V2
+     [`BlockHeaderData`] structs, with serde handled internally.
 - Tables:
   - Added: None.
   - Removed: None.
   - Renamed: None.
 - Encoding:
   - Keys: No changes.
-  - Values: Introduced `[BlockIndex::V2]`.
+  - Values: Introduced `[BlockHeaderData::V2]`.
   - Checksums / validation: No changes.
 - Invariants:
   - No changes.

@@ -30,13 +30,15 @@
 #
 # 1. headers  ―  H  ->  StoredEntryVar<BlockHeaderData>
 #    Key : BE height
-#    Val : 0x01 + BlockHeaderData
+#    Val : 0x01/0x02 + BlockHeaderData
 #           BlockHeaderData V1 body  =
-#              BlockIndex  +  BlockData
+#              BlockIndex V1  +  BlockData
 #
-#              BlockIndex:
-#              - BlockIndex V2 body =  B hash  B parent_hash  U256 chain_work  H height
-#              - BlockIndex V1 body =  B hash  B parent_hash  U256 chain_work  Option<H> height
+#           BlockHeaderData V2 body  =
+#              BlockIndex V2  +  BlockData
+#
+#              BlockIndex V2 body =  B hash  B parent_hash  U256 chain_work  H height
+#              BlockIndex V1 body =  B hash  B parent_hash  U256 chain_work  Option<H> height
 #
 #              BlockData   =  LE(u32) version
 #                             LE(i64) unix_time
@@ -44,11 +46,6 @@
 #                             B block_commitments
 #                             LE(u32) bits
 #                             [32] nonce
-#
-# Note: BlockIndex is itself encoded with ZainoVersionedSerde, so the BlockIndex bytes
-#        begin with a u8 version_tag (0x01 = v1, 0x02 = v2). BlockHeaderData V1's
-#        body therefore contains a nested BlockIndex whose tag indicates which BlockIndex
-#        layout follows (v1 = Option<H>, v2 = raw H).
 #
 # 2. txids  ―  H  ->  StoredEntryVar<TxidList>
 #    Val : 0x01 + CS count + count × B txid

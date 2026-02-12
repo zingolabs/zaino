@@ -79,11 +79,12 @@
 //! This release also introduces [`MigrationStep`], the enum-based migration dispatcher used by
 //! [`MigrationManager`], to allow selecting between multiple concrete migration implementations.
 //!
-//! Important note: `BlockIndex` now has a V2 wire layout. Because `BlockHeaderData` is stored
-//! as a `StoredEntryVar` and `BlockIndex` is itself versioned, the `headers` table can hold
-//! either `BlockIndex` v1 or v2 entries without a full table rewrite (in-place update). This
-//! migration is metadata-only: it advances the `DbMetadata::version` and refreshes the recorded
-//! on-disk schema checksum so persisted metadata matches the repository's updated schema text.
+//! Important note: `BlockHeaderData` now has a V2 on-disk layout which uses the V2
+//! `BlockIndex` wire format. Because the `headers` table stores `BlockHeaderData` as a
+//! `StoredEntryVar` (no fixed-length optimisations), the table may contain both V1 and V2
+//! `BlockHeaderData` records concurrently. This migration is metadata-only: it advances
+//! `DbMetadata::version` and refreshes the recorded schema checksum so persisted metadata
+//! matches the repository's updated schema text.
 //!
 //! # Development: adding a new migration step
 //!
