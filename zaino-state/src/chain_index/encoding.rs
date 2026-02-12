@@ -1,4 +1,60 @@
-//! Holds traits and primitive functions for Zaino's Serialisation schema.
+/* ────────────────────────── Zaino Serialiser Traits ─────────────────────────── */
+
+/*!
+Provides **backward-compatible** encoding and decoding for versioned structs that implement
+`ZainoVersionedSerde`.
+
+Design goals
+- Allow code to **read**  and **write** older on-disk versions.
+- Enable implementers to supply compact, explicit encoders/decoders for historical versions
+  without duplicating decode logic in multiple places.
+- Provide a small set of *version-agnostic* APIs that consumers can call without caring
+  about which concrete wire-format was used on-disk.
+
+Wire-format overview
+- Every record begins with a single **version tag byte** followed by a version-specific body.
+- `Self::VERSION` is the newest implemented version this build **writes**; on read we dispatch
+  using the tag.
+- Implementations *must* expose encoders/decoders for the versions they support so that
+  callers can reliably regenerate exact historical bytes (necessary for checksums,
+  backward-compatible verification and database version migration logic).
+
+Developer guidance (how to implement a versioned type)
+1. When introducing a type, select the initial wire version:
+   - `const VERSION = version::V1;` for first release.
+   - Implement `encode_v1` and `decode_v1` (body-only helpers), and make `encode_latest`
+     / `decode_latest` wrap v1 behaviour.
+2. When bumping to a new wire-format (V2, V3, …):
+   - Introduce `encode_vN` and `decode_vN` for the new layout.
+   - Update `const VERSION` to the new tag (this build will now write the new tag by default).
+   - Make `encode_latest` / `decode_latest` delegate to the new vN helpers.
+   - Preserve `decode_v(M)` helpers for earlier M so older on-disk values remain readable.
+3. For types that *contain* inner fields that themselves implement `ZainoVersionedSerde`
+   (for example `BlockHeaderData` contains `BlockIndex`), **explicitly** control the inner
+   field’s encoded version when producing historical top-level encodings:
+   - Use `serialize_with_version` (or `to_bytes_with_version`) on the inner field to request
+     the exact nested version you need.  This guarantees that `to_bytes_with_version(Some(v))`
+     reproduces exact bytes that historical writers produced (critical for checksum equality).
+   - Do *not* rely on the inner field’s current `serialize()` when producing historical
+     top-level encodings — doing so will change nested bytes and break checksum verification.
+4. Keep encode helpers narrow and faithful:
+   - Implement only the `encode_vN` helpers that are required to reproduce historical
+     bytes; default implementations return an error. This keeps implementations explicit
+     and easy to review.
+
+Consumer (version-agnostic) APIs
+- `serialize()` / `to_bytes()` — writes the current version tag + body.
+- `serialize_with_version(&mut w, version)` / `to_bytes_with_version(version)` — write a
+  chosen version tag and body (useful when reproducing historical bytes).
+- `deserialize()` / `from_bytes()` / `decode_body()` — read and dispatch by version tag.
+
+Safety note
+- `StoredEntry*` wrappers compute and verify checksums over the exact bytes written to disk:
+  `blake2b256(encoded_key || encoded_item_bytes)`. For verification to succeed against older
+  on-disk rows, an implementation MUST be able to reproduce the exact historical `encoded_item_bytes`
+  (including nested fields’ tags/bodies). Use `serialize_with_version` for nested fields to
+  guarantee this behaviour.
+*/
 #![allow(dead_code)]
 
 use core::iter::FromIterator;
@@ -16,7 +72,7 @@ pub mod version {
     // pub const V3: u8 = 3;
 }
 
-/* ────────────────────────── Zaino Serialiser Traits ─────────────────────────── */
+/* ────────────────────────── ZainoVersionedSerde ─────────────────────────── */
 /// # Zaino wire-format: one-byte version tag
 ///
 /// ## Quick summary
@@ -25,56 +81,68 @@ pub mod version {
 /// │ version  │              (little-endian by default)          │
 /// └──────────┴──────────────────────────────────────────────────┘
 ///
-/// * `Self::VERSION` = the tag **this build *writes***.
+/// * `Self::VERSION` is the highest (newest) version implemented in this build.
 /// * On **read**, we peek at the tag:
 ///   * if it equals `Self::VERSION` call `decode_latest`;
 ///   * otherwise fall back to the relevant `decode_vN` helper
 ///     (defaults to “unsupported” unless overwritten).
 ///
-/// ## Update guide.
+/// ## Developer behaviour (implementer guidance)
 ///
-/// ### Initial release (`VERSION = 1`)
-/// 1. `pub struct TxV1 { … }`   // layout frozen forever
-/// 2. `impl ZainoVersionedSerde for TxV1`
-///    * `const VERSION = 1`
-///    * `encode_body` – **v1** layout
-///    * `decode_v1` – parses **v1** bytes
-///    * `decode_latest` - wrapper for `Self::decode_v1`
+/// When you implement a new versioned type:
+/// - Provide *both* encoders and decoders for concrete versions you need to support:
+///   - `encode_vN` and `decode_vN` are the *body-only* helpers for version `N`.
+///   - `encode_latest` should emit the body for the current `Self::VERSION`.
+///   - `decode_latest` must parse the body for the current `Self::VERSION`.
+/// - On a version bump (v1 → v2):
+///   1. Implement `encode_v2` and `decode_v2` for the v2 layout.
+///   2. Update `const VERSION = version::V2;`.
+///   3. Make `encode_latest` forward to `encode_v2` and `decode_latest` forward to `decode_v2`.
+///   4. Keep `decode_v1` and `encode_v1`so existing on-disk v1 values remain readable and
+///      constructable.
+/// - On version bumps >v2:
+///   1. Create `pub const Vn: u8 = n` struct in version mod for new version.
+///   2. Add optional `encode_vn` and `decode_vn` methods to `ZainoVersionedSerde`.
+///   3. Implement new `encode_vn` and `decode_vn` for the new vn layout.
+///   2. Update `const VERSION = version::Vn;`.
+///   3. Make `encode_latest` forward to `encode_vn` and `decode_latest` forward to `decode_vn`.
+///   4. Keep existing encodes / decodes so existing on-disk v1 values remain readable and
+///      constructable.
 ///
-/// ### Bump to v2
-/// 1. `pub struct TxV2 { … }`   // new “current” layout
-/// 2. `impl From<TxV1> for TxV2` // loss-less upgrade path
-/// 3. `impl ZainoVersionedSerde for TxV2`
-///    * `const VERSION = 2`
-///    * `encode_body` – **v2** layout
-///    * `decode_v1` – `TxV1::decode_latest(r).map(Self::from)`
-///    * `decode_v2` – parses **v2** bytes
-///    * `decode_latest` - wrapper for `Self::decode_v2`
+/// Important: **nested versioned fields.**
+/// - If your type contains fields that also implement `ZainoVersionedSerde` (for example
+///   `BlockHeaderData` contains `BlockIndex`), you **must** control the concrete nested
+///   version when producing historical top-level encodings.
+/// - Use `serialize_with_version(..., version)` or `to_bytes_with_version(version)` on the
+///   nested field inside `encode_vN` to force the inner field to be encoded with a specific
+///   tag/body. This guarantees that `to_bytes_with_version(Some(v))` reproduces *exactly* the
+///   bytes historical writers produced (critical for checksum equality and verification).
 ///
-/// ### Next bumps (v3, v4, …, vN)
-/// * Create struct for new version.
-/// * Set `const VERSION = N`.
-/// * Add the `decode_vN` trait method and extend the `match` table inside **this trait** when a brand-new tag first appears.
-/// * Implement `decode_vN` for N’s layout.
-/// * Update `decode_latest` to wrap `decode_vN`.
-/// * Implement `decode_v(N-1)`, `decode_v(N-2)`, ..., `decode_v(N-K)` for all previous versions.
+/// ## Version-agnostic consumer helpers
+///
+/// Implementers expose the low-level `encode_vN`/`decode_vN` helpers; consumers should use
+/// the version-agnostic APIs below:
+/// - `serialize()` / `to_bytes()` — write the current version (latest) tag + body.
+/// - `serialize_with_version(&mut w, version)` / `to_bytes_with_version(version)` — write the
+///   chosen version tag and body (use when reproducing historical bytes).
+/// - `deserialize()` / `from_bytes()` — read version tag and dispatch to the correct decode.
 ///
 /// ## Mandatory items per implementation
 /// * `const VERSION`
-/// * `encode_body`
-/// * `decode_vN` — **must** parse bytes for version N, where N = [`Self::VERSION`].
-/// * `decode_latest` — **must** parse `Self::VERSION` bytes.
-///
-/// Historical helpers (`decode_v1`, `decode_v2`, …) must be implemented
-/// for compatibility with historical versions
+/// * `encode_latest`
+/// * `encode_vN`
+/// * `decode_latest`
+/// * `decode_vN`
 pub trait ZainoVersionedSerde: Sized {
     /// Tag this build writes.
     const VERSION: u8;
 
     /*──────────── encoding ────────────*/
 
-    /// Encode **only** the body (no tag).
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()>;
+    /// Endodes a body whose tag equals `Self::VERSION`.
+    ///
+    /// The trait implementation must wrap `decode_vN` where N = [`Self::VERSION`]
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()>;
 
     /*──────────── mandatory decoder for *this* version ────────────*/
 
@@ -83,23 +151,64 @@ pub trait ZainoVersionedSerde: Sized {
     /// The trait implementation must wrap `decode_vN` where N = [`Self::VERSION`]
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self>;
 
-    /*──────────── version decoders ────────────*/
+    /*──────────── version encoders / decoders ────────────*/
     // Add more versions here when required.
+
+    /// Encode the body in the *v1* layout (tag-less body only).
+    #[inline(always)]
+    #[allow(unused)]
+    fn encode_v1<W: Write>(&self, _w: &mut W) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "v1 encode unsupported",
+        ))
+    }
+
+    /// Encode the body in the *v2* layout (tag-less body only).
+    #[inline(always)]
+    #[allow(unused)]
+    fn encode_v2<W: Write>(&self, _w: &mut W) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "v2 encode unsupported",
+        ))
+    }
 
     #[inline(always)]
     #[allow(unused)]
-    /// Decode an older v1 version
+    /// Decode the body in the *v1* layout (tag-less body only).
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         Err(io::Error::new(io::ErrorKind::InvalidData, "v1 unsupported"))
     }
     #[inline(always)]
     #[allow(unused)]
-    /// Decode an older v2 version
+    /// Decode the body in the *v2* layout (tag-less body only).
     fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
         Err(io::Error::new(io::ErrorKind::InvalidData, "v2 unsupported"))
     }
 
     /*──────────── router ────────────*/
+
+    /// Encode a body for the requested `version_tag`.
+    ///
+    /// This mirrors `decode_body` but for encoding. Types that only support latest
+    /// may rely on the default behaviour where attempts to encode an older version
+    /// return an error.
+    #[inline]
+    fn encode_body<W: Write>(&self, w: &mut W, version_tag: u8) -> io::Result<()> {
+        if version_tag == Self::VERSION {
+            self.encode_latest(w)
+        } else {
+            match version_tag {
+                version::V1 => self.encode_v1(w),
+                version::V2 => self.encode_v2(w),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported encode version {version_tag}"),
+                )),
+            }
+        }
+    }
 
     #[inline]
     /// Decode the body, dispatcing to the appropriate decode_vx function
@@ -123,8 +232,15 @@ pub trait ZainoVersionedSerde: Sized {
     #[inline]
     /// The expected start point. Read the version tag, then decode the rest
     fn serialize<W: Write>(&self, mut w: W) -> io::Result<()> {
-        w.write_all(&[Self::VERSION])?;
-        self.encode_body(&mut w)
+        self.serialize_with_version(&mut w, Self::VERSION)
+    }
+
+    /// Serialise specifying a `version` (None -> latest). This writes the
+    /// version tag byte and then the body encoded *for that version*.
+    #[inline]
+    fn serialize_with_version<W: Write>(&self, mut w: W, version: u8) -> io::Result<()> {
+        w.write_all(&[version])?;
+        self.encode_body(&mut w, version)
     }
 
     #[inline]
@@ -138,8 +254,14 @@ pub trait ZainoVersionedSerde: Sized {
     /// Serialize into a `Vec<u8>` (tag + body).
     #[inline]
     fn to_bytes(&self) -> io::Result<Vec<u8>> {
+        self.to_bytes_with_version(Self::VERSION)
+    }
+
+    /// to_bytes with explicit version selection (None -> latest).
+    #[inline]
+    fn to_bytes_with_version(&self, version: u8) -> io::Result<Vec<u8>> {
         let mut buf = Vec::new();
-        self.serialize(&mut buf)?;
+        self.serialize_with_version(&mut buf, version)?;
         Ok(buf)
     }
 
@@ -498,4 +620,390 @@ where
 {
     let len = CompactSize::read(&mut r)? as usize;
     (0..len).map(|_| f(&mut r)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core2::io::Cursor;
+
+    #[test]
+    fn compactsize_roundtrip_various() {
+        let values: &[usize] = &[
+            0usize,
+            1,
+            10,
+            252,
+            253,
+            254,
+            1024,
+            0xFFFFusize,
+            0x1_0000usize,
+            MAX_COMPACT_SIZE as usize,
+        ];
+
+        for &v in values {
+            let mut buf = Vec::new();
+            CompactSize::write(&mut buf, v).expect("write compactsize");
+            let mut cur = Cursor::new(&buf);
+            let r = CompactSize::read(&mut cur).expect("read compactsize");
+            assert_eq!(r as usize, v, "compactsize roundtrip mismatch for {}", v);
+
+            // serialized_size should match produced length
+            assert_eq!(CompactSize::serialized_size(v), buf.len());
+        }
+    }
+
+    #[test]
+    fn compactsize_too_large_errors() {
+        let too_big = (MAX_COMPACT_SIZE as usize) + 1;
+        let mut buf = Vec::new();
+        CompactSize::write(&mut buf, too_big).expect("write oversized");
+        // Reading should return an error because the value exceeds MAX_COMPACT_SIZE.
+        assert!(
+            CompactSize::read(Cursor::new(&buf)).is_err(),
+            "reading compactsize > MAX_COMPAC T_SIZE should error"
+        );
+    }
+
+    #[test]
+    fn compactsize_read_t_roundtrip() {
+        let mut buf = Vec::new();
+        CompactSize::write(&mut buf, 1000).expect("write 1000");
+        let mut cur = Cursor::new(&buf);
+        let v: u32 = CompactSize::read_t(&mut cur).expect("read_t to u32");
+        assert_eq!(v, 1000u32);
+    }
+
+    #[test]
+    fn u8_roundtrip() {
+        let mut buf = Vec::new();
+        write_u8(&mut buf, 0xAB).expect("write_u8");
+        let v = read_u8(Cursor::new(&buf)).expect("read_u8");
+        assert_eq!(v, 0xAB);
+    }
+
+    #[test]
+    fn u16_le_roundtrip() {
+        let mut buf = Vec::new();
+        write_u16_le(&mut buf, 0x1234).expect("write_u16_le");
+        let v = read_u16_le(Cursor::new(&buf)).expect("read_u16_le");
+        assert_eq!(v, 0x1234);
+    }
+
+    #[test]
+    fn u16_be_roundtrip() {
+        let mut buf = Vec::new();
+        write_u16_be(&mut buf, 0x1234).expect("write_u16_be");
+        let v = read_u16_be(Cursor::new(&buf)).expect("read_u16_be");
+        assert_eq!(v, 0x1234);
+    }
+
+    #[test]
+    fn u32_le_roundtrip() {
+        let mut buf = Vec::new();
+        write_u32_le(&mut buf, 0x1122_3344).expect("write_u32_le");
+        let v = read_u32_le(Cursor::new(&buf)).expect("read_u32_le");
+        assert_eq!(v, 0x1122_3344);
+    }
+
+    #[test]
+    fn u32_be_roundtrip() {
+        let mut buf = Vec::new();
+        write_u32_be(&mut buf, 0x1122_3344).expect("write_u32_be");
+        let v = read_u32_be(Cursor::new(&buf)).expect("read_u32_be");
+        assert_eq!(v, 0x1122_3344);
+    }
+
+    #[test]
+    fn u64_le_roundtrip() {
+        let mut buf = Vec::new();
+        write_u64_le(&mut buf, 0x0102_0304_0506_0708).expect("write_u64_le");
+        let v = read_u64_le(Cursor::new(&buf)).expect("read_u64_le");
+        assert_eq!(v, 0x0102_0304_0506_0708u64);
+    }
+
+    #[test]
+    fn u64_be_roundtrip() {
+        let mut buf = Vec::new();
+        write_u64_be(&mut buf, 0x0102_0304_0506_0708).expect("write_u64_be");
+        let v = read_u64_be(Cursor::new(&buf)).expect("read_u64_be");
+        assert_eq!(v, 0x0102_0304_0506_0708u64);
+    }
+
+    #[test]
+    fn i64_le_roundtrip() {
+        let mut buf = Vec::new();
+        let val: i64 = -9_001_234_567_890i64;
+        write_i64_le(&mut buf, val).expect("write_i64_le");
+        let r = read_i64_le(Cursor::new(&buf)).expect("read_i64_le");
+        assert_eq!(r, val);
+    }
+
+    #[test]
+    fn i64_be_roundtrip() {
+        let mut buf = Vec::new();
+        let val: i64 = -9_001_234_567_890i64;
+        write_i64_be(&mut buf, val).expect("write_i64_be");
+        let r = read_i64_be(Cursor::new(&buf)).expect("read_i64_be");
+        assert_eq!(r, val);
+    }
+
+    #[test]
+    fn fixed_le_roundtrip() {
+        let arr: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        let mut buf = Vec::new();
+        write_fixed_le::<8, _>(&mut buf, &arr).expect("write_fixed_le");
+        let got: [u8; 8] = read_fixed_le::<8, _>(Cursor::new(&buf)).expect("read_fixed_le");
+        assert_eq!(got, arr);
+    }
+
+    #[test]
+    fn fixed_be_roundtrip() {
+        let arr: [u8; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
+        let mut buf = Vec::new();
+        write_fixed_be::<8, _>(&mut buf, &arr).expect("write_fixed_be");
+        let got: [u8; 8] = read_fixed_be::<8, _>(Cursor::new(&buf)).expect("read_fixed_be");
+        // read_fixed_be reverses the wire bytes back into internal order, so we expect equality
+        assert_eq!(got, arr);
+    }
+
+    #[test]
+    fn option_none_roundtrip() {
+        let mut buf = Vec::new();
+        write_option(&mut buf, &None::<u32>, |_w, _v| Ok(())).expect("write_option none");
+        let mut cur = Cursor::new(&buf);
+        let r: Option<u32> = read_option(&mut cur, |_r| unreachable!()).expect("read_option none");
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn option_some_roundtrip() {
+        let mut buf = Vec::new();
+        write_option(&mut buf, &Some(0xDEADBEEFu32), |w, v| write_u32_le(w, *v))
+            .expect("write_option some");
+        let mut cur = Cursor::new(&buf);
+        let r: Option<u32> = read_option(&mut cur, |r| read_u32_le(r)).expect("read_option some");
+        assert_eq!(r, Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn write_vec_read_vec_roundtrip() {
+        let items = vec![1u16, 2u16, 3u16, 0xABCDu16];
+        let mut buf = Vec::new();
+        write_vec(&mut buf, &items, |w, v| write_u16_le(w, *v)).expect("write_vec");
+        let mut cur = Cursor::new(&buf);
+        let r: Vec<u16> = read_vec(&mut cur, |r| read_u16_le(r)).expect("read_vec");
+        assert_eq!(r, items);
+    }
+
+    #[test]
+    fn read_vec_into_roundtrip() {
+        let items = vec![10u32, 11u32, 12u32];
+        let mut buf = Vec::new();
+        write_vec(&mut buf, &items, |w, v| write_u32_le(w, *v)).expect("write_vec u32");
+        let mut cur = Cursor::new(&buf);
+        let out: Vec<u32> = read_vec_into(&mut cur, |r| read_u32_le(r)).expect("read_vec_into");
+        assert_eq!(out, items);
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Inner {
+        pub x: u32,
+    }
+
+    // Inner: versioned: v1 writes little-endian, v2 writes big-endian for demonstration.
+    impl ZainoVersionedSerde for Inner {
+        // current build writes v2
+        const VERSION: u8 = version::V2;
+
+        fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+            // latest = v2
+            self.encode_v2(w)
+        }
+
+        fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+            Self::decode_v2(r)
+        }
+
+        fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+            // v1 body: x as little-endian
+            write_u32_le(w, self.x)
+        }
+
+        fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+            // v2 body: x as big-endian
+            write_u32_be(w, self.x)
+        }
+
+        fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+            let x = read_u32_le(r)?;
+            Ok(Inner { x })
+        }
+
+        fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+            let x = read_u32_be(r)?;
+            Ok(Inner { x })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Outer {
+        pub inner: Inner,
+        pub y: u8,
+    }
+
+    // Outer: top-level is versioned. Top-level v1 must include nested Inner encoded as v1.
+    impl ZainoVersionedSerde for Outer {
+        // this build writes v2 by default
+        const VERSION: u8 = version::V2;
+
+        fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+            self.encode_v2(w)
+        }
+
+        fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+            Self::decode_v2(r)
+        }
+
+        // Top-level v1: explicitly request inner as v1 (writes inner tag+body for v1)
+        fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+            // write nested Inner as a versioned record with tag+body
+            self.inner.serialize_with_version(&mut *w, version::V1)?;
+            // then write y
+            w.write_all(&[self.y])?;
+            Ok(())
+        }
+
+        // Top-level v2: explicitly request inner as v2
+        fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+            self.inner.serialize_with_version(&mut *w, version::V2)?;
+            w.write_all(&[self.y])?;
+            Ok(())
+        }
+
+        fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+            // inner is stored with its own tag, so use Inner::deserialize
+            let inner = Inner::deserialize(&mut *r)?;
+            let mut buf = [0u8; 1];
+            r.read_exact(&mut buf)?;
+            Ok(Outer { inner, y: buf[0] })
+        }
+
+        fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+            // same decoding behavior: nested inner may include its tag
+            let inner = Inner::deserialize(&mut *r)?;
+            let mut buf = [0u8; 1];
+            r.read_exact(&mut buf)?;
+            Ok(Outer { inner, y: buf[0] })
+        }
+    }
+
+    #[test]
+    fn inner_v1_v2_roundtrip_and_difference() {
+        let i = Inner { x: 0x1122_3344 };
+
+        // v1 and v2 bytes should differ
+        let b_v1 = i.to_bytes_with_version(version::V1).expect("v1 bytes");
+        let b_v2 = i.to_bytes_with_version(version::V2).expect("v2 bytes");
+        assert_ne!(b_v1, b_v2, "v1 and v2 encodings must differ for the test");
+
+        // decoding roundtrip for both
+        let decoded_v1 = Inner::from_bytes(&b_v1).expect("decode v1");
+        let decoded_v2 = Inner::from_bytes(&b_v2).expect("decode v2");
+        assert_eq!(decoded_v1, i);
+        assert_eq!(decoded_v2, i);
+
+        // check tags: first byte is version tag
+        assert_eq!(b_v1[0], version::V1);
+        assert_eq!(b_v2[0], version::V2);
+
+        // Inspect body bytes to ensure endianness was used differently
+        // body starts at index 1 (after tag)
+        let body_v1 = &b_v1[1..];
+        let body_v2 = &b_v2[1..];
+        // v1 is little-endian -> first body byte should be low-order byte 0x44
+        assert_eq!(body_v1[0], 0x44);
+        // v2 is big-endian -> first body byte should be high-order byte 0x11
+        assert_eq!(body_v2[0], 0x11);
+    }
+
+    #[test]
+    fn outer_nested_v1_v2_roundtrip_and_nested_tag_behavior() {
+        let o = Outer {
+            inner: Inner { x: 0xAABBCCDD },
+            y: 0x7f,
+        };
+
+        // produce top-level v1 and v2 bytes
+        let top_v1 = o.to_bytes_with_version(version::V1).expect("outer v1");
+        let top_v2 = o.to_bytes_with_version(version::V2).expect("outer v2");
+
+        // top-level tags:
+        assert_eq!(top_v1[0], version::V1);
+        assert_eq!(top_v2[0], version::V2);
+
+        // nested inner tag should appear immediately after top-level tag
+        // (we wrote inner with serialize_with_version in encode_vN)
+        assert!(top_v1.len() >= 2 && top_v2.len() >= 2);
+        let nested_tag_v1 = top_v1[1];
+        let nested_tag_v2 = top_v2[1];
+
+        // For top-level v1 we explicitly asked inner to be v1
+        assert_eq!(nested_tag_v1, version::V1);
+        // For top-level v2 we explicitly asked inner to be v2
+        assert_eq!(nested_tag_v2, version::V2);
+
+        // decode both and ensure roundtrip equality
+        let decoded_v1 = Outer::from_bytes(&top_v1).expect("decode outer v1");
+        let decoded_v2 = Outer::from_bytes(&top_v2).expect("decode outer v2");
+        assert_eq!(decoded_v1, o);
+        assert_eq!(decoded_v2, o);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_helpers_consistency() {
+        let i = Inner { x: 0x0102_0304 };
+
+        // serialize() should use latest = v2
+        let latest_bytes = i.to_bytes().expect("latest bytes");
+        assert_eq!(latest_bytes[0], version::V2);
+
+        // serialize_with_version should produce requested tag
+        let v1_bytes = i.to_bytes_with_version(version::V1).expect("v1 bytes");
+        let v2_bytes = i.to_bytes_with_version(version::V2).expect("v2 bytes");
+        assert_eq!(v1_bytes[0], version::V1);
+        assert_eq!(v2_bytes[0], version::V2);
+
+        // to_bytes/from_bytes roundtrip across versions
+        assert_eq!(Inner::from_bytes(&v1_bytes).expect("from v1"), i);
+        assert_eq!(Inner::from_bytes(&v2_bytes).expect("from v2"), i);
+        // latest roundtrip
+        assert_eq!(Inner::from_bytes(&latest_bytes).expect("from latest"), i);
+    }
+
+    // Additional test: ensure nested explicit encoding is necessary
+    #[test]
+    fn nested_encoding_must_use_serialize_with_version() {
+        let o = Outer {
+            inner: Inner { x: 0xDEAD_BEEF },
+            y: 0x42,
+        };
+
+        // If we had implemented encode_v1 for Outer *without* calling inner.serialize_with_version(..., V1)
+        // the nested tag would be the inner's current tag (V2), and roundtrip of top-level v1
+        // produced by such a broken implementation would not match historical bytes.
+        //
+        // The test below asserts that our encode_v1 produces nested tag == V1.
+        let top_v1 = o.to_bytes_with_version(version::V1).expect("outer v1");
+        assert_eq!(
+            top_v1[1],
+            version::V1,
+            "nested inner tag must be v1 for top-level v1"
+        );
+
+        // Confirm the outer decoding still works
+        let decoded = Outer::from_bytes(&top_v1).expect("decode outer v1");
+        assert_eq!(decoded, o);
+    }
 }

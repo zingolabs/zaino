@@ -152,12 +152,16 @@ impl From<zcash_primitives::block::BlockHash> for BlockHash {
 impl ZainoVersionedSerde for BlockHash {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.0)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<32, _>(w, &self.0)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -269,12 +273,16 @@ impl From<zcash_primitives::transaction::TxId> for TransactionHash {
 impl ZainoVersionedSerde for TransactionHash {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.0)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<32, _>(w, &self.0)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -381,13 +389,17 @@ impl TryFrom<zcash_protocol::consensus::BlockHeight> for Height {
 impl ZainoVersionedSerde for Height {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        // Height must sort lexicographically - write **big-endian**
-        write_u32_be(w, self.0)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        // Height must sort lexicographically - write **big-endian**
+        write_u32_be(w, self.0)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -413,13 +425,17 @@ pub struct ShardIndex(pub u32);
 impl ZainoVersionedSerde for ShardIndex {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        // Index must sort lexicographically - write **big-endian**
-        write_u32_be(w, self.0)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        // Index must sort lexicographically - write **big-endian**
+        write_u32_be(w, self.0)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -533,13 +549,17 @@ impl From<AddrScript> for [u8; 21] {
 impl ZainoVersionedSerde for AddrScript {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<20, _>(&mut *w, &self.hash)?;
-        w.write_all(&[self.script_type])
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<20, _>(&mut *w, &self.hash)?;
+        w.write_all(&[self.script_type])
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -598,14 +618,18 @@ impl Outpoint {
 impl ZainoVersionedSerde for Outpoint {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_fixed_le::<32, _>(&mut w, &self.prev_txid)?;
-        write_u32_le(&mut w, self.prev_index)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_fixed_le::<32, _>(&mut w, &self.prev_txid)?;
+        write_u32_le(&mut w, self.prev_index)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -678,17 +702,32 @@ impl BlockIndex {
 impl ZainoVersionedSerde for BlockIndex {
     const VERSION: u8 = version::V2;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        self.hash.serialize(&mut w)?;
-        self.parent_hash.serialize(&mut w)?;
-        self.chainwork.serialize(&mut w)?;
-        self.height.serialize(&mut *w)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v2(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v2(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+
+        self.hash.serialize_with_version(&mut w, 1)?;
+        self.parent_hash.serialize_with_version(&mut w, 1)?;
+        self.chainwork.serialize_with_version(&mut w, 1)?;
+        write_option(&mut w, &Some(self.height), |w, h| {
+            h.serialize_with_version(w, 1)
+        })
+    }
+
+    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+
+        self.hash.serialize_with_version(&mut w, 1)?;
+        self.parent_hash.serialize_with_version(&mut w, 1)?;
+        self.chainwork.serialize_with_version(&mut w, 1)?;
+        self.height.serialize_with_version(&mut w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -767,12 +806,16 @@ impl fmt::Display for ChainWork {
 impl ZainoVersionedSerde for ChainWork {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.0)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<32, _>(w, &self.0)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -933,7 +976,15 @@ impl BlockData {
 impl ZainoVersionedSerde for BlockData {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w; // re-borrow
 
         write_u32_le(&mut w, self.version)?;
@@ -945,11 +996,7 @@ impl ZainoVersionedSerde for BlockData {
         write_u32_le(&mut w, self.bits)?;
         write_fixed_le::<32, _>(&mut w, &self.nonce)?;
 
-        self.solution.serialize(&mut w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
+        self.solution.serialize_with_version(&mut w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -1042,7 +1089,15 @@ impl<'a> TryFrom<&'a [u8]> for EquihashSolution {
 impl ZainoVersionedSerde for EquihashSolution {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
 
         match self {
@@ -1055,10 +1110,6 @@ impl ZainoVersionedSerde for EquihashSolution {
                 write_fixed_le::<36, _>(&mut w, bytes)
             }
         }
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -1197,15 +1248,21 @@ impl IndexedBlock {
 impl ZainoVersionedSerde for IndexedBlock {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
-        self.index.serialize(&mut w)?;
-        self.data.serialize(&mut w)?;
-        write_vec(&mut w, &self.transactions, |w, tx| tx.serialize(w))?;
-        self.commitment_tree_data.serialize(&mut w)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
+        self.index.serialize_with_version(&mut w, 1)?;
+        self.data.serialize_with_version(&mut w, 1)?;
+        write_vec(&mut w, &self.transactions, |w, tx| {
+            tx.serialize_with_version(w, 1)
+        })?;
+        self.commitment_tree_data.serialize_with_version(&mut w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -1604,17 +1661,21 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
 impl ZainoVersionedSerde for CompactTxData {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
-        write_u64_le(&mut w, self.index)?;
-
-        self.txid.serialize(&mut w)?;
-        self.transparent.serialize(&mut w)?;
-        self.sapling.serialize(&mut w)?;
-        self.orchard.serialize(&mut w)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
+        write_u64_le(&mut w, self.index)?;
+
+        self.txid.serialize_with_version(&mut w, 1)?;
+        self.transparent.serialize_with_version(&mut w, 1)?;
+        self.sapling.serialize_with_version(&mut w, 1)?;
+        self.orchard.serialize_with_version(&mut w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -1649,15 +1710,23 @@ pub struct TransparentCompactTx {
 impl ZainoVersionedSerde for TransparentCompactTx {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        write_vec(&mut w, &self.vin, |w, txin| txin.serialize(w))?;
-        write_vec(&mut w, &self.vout, |w, txout| txout.serialize(w))
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+
+        write_vec(&mut w, &self.vin, |w, txin| {
+            txin.serialize_with_version(w, 1)
+        })?;
+        write_vec(&mut w, &self.vout, |w, txout| {
+            txout.serialize_with_version(w, 1)
+        })
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -1759,14 +1828,18 @@ impl TxInCompact {
 impl ZainoVersionedSerde for TxInCompact {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_fixed_le::<32, _>(&mut w, &self.prevout_txid)?;
-        write_u32_le(&mut w, self.prevout_index)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_fixed_le::<32, _>(&mut w, &self.prevout_txid)?;
+        write_u32_le(&mut w, self.prevout_index)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -1822,12 +1895,16 @@ impl ScriptType {
 impl ZainoVersionedSerde for ScriptType {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(&[*self as u8])
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(&[*self as u8])
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -1989,15 +2066,19 @@ impl<T: AsRef<[u8]>> TryFrom<(u64, T)> for TxOutCompact {
 impl ZainoVersionedSerde for TxOutCompact {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_u64_le(&mut w, self.value)?;
-        write_fixed_le::<20, _>(&mut w, &self.script_hash)?;
-        w.write_all(&[self.script_type])
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_u64_le(&mut w, self.value)?;
+        write_fixed_le::<20, _>(&mut w, &self.script_hash)?;
+        w.write_all(&[self.script_type])
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2063,16 +2144,20 @@ impl SaplingCompactTx {
 impl ZainoVersionedSerde for SaplingCompactTx {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        write_option(&mut w, &self.value, |w, v| write_i64_le(w, *v))?;
-        write_vec(&mut w, &self.spends, |w, s| s.serialize(w))?;
-        write_vec(&mut w, &self.outputs, |w, o| o.serialize(w))
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+
+        write_option(&mut w, &self.value, |w, v| write_i64_le(w, *v))?;
+        write_vec(&mut w, &self.spends, |w, s| s.serialize_with_version(w, 1))?;
+        write_vec(&mut w, &self.outputs, |w, o| o.serialize_with_version(w, 1))
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2116,12 +2201,16 @@ impl CompactSaplingSpend {
 impl ZainoVersionedSerde for CompactSaplingSpend {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.nf)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<32, _>(w, &self.nf)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2186,15 +2275,19 @@ impl CompactSaplingOutput {
 impl ZainoVersionedSerde for CompactSaplingOutput {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_fixed_le::<32, _>(&mut w, &self.cmu)?;
-        write_fixed_le::<32, _>(&mut w, &self.ephemeral_key)?;
-        write_fixed_le::<52, _>(&mut w, &self.ciphertext)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_fixed_le::<32, _>(&mut w, &self.cmu)?;
+        write_fixed_le::<32, _>(&mut w, &self.ephemeral_key)?;
+        write_fixed_le::<52, _>(&mut w, &self.ciphertext)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2242,15 +2335,19 @@ impl OrchardCompactTx {
 impl ZainoVersionedSerde for OrchardCompactTx {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        write_option(&mut w, &self.value, |w, v| write_i64_le(w, *v))?;
-        write_vec(&mut w, &self.actions, |w, a| a.serialize(w))
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+
+        write_option(&mut w, &self.value, |w, v| write_i64_le(w, *v))?;
+        write_vec(&mut w, &self.actions, |w, a| a.serialize_with_version(w, 1))
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2328,16 +2425,20 @@ impl CompactOrchardAction {
 impl ZainoVersionedSerde for CompactOrchardAction {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
         write_fixed_le::<32, _>(&mut w, &self.nullifier)?;
         write_fixed_le::<32, _>(&mut w, &self.cmx)?;
         write_fixed_le::<32, _>(&mut w, &self.ephemeral_key)?;
         write_fixed_le::<52, _>(&mut w, &self.ciphertext)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2389,13 +2490,17 @@ impl TxLocation {
 impl ZainoVersionedSerde for TxLocation {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_u32_be(&mut *w, self.block_height)?;
-        write_u16_be(&mut *w, self.tx_index)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_u32_be(&mut *w, self.block_height)?;
+        write_u16_be(&mut *w, self.tx_index)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2483,15 +2588,19 @@ impl AddrHistRecord {
 impl ZainoVersionedSerde for AddrHistRecord {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.tx_location.serialize(&mut *w)?;
-        write_u16_be(&mut *w, self.out_index)?;
-        write_u64_le(&mut *w, self.value)?;
-        w.write_all(&[self.flags])
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.tx_location.serialize_with_version(&mut *w, 1)?;
+        write_u16_be(&mut *w, self.out_index)?;
+        write_u64_le(&mut *w, self.value)?;
+        w.write_all(&[self.flags])
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2585,12 +2694,16 @@ impl AddrEventBytes {
 impl ZainoVersionedSerde for AddrEventBytes {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<17, _>(w, &self.0)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<17, _>(w, &self.0)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2654,15 +2767,19 @@ impl ShardRoot {
 impl ZainoVersionedSerde for ShardRoot {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_fixed_le::<32, _>(&mut w, &self.hash)?;
-        write_fixed_le::<32, _>(&mut w, &self.final_block_hash)?;
-        write_u32_le(&mut w, self.final_block_height)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_fixed_le::<32, _>(&mut w, &self.hash)?;
+        write_fixed_le::<32, _>(&mut w, &self.final_block_hash)?;
+        write_u32_le(&mut w, self.final_block_height)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2711,21 +2828,34 @@ impl BlockHeaderData {
 }
 
 impl ZainoVersionedSerde for BlockHeaderData {
-    const VERSION: u8 = version::V1;
+    const VERSION: u8 = version::V2;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.index.serialize(&mut *w)?;
-        self.data.serialize(w)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v2(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
+        Self::decode_v2(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.index.serialize_with_version(&mut *w, 1)?;
+        self.data.serialize_with_version(w, 1)
+    }
+
+    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.index.serialize_with_version(&mut *w, 2)?;
+        self.data.serialize_with_version(w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let index = BlockIndex::deserialize(&mut *r)?;
         let data = BlockData::deserialize(r)?;
         Ok(BlockHeaderData::new(index, data))
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
     }
 }
 
@@ -2752,12 +2882,16 @@ impl TxidList {
 impl ZainoVersionedSerde for TxidList {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_vec(w, &self.txids, |w, h| h.serialize(w))
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_vec(w, &self.txids, |w, h| h.serialize_with_version(w, 1))
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2823,14 +2957,18 @@ impl TransparentTxList {
 impl ZainoVersionedSerde for TransparentTxList {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_vec(w, &self.tx, |w, opt| {
-            write_option(w, opt, |w, t| t.serialize(w))
-        })
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_vec(w, &self.tx, |w, opt| {
+            write_option(w, opt, |w, t| t.serialize_with_version(w, 1))
+        })
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2902,14 +3040,18 @@ impl SaplingTxList {
 impl ZainoVersionedSerde for SaplingTxList {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_vec(w, &self.tx, |w, opt| {
-            write_option(w, opt, |w, t| t.serialize(w))
-        })
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_vec(w, &self.tx, |w, opt| {
+            write_option(w, opt, |w, t| t.serialize_with_version(w, 1))
+        })
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2973,14 +3115,18 @@ impl OrchardTxList {
 impl ZainoVersionedSerde for OrchardTxList {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_vec(w, &self.tx, |w, opt| {
-            write_option(w, opt, |w, t| t.serialize(w))
-        })
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_vec(w, &self.tx, |w, opt| {
+            write_option(w, opt, |w, t| t.serialize_with_version(w, 1))
+        })
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {

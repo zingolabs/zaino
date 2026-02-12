@@ -336,14 +336,18 @@ impl DbMetadata {
 impl ZainoVersionedSerde for DbMetadata {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.version.serialize(&mut *w)?;
-        write_fixed_le::<32, _>(&mut *w, &self.schema_hash)?;
-        self.migration_status.serialize(&mut *w)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.version.serialize_with_version(&mut *w, 1)?;
+        write_fixed_le::<32, _>(&mut *w, &self.schema_hash)?;
+        self.migration_status.serialize_with_version(&mut *w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -476,14 +480,18 @@ impl DbVersion {
 impl ZainoVersionedSerde for DbVersion {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_u32_le(&mut *w, self.major)?;
-        write_u32_le(&mut *w, self.minor)?;
-        write_u32_le(&mut *w, self.patch)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_u32_le(&mut *w, self.major)?;
+        write_u32_le(&mut *w, self.minor)?;
+        write_u32_le(&mut *w, self.patch)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -565,7 +573,15 @@ impl fmt::Display for MigrationStatus {
 impl ZainoVersionedSerde for MigrationStatus {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let tag = match self {
             MigrationStatus::Empty => 0,
             MigrationStatus::PartialBuidInProgress => 1,
@@ -574,10 +590,6 @@ impl ZainoVersionedSerde for MigrationStatus {
             MigrationStatus::Complete => 4,
         };
         write_u8(w, tag)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
