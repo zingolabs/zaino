@@ -123,6 +123,7 @@ mod chain_query_interface {
                     NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
                     NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
                 };
+                // FIXME: when state service is integrated into chain index this initialization must change
                 let state_service = StateService::spawn(StateServiceConfig::new(
                     zebra_state::Config {
                         cache_dir: state_chain_cache_dir,
@@ -176,7 +177,7 @@ mod chain_query_interface {
                 )
                 .await
                 .unwrap();
-                let index_reader = chain_index.subscriber().await;
+                let index_reader = chain_index.subscriber();
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
                 (
@@ -209,7 +210,7 @@ mod chain_query_interface {
                 )
                 .await
                 .unwrap();
-                let index_reader = chain_index.subscriber().await;
+                let index_reader = chain_index.subscriber();
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
                 (test_manager, json_service, None, chain_index, index_reader)

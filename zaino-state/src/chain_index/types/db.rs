@@ -22,6 +22,7 @@ pub mod address;
 pub mod block;
 pub mod commitment;
 pub mod legacy;
+pub mod metadata;
 pub mod primitives;
 pub mod shielded;
 pub mod transaction;

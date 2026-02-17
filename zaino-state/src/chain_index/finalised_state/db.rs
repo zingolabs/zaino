@@ -92,6 +92,8 @@ use super::capability::Capability;
 /// - Discovery code assumes `VERSION_DIRS[index]` corresponds to major version `index + 1`.
 pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
 
+#[derive(Debug)]
+/// All concrete database implementations.
 /// Version-erased database backend.
 ///
 /// This enum is the central dispatch point for the finalised-state database:

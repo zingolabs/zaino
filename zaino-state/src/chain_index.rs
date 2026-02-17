@@ -12,18 +12,22 @@
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
 use crate::chain_index::non_finalised_state::BestTip;
+use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
-use crate::IndexedBlock;
-use crate::{AtomicStatus, StatusType, SyncError};
+use crate::status::Status;
+use crate::{AtomicStatus, CompactBlockStream, StatusType, SyncError};
+use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, Stream};
+use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tracing::info;
+use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
@@ -196,6 +200,50 @@ pub trait ChainIndex {
         end: Option<types::Height>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
 
+    /// Returns the *compact* block for the given height.
+    ///
+    /// Returns `None` if the specified `height` is greater than the snapshot's tip.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    #[allow(clippy::type_complexity)]
+    fn get_compact_block(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> impl std::future::Future<
+        Output = Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error>,
+    >;
+
+    /// Streams *compact* blocks for an inclusive height range.
+    ///
+    /// Returns `None` if the requested range is entirely above the snapshot's tip.
+    ///
+    /// - The stream covers `[start_height, end_height]` (inclusive).
+    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    #[allow(clippy::type_complexity)]
+    fn get_compact_block_stream(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        start_height: types::Height,
+        end_height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> impl std::future::Future<Output = Result<Option<CompactBlockStream>, Self::Error>>;
+
     /// Finds the newest ancestor of the given block on the main
     /// chain, or the block itself if it is on the main chain.
     fn find_fork_point(
@@ -238,6 +286,11 @@ pub trait ChainIndex {
         Output = Result<(Option<BestChainLocation>, HashSet<NonBestChainLocation>), Self::Error>,
     >;
 
+    /// Returns all txids currently in the mempool.
+    fn get_mempool_txids(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<types::TransactionHash>, Self::Error>>;
+
     /// Returns all transactions currently in the mempool, filtered by `exclude_list`.
     ///
     /// The `exclude_list` may contain shortened transaction ID hex prefixes (client-endian).
@@ -249,12 +302,18 @@ pub trait ChainIndex {
     /// Returns a stream of mempool transactions, ending the stream when the chain tip block hash
     /// changes (a new block is mined or a reorg occurs).
     ///
-    /// If the chain tip has changed from the given spanshot returns None.
+    /// If a snapshot is given and the chain tip has changed from the given spanshot, returns None.
     #[allow(clippy::type_complexity)]
     fn get_mempool_stream(
         &self,
-        snapshot: &Self::Snapshot,
+        snapshot: Option<&Self::Snapshot>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
+
+    /// Returns Information about the mempool state:
+    /// - size: Current tx count
+    /// - bytes: Sum of all tx sizes
+    /// - usage: Total memory usage for the mempool
+    fn get_mempool_info(&self) -> impl std::future::Future<Output = MempoolInfo>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -380,8 +439,8 @@ pub trait ChainIndex {
 /// - Unified access to finalized and non-finalized blockchain state
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
+#[derive(Debug)]
 pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
-    blockchain_source: std::sync::Arc<Source>,
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
@@ -420,7 +479,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         .await?;
 
         let mut chain_index = Self {
-            blockchain_source: Arc::new(source),
             mempool: std::sync::Arc::new(mempool_state),
             non_finalized_state: std::sync::Arc::new(non_finalized_state),
             finalized_db,
@@ -434,9 +492,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
     /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
-    pub async fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
+    pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
         NodeBackedChainIndexSubscriber {
-            blockchain_source: self.blockchain_source.as_ref().clone(),
             mempool: self.mempool.subscriber(),
             non_finalized_state: self.non_finalized_state.clone(),
             finalized_state: self.finalized_db.to_reader(),
@@ -473,61 +530,68 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
         tokio::task::spawn(async move {
-            loop {
-                if status.load() == StatusType::Closing {
-                    break;
-                }
-                let handle_error = |e| {
-                    tracing::error!("Sync failure: {e:?}. Shutting down.");
-                    status.store(StatusType::CriticalError);
-                    e
-                };
-
-                status.store(StatusType::Syncing);
-                // Sync nfs to chain tip, trimming blocks to finalized tip.
-                nfs.sync(fs.clone()).await.map_err(handle_error)?;
-
-                // Sync fs to chain tip - 100.
-                {
-                    let snapshot = nfs.get_snapshot();
-                    while snapshot.best_tip.height.0
-                        > (fs
-                            .to_reader()
-                            .db_height()
-                            .await
-                            .map_err(|_e| handle_error(SyncError::CannotReadFinalizedState))?
-                            .unwrap_or(types::Height(0))
-                            .0
-                            + 100)
-                    {
-                        let next_finalized_height = fs
-                            .to_reader()
-                            .db_height()
-                            .await
-                            .map_err(|_e| handle_error(SyncError::CannotReadFinalizedState))?
-                            .map(|height| height + 1)
-                            .unwrap_or(types::Height(0));
-                        let next_finalized_block = snapshot
-                            .blocks
-                            .get(
-                                snapshot
-                                    .heights_to_hashes
-                                    .get(&(next_finalized_height))
-                                    .ok_or(SyncError::CompetingSyncProcess)?,
-                            )
-                            .ok_or_else(|| handle_error(SyncError::CompetingSyncProcess))?;
-                        // TODO: Handle write errors better (fix db and continue)
-                        fs.write_block(next_finalized_block.clone())
-                            .await
-                            .map_err(|_e| handle_error(SyncError::CompetingSyncProcess))?;
+            let result: Result<(), SyncError> = async {
+                loop {
+                    if status.load() == StatusType::Closing {
+                        break;
                     }
+
+                    status.store(StatusType::Syncing);
+                    // Sync nfs to chain tip, trimming blocks to finalized tip.
+                    nfs.sync(fs.clone()).await?;
+
+                    // Sync fs to chain tip - 100.
+                    {
+                        let snapshot = nfs.get_snapshot();
+                        while snapshot.best_tip.height.0
+                            > (fs
+                                .to_reader()
+                                .db_height()
+                                .await
+                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                                .unwrap_or(types::Height(0))
+                                .0
+                                + 100)
+                        {
+                            let next_finalized_height = fs
+                                .to_reader()
+                                .db_height()
+                                .await
+                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
+                                .map(|height| height + 1)
+                                .unwrap_or(types::Height(0));
+                            let next_finalized_block = snapshot
+                                .blocks
+                                .get(
+                                    snapshot
+                                        .heights_to_hashes
+                                        .get(&(next_finalized_height))
+                                        .ok_or(SyncError::CompetingSyncProcess)?,
+                                )
+                                .ok_or(SyncError::CompetingSyncProcess)?;
+                            // TODO: Handle write errors better (fix db and continue)
+                            fs.write_block(next_finalized_block.clone())
+                                .await
+                                .map_err(|_e| SyncError::CompetingSyncProcess)?;
+                        }
+                    }
+                    status.store(StatusType::Ready);
+                    // TODO: configure sleep duration?
+                    tokio::time::sleep(Duration::from_millis(500)).await
+                    // TODO: Check for shutdown signal.
                 }
-                status.store(StatusType::Ready);
-                // TODO: configure sleep duration?
-                tokio::time::sleep(Duration::from_millis(500)).await
-                // TODO: Check for shutdown signal.
+                Ok(())
             }
-            Ok(())
+            .await;
+
+            // If the sync loop exited unexpectedly with an error, set CriticalError
+            // so that liveness checks can detect the failure.
+            if let Err(ref e) = result {
+                tracing::error!("Sync loop exited with error: {e:?}");
+                status.store(StatusType::CriticalError);
+            }
+
+            result
         })
     }
 }
@@ -537,9 +601,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 /// Designed for concurrent efficiency.
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
-    blockchain_source: Source,
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
     finalized_state: finalised_state::reader::DbReader,
@@ -547,8 +610,13 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
-    /// Displays the status of the chain_index
-    pub fn status(&self) -> StatusType {
+
+    fn source(&self) -> &Source {
+        &self.non_finalized_state.source
+    }
+  
+    /// Returns the combined status of all chain index components.
+    pub fn combined_status(&self) -> StatusType {
         let finalized_status = self.finalized_state.status();
         let mempool_status = self.mempool.status();
         let combined_status = self
@@ -617,6 +685,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             });
         Ok(finalized_blocks_containing_transaction
             .chain(non_finalized_blocks_containing_transaction))
+    }
+}
+
+impl<Source: BlockchainSource> Status for NodeBackedChainIndexSubscriber<Source> {
+    fn status(&self) -> StatusType {
+        self.combined_status()
     }
 }
 
@@ -708,6 +782,211 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
+    /// Returns the *compact* block for the given height.
+    ///
+    /// Returns `None` if the specified `height` is greater than the snapshot's tip.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    ///
+    /// Returns None if the specified height
+    /// is greater than the snapshot's tip
+    async fn get_compact_block(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
+        if height <= nonfinalized_snapshot.best_tip.height {
+            Ok(Some(
+                match nonfinalized_snapshot.get_chainblock_by_height(&height) {
+                    Some(block) => compact_block_with_pool_types(
+                        block.to_compact_block(),
+                        &pool_types.to_pool_types_vector(),
+                    ),
+                    None => match self
+                        .finalized_state
+                        .get_compact_block(height, pool_types)
+                        .await
+                    {
+                        Ok(block) => block,
+                        Err(_e) => return Err(ChainIndexError::database_hole(height)),
+                    },
+                },
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Streams *compact* blocks for an inclusive height range.
+    ///
+    /// Returns `None` if either requested height is greater than the snapshot's tip.
+    ///
+    /// - The stream covers `[start_height, end_height]` (inclusive).
+    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    #[allow(clippy::type_complexity)]
+    async fn get_compact_block_stream(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        start_height: types::Height,
+        end_height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<Option<CompactBlockStream>, Self::Error> {
+        let chain_tip_height = nonfinalized_snapshot.best_chaintip().height;
+
+        if start_height > chain_tip_height || end_height > chain_tip_height {
+            return Ok(None);
+        }
+
+        // The nonfinalized cache holds the tip block plus the previous 99 blocks (100 total),
+        // so the lowest possible cached height is `tip - 99` (saturating at 0).
+        let lowest_nonfinalized_height = types::Height(chain_tip_height.0.saturating_sub(99));
+
+        let is_ascending = start_height <= end_height;
+
+        let pool_types_vector = pool_types.to_pool_types_vector();
+
+        // Pre-create any finalized-state stream(s) we will need so that errors are returned
+        // from this method (not deferred into the spawned task).
+        let finalized_stream: Option<CompactBlockStream> = if is_ascending {
+            if start_height < lowest_nonfinalized_height {
+                let finalized_end_height = types::Height(std::cmp::min(
+                    end_height.0,
+                    lowest_nonfinalized_height.0.saturating_sub(1),
+                ));
+
+                if start_height <= finalized_end_height {
+                    Some(
+                        self.finalized_state
+                            .get_compact_block_stream(
+                                start_height,
+                                finalized_end_height,
+                                pool_types.clone(),
+                            )
+                            .await
+                            .map_err(ChainIndexError::from)?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        // Serve in reverse order.
+        } else if end_height < lowest_nonfinalized_height {
+            let finalized_start_height = if start_height < lowest_nonfinalized_height {
+                start_height
+            } else {
+                types::Height(lowest_nonfinalized_height.0.saturating_sub(1))
+            };
+
+            Some(
+                self.finalized_state
+                    .get_compact_block_stream(
+                        finalized_start_height,
+                        end_height,
+                        pool_types.clone(),
+                    )
+                    .await
+                    .map_err(ChainIndexError::from)?,
+            )
+        } else {
+            None
+        };
+
+        let nonfinalized_snapshot = nonfinalized_snapshot.clone();
+        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically base on resources.
+        let (channel_sender, channel_receiver) = tokio::sync::mpsc::channel(128);
+
+        tokio::spawn(async move {
+            if is_ascending {
+                // 1) Finalized segment (if any), ascending.
+                if let Some(mut finalized_stream) = finalized_stream {
+                    while let Some(stream_item) = finalized_stream.next().await {
+                        if channel_sender.send(stream_item).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+
+                // 2) Nonfinalized segment, ascending.
+                let nonfinalized_start_height =
+                    types::Height(std::cmp::max(start_height.0, lowest_nonfinalized_height.0));
+
+                for height_value in nonfinalized_start_height.0..=end_height.0 {
+                    let Some(indexed_block) = nonfinalized_snapshot
+                        .get_chainblock_by_height(&types::Height(height_value))
+                    else {
+                        let _ = channel_sender
+                        .send(Err(tonic::Status::internal(format!(
+                            "Internal error, missing nonfinalized block at height [{height_value}].",
+                        ))))
+                        .await;
+                        return;
+                    };
+                    let compact_block = compact_block_with_pool_types(
+                        indexed_block.to_compact_block(),
+                        &pool_types_vector,
+                    );
+                    if channel_sender.send(Ok(compact_block)).await.is_err() {
+                        return;
+                    }
+                }
+            } else {
+                // 1) Nonfinalized segment, descending.
+                if start_height >= lowest_nonfinalized_height {
+                    let nonfinalized_end_height =
+                        types::Height(std::cmp::max(end_height.0, lowest_nonfinalized_height.0));
+
+                    for height_value in (nonfinalized_end_height.0..=start_height.0).rev() {
+                        let Some(indexed_block) = nonfinalized_snapshot
+                            .get_chainblock_by_height(&types::Height(height_value))
+                        else {
+                            let _ = channel_sender
+                            .send(Err(tonic::Status::internal(format!(
+                                "Internal error, missing nonfinalized block at height [{height_value}].",
+                            ))))
+                            .await;
+                            return;
+                        };
+                        let compact_block = compact_block_with_pool_types(
+                            indexed_block.to_compact_block(),
+                            &pool_types_vector,
+                        );
+                        if channel_sender.send(Ok(compact_block)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+
+                // 2) Finalized segment (if any), descending.
+                if let Some(mut finalized_stream) = finalized_stream {
+                    while let Some(stream_item) = finalized_stream.next().await {
+                        if channel_sender.send(stream_item).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Some(CompactBlockStream::new(channel_receiver)))
+    }
+
     /// Finds the newest ancestor of the given block on the main
     /// chain, or the block itself if it is on the main chain.
     fn find_fork_point(
@@ -736,7 +1015,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
         hash: &types::BlockHash,
     ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
-        match self.blockchain_source.get_treestate(*hash).await {
+        match self.source().get_treestate(*hash).await {
             Ok(resp) => Ok(resp),
             Err(e) => Err(ChainIndexError {
                 kind: ChainIndexErrorKind::InternalServerError,
@@ -891,6 +1170,19 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         Ok((best_chain_block, non_best_chain_blocks))
     }
 
+    /// Returns all txids currently in the mempool.
+    async fn get_mempool_txids(&self) -> Result<Vec<types::TransactionHash>, Self::Error> {
+        self.mempool
+            .get_mempool()
+            .await
+            .into_iter()
+            .map(|(txid_key, _)| {
+                TransactionHash::from_hex(&txid_key.txid)
+                    .map_err(ChainIndexError::backing_validator)
+            })
+            .collect::<Result<_, _>>()
+    }
+
     /// Returns all transactions currently in the mempool, filtered by `exclude_list`.
     ///
     /// The `exclude_list` may contain shortened transaction ID hex prefixes (client-endian).
@@ -902,11 +1194,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         &self,
         exclude_list: Vec<String>,
     ) -> Result<Vec<Vec<u8>>, Self::Error> {
-        let subscriber = self.mempool.clone();
-
         // Use the mempool's own filtering (it already handles client-endian shortened prefixes).
         let pairs: Vec<(mempool::MempoolKey, mempool::MempoolValue)> =
-            subscriber.get_filtered_mempool(exclude_list).await;
+            self.mempool.get_filtered_mempool(exclude_list).await;
 
         // Transform to the Vec<Vec<u8>> that the trait requires.
         let bytes: Vec<Vec<u8>> = pairs
@@ -920,16 +1210,16 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// Returns a stream of mempool transactions, ending the stream when the chain tip block hash
     /// changes (a new block is mined or a reorg occurs).
     ///
-    /// Returns None if the chain tip has changed from the given snapshot.
+    /// If a snapshot is given and the chain tip has changed from the given spanshot, returns None.
     fn get_mempool_stream(
         &self,
-        snapshot: &Self::Snapshot,
+        snapshot: Option<&Self::Snapshot>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>> {
-        let expected_chain_tip = snapshot.best_tip.blockhash;
+        let expected_chain_tip = snapshot.map(|snapshot| snapshot.best_tip.blockhash);
         let mut subscriber = self.mempool.clone();
 
         match subscriber
-            .get_mempool_stream(Some(expected_chain_tip))
+            .get_mempool_stream(expected_chain_tip)
             .now_or_never()
         {
             Some(Ok((in_rx, _handle))) => {
@@ -979,6 +1269,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))
             }
         }
+    }
+
+    /// Returns Information about the mempool state:
+    /// - size: Current tx count
+    /// - bytes: Sum of all tx sizes
+    /// - usage: Total memory usage for the mempool
+    async fn get_mempool_info(&self) -> MempoolInfo {
+        self.mempool.get_mempool_info().await
     }
 }
 

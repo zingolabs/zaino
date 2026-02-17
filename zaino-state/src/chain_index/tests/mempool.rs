@@ -228,7 +228,7 @@ async fn get_mempool_info() {
         })
         .unwrap_or_default();
 
-    let subscriber_mempool_info = subscriber.get_mempool_info().await.unwrap();
+    let subscriber_mempool_info = subscriber.get_mempool_info().await;
 
     let expected_size: u64 = mempool_transactions.len() as u64;
 

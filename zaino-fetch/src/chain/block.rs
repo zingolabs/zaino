@@ -385,10 +385,21 @@ impl FullBlock {
             .into_iter()
             .enumerate()
             .filter_map(|(index, tx)| {
-                if tx.has_shielded_elements() {
-                    Some(tx.to_compact_tx(Some(index as u64), &pool_types))
-                } else {
-                    None
+                match tx.to_compact_tx(Some(index as u64), &pool_types) {
+                    Ok(compact_tx) => {
+                        // Omit transactions that have no elements in any requested pool type.
+                        if !compact_tx.vin.is_empty()
+                            || !compact_tx.vout.is_empty()
+                            || !compact_tx.spends.is_empty()
+                            || !compact_tx.outputs.is_empty()
+                            || !compact_tx.actions.is_empty()
+                        {
+                            Some(Ok(compact_tx))
+                        } else {
+                            None
+                        }
+                    }
+                    Err(parse_error) => Some(Err(parse_error)),
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -415,7 +426,7 @@ impl FullBlock {
     }
 
     #[deprecated]
-    /// Converts a zcash full block into a compact block.
+    /// Converts a zcash full block into a **legacy** compact block.
     pub fn into_compact(
         self,
         sapling_commitment_tree_size: u32,

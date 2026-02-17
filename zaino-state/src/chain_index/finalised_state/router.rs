@@ -82,6 +82,7 @@ use std::sync::{
     Arc,
 };
 
+#[derive(Debug)]
 /// Capability-based database router.
 ///
 /// `Router` is the internal dispatch layer used by `ZainoDB` to route operations to either:

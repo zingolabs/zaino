@@ -2,6 +2,8 @@
 use std::fmt;
 use zebra_chain::parameters::Network;
 
+// *** Metadata structs ***
+
 /// Zaino build info.
 #[derive(Debug, Clone)]
 pub(crate) struct BuildInfo {

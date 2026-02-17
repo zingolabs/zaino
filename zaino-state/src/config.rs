@@ -26,7 +26,7 @@ pub enum BackendConfig {
 
 /// Holds config data for [crate::StateService].
 #[derive(Debug, Clone)]
-#[deprecated]
+// #[deprecated]
 pub struct StateServiceConfig {
     /// Zebra [`zebra_state::ReadStateService`] config data
     pub validator_state_config: zebra_state::Config,

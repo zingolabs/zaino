@@ -68,8 +68,7 @@ use super::{
 
 use std::sync::Arc;
 
-/// Read-only, capability-routed handle to the finalised database.
-///
+#[derive(Clone, Debug)]
 /// `DbReader` is the preferred entry point for serving chain queries:
 /// - it exposes only read APIs,
 /// - it routes each operation via [`CapabilityRequest`] to ensure the selected backend supports the
@@ -79,7 +78,6 @@ use std::sync::Arc;
 ///
 /// ## Cloning and sharing
 /// `DbReader` is cheap to clone; clones share the underlying `Arc<ZainoDB>`.
-#[derive(Clone)]
 pub(crate) struct DbReader {
     /// Shared handle to the running `ZainoDB` instance.
     pub(crate) inner: Arc<ZainoDB>,

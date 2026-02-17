@@ -66,7 +66,7 @@ fn make_chain() {
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let index_reader = indexer.subscriber().await;
+            let index_reader = indexer.subscriber();
             let snapshot = index_reader.snapshot_nonfinalized_state();
             let best_tip_hash = snapshot.best_chaintip().blockhash;
             let best_tip_block = snapshot

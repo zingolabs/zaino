@@ -31,6 +31,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 futures.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["buffer", "util"] }
+hex = { workspace = true }
 
 # Runtime
 tokio = { workspace = true }

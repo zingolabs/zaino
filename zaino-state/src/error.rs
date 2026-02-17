@@ -10,29 +10,8 @@ use std::{any::type_name, fmt::Display};
 use zaino_fetch::jsonrpsee::connector::RpcRequestError;
 use zaino_proto::proto::utils::GetBlockRangeError;
 
-impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
-    fn from(value: RpcRequestError<T>) -> Self {
-        match value {
-            RpcRequestError::Transport(transport_error) => {
-                Self::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestError::Method(e) => Self::UnhandledRpcError(format!(
-                "{}: {}",
-                std::any::type_name::<T>(),
-                e.to_string()
-            )),
-            RpcRequestError::JsonRpc(error) => Self::Custom(format!("bad argument: {error}")),
-            RpcRequestError::InternalUnrecoverable(e) => Self::Custom(e.to_string()),
-            RpcRequestError::ServerWorkQueueFull => {
-                Self::Custom("Server queue full. Handling for this not yet implemented".to_string())
-            }
-            RpcRequestError::UnexpectedErrorResponse(error) => Self::Custom(format!("{error}")),
-        }
-    }
-}
-
 /// Errors related to the `StateService`.
-#[deprecated]
+// #[deprecated]
 #[derive(Debug, thiserror::Error)]
 pub enum StateServiceError {
     /// An rpc-specific error we haven't accounted for
@@ -53,6 +32,10 @@ pub enum StateServiceError {
     /// RPC error in compatibility with zcashd.
     #[error("RPC error: {0:?}")]
     RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
+
+    /// Chain index error.
+    #[error("Chain index error: {0}")]
+    ChainIndexError(#[from] ChainIndexError),
 
     /// Error from the block cache.
     #[error("Mempool error: {0}")]
@@ -122,6 +105,7 @@ impl From<GetBlockRangeError> for StateServiceError {
         }
     }
 }
+
 #[allow(deprecated)]
 impl From<StateServiceError> for tonic::Status {
     fn from(error: StateServiceError) -> Self {
@@ -136,6 +120,12 @@ impl From<StateServiceError> for tonic::Status {
             StateServiceError::RpcError(err) => {
                 tonic::Status::internal(format!("RPC error: {err:?}"))
             }
+            StateServiceError::ChainIndexError(err) => match err.kind {
+                ChainIndexErrorKind::InternalServerError => tonic::Status::internal(err.message),
+                ChainIndexErrorKind::InvalidSnapshot => {
+                    tonic::Status::failed_precondition(err.message)
+                }
+            },
             StateServiceError::BlockCacheError(err) => {
                 tonic::Status::internal(format!("BlockCache error: {err:?}"))
             }
@@ -157,6 +147,80 @@ impl From<StateServiceError> for tonic::Status {
                 tonic::Status::internal(err.to_string())
             }
             StateServiceError::UnhandledRpcError(e) => tonic::Status::internal(e.to_string()),
+        }
+    }
+}
+
+impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match value {
+            RpcRequestError::Transport(transport_error) => {
+                Self::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestError::Method(e) => Self::UnhandledRpcError(format!(
+                "{}: {}",
+                std::any::type_name::<T>(),
+                e.to_string()
+            )),
+            RpcRequestError::JsonRpc(error) => Self::Custom(format!("bad argument: {error}")),
+            RpcRequestError::InternalUnrecoverable(e) => Self::Custom(e.to_string()),
+            RpcRequestError::ServerWorkQueueFull => {
+                Self::Custom("Server queue full. Handling for this not yet implemented".to_string())
+            }
+            RpcRequestError::UnexpectedErrorResponse(error) => Self::Custom(format!("{error}")),
+        }
+    }
+}
+
+/// Errors related to the `FetchService`.
+#[deprecated]
+#[derive(Debug, thiserror::Error)]
+pub enum FetchServiceError {
+    /// Critical Errors, Restart Zaino.
+    #[error("Critical error: {0}")]
+    Critical(String),
+
+    /// Error from JsonRpcConnector.
+    #[error("JsonRpcConnector error: {0}")]
+    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
+
+    /// Chain index error.
+    #[error("Chain index error: {0}")]
+    ChainIndexError(#[from] ChainIndexError),
+
+    /// RPC error in compatibility with zcashd.
+    #[error("RPC error: {0:?}")]
+    RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
+
+    /// Tonic gRPC error.
+    #[error("Tonic status error: {0}")]
+    TonicStatusError(#[from] tonic::Status),
+
+    /// Serialization error.
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] zebra_chain::serialization::SerializationError),
+}
+
+impl From<FetchServiceError> for tonic::Status {
+    fn from(error: FetchServiceError) -> Self {
+        match error {
+            FetchServiceError::Critical(message) => tonic::Status::internal(message),
+            FetchServiceError::JsonRpcConnectorError(err) => {
+                tonic::Status::internal(format!("JsonRpcConnector error: {err}"))
+            }
+            FetchServiceError::ChainIndexError(err) => match err.kind {
+                ChainIndexErrorKind::InternalServerError => tonic::Status::internal(err.message),
+                ChainIndexErrorKind::InvalidSnapshot => {
+                    tonic::Status::failed_precondition(err.message)
+                }
+            },
+            FetchServiceError::RpcError(err) => {
+                tonic::Status::internal(format!("RPC error: {err:?}"))
+            }
+            FetchServiceError::TonicStatusError(err) => err,
+            FetchServiceError::SerializationError(err) => {
+                tonic::Status::internal(format!("Serialization error: {err}"))
+            }
         }
     }
 }
@@ -192,39 +256,6 @@ impl<T: ToString> From<RpcRequestError<T>> for FetchServiceError {
     }
 }
 
-/// Errors related to the `FetchService`.
-#[deprecated]
-#[derive(Debug, thiserror::Error)]
-pub enum FetchServiceError {
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Error from JsonRpcConnector.
-    #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
-
-    /// Error from the block cache.
-    #[error("Mempool error: {0}")]
-    BlockCacheError(#[from] BlockCacheError),
-
-    /// Error from the mempool.
-    #[error("Mempool error: {0}")]
-    MempoolError(#[from] MempoolError),
-
-    /// RPC error in compatibility with zcashd.
-    #[error("RPC error: {0:?}")]
-    RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
-
-    /// Tonic gRPC error.
-    #[error("Tonic status error: {0}")]
-    TonicStatusError(#[from] tonic::Status),
-
-    /// Serialization error.
-    #[error("Serialization error: {0}")]
-    SerializationError(#[from] zebra_chain::serialization::SerializationError),
-}
-
 impl From<GetBlockRangeError> for FetchServiceError {
     fn from(value: GetBlockRangeError) -> Self {
         match value {
@@ -251,30 +282,6 @@ impl From<GetBlockRangeError> for FetchServiceError {
     }
 }
 
-#[allow(deprecated)]
-impl From<FetchServiceError> for tonic::Status {
-    fn from(error: FetchServiceError) -> Self {
-        match error {
-            FetchServiceError::Critical(message) => tonic::Status::internal(message),
-            FetchServiceError::JsonRpcConnectorError(err) => {
-                tonic::Status::internal(format!("JsonRpcConnector error: {err}"))
-            }
-            FetchServiceError::BlockCacheError(err) => {
-                tonic::Status::internal(format!("BlockCache error: {err}"))
-            }
-            FetchServiceError::MempoolError(err) => {
-                tonic::Status::internal(format!("Mempool error: {err}"))
-            }
-            FetchServiceError::RpcError(err) => {
-                tonic::Status::internal(format!("RPC error: {err:?}"))
-            }
-            FetchServiceError::TonicStatusError(err) => err,
-            FetchServiceError::SerializationError(err) => {
-                tonic::Status::internal(format!("Serialization error: {err}"))
-            }
-        }
-    }
-}
 /// These aren't the best conversions, but the MempoolError should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for MempoolError {
@@ -382,38 +389,6 @@ pub enum BlockCacheError {
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
 }
-/// These aren't the best conversions, but the NonFinalizedStateError should go away
-/// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
-    fn from(value: RpcRequestError<T>) -> Self {
-        match value {
-            RpcRequestError::Transport(transport_error) => {
-                NonFinalisedStateError::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestError::JsonRpc(error) => {
-                NonFinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
-            }
-            RpcRequestError::InternalUnrecoverable(e) => {
-                NonFinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
-            }
-            RpcRequestError::ServerWorkQueueFull => NonFinalisedStateError::Custom(
-                "Server queue full. Handling for this not yet implemented".to_string(),
-            ),
-            RpcRequestError::Method(e) => NonFinalisedStateError::Custom(format!(
-                "unhandled rpc-specific {} error: {}",
-                type_name::<T>(),
-                e.to_string()
-            )),
-            RpcRequestError::UnexpectedErrorResponse(error) => {
-                NonFinalisedStateError::Custom(format!(
-                    "unhandled rpc-specific {} error: {}",
-                    type_name::<T>(),
-                    error
-                ))
-            }
-        }
-    }
-}
 
 /// Errors related to the `NonFinalisedState`.
 #[derive(Debug, thiserror::Error)]
@@ -438,30 +413,31 @@ pub enum NonFinalisedStateError {
     #[error("Status error: {0:?}")]
     StatusError(StatusError),
 }
-/// These aren't the best conversions, but the FinalizedStateError should go away
+
+/// These aren't the best conversions, but the NonFinalizedStateError should go away
 /// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
+impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
     fn from(value: RpcRequestError<T>) -> Self {
         match value {
             RpcRequestError::Transport(transport_error) => {
-                FinalisedStateError::JsonRpcConnectorError(transport_error)
+                NonFinalisedStateError::JsonRpcConnectorError(transport_error)
             }
             RpcRequestError::JsonRpc(error) => {
-                FinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
+                NonFinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
             }
             RpcRequestError::InternalUnrecoverable(e) => {
-                FinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
+                NonFinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
             }
-            RpcRequestError::ServerWorkQueueFull => FinalisedStateError::Custom(
+            RpcRequestError::ServerWorkQueueFull => NonFinalisedStateError::Custom(
                 "Server queue full. Handling for this not yet implemented".to_string(),
             ),
-            RpcRequestError::Method(e) => FinalisedStateError::Custom(format!(
+            RpcRequestError::Method(e) => NonFinalisedStateError::Custom(format!(
                 "unhandled rpc-specific {} error: {}",
                 type_name::<T>(),
                 e.to_string()
             )),
             RpcRequestError::UnexpectedErrorResponse(error) => {
-                FinalisedStateError::Custom(format!(
+                NonFinalisedStateError::Custom(format!(
                     "unhandled rpc-specific {} error: {}",
                     type_name::<T>(),
                     error
@@ -535,6 +511,39 @@ pub enum FinalisedStateError {
     /// std::io::Error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+}
+
+/// These aren't the best conversions, but the FinalizedStateError should go away
+/// in favor of a new type with the new chain cache is complete
+impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match value {
+            RpcRequestError::Transport(transport_error) => {
+                FinalisedStateError::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestError::JsonRpc(error) => {
+                FinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
+            }
+            RpcRequestError::InternalUnrecoverable(e) => {
+                FinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
+            }
+            RpcRequestError::ServerWorkQueueFull => FinalisedStateError::Custom(
+                "Server queue full. Handling for this not yet implemented".to_string(),
+            ),
+            RpcRequestError::Method(e) => FinalisedStateError::Custom(format!(
+                "unhandled rpc-specific {} error: {}",
+                type_name::<T>(),
+                e.to_string()
+            )),
+            RpcRequestError::UnexpectedErrorResponse(error) => {
+                FinalisedStateError::Custom(format!(
+                    "unhandled rpc-specific {} error: {}",
+                    type_name::<T>(),
+                    error
+                ))
+            }
+        }
+    }
 }
 
 /// A general error type to represent error StatusTypes.
@@ -621,6 +630,7 @@ impl ChainIndexError {
         }
     }
 }
+
 impl From<FinalisedStateError> for ChainIndexError {
     fn from(value: FinalisedStateError) -> Self {
         let message = match &value {

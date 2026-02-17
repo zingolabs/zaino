@@ -18,6 +18,8 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use zaino_common::{
     network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
+    probing::{Liveness, Readiness},
+    status::Status,
     validator::ValidatorConfig,
     CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
@@ -61,6 +63,28 @@ pub fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
     format!("http://127.0.0.1:{indexer_port}")
         .try_into()
         .unwrap()
+}
+
+/// Polls until the given component reports ready.
+///
+/// Returns `true` if the component became ready within the timeout,
+/// `false` if the timeout was reached.
+pub async fn poll_until_ready(
+    component: &impl Readiness,
+    poll_interval: std::time::Duration,
+    timeout: std::time::Duration,
+) -> bool {
+    tokio::time::timeout(timeout, async {
+        let mut interval = tokio::time::interval(poll_interval);
+        loop {
+            interval.tick().await;
+            if component.is_ready() {
+                return;
+            }
+        }
+    })
+    .await
+    .is_ok()
 }
 
 // temporary until activation heights are unified to zebra-chain type.
@@ -459,8 +483,15 @@ where
             test_manager.local_net.generate_blocks(1).await.unwrap();
         }
 
-        // FIXME: zaino's status can still be syncing instead of ready at this point
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // Wait for zaino to be ready to serve requests
+        if let Some(ref subscriber) = test_manager.service_subscriber {
+            poll_until_ready(
+                subscriber,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+        }
 
         Ok(test_manager)
     }
@@ -507,37 +538,83 @@ where
     }
 
     /// Generate `n` blocks for the local network and poll zaino's fetch/state subscriber until the chain index is synced to the target height.
-    pub async fn generate_blocks_and_poll_indexer(
+    ///
+    /// # Panics
+    ///
+    /// Panics if the indexer is not live (Offline or CriticalError), indicating the
+    /// backing validator has crashed or become unreachable.
+    pub async fn generate_blocks_and_poll_indexer<I>(
         &self,
         n: u32,
-        indexer: &impl LightWalletIndexer,
-    ) {
+        indexer: &I,
+    ) where
+        I: LightWalletIndexer + Liveness + Status,
+    {
         let chain_height = self.local_net.get_chain_height().await;
+        let target_height = u64::from(chain_height) + n as u64;
         let mut next_block_height = u64::from(chain_height) + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
+
         // NOTE: readstate service seems to not be functioning correctly when generate multiple blocks at once and polling the latest block.
         // commented out a fall back to `get_block` to query the cache directly if needed in the future.
         // while indexer.get_block(zaino_proto::proto::service::BlockId {
         //     height: u64::from(chain_height) + n as u64,
         //     hash: vec![],
         // }).await.is_err()
-        while indexer.get_latest_block().await.unwrap().height < u64::from(chain_height) + n as u64
-        {
+        while indexer.get_latest_block().await.unwrap().height < target_height {
+            // Check liveness - fail fast if the indexer is dead
+            if !indexer.is_live() {
+                let status = indexer.status();
+                panic!(
+                    "Indexer is not live (status: {status:?}). \
+                     The backing validator may have crashed or become unreachable."
+                );
+            }
+
             if n == 0 {
                 interval.tick().await;
             } else {
                 self.local_net.generate_blocks(1).await.unwrap();
                 while indexer.get_latest_block().await.unwrap().height != next_block_height {
+                    if !indexer.is_live() {
+                        let status = indexer.status();
+                        panic!(
+                            "Indexer is not live while waiting for block {next_block_height} (status: {status:?})."
+                        );
+                    }
                     interval.tick().await;
                 }
                 next_block_height += 1;
             }
         }
+
+        // After height is reached, wait for readiness and measure if it adds time
+        if !indexer.is_ready() {
+            let start = std::time::Instant::now();
+            poll_until_ready(
+                indexer,
+                std::time::Duration::from_millis(50),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            let elapsed = start.elapsed();
+            if elapsed.as_millis() > 0 {
+                info!(
+                    "Readiness wait after height poll took {:?} (height polling alone was insufficient)",
+                    elapsed
+                );
+            }
+        }
     }
 
     /// Generate `n` blocks for the local network and poll zaino's chain index until the chain index is synced to the target height.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the chain index is not live (Offline or CriticalError), indicating the
+    /// backing validator has crashed or become unreachable.
     pub async fn generate_blocks_and_poll_chain_index(
         &self,
         n: u32,
@@ -555,6 +632,15 @@ where
                 .height,
         ) < chain_height + n
         {
+            // Check liveness - fail fast if the chain index is dead
+            if !chain_index.is_live() {
+                let status = chain_index.combined_status();
+                panic!(
+                    "Chain index is not live (status: {status:?}). \
+                     The backing validator may have crashed or become unreachable."
+                );
+            }
+
             if n == 0 {
                 interval.tick().await;
             } else {
@@ -566,9 +652,33 @@ where
                         .height,
                 ) != next_block_height
                 {
+                    if !chain_index.is_live() {
+                        let status = chain_index.combined_status();
+                        panic!(
+                            "Chain index is not live while waiting for block {next_block_height} (status: {status:?})."
+                        );
+                    }
                     interval.tick().await;
                 }
                 next_block_height += 1;
+            }
+        }
+
+        // After height is reached, wait for readiness and measure if it adds time
+        if !chain_index.is_ready() {
+            let start = std::time::Instant::now();
+            poll_until_ready(
+                chain_index,
+                std::time::Duration::from_millis(50),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            let elapsed = start.elapsed();
+            if elapsed.as_millis() > 0 {
+                info!(
+                    "Readiness wait after height poll took {:?} (height polling alone was insufficient)",
+                    elapsed
+                );
             }
         }
     }

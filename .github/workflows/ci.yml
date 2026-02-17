@@ -90,7 +90,6 @@ jobs:
           # - "integration-tests::chain_cache" FIXME: this must be reintroduced when the chain index test hangs are debugged
           - "integration-tests::fetch_service"
           - "integration-tests::json_server"
-          - "integration-tests::local_cache"
           - "integration-tests::state_service"
           - "integration-tests::test_vectors"
           - "integration-tests::wallet_to_validator"
