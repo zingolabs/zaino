@@ -916,12 +916,13 @@ pub async fn test_node_and_return_url(
                 return Ok(url);
             }
             Err(_) => {
+                // TOdo actually show this error.
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
         interval.tick().await;
     }
-    error!("Error: Zainod needs to connect to a zcash Validator node. (either zcashd or zebrad). Failed to connect to a Validator at {url}. Perhaps the Validator is not running or perhaps there was an authentication error. Exiting..");
+    error!("Error: Zainod needs to connect to a zcash Validator node. (either zcashd or zebrad). Failed to connect to a Validator at {url}. Perhaps the Validator is not running or perhaps there was an authentication error.");
     std::process::exit(1);
 }
 
