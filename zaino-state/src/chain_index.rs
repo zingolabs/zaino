@@ -274,7 +274,7 @@ pub trait ChainIndex {
         pool: ShieldedPool,
         start_index: u16,
         max_entries: Option<u16>,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<([u8; 32], u32)>, Self::Error>>;
 
     /// given a transaction id, returns the transaction, along with
     /// its consensus branch ID if available
@@ -1480,13 +1480,18 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         self.mempool.get_mempool_info().await
     }
 
+    /// Gets the subtree roots of a given pool and the end heights of each root,
+    /// starting at the provided index, up to an optional maximum number of roots.
     async fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
         start_index: u16,
         max_entries: Option<u16>,
-    ) -> Result<(), Self::Error> {
-        self.source().get_subtree_roots()
+    ) -> Result<Vec<([u8; 32], u32)>, Self::Error> {
+        self.source()
+            .get_subtree_roots(pool, start_index, max_entries)
+            .await
+            .map_err(ChainIndexError::backing_validator)
     }
 }
 

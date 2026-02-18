@@ -91,12 +91,14 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         Box<dyn Error + Send + Sync>,
     >;
 
+    /// Gets the subtree roots of a given pool and the end heights of each root,
+    /// starting at the provided index, up to an optional maximum number of roots.
     async fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
         start_index: u16,
         max_entries: Option<u16>,
-    );
+    ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>>;
 }
 
 /// An error originating from a blockchain source.
@@ -682,7 +684,7 @@ impl BlockchainSource for ValidatorConnector {
         pool: ShieldedPool,
         start_index: u16,
         max_entries: Option<u16>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
         match self {
             ValidatorConnector::State(state) => {
                 let start_index = NoteCommitmentSubtreeIndex(start_index);
@@ -696,20 +698,58 @@ impl BlockchainSource for ValidatorConnector {
                     .clone()
                     .call(request)
                     .await
-                    .and_then(|response| match pool {
-                        ShieldedPool::Sapling => {
-                            expected_read_response!(response, SaplingSubtrees)
-                        }
-                        ShieldedPool::Orchard => {
-                            expected_read_response!(response, OrchardSubtrees)
-                        }
-                    })?
+                    .map(|response| match pool {
+                        ShieldedPool::Sapling => expected_read_response!(response, SaplingSubtrees)
+                            .iter()
+                            .map(|(_index, subtree)| {
+                                (subtree.root.to_bytes(), subtree.end_height.0)
+                            })
+                            .collect(),
+                        ShieldedPool::Orchard => expected_read_response!(response, OrchardSubtrees)
+                            .iter()
+                            .map(|(_index, subtree)| (subtree.root.to_repr(), subtree.end_height.0))
+                            .collect(),
+                    })
+                    .map_err(|e| {
+                        BlockchainSourceError::Unrecoverable(format!(
+                            "could not get subtrees from validator: {e}"
+                        ))
+                    })
             }
 
-            ValidatorConnector::Fetch(json_rp_see_connector) => Ok(json_rp_see_connector
-                .get_subtrees_by_index(pool.pool_string(), start_index, max_entries)
-                .await
-                .map_err(|e| e)?),
+            ValidatorConnector::Fetch(json_rp_see_connector) => {
+                let subtrees = json_rp_see_connector
+                    .get_subtrees_by_index(pool.pool_string(), start_index, max_entries)
+                    .await
+                    .map_err(|e| {
+                        BlockchainSourceError::Unrecoverable(format!(
+                            "could not get subtrees from validator: {e}"
+                        ))
+                    })?;
+
+                Ok(subtrees
+                    .subtrees
+                    .iter()
+                    .map(|subtree| {
+                        Ok::<_, Box<dyn Error + Send + Sync>>((
+                            <[u8; 32]>::try_from(hex::decode(&subtree.root)?).map_err(
+                                |_subtree| {
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        "received subtree root not 32 bytes",
+                                    )
+                                },
+                            )?,
+                            subtree.end_height.0,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        BlockchainSourceError::Unrecoverable(format!(
+                            "could not get subtrees from validator: {e}"
+                        ))
+                    })?)
+            }
         }
     }
 }
@@ -1034,6 +1074,15 @@ pub(crate) mod test {
             Box<dyn Error + Send + Sync>,
         > {
             Ok(None)
+        }
+
+        async fn get_subtree_roots(
+            &self,
+            _pool: ShieldedPool,
+            _start_index: u16,
+            _max_entries: Option<u16>,
+        ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
+            todo!()
         }
     }
 }
