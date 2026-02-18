@@ -921,7 +921,7 @@ pub async fn test_node_and_return_url(
         }
         interval.tick().await;
     }
-    error!("Error: Could not establish connection with node. Please check config and confirm node is listening at {url} and the correct authorisation details have been entered. Exiting..");
+    error!("Error: Zainod needs to connect to a zcash Validator node. (either zcashd or zebrad). Failed to connect to a Validator at {url}. Perhaps the Validator is not running or perhaps there was an authentication error. Exiting..");
     std::process::exit(1);
 }
 
