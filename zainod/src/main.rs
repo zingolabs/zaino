@@ -3,7 +3,6 @@
 use clap::Parser;
 use std::path::PathBuf;
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
 
 use zainodlib::{config::load_config, error::IndexerError, indexer::start_indexer};
 
@@ -17,13 +16,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-        .with_target(true)
-        .init();
+    zaino_common::logging::init();
 
     let args = Args::parse();
 
