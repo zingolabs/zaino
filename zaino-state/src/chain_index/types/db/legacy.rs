@@ -73,7 +73,13 @@ impl BlockHash {
 
 impl fmt::Display for BlockHash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.encode_hex::<String>())
+        // Show truncated hash for cleaner logs (first 8 hex chars = 4 bytes)
+        let full_hex: String = self.encode_hex();
+        if full_hex.len() > 8 {
+            write!(f, "{}..", &full_hex[..8])
+        } else {
+            f.write_str(&full_hex)
+        }
     }
 }
 
@@ -208,7 +214,13 @@ impl TransactionHash {
 
 impl fmt::Display for TransactionHash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.encode_hex::<String>())
+        // Show truncated hash for cleaner logs (first 8 hex chars = 4 bytes)
+        let full_hex: String = self.encode_hex();
+        if full_hex.len() > 8 {
+            write!(f, "{}..", &full_hex[..8])
+        } else {
+            f.write_str(&full_hex)
+        }
     }
 }
 
