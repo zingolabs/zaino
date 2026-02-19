@@ -25,4 +25,5 @@ tracing-tree = { workspace = true }
 nu-ansi-term = { workspace = true }
 atty = { workspace = true }
 hex = { workspace = true }
+time = { workspace = true }
 

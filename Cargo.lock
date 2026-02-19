@@ -8436,6 +8436,7 @@ dependencies = [
  "nu-ansi-term",
  "serde",
  "thiserror 1.0.69",
+ "time",
  "tracing",
  "tracing-subscriber",
  "tracing-tree",

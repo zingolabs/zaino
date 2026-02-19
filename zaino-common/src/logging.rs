@@ -11,7 +11,7 @@
 //!   Set `RUST_LOG=info` to include all crates (zebra, etc.), or use specific
 //!   filters like `RUST_LOG=zaino=debug,zebra_state=info`.
 //! - `ZAINO_LOG_FORMAT`: Output format ("stream", "tree", or "json")
-//! - `ZAINO_LOG_COLOR`: Force color on/off ("true"/"false"). Auto-detects TTY by default.
+//! - `ZAINO_LOG_COLOR`: Color mode ("true"/"false"/"auto"). Defaults to color enabled.
 //!
 //! # Example
 //!
@@ -28,6 +28,7 @@
 use std::env;
 use std::fmt;
 
+use time::macros::format_description;
 use tracing::Level;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, time::UtcTime},
@@ -36,6 +37,10 @@ use tracing_subscriber::{
     EnvFilter,
 };
 use tracing_tree::HierarchicalLayer;
+
+/// Time format for logs: HH:MM:SS.subsec (compact, no date)
+const TIME_FORMAT: &[time::format_description::FormatItem<'static>] =
+    format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
 
 /// Log output format.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -94,15 +99,20 @@ pub struct LogConfig {
 
 impl Default for LogConfig {
     fn default() -> Self {
-        // Check ZAINO_LOG_COLOR env var, otherwise auto-detect TTY
+        // Check ZAINO_LOG_COLOR env var:
+        // - "true"/"1"/etc: force color on
+        // - "false"/"0"/etc: force color off
+        // - "auto": auto-detect TTY (default behavior)
+        // If not set, default to color enabled (better dev experience)
         let color = env::var("ZAINO_LOG_COLOR")
             .ok()
             .and_then(|s| match s.to_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" => Some(true),
                 "0" | "false" | "no" | "off" => Some(false),
+                "auto" => Some(atty::is(atty::Stream::Stderr)),
                 _ => None,
             })
-            .unwrap_or_else(|| atty::is(atty::Stream::Stderr));
+            .unwrap_or(true); // Default to color enabled
 
         Self {
             format: LogFormat::from_env(),
@@ -241,7 +251,7 @@ fn init_stream(env_filter: EnvFilter, config: LogConfig) {
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
-        .with_timer(UtcTime::rfc_3339())
+        .with_timer(UtcTime::new(TIME_FORMAT))
         .with_target(true)
         .with_ansi(config.color)
         .with_span_events(span_events)
@@ -259,7 +269,7 @@ fn try_init_stream(
     };
 
     let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_timer(UtcTime::rfc_3339())
+        .with_timer(UtcTime::new(TIME_FORMAT))
         .with_target(true)
         .with_ansi(config.color)
         .with_span_events(span_events);
@@ -271,6 +281,7 @@ fn try_init_stream(
 }
 
 fn init_json(env_filter: EnvFilter) {
+    // JSON format keeps full RFC3339 timestamps for machine parsing
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .json()
@@ -280,6 +291,7 @@ fn init_json(env_filter: EnvFilter) {
 }
 
 fn try_init_json(env_filter: EnvFilter) -> Result<(), tracing_subscriber::util::TryInitError> {
+    // JSON format keeps full RFC3339 timestamps for machine parsing
     let fmt_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_timer(UtcTime::rfc_3339())
