@@ -1,14 +1,17 @@
 //! Logging infrastructure for Zaino.
 //!
 //! This module provides centralized logging configuration with support for:
-//! - Tree view (hierarchical span-based output) - DEFAULT
-//! - Stream view (flat chronological output)
+//! - Stream view (flat chronological output) - DEFAULT
+//! - Tree view (hierarchical span-based output)
 //! - JSON output (machine-parseable)
 //!
 //! # Environment Variables
 //!
-//! - `RUST_LOG`: Standard tracing filter (e.g., "info", "zaino=debug")
-//! - `ZAINO_LOG_FORMAT`: Output format ("tree", "stream", or "json")
+//! - `RUST_LOG`: Standard tracing filter. By default only zaino crates are logged.
+//!   Set `RUST_LOG=info` to include all crates (zebra, etc.), or use specific
+//!   filters like `RUST_LOG=zaino=debug,zebra_state=info`.
+//! - `ZAINO_LOG_FORMAT`: Output format ("stream", "tree", or "json")
+//! - `ZAINO_LOG_COLOR`: Force color on/off ("true"/"false"). Auto-detects TTY by default.
 //!
 //! # Example
 //!
@@ -37,10 +40,10 @@ use tracing_tree::HierarchicalLayer;
 /// Log output format.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogFormat {
-    /// Hierarchical tree view showing span nesting (default).
-    #[default]
+    /// Hierarchical tree view showing span nesting.
     Tree,
-    /// Flat chronological stream.
+    /// Flat chronological stream (default).
+    #[default]
     Stream,
     /// Machine-parseable JSON.
     Json,
@@ -91,9 +94,19 @@ pub struct LogConfig {
 
 impl Default for LogConfig {
     fn default() -> Self {
+        // Check ZAINO_LOG_COLOR env var, otherwise auto-detect TTY
+        let color = env::var("ZAINO_LOG_COLOR")
+            .ok()
+            .and_then(|s| match s.to_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Some(true),
+                "0" | "false" | "no" | "off" => Some(false),
+                _ => None,
+            })
+            .unwrap_or_else(|| atty::is(atty::Stream::Stderr));
+
         Self {
             format: LogFormat::from_env(),
-            color: atty::is(atty::Stream::Stderr),
+            color,
             level: Level::INFO,
             show_span_events: false,
         }
@@ -134,8 +147,8 @@ impl LogConfig {
 /// Initialize logging with default configuration.
 ///
 /// Reads `ZAINO_LOG_FORMAT` environment variable to determine format:
-/// - "tree" (default): Hierarchical span-based output
-/// - "stream": Flat chronological output
+/// - "stream" (default): Flat chronological output with timestamps
+/// - "tree": Hierarchical span-based output
 /// - "json": Machine-parseable JSON
 pub fn init() {
     init_with_config(LogConfig::default());
@@ -143,8 +156,14 @@ pub fn init() {
 
 /// Initialize logging with custom configuration.
 pub fn init_with_config(config: LogConfig) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(config.level.as_str()));
+    // If RUST_LOG is set, use it directly. Otherwise, default to zaino crates only.
+    // Users can set RUST_LOG=info to see all crates including zebra.
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(format!(
+            "zaino={level},zainod={level}",
+            level = config.level.as_str()
+        ))
+    });
 
     match config.format {
         LogFormat::Tree => init_tree(env_filter, config),
@@ -162,8 +181,12 @@ pub fn try_init() {
 
 /// Try to initialize logging with custom configuration.
 pub fn try_init_with_config(config: LogConfig) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(config.level.as_str()));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(format!(
+            "zaino={level},zainod={level}",
+            level = config.level.as_str()
+        ))
+    });
 
     match config.format {
         LogFormat::Tree => {
