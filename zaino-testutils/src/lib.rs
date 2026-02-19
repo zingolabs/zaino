@@ -15,7 +15,6 @@ use std::{
     path::PathBuf,
 };
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 use zaino_common::{
     network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
     probing::{Liveness, Readiness},
@@ -307,13 +306,7 @@ where
                 "Cannot use state backend with zcashd.",
             ));
         }
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-            )
-            .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-            .with_target(true)
-            .try_init();
+        zaino_common::logging::try_init();
 
         let activation_heights = activation_heights.unwrap_or_else(|| match validator {
             ValidatorKind::Zcashd => ActivationHeights::default(),
