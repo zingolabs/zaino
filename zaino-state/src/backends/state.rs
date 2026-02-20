@@ -13,7 +13,7 @@ use crate::{
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    status::{AtomicStatus, Status, StatusType},
+    status::{NamedAtomicStatus, Status, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
@@ -141,7 +141,7 @@ pub struct StateService {
     data: ServiceMetadata,
 
     /// Thread-safe status indicator.
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl StateService {
@@ -172,11 +172,11 @@ impl ZcashService for StateService {
     type Config = StateServiceConfig;
 
     /// Initializes a new StateService instance and starts sync process.
-    #[instrument(name = "StateService::spawn", skip(config), fields(network = ?config.network))]
+    #[instrument(name = "StateService::spawn", skip(config), fields(network = %config.network))]
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
         info!(
             rpc_address = %config.validator_rpc_address,
-            network = ?config.network,
+            network = %config.network,
             "Spawning State Service"
         );
 
@@ -299,7 +299,7 @@ impl ZcashService for StateService {
             indexer: chain_index,
             data,
             config,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("StateService", StatusType::Spawning),
         };
 
         state_service.status.store(StatusType::Ready);

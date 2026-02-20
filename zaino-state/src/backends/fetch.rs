@@ -113,11 +113,11 @@ impl ZcashService for FetchService {
     type Config = FetchServiceConfig;
 
     /// Initializes a new FetchService instance and starts sync process.
-    #[instrument(name = "FetchService::spawn", skip(config), fields(network = ?config.network))]
+    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.network))]
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!(
             rpc_address = %config.validator_rpc_address,
-            network = ?config.network,
+            network = %config.network,
             "Launching Fetch Service"
         );
 
