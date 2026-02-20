@@ -66,7 +66,7 @@ impl<T: BlockchainSource> Mempool<T> {
                     break;
                 }
                 Err(_) => {
-                    info!(" - Waiting for Validator mempool to come online..");
+                    info!("Waiting for Validator mempool to come online");
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 }
             }
@@ -90,7 +90,7 @@ impl<T: BlockchainSource> Mempool<T> {
 
         let (chain_tip_sender, _chain_tip_reciever) = tokio::sync::watch::channel(best_block_hash);
 
-        info!("Launching Mempool..");
+        info!(chain_tip = %best_block_hash, "Launching Mempool");
         let mut mempool = Mempool {
             fetcher: fetcher.clone(),
             state: match capacity_and_shard_amount {

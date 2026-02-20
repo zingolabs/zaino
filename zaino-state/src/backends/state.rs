@@ -173,7 +173,11 @@ impl ZcashService for StateService {
 
     /// Initializes a new StateService instance and starts sync process.
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
-        info!("Spawning State Service..");
+        info!(
+            rpc_address = %config.validator_rpc_address,
+            network = ?config.network,
+            "Spawning State Service"
+        );
 
         let rpc_client = JsonRpSeeConnector::new_from_config_parts(
             &config.validator_rpc_address,
@@ -218,10 +222,12 @@ impl ZcashService for StateService {
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
-        info!("Using Zcash build: {}", data);
+        info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
-        info!("Launching Chain Syncer..");
-        info!("{}", config.validator_rpc_address);
+        info!(
+            grpc_address = %config.validator_grpc_address,
+            "Launching Chain Syncer"
+        );
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_state_config.clone(),
@@ -230,29 +236,29 @@ impl ZcashService for StateService {
             )
             .await??;
 
-        info!("chain syncer launched!");
+        info!("Chain syncer launched");
 
         // Wait for ReadStateService to catch up to primary database:
         loop {
             let server_height = rpc_client.get_blockchain_info().await?.blocks;
-            info!("got blockchain info!");
 
             let syncer_response = read_state_service
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await?;
-            info!("got tip!");
             let (syncer_height, _) = expected_read_response!(syncer_response, Tip).ok_or(
                 RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
             )?;
 
             if server_height.0 == syncer_height.0 {
+                info!(height = syncer_height.0, "ReadStateService synced with Zebra");
                 break;
             } else {
-                info!(" - ReadStateService syncing with Zebra. Syncer chain height: {}, Validator chain height: {}",
-                            &syncer_height.0,
-                            &server_height.0
-                        );
+                info!(
+                    syncer_height = syncer_height.0,
+                    validator_height = server_height.0,
+                    "ReadStateService syncing with Zebra"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                 continue;
             }

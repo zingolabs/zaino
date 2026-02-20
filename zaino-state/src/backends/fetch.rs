@@ -114,7 +114,11 @@ impl ZcashService for FetchService {
 
     /// Initializes a new FetchService instance and starts sync process.
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
-        info!("Launching Chain Fetch Service..");
+        info!(
+            rpc_address = %config.validator_rpc_address,
+            network = ?config.network,
+            "Launching Fetch Service"
+        );
 
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
             &config.validator_rpc_address,
@@ -131,7 +135,7 @@ impl ZcashService for FetchService {
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
-        info!("Using Zcash build: {}", data);
+        info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
         let source = ValidatorConnector::Fetch(fetcher.clone());
         let indexer = NodeBackedChainIndex::new(source, config.clone().into())

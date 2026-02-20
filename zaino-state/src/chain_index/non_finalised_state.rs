@@ -224,7 +224,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         network: Network,
         start_block: Option<IndexedBlock>,
     ) -> Result<Self, InitError> {
-        info!("Initialising non-finalised state.");
+        info!(network = %network, "Initializing non-finalized state");
 
         let validator_tip = source
             .get_best_block_height()
@@ -371,9 +371,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     })?;
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
                 info!(
-                    "syncing block {} at height {}",
-                    &chainblock.index().hash(),
-                    working_snapshot.best_tip.height + 1
+                    height = (working_snapshot.best_tip.height + 1).0,
+                    hash = %chainblock.index().hash(),
+                    "Syncing block"
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
             } else {
@@ -533,26 +533,28 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             if new_best_tip != stale_best_tip {
                 if new_best_tip.height > stale_best_tip.height {
                     info!(
-                        "non-finalized tip advanced: Height: {} -> {}, Hash: {} -> {}",
-                        stale_best_tip.height,
-                        new_best_tip.height,
-                        stale_best_tip.blockhash,
-                        new_best_tip.blockhash,
+                        old_height = stale_best_tip.height.0,
+                        new_height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip advanced"
                     );
                 } else if new_best_tip.height == stale_best_tip.height
                     && new_best_tip.blockhash != stale_best_tip.blockhash
                 {
                     info!(
-                        "non-finalized tip reorg at height {}: Hash: {} -> {}",
-                        new_best_tip.height, stale_best_tip.blockhash, new_best_tip.blockhash,
+                        height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip reorg"
                     );
                 } else if new_best_tip.height < stale_best_tip.height {
                     info!(
-                        "non-finalized tip rollback from height {} to {}, Hash: {} -> {}",
-                        stale_best_tip.height,
-                        new_best_tip.height,
-                        stale_best_tip.blockhash,
-                        new_best_tip.blockhash,
+                        old_height = stale_best_tip.height.0,
+                        new_height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip rollback"
                     );
                 }
             }

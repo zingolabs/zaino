@@ -530,7 +530,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     }
 
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
-        info!("Starting ChainIndex sync.");
+        info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
