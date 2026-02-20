@@ -216,8 +216,11 @@ fn init_tree(env_filter: EnvFilter, config: LogConfig) {
         .with_ansi(config.color)
         .with_targets(true)
         .with_bracketed_fields(true)
+        .with_indent_lines(true)
         .with_thread_ids(false)
-        .with_thread_names(false);
+        .with_thread_names(false)
+        .with_verbose_entry(true)
+        .with_verbose_exit(true);
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -233,8 +236,11 @@ fn try_init_tree(
         .with_ansi(config.color)
         .with_targets(true)
         .with_bracketed_fields(true)
+        .with_indent_lines(true)
         .with_thread_ids(false)
-        .with_thread_names(false);
+        .with_thread_names(false)
+        .with_verbose_entry(true)
+        .with_verbose_exit(true);
 
     tracing_subscriber::registry()
         .with(env_filter)
