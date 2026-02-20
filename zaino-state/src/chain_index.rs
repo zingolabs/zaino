@@ -17,7 +17,7 @@ use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{AtomicStatus, CompactBlockStream, StatusType, SyncError};
+use crate::{CompactBlockStream, NamedAtomicStatus, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -451,7 +451,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
     finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
@@ -488,7 +488,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             non_finalized_state: std::sync::Arc::new(non_finalized_state),
             finalized_db,
             sync_loop_handle: None,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
@@ -612,7 +612,7 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
     finalized_state: finalised_state::reader::DbReader,
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {

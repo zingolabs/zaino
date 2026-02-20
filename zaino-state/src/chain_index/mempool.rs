@@ -9,7 +9,7 @@ use crate::{
         types::db::metadata::MempoolInfo,
     },
     error::{MempoolError, StatusError},
-    status::{AtomicStatus, StatusType},
+    status::{NamedAtomicStatus, StatusType},
     BlockHash,
 };
 use tracing::{info, instrument, warn};
@@ -50,7 +50,7 @@ pub struct Mempool<T: BlockchainSource> {
     /// Mempool sync handle.
     sync_task_handle: Option<std::sync::Mutex<tokio::task::JoinHandle<()>>>,
     /// mempool status.
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl<T: BlockchainSource> Mempool<T> {
@@ -102,7 +102,7 @@ impl<T: BlockchainSource> Mempool<T> {
             },
             mempool_chain_tip: chain_tip_sender,
             sync_task_handle: None,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
         };
 
         loop {
@@ -361,7 +361,7 @@ pub struct MempoolSubscriber {
     subscriber: BroadcastSubscriber<MempoolKey, MempoolValue>,
     seen_txids: HashSet<MempoolKey>,
     mempool_chain_tip: tokio::sync::watch::Receiver<BlockHash>,
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl MempoolSubscriber {

@@ -5,7 +5,7 @@ use crate::{
     server::{config::JsonRpcServerConfig, error::ServerError},
 };
 
-use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusType, ZcashIndexer};
+use zaino_state::{IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer};
 
 use zebra_rpc::server::{
     cookie::{remove_from_disk, write_to_disk, Cookie},
@@ -21,7 +21,7 @@ use tracing::warn;
 /// JSON-RPC server capable of servicing clients over TCP.
 pub struct JsonRpcServer {
     /// Current status of the server.
-    pub status: AtomicStatus,
+    pub status: NamedAtomicStatus,
     /// JoinHandle for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
     /// Cookie dir.
@@ -38,7 +38,7 @@ impl JsonRpcServer {
         service_subscriber: IndexerSubscriber<Service>,
         server_config: JsonRpcServerConfig,
     ) -> Result<Self, ServerError> {
-        let status = AtomicStatus::new(StatusType::Spawning);
+        let status = NamedAtomicStatus::new("JSON-RPC", StatusType::Spawning);
 
         let rpc_impl = JsonRpcClient {
             service_subscriber: service_subscriber.clone(),

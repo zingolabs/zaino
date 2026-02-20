@@ -38,7 +38,7 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    AddrHistRecord, AddrScript, AtomicStatus, BlockHash, BlockHeaderData, CommitmentTreeData,
+    AddrHistRecord, AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, NamedAtomicStatus,
     CompactBlockStream, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend,
     CompactSize, CompactTxData, FixedEncodedLen as _, Height, IndexedBlock, OrchardCompactTx,
     OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx,
@@ -539,7 +539,7 @@ pub(crate) struct DbV1 {
     db_handler: Option<tokio::task::JoinHandle<()>>,
 
     /// ZainoDB status.
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 
     /// BlockCache config data.
     config: BlockCacheConfig,
@@ -635,7 +635,7 @@ impl DbV1 {
             validated_tip: Arc::new(AtomicU32::new(0)),
             validated_set: DashSet::new(),
             db_handler: None,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
             config: config.clone(),
         };
 
