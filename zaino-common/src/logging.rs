@@ -219,8 +219,9 @@ fn init_tree(env_filter: EnvFilter, config: LogConfig) {
         .with_indent_lines(true)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .with_verbose_entry(true)
-        .with_verbose_exit(true);
+        .with_deferred_spans(true) // Only show spans when they have events
+        .with_verbose_entry(false) // Don't repeat span info on entry
+        .with_verbose_exit(false); // Don't repeat span info on exit
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -239,8 +240,9 @@ fn try_init_tree(
         .with_indent_lines(true)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .with_verbose_entry(true)
-        .with_verbose_exit(true);
+        .with_deferred_spans(true) // Only show spans when they have events
+        .with_verbose_entry(false) // Don't repeat span info on entry
+        .with_verbose_exit(false); // Don't repeat span info on exit
 
     tracing_subscriber::registry()
         .with(env_filter)
