@@ -5,7 +5,7 @@ use hex::FromHex;
 use std::{io::Cursor, time};
 use tokio::{sync::mpsc, time::timeout};
 use tonic::async_trait;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{
@@ -113,6 +113,7 @@ impl ZcashService for FetchService {
     type Config = FetchServiceConfig;
 
     /// Initializes a new FetchService instance and starts sync process.
+    #[instrument(name = "FetchService::spawn", skip(config), fields(network = ?config.network))]
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!(
             rpc_address = %config.validator_rpc_address,

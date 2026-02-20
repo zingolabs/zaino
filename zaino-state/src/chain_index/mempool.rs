@@ -12,7 +12,7 @@ use crate::{
     status::{AtomicStatus, StatusType},
     BlockHash,
 };
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
 use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 
@@ -55,6 +55,7 @@ pub struct Mempool<T: BlockchainSource> {
 
 impl<T: BlockchainSource> Mempool<T> {
     /// Spawns a new [`Mempool`].
+    #[instrument(name = "Mempool::spawn", skip(fetcher, capacity_and_shard_amount))]
     pub async fn spawn(
         fetcher: T,
         capacity_and_shard_amount: Option<(usize, usize)>,

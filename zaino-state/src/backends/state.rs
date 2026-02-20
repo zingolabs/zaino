@@ -91,7 +91,7 @@ use tokio::{
 };
 use tonic::async_trait;
 use tower::{Service, ServiceExt};
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
 macro_rules! expected_read_response {
     ($response:ident, $expected_variant:ident) => {
@@ -172,6 +172,7 @@ impl ZcashService for StateService {
     type Config = StateServiceConfig;
 
     /// Initializes a new StateService instance and starts sync process.
+    #[instrument(name = "StateService::spawn", skip(config), fields(network = ?config.network))]
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
         info!(
             rpc_address = %config.validator_rpc_address,

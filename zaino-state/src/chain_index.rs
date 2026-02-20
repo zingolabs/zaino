@@ -27,7 +27,7 @@ use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
-use tracing::info;
+use tracing::{info, instrument};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
@@ -529,6 +529,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         combined_status
     }
 
+    #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();

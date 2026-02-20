@@ -9,7 +9,7 @@ use futures::lock::Mutex;
 use primitive_types::U256;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
 
@@ -219,6 +219,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// TODO: Currently, we can't initate without an snapshot, we need to create a cache
     /// of at least one block. Should this be tied to the instantiation of the data structure
     /// itself?
+    #[instrument(name = "NonFinalizedState::initialize", skip(source, start_block), fields(network = %network))]
     pub async fn initialize(
         source: Source,
         network: Network,
@@ -329,6 +330,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// sync to the top of the chain, trimming to the finalised tip.
+    #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
     pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let mut working_snapshot = initial_state.as_ref().clone();

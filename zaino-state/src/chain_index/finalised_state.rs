@@ -182,7 +182,7 @@ use db::{DbBackend, VERSION_DIRS};
 use migrations::MigrationManager;
 use reader::*;
 use router::Router;
-use tracing::info;
+use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
 use crate::{
@@ -267,6 +267,7 @@ impl ZainoDB {
     /// - the on-disk database version is unsupported,
     /// - opening or creating the database fails,
     /// - or any migration step fails.
+    #[instrument(name = "ZainoDB::spawn", skip(cfg, source), fields(db_version = cfg.db_version))]
     pub(crate) async fn spawn<T>(
         cfg: BlockCacheConfig,
         source: T,
