@@ -59,6 +59,11 @@ pub struct NonfinalizedBlockCacheSnapshot {
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
     pub best_tip: BestTip,
+
+    /// if the validator has finalized above the tip
+    /// of the snapshot, we can use it for some queries
+    /// and pass through to the validator
+    pub validator_finalized_height: Height,
 }
 
 #[derive(Debug)]
@@ -91,7 +96,7 @@ pub enum SyncError {
     /// The backing validator node returned corrupt, invalid, or incomplete data
     /// TODO: This may not be correctly disambibuated from temporary network issues
     /// in the fetchservice case.
-    ZebradConnectionError(NodeConnectionError),
+    ValidatorConnectionError(NodeConnectionError),
     /// The channel used to store new blocks has been closed. This should only happen
     /// during shutdown.
     StagingChannelClosed,
@@ -113,6 +118,9 @@ impl From<UpdateError> for SyncError {
             UpdateError::DatabaseHole => {
                 SyncError::ReorgFailure(String::from("could not determine best chain"))
             }
+            UpdateError::ValidatorConnectionError(e) => SyncError::ValidatorConnectionError(
+                NodeConnectionError::UnrecoverableError(Box::new(MissingBlockError(e.to_string()))),
+            ),
         }
     }
 }
@@ -154,7 +162,10 @@ impl BestTip {
 
 impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
-    fn from_initial_block(block: IndexedBlock) -> Result<Self, InitError> {
+    fn from_initial_block(
+        block: IndexedBlock,
+        validator_finalized_height: Height,
+    ) -> Result<Self, InitError> {
         let best_tip = BestTip::from_block(&block)?;
         let hash = *block.hash();
         let height = best_tip.height;
@@ -169,6 +180,7 @@ impl NonfinalizedBlockCacheSnapshot {
             blocks,
             heights_to_hashes,
             best_tip,
+            validator_finalized_height,
         })
     }
 
@@ -214,11 +226,24 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<Self, InitError> {
         info!("Initialising non-finalised state.");
 
+        let validator_tip = source
+            .get_best_block_height()
+            .await
+            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
+            .ok_or_else(|| {
+                InitError::InvalidNodeData(Box::new(MissingBlockError(
+                    "Validator has no best block".to_string(),
+                )))
+            })?;
+
         // Resolve the initial block (provided or genesis)
         let initial_block = Self::resolve_initial_block(&source, &network, start_block).await?;
 
         // Create initial snapshot from the block
-        let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(initial_block)?;
+        let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(
+            initial_block,
+            Height(validator_tip.0.saturating_sub(100)),
+        )?;
 
         // Set up optional listener
         let nfs_change_listener = Self::setup_listener(&source).await;
@@ -322,9 +347,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .await
             .map_err(|e| {
                 // TODO: Check error. Determine what kind of error to return, this may be recoverable
-                SyncError::ZebradConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
-                    e,
-                )))
+                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                    Box::new(e),
+                ))
             })?
         {
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
@@ -406,11 +431,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     ))
                     .await
                     .map_err(|e| {
-                        SyncError::ZebradConnectionError(NodeConnectionError::UnrecoverableError(
-                            Box::new(e),
-                        ))
+                        SyncError::ValidatorConnectionError(
+                            NodeConnectionError::UnrecoverableError(Box::new(e)),
+                        )
                     })?
-                    .ok_or(SyncError::ZebradConnectionError(
+                    .ok_or(SyncError::ValidatorConnectionError(
                         NodeConnectionError::UnrecoverableError(Box::new(MissingBlockError(
                             "zebrad missing block in best chain".to_string(),
                         ))),
@@ -451,7 +476,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(e @ mpsc::error::TryRecvError::Disconnected) => {
-                    return Err(SyncError::ZebradConnectionError(
+                    return Err(SyncError::ValidatorConnectionError(
                         NodeConnectionError::UnrecoverableError(Box::new(e)),
                     ))
                 }
@@ -461,7 +486,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalised tip.
-    async fn update(
+    pub(super) async fn update(
         &self,
         finalized_db: Arc<ZainoDB>,
         initial_state: Arc<NonfinalizedBlockCacheSnapshot>,
@@ -484,6 +509,16 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.handle_reorg(&mut new_snapshot, best_block)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
+
+        let validator_tip = self
+            .source
+            .get_best_block_height()
+            .await
+            .map_err(|e| UpdateError::ValidatorConnectionError(Box::new(e)))?
+            .ok_or(UpdateError::ValidatorConnectionError(Box::new(
+                MissingBlockError("no best block height".to_string()),
+            )))?;
+        new_snapshot.validator_finalized_height = Height(validator_tip.0.saturating_sub(100));
 
         // Need to get best hash at some point in this process
         let stored = self
@@ -541,9 +576,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .get_tree_roots_from_source(block.hash().into())
             .await
             .map_err(|e| {
-                SyncError::ZebradConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
-                    InvalidData(format!("{}", e)),
-                )))
+                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                    Box::new(InvalidData(format!("{}", e))),
+                ))
             })?;
 
         Self::create_indexed_block_with_optional_roots(
@@ -553,7 +588,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             self.network.clone(),
         )
         .map_err(|e| {
-            SyncError::ZebradConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
+            SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
                 InvalidData(e),
             )))
         })
@@ -620,11 +655,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     ))
                     .await
                     .map_err(|e| {
-                        SyncError::ZebradConnectionError(NodeConnectionError::UnrecoverableError(
-                            Box::new(e),
-                        ))
+                        SyncError::ValidatorConnectionError(
+                            NodeConnectionError::UnrecoverableError(Box::new(e)),
+                        )
                     })?
-                    .ok_or(SyncError::ZebradConnectionError(
+                    .ok_or(SyncError::ValidatorConnectionError(
                         NodeConnectionError::UnrecoverableError(Box::new(MissingBlockError(
                             "zebrad missing block".to_string(),
                         ))),
@@ -652,6 +687,9 @@ pub enum UpdateError {
 
     /// A block in the snapshot is missing
     DatabaseHole,
+
+    /// Failed to connect to the backing validator
+    ValidatorConnectionError(Box<dyn std::error::Error>),
 }
 
 trait Block {

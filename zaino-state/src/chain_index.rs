@@ -12,6 +12,7 @@
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
 use crate::chain_index::non_finalised_state::BestTip;
+use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
@@ -167,6 +168,9 @@ mod tests;
 /// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
 /// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
 /// 3. Call `NodeBackedChainIndex::new(source, config).await`
+///
+/// When a call asks for info (e.g. a block), Zaino selects sources in this order:
+#[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
 pub trait ChainIndex {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
@@ -184,7 +188,7 @@ pub trait ChainIndex {
     /// Returns None if the specified block is not in the best chain or is not found.
     fn get_block_height(
         &self,
-        nonfinalized_snapshot: &Self::Snapshot,
+        snapshot: &Self::Snapshot,
         hash: types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<types::Height>, Self::Error>>;
 
@@ -192,10 +196,11 @@ pub trait ChainIndex {
     /// between the given heights.
     /// Returns None if the specified end height
     /// is greater than the snapshot's tip
+    // TO-TEST
     #[allow(clippy::type_complexity)]
     fn get_block_range(
         &self,
-        nonfinalized_snapshot: &Self::Snapshot,
+        snapshot: &Self::Snapshot,
         start: types::Height,
         end: Option<types::Height>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
@@ -249,8 +254,8 @@ pub trait ChainIndex {
     fn find_fork_point(
         &self,
         snapshot: &Self::Snapshot,
-        block_hash: &types::BlockHash,
-    ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error>;
+        hash: &types::BlockHash,
+    ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
 
     /// Returns the block commitment tree data by hash
     #[allow(clippy::type_complexity)]
@@ -273,10 +278,10 @@ pub trait ChainIndex {
     ) -> impl std::future::Future<Output = Result<Option<(Vec<u8>, Option<u32>)>, Self::Error>>;
 
     /// Given a transaction ID, returns all known hashes and heights of blocks
-    /// containing that transaction. Height is None for blocks not on the best chain.
+    /// containing that transaction.
     ///
-    /// Also returns a bool representing whether the transaction is *currently* in the mempool.
-    /// This is not currently tied to the given snapshot but rather uses the live mempool.
+    /// Also returns if the transaction is in the mempool (and whether that mempool is
+    /// in-sync with the provided snapshot)
     #[allow(clippy::type_complexity)]
     fn get_transaction_status(
         &self,
@@ -610,11 +615,10 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
-
     fn source(&self) -> &Source {
         &self.non_finalized_state.source
     }
-  
+
     /// Returns the combined status of all chain index components.
     pub fn combined_status(&self) -> StatusType {
         let finalized_status = self.finalized_state.status();
@@ -632,8 +636,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         &self,
         id: HashOrHeight,
     ) -> Result<Option<Vec<u8>>, ChainIndexError> {
-        self.non_finalized_state
-            .source
+        self.source()
             .get_block(id)
             .await
             .map_err(ChainIndexError::backing_validator)?
@@ -642,6 +645,29 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                     .map_err(ChainIndexError::backing_validator)
             })
             .transpose()
+    }
+
+    async fn get_indexed_block_height(
+        &self,
+        snapshot: &NonfinalizedBlockCacheSnapshot,
+        hash: types::BlockHash,
+    ) -> Result<Option<types::Height>, ChainIndexError> {
+        // ChainIndex step 2:
+        match snapshot.blocks.get(&hash).cloned() {
+            Some(block) => Ok(snapshot
+                // ChainIndex step 3:
+                .heights_to_hashes
+                .values()
+                .find(|h| **h == hash)
+                // Canonical height is None for blocks not on the best chain
+                .map(|_| block.index().height())),
+            None => self
+                // ChainIndex step 4:
+                .finalized_state
+                .get_block_height(hash)
+                .await
+                .map_err(|_e| ChainIndexError::database_hole(hash)),
+        }
     }
 
     /**
@@ -686,6 +712,68 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         Ok(finalized_blocks_containing_transaction
             .chain(non_finalized_blocks_containing_transaction))
     }
+
+    async fn get_block_height_passthrough(
+        &self,
+        snapshot: &NonfinalizedBlockCacheSnapshot,
+        hash: types::BlockHash,
+    ) -> Result<Option<types::Height>, ChainIndexError> {
+        //ChainIndex step 5:
+        match self
+            .source()
+            .get_block(HashOrHeight::Hash(hash.into()))
+            .await
+        {
+            Ok(Some(block)) => {
+                // At this point, we know that
+                // the block is in the VALIDATOR.
+                match block.coinbase_height() {
+                    None => {
+                        // the block is in the VALIDATOR. but doesnt have a height. That would imply a bug.
+                        Err(ChainIndexError::validator_data_error_block_coinbase_height_missing())
+                    }
+                    Some(height) => {
+                        // The VALIDATOR returned a block with a height.
+                        // However, there is as of yet no guaranteed the Block is FINALIZED
+                        if height <= snapshot.validator_finalized_height {
+                            Ok(Some(types::Height::from(height)))
+                        } else {
+                            // non-finalized block
+                            // no passthrough
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                // the block is neither in the INDEXER nor VALIDATOR
+                Ok(None)
+            }
+            Err(e) => Err(ChainIndexError::backing_validator(e)),
+        }
+    }
+
+    // Get the height of the mempool
+    fn get_mempool_height(
+        &self,
+        snapshot: &NonfinalizedBlockCacheSnapshot,
+    ) -> Option<types::Height> {
+        snapshot
+            .blocks
+            .iter()
+            .find(|(hash, _block)| **hash == self.mempool.mempool_chain_tip())
+            .map(|(_hash, block)| block.height())
+    }
+
+    fn mempool_branch_id(&self, snapshot: &NonfinalizedBlockCacheSnapshot) -> Option<u32> {
+        self.get_mempool_height(snapshot).and_then(|height| {
+            ConsensusBranchId::current(
+                &self.non_finalized_state.network,
+                zebra_chain::block::Height::from(height + 1),
+            )
+            .map(u32::from)
+        })
+    }
 }
 
 impl<Source: BlockchainSource> Status for NodeBackedChainIndexSubscriber<Source> {
@@ -712,37 +800,47 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// Used for hash based block lookup (random access).
     async fn get_block_height(
         &self,
-        nonfinalized_snapshot: &Self::Snapshot,
+        snapshot: &Self::Snapshot,
         hash: types::BlockHash,
     ) -> Result<Option<types::Height>, Self::Error> {
-        match nonfinalized_snapshot.blocks.get(&hash).cloned() {
-            Some(block) => Ok(nonfinalized_snapshot
-                .heights_to_hashes
-                .values()
-                .find(|h| **h == hash)
-                // Canonical height is None for blocks not on the best chain
-                .map(|_| block.index().height())),
-            None => match self.finalized_state.get_block_height(hash).await {
-                Ok(height) => Ok(height),
-                Err(_e) => Err(ChainIndexError::database_hole(hash)),
-            },
+        // ChainIndex step 1: Skip
+        // mempool blocks have no canon height
+        // todo: possible efficiency boost by checking mempool for a negative?
+
+        // ChainIndex steps 2-4:
+        match self.get_indexed_block_height(snapshot, hash).await? {
+            Some(h) => Ok(Some(h)),
+            None => self.get_block_height_passthrough(snapshot, hash).await, // ChainIndex step 5
         }
     }
 
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights.
-    /// Returns None if the specified end height
-    /// is greater than the snapshot's tip
+    /// Returns None if the specified start height
+    /// is greater than the snapshot's tip and greater
+    /// than the validator's finalized height (100 blocks below tip)
     fn get_block_range(
         &self,
-        nonfinalized_snapshot: &Self::Snapshot,
+        snapshot: &Self::Snapshot,
         start: types::Height,
         end: std::option::Option<types::Height>,
     ) -> Option<impl Stream<Item = Result<Vec<u8>, Self::Error>>> {
-        let end = end.unwrap_or(nonfinalized_snapshot.best_tip.height);
-        if end <= nonfinalized_snapshot.best_tip.height {
+        // ChainIndex step 1: Skip
+        // mempool blocks have no canon height
+
+        // We can serve blocks above where the validator has finalized
+        // only if we have those blocks in our nonfinalized snapshot
+        let max_servable_height = snapshot
+            .validator_finalized_height
+            .max(snapshot.best_tip.height);
+        // The lower of the end of the provided range, and the highest block we can serve
+        let end = end.unwrap_or(max_servable_height).min(max_servable_height);
+        // Serve as high as we can, or to the provided end if it's lower
+        if start <= max_servable_height.min(end) {
             Some(
                 futures::stream::iter((start.0)..=(end.0)).then(move |height| async move {
+                    // For blocks above validator_finalized_height, it's not reorg-safe to get blocks by height. It is reorg-safe to get blocks by hash. What we need to do in this case is use our snapshot index to look up the hash at a given height, and then get that hash from the validator.
+                    // This is why we now look in the index.
                     match self
                         .finalized_state
                         .get_block_hash(types::Height(height))
@@ -760,9 +858,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             source: Some(Box::new(e)),
                         }),
                         Ok(None) => {
-                            match nonfinalized_snapshot
-                                .get_chainblock_by_height(&types::Height(height))
-                            {
+                            match snapshot.get_chainblock_by_height(&types::Height(height)) {
                                 Some(block) => {
                                     return self
                                         .get_fullblock_bytes_from_node(HashOrHeight::Hash(
@@ -771,7 +867,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                                         .await?
                                         .ok_or(ChainIndexError::database_hole(block.hash()))
                                 }
-                                None => Err(ChainIndexError::database_hole(height)),
+                                None => self
+                                    // usually getting by height is not reorg-safe, but here, height is known to be below or equal to validator_finalized_height.
+                                    .get_fullblock_bytes_from_node(HashOrHeight::Height(
+                                        zebra_chain::block::Height(height),
+                                    ))
+                                    .await?
+                                    .ok_or(ChainIndexError::database_hole(height)),
                             }
                         }
                     }
@@ -987,32 +1089,104 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         Ok(Some(CompactBlockStream::new(channel_receiver)))
     }
 
-    /// Finds the newest ancestor of the given block on the main
-    /// chain, or the block itself if it is on the main chain.
-    fn find_fork_point(
+    /// For a given block,
+    /// find its newest main-chain ancestor,
+    /// or the block itself if it is on the main-chain.
+    /// Returns Ok(None) if no fork point found. This is not an error,
+    /// as zaino does not guarentee knowledge of all sidechain data.
+    async fn find_fork_point(
         &self,
         snapshot: &Self::Snapshot,
-        block_hash: &types::BlockHash,
+        hash: &types::BlockHash,
     ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
-        let Some(block) = snapshot.as_ref().get_chainblock_by_hash(block_hash) else {
-            // No fork point found. This is not an error,
-            // as zaino does not guarentee knowledge of all sidechain data.
-            return Ok(None);
-        };
-        if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
-            Ok(Some((*block.hash(), block.height())))
-        } else {
-            self.find_fork_point(snapshot, block.index().parent_hash())
+        // ChainIndex step 1: Skip
+        // mempool blocks have no canon height, guaranteed to return None
+        // todo: possible efficiency boost by checking mempool for a negative?
+
+        // ChainIndex step 2:
+        match snapshot.as_ref().get_chainblock_by_hash(hash) {
+            Some(block) => {
+                // At this point, we know that
+                // The block is non-FINALIZED in the INDEXER
+                // ChainIndex step 3:
+                if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
+                    // The block is in the best chain.
+                    Ok(Some((*block.hash(), block.height())))
+                } else {
+                    // Otherwise, it's non-best chain! Grab its parent, and recurse
+                    Box::pin(self.find_fork_point(snapshot, block.index().parent_hash())).await
+                    // gotta pin recursive async functions to prevent infinite-sized
+                    // Future-implementing types
+                }
+            }
+            None => {
+                // At this point, we know that
+                // the block is NOT non-FINALIZED in the INDEXER.
+                // ChainIndex step 4
+                match self.finalized_state.get_block_height(*hash).await {
+                    Ok(Some(height)) => {
+                        // the block is FINALIZED in the INDEXER
+                        Ok(Some((*hash, height)))
+                    }
+                    Err(_e) => Err(ChainIndexError::database_hole(hash)),
+                    Ok(None) => {
+                        // At this point, we know that
+                        // the block is NOT FINALIZED in the INDEXER
+                        // (NEITHER is it non-FINALIZED in the INDEXER)
+
+                        // Now, we ask the VALIDATOR.
+                        // ChainIndex step 5
+                        match self
+                            .source()
+                            .get_block(HashOrHeight::Hash(zebra_chain::block::Hash::from(*hash)))
+                            .await
+                        {
+                            Ok(Some(block)) => {
+                                // At this point, we know that
+                                // the block is in the VALIDATOR.
+                                match block.coinbase_height() {
+                                    None => {
+                                        // the block is in the VALIDATOR. but doesnt have a height. That would imply a bug.
+                                        Err(ChainIndexError::validator_data_error_block_coinbase_height_missing())
+                                    }
+                                    Some(height) => {
+                                        // The VALIDATOR returned a block with a height.
+                                        // However, there is as of yet no guaranteed the Block is FINALIZED
+                                        if height <= snapshot.validator_finalized_height {
+                                            Ok(Some((
+                                                types::BlockHash::from(block.hash()),
+                                                types::Height::from(height),
+                                            )))
+                                        } else {
+                                            // non-finalized block
+                                            // no passthrough
+                                            Ok(None)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Ok(None) => {
+                                // At this point, we know that
+                                // the block is NOT FINALIZED in the VALIDATOR.
+                                // Return Ok(None) = no block found.
+                                Ok(None)
+                            }
+                            Err(e) => Err(ChainIndexError::backing_validator(e)),
+                        }
+                    }
+                }
+            }
         }
     }
 
     /// Returns the block commitment tree data by hash
     async fn get_treestate(
         &self,
-        // snapshot: &Self::Snapshot,
         // currently not implemented internally, fetches data from validator.
-        //
-        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
+        // as this looks up the block by hash, and cares not if the
+        // block is on the main chain or not, this is safe to pass through
+        // even if the target block is non-finalized
         hash: &types::BlockHash,
     ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
         match self.source().get_treestate(*hash).await {
@@ -1026,11 +1200,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     }
 
     /// given a transaction id, returns the transaction
+    /// and the consensus branch ID for the block the transaction
+    /// is in
     async fn get_raw_transaction(
         &self,
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<Option<(Vec<u8>, Option<u32>)>, Self::Error> {
+        // ChainIndex step 1
         if let Some(mempool_tx) = self
             .mempool
             .get_transaction(&mempool::MempoolKey {
@@ -1039,59 +1216,50 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .await
         {
             let bytes = mempool_tx.serialized_tx.as_ref().as_ref().to_vec();
-            let mempool_height = snapshot
-                .blocks
-                .iter()
-                .find(|(hash, _block)| **hash == self.mempool.mempool_chain_tip())
-                .map(|(_hash, block)| block.height());
-            let mempool_branch_id = mempool_height.and_then(|height| {
-                ConsensusBranchId::current(
-                    &self.non_finalized_state.network,
-                    zebra_chain::block::Height::from(height + 1),
-                )
-                .map(u32::from)
-            });
+            let mempool_branch_id = self.mempool_branch_id(snapshot);
 
             return Ok(Some((bytes, mempool_branch_id)));
         }
 
-        let Some(block) = self
-            .blocks_containing_transaction(snapshot, txid.0)
-            .await?
-            .next()
+        let Some((transaction, location)) = self
+            .source()
+            .get_transaction(*txid)
+            .await
+            .map_err(ChainIndexError::backing_validator)?
         else {
             return Ok(None);
         };
+        // as the reorg process cannot modify a transaction
+        // it's safe to serve nonfinalized state directly here
+        let height = match location {
+            GetTransactionLocation::BestChain(height) => height,
+            GetTransactionLocation::NonbestChain => {
+                // if the tranasction isn't on the best chain
+                // check our indexes. We need to find out the height from our index
+                // to determine the consensus branch ID
+                match self
+                    .blocks_containing_transaction(snapshot, txid.0)
+                    .await?
+                    .next()
+                {
+                    Some(block) => block.index.height.into(),
+                    // If we don't have a block containing the transaction
+                    // locally and the transaction's not on the validator's
+                    // best chain, we can't determine its consensus branch ID
+                    None => return Ok(None),
+                }
+            }
+            // We've already checked the mempool. Should be unreachable?
+            // todo: error here?
+            GetTransactionLocation::Mempool => return Ok(None),
+        };
 
-        // NOTE: Could we safely use zebra's get transaction method here without invalidating the snapshot?
-        // This would be a more efficient way to fetch transaction data.
-        //
-        // Should NodeBackedChainIndex keep a clone of source to use here?
-        //
-        // This will require careful attention as there is a case where a transaction may still exist,
-        // but may have been reorged into a different block, possibly breaking the validation of this interface.
-        let full_block = self
-            .non_finalized_state
-            .source
-            .get_block(HashOrHeight::Hash((block.index().hash().0).into()))
-            .await
-            .map_err(ChainIndexError::backing_validator)?
-            .ok_or_else(|| ChainIndexError::database_hole(block.index().hash()))?;
-        let block_consensus_branch_id = full_block.coinbase_height().and_then(|height| {
-            ConsensusBranchId::current(&self.non_finalized_state.network, height).map(u32::from)
-        });
-        full_block
-            .transactions
-            .iter()
-            .find(|transaction| {
-                let txn_txid = transaction.hash().0;
-                txn_txid == txid.0
-            })
-            .map(ZcashSerialize::zcash_serialize_to_vec)
-            .ok_or_else(|| ChainIndexError::database_hole(block.index().hash()))?
-            .map_err(ChainIndexError::backing_validator)
-            .map(|transaction| (transaction, block_consensus_branch_id))
-            .map(Some)
+        Ok(Some((
+            zebra_chain::transaction::SerializedTransaction::from(transaction)
+                .as_ref()
+                .to_vec(),
+            ConsensusBranchId::current(&self.non_finalized_state.network, height).map(u32::from),
+        )))
     }
 
     /// Given a transaction ID, returns all known blocks containing this transaction
@@ -1108,7 +1276,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .blocks_containing_transaction(snapshot, txid.0)
             .await?
             .collect::<Vec<_>>();
-        let start_of_nonfinalized = snapshot.heights_to_hashes.keys().min().unwrap();
+        let Some(start_of_nonfinalized) = snapshot.heights_to_hashes.keys().min() else {
+            return Err(ChainIndexError::database_hole("no blocks"));
+        };
         let mut best_chain_block = blocks_containing_transaction
             .iter()
             .find(|block| {
@@ -1164,6 +1334,29 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         }
                     });
                 non_best_chain_blocks.insert(NonBestChainLocation::Mempool(target_height));
+            }
+        }
+
+        // If we haven't found a block on the best chain,
+        // try passthrough
+        if best_chain_block.is_none() {
+            if let Some((_transaction, GetTransactionLocation::BestChain(height))) = self
+                .source()
+                .get_transaction(*txid)
+                .await
+                .map_err(ChainIndexError::backing_validator)?
+            {
+                if height <= snapshot.validator_finalized_height {
+                    if let Some(block) = self
+                        .source()
+                        .get_block(HashOrHeight::Height(height))
+                        .await
+                        .map_err(ChainIndexError::backing_validator)?
+                    {
+                        best_chain_block =
+                            Some(BestChainLocation::Block(block.hash().into(), height.into()));
+                    }
+                }
             }
         }
 

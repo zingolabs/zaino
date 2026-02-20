@@ -23,6 +23,7 @@ zcash_keys = { workspace = true }
 zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
+sapling-crypto = "0.5.0"
 
 # Zebra
 zebra-chain = { workspace = true }
@@ -31,6 +32,9 @@ zebra-rpc = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+
+# Documentation
+simple-mermaid = "0.2.0"
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
@@ -59,8 +63,6 @@ arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }
-sapling-crypto = "0.5.0"
-
 
 [dev-dependencies]
 tempfile = { workspace = true }

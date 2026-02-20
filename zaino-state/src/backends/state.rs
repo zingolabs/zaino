@@ -1936,7 +1936,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 .indexer
                 .get_block_height(&snapshot, chain_types::BlockHash(h.0))
                 .await
-                .map_err(|e| StateServiceError::ChainIndexError(e))?
+                .map_err(StateServiceError::ChainIndexError)?
                 .ok_or_else(|| {
                     StateServiceError::TonicStatusError(tonic::Status::not_found(
                         "Error: Block not found for given hash.",

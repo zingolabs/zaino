@@ -307,6 +307,7 @@ mod chain_query_interface {
                 block_hash,
                 &indexer
                     .find_fork_point(&snapshot, block_hash)
+                    .await
                     .unwrap()
                     .unwrap()
                     .0
