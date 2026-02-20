@@ -255,6 +255,7 @@ fn init_stream(env_filter: EnvFilter, config: LogConfig) {
         .with_target(true)
         .with_ansi(config.color)
         .with_span_events(span_events)
+        .pretty()
         .init();
 }
 
@@ -272,7 +273,8 @@ fn try_init_stream(
         .with_timer(UtcTime::new(TIME_FORMAT))
         .with_target(true)
         .with_ansi(config.color)
-        .with_span_events(span_events);
+        .with_span_events(span_events)
+        .pretty();
 
     tracing_subscriber::registry()
         .with(env_filter)
