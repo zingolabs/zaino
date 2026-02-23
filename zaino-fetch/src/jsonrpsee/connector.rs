@@ -910,12 +910,13 @@ pub async fn test_node_and_return_url(
     let url: Url = format!("http://{}:{}", host, addr.port()).parse()?;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-    for _ in 0..3 {
+    for _ in 0..6 {
         match test_node_connection(url.clone(), auth_method.clone()).await {
             Ok(_) => {
                 return Ok(url);
             }
-            Err(_) => {
+            Err(e) => {
+                dbg!(e);
                 // TOdo actually show this error.
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
