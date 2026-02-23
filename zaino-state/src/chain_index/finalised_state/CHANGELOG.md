@@ -45,6 +45,8 @@ Migration
 - Completion criteria: <how we decide migration is done>
 - Failure handling: <rollback / retry behavior>
 
+Bug Fixes / Optimisations
+
 --------------------------------------------------------------------------------
 DB VERSION v1.0.0 (from v0.0.0)
 Date: 2025-08-13
@@ -97,8 +99,10 @@ Migration
 - Failure handling:
   - do not promote partially built v1; continue using v0 if present; rebuild v1 on retry.
 
+Bug Fixes / Optimisations
+- Complete DB rework
 --------------------------------------------------------------------------------
-DB VERSION v1.0.0 (from v1.1.0)
+DB VERSION v1.1.0 (from v1.0.0)
 Date: 2026-01-27
 --------------------------------------------------------------------------------
 
@@ -145,6 +149,9 @@ Migration
   - DbMetadata.migration_status reset to Empty.
 - Failure handling:
   - Idempotent: re-running re-writes the same metadata; no partial state beyond metadata.
+
+Bug Fixes / Optimisations
+- Added safety check for idempotent DB writes
 
 --------------------------------------------------------------------------------
 (append new entries below)

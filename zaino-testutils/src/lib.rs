@@ -543,11 +543,8 @@ where
     ///
     /// Panics if the indexer is not live (Offline or CriticalError), indicating the
     /// backing validator has crashed or become unreachable.
-    pub async fn generate_blocks_and_poll_indexer<I>(
-        &self,
-        n: u32,
-        indexer: &I,
-    ) where
+    pub async fn generate_blocks_and_poll_indexer<I>(&self, n: u32, indexer: &I)
+    where
         I: LightWalletIndexer + Liveness + Status,
     {
         let chain_height = self.local_net.get_chain_height().await;
