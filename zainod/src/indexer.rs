@@ -3,7 +3,7 @@
 use tokio::time::Instant;
 use tracing::info;
 
-use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
+use zaino_fetch::jsonrpsee::{connector::test_node_and_return_url, error::TransportError};
 use zaino_serve::server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer};
 #[allow(deprecated)]
 use zaino_state::{
@@ -28,19 +28,36 @@ pub struct Indexer<Service: ZcashService + LightWalletService> {
 /// Starts Indexer service.
 ///
 /// Currently only takes an IndexerConfig.
-pub async fn start_indexer(
+pub(crate) async fn start_indexer(
     config: ZainodConfig,
-) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
+) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, SpawnIndexerError> {
     startup_message();
     info!("Starting Zaino..");
     spawn_indexer(config).await
 }
 
+#[derive(Debug)] //
+#[derive(thiserror::Error)] //
+pub(crate) enum SpawnIndexerError {
+    #[error("Checking Config: {{0}}")]
+    Config(IndexerError),
+    #[error("During test_node_and_return_url: {{0}}")]
+    ValidatorUrl(TransportError),
+    #[error("Creating StateService config: {{0}}")]
+    StateServiceConfig(IndexerError),
+    #[error("Launching StateService: {{0}}")]
+    StateService(IndexerError),
+    #[error("Creating FetchService config: {{0}}")]
+    FetchServiceConfig(IndexerError),
+    #[error("Launching FetchService: {{0}}")]
+    FetchService(IndexerError),
+}
+
 /// Spawns a new Indexer server.
-pub async fn spawn_indexer(
+pub(crate) async fn spawn_indexer(
     config: ZainodConfig,
-) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    config.check_config()?;
+) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, SpawnIndexerError> {
+    config.check_config().map_err(SpawnIndexerError::Config)?;
     info!("Checking connection with node..");
     let zebrad_uri = test_node_and_return_url(
         &config.validator_settings.validator_jsonrpc_listen_address,
@@ -48,7 +65,8 @@ pub async fn spawn_indexer(
         config.validator_settings.validator_user.clone(),
         config.validator_settings.validator_password.clone(),
     )
-    .await?;
+    .await
+    .map_err(SpawnIndexerError::ValidatorUrl)?;
 
     info!(
         " - Connected to node using JsonRPSee at address {}.",
@@ -58,16 +76,20 @@ pub async fn spawn_indexer(
     #[allow(deprecated)]
     match config.backend {
         BackendType::State => {
-            let state_config = StateServiceConfig::try_from(config.clone())?;
+            let state_config = StateServiceConfig::try_from(config.clone())
+                .map_err(SpawnIndexerError::StateServiceConfig)?;
             Indexer::<StateService>::launch_inner(state_config, config)
                 .await
                 .map(|res| res.0)
+                .map_err(SpawnIndexerError::StateService)
         }
         BackendType::Fetch => {
-            let fetch_config = FetchServiceConfig::try_from(config.clone())?;
+            let fetch_config = FetchServiceConfig::try_from(config.clone())
+                .map_err(SpawnIndexerError::FetchServiceConfig)?;
             Indexer::<FetchService>::launch_inner(fetch_config, config)
                 .await
                 .map(|res| res.0)
+                .map_err(SpawnIndexerError::FetchService)
         }
     }
 }
