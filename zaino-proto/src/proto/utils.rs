@@ -1,4 +1,7 @@
-use crate::proto::service::{BlockId, BlockRange, PoolType};
+use crate::proto::{
+    compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction},
+    service::{BlockId, BlockRange, PoolType},
+};
 use zebra_chain::block::Height;
 use zebra_state::HashOrHeight;
 
@@ -62,6 +65,14 @@ pub enum GetBlockRangeError {
 
 /// `BlockRange` request that has been validated in terms of the semantics
 /// of `GetBlockRange` RPC.
+///
+/// # Guarantees
+///
+/// - `start` and `end` were provided in the request.
+/// - `start` and `end` are in the inclusive range `0..=u32::MAX`, so they can be
+///   safely converted to `u32` (for example via `u32::try_from(...)`) without
+///   failing.
+/// - `pool_types` has been validated via `pool_types_from_vector`.
 pub struct ValidatedBlockRangeRequest {
     start: u64,
     end: u64,
@@ -69,7 +80,16 @@ pub struct ValidatedBlockRangeRequest {
 }
 
 impl ValidatedBlockRangeRequest {
-    /// validates a BlockRange in terms of the `GetBlockRange` RPC
+    /// Validates a `BlockRange` in terms of the `GetBlockRange` RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns:
+    /// - [`GetBlockRangeError::NoStartHeightProvided`] if `request.start` is `None`.
+    /// - [`GetBlockRangeError::NoEndHeightProvided`] if `request.end` is `None`.
+    /// - [`GetBlockRangeError::StartHeightOutOfRange`] if `start` does not fit in a `u32`.
+    /// - [`GetBlockRangeError::EndHeightOutOfRange`] if `end` does not fit in a `u32`.
+    /// - [`GetBlockRangeError::PoolTypeArgumentError`] if pool types are invalid.
     pub fn new_from_block_range(
         request: &BlockRange,
     ) -> Result<ValidatedBlockRangeRequest, GetBlockRangeError> {
@@ -85,6 +105,13 @@ impl ValidatedBlockRangeRequest {
                 return Err(GetBlockRangeError::NoEndHeightProvided);
             }
         };
+
+        if u32::try_from(start).is_err() {
+            return Err(GetBlockRangeError::StartHeightOutOfRange);
+        }
+        if u32::try_from(end).is_err() {
+            return Err(GetBlockRangeError::EndHeightOutOfRange);
+        }
 
         let pool_types = pool_types_from_vector(&request.pool_types)
             .map_err(GetBlockRangeError::PoolTypeArgumentError)?;
@@ -259,6 +286,92 @@ impl PoolTypeFilter {
     }
 }
 
+/// Converts [`BlockId`] into [`HashOrHeight`] Zebra type
+pub fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
+    <[u8; 32]>::try_from(block_id.hash)
+        .map(zebra_chain::block::Hash)
+        .map(HashOrHeight::from)
+        .or_else(|_| {
+            block_id
+                .height
+                .try_into()
+                .map(|height| HashOrHeight::Height(Height(height)))
+        })
+        .ok()
+}
+
+/// prunes a compact block from transaction in formation related to pools not included in the
+/// `pool_types` vector.
+/// Note: for backwards compatibility an empty vector will return Sapling and Orchard Tx info.
+pub fn compact_block_with_pool_types(
+    mut block: CompactBlock,
+    pool_types: &[PoolType],
+) -> CompactBlock {
+    if pool_types.is_empty() {
+        for compact_tx in &mut block.vtx {
+            // strip out transparent inputs if not Requested
+            compact_tx.vin.clear();
+            compact_tx.vout.clear();
+        }
+
+        // Omit transactions that have no Sapling/Orchard elements.
+        block.vtx.retain(|compact_tx| {
+            !compact_tx.spends.is_empty()
+                || !compact_tx.outputs.is_empty()
+                || !compact_tx.actions.is_empty()
+        });
+    } else {
+        for compact_tx in &mut block.vtx {
+            // strip out transparent inputs if not Requested
+            if !pool_types.contains(&PoolType::Transparent) {
+                compact_tx.vin.clear();
+                compact_tx.vout.clear();
+            }
+            // strip out sapling if not requested
+            if !pool_types.contains(&PoolType::Sapling) {
+                compact_tx.spends.clear();
+                compact_tx.outputs.clear();
+            }
+            // strip out orchard if not requested
+            if !pool_types.contains(&PoolType::Orchard) {
+                compact_tx.actions.clear();
+            }
+        }
+
+        // Omit transactions that have no elements in any requested pool type.
+        block.vtx.retain(|compact_tx| {
+            !compact_tx.vin.is_empty()
+                || !compact_tx.vout.is_empty()
+                || !compact_tx.spends.is_empty()
+                || !compact_tx.outputs.is_empty()
+                || !compact_tx.actions.is_empty()
+        });
+    }
+
+    block
+}
+
+/// Strips the ouputs and from all transactions, retains only
+/// the nullifier from all orcard actions, and clears the chain
+/// metadata from the block
+pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
+    for ctransaction in &mut block.vtx {
+        ctransaction.outputs = Vec::new();
+        for caction in &mut ctransaction.actions {
+            *caction = CompactOrchardAction {
+                nullifier: caction.nullifier.clone(),
+                ..Default::default()
+            }
+        }
+    }
+
+    block.chain_metadata = Some(ChainMetadata {
+        sapling_commitment_tree_size: 0,
+        orchard_commitment_tree_size: 0,
+    });
+    block
+}
+
 #[cfg(test)]
 mod test {
     use crate::proto::{
@@ -333,18 +446,4 @@ mod test {
             PoolTypeFilter::includes_all()
         );
     }
-}
-
-/// Converts [`BlockId`] into [`HashOrHeight`] Zebra type
-pub fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
-    <[u8; 32]>::try_from(block_id.hash)
-        .map(zebra_chain::block::Hash)
-        .map(HashOrHeight::from)
-        .or_else(|_| {
-            block_id
-                .height
-                .try_into()
-                .map(|height| HashOrHeight::Height(Height(height)))
-        })
-        .ok()
 }

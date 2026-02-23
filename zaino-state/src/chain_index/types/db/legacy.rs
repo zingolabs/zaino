@@ -125,6 +125,18 @@ impl From<BlockHash> for [u8; 32] {
     }
 }
 
+impl PartialEq<BlockHash> for zebra_chain::block::Hash {
+    fn eq(&self, other: &BlockHash) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PartialEq<zebra_chain::block::Hash> for BlockHash {
+    fn eq(&self, other: &zebra_chain::block::Hash) -> bool {
+        self.0 == other.0
+    }
+}
+
 impl From<BlockHash> for zebra_chain::block::Hash {
     fn from(hash: BlockHash) -> Self {
         zebra_chain::block::Hash(hash.0)
@@ -297,6 +309,30 @@ impl FixedEncodedLen for TransactionHash {
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct Height(pub(crate) u32);
 
+impl PartialOrd<zebra_chain::block::Height> for Height {
+    fn partial_cmp(&self, other: &zebra_chain::block::Height) -> Option<std::cmp::Ordering> {
+        Some(self.0.cmp(&other.0))
+    }
+}
+
+impl PartialOrd<Height> for zebra_chain::block::Height {
+    fn partial_cmp(&self, other: &Height) -> Option<std::cmp::Ordering> {
+        Some(self.0.cmp(&other.0))
+    }
+}
+
+impl PartialEq<zebra_chain::block::Height> for Height {
+    fn eq(&self, other: &zebra_chain::block::Height) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PartialEq<Height> for zebra_chain::block::Height {
+    fn eq(&self, other: &Height) -> bool {
+        self.0 == other.0
+    }
+}
+
 /// The first block
 pub const GENESIS_HEIGHT: Height = Height(0);
 
@@ -356,11 +392,12 @@ impl From<Height> for zebra_chain::block::Height {
     }
 }
 
-impl TryFrom<zebra_chain::block::Height> for Height {
-    type Error = &'static str;
-
-    fn try_from(h: zebra_chain::block::Height) -> Result<Self, Self::Error> {
-        Height::try_from(h.0)
+impl From<zebra_chain::block::Height> for Height {
+    // Zebra checks heights to ensure they're not above
+    // height::MAX as we do. We should trust zebra heights
+    // to be valid
+    fn from(h: zebra_chain::block::Height) -> Self {
+        Height(h.0)
     }
 }
 

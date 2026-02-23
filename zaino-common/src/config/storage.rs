@@ -2,16 +2,21 @@
 
 use std::path::PathBuf;
 
+use crate::xdg::resolve_path_with_xdg_cache_defaults;
+
 /// Cache configuration for DashMaps.
+///
+/// Used by the mempool and BlockCache non-finalized state (FetchService backend).
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct CacheConfig {
-    /// Capacity of the DashMaps used for caching
+    /// Capacity of the DashMaps used for caching.
     pub capacity: usize,
-    /// Power of 2 for number of shards (e.g., 4 means 16 shards)
+    /// Power of 2 for number of shards (e.g., 4 means 16 shards).
     ///
     /// The actual shard count will be 2^shard_power.
     /// Valid range is typically 0-8 (1 to 256 shards).
+    /// Must be greater than 0.
     pub shard_power: u8,
 }
 
@@ -33,35 +38,21 @@ impl Default for CacheConfig {
     }
 }
 
-/// Database size limit configuration.
-///
-/// This enum provides a clean TOML interface and easy extensibility for different units.
-#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DatabaseSize {
-    /// Limited to a specific size in GB
-    Gb(usize),
-    // Future: easy to add Mb(usize), Tb(usize), etc.
-}
+/// Database size limit in gigabytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct DatabaseSize(pub usize);
 
 impl Default for DatabaseSize {
     fn default() -> Self {
-        DatabaseSize::Gb(128) // Default to 128 GB
-    }
-}
-
-impl PartialEq for DatabaseSize {
-    fn eq(&self, other: &Self) -> bool {
-        self.to_byte_count() == other.to_byte_count()
+        DatabaseSize(128) // Default to 128 GB
     }
 }
 
 impl DatabaseSize {
-    /// Convert to bytes
+    /// Convert to bytes.
     pub fn to_byte_count(&self) -> usize {
-        match self {
-            DatabaseSize::Gb(gb) => gb * 1024 * 1024 * 1024,
-        }
+        self.0 * 1024 * 1024 * 1024
     }
 }
 
@@ -82,7 +73,7 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            path: PathBuf::from("./zaino_cache"),
+            path: resolve_path_with_xdg_cache_defaults("zaino"),
             size: DatabaseSize::default(),
         }
     }

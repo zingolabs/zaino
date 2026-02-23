@@ -197,6 +197,7 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use super::source::BlockchainSource;
 
+#[derive(Debug)]
 /// Handle to the finalised on-disk chain index.
 ///
 /// `ZainoDB` is the owner-facing facade for the finalised portion of the ChainIndex:

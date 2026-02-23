@@ -49,12 +49,15 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    local_cache::compact_block_with_pool_types,
     status::{AtomicStatus, StatusType},
     CompactBlockStream, Height, IndexedBlock,
 };
 
-use zaino_proto::proto::{compact_formats::CompactBlock, service::PoolType, utils::PoolTypeFilter};
+use zaino_proto::proto::{
+    compact_formats::CompactBlock,
+    service::PoolType,
+    utils::{compact_block_with_pool_types, PoolTypeFilter},
+};
 
 use zebra_chain::{
     block::{Hash as ZebraHash, Height as ZebraHeight},

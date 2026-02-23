@@ -1238,7 +1238,8 @@ impl FullTransaction {
         })
     }
 
-    /// Returns true if the transaction contains either sapling spends or outputs.
+    /// Returns true if the transaction contains either sapling spends or outputs, or orchard actions.
+    #[allow(dead_code)]
     pub(crate) fn has_shielded_elements(&self) -> bool {
         !self.raw_transaction.shielded_spends.is_empty()
             || !self.raw_transaction.shielded_outputs.is_empty()

@@ -3,13 +3,19 @@
 use std::path::PathBuf;
 use zaino_common::{Network, ServiceConfig, StorageConfig};
 
+/// Type of backend to be used.
+///
+/// Determines how Zaino fetches blockchain data from the validator.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
-/// Type of backend to be used.
 pub enum BackendType {
-    /// Uses ReadStateService (Zebrad)
+    /// Uses Zebra's ReadStateService for direct state access.
+    ///
+    /// More efficient but requires running on the same machine as Zebra.
     State,
-    /// Uses JsonRPC client (Zcashd. Zainod)
+    /// Uses JSON-RPC client to fetch data.
+    ///
+    /// Compatible with Zcashd, Zebra, or another Zaino instance.
     #[default]
     Fetch,
 }
@@ -26,7 +32,7 @@ pub enum BackendConfig {
 
 /// Holds config data for [crate::StateService].
 #[derive(Debug, Clone)]
-#[deprecated]
+// #[deprecated]
 pub struct StateServiceConfig {
     /// Zebra [`zebra_state::ReadStateService`] config data
     pub validator_state_config: zebra_state::Config,

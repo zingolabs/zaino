@@ -1,50 +1,66 @@
 use std::{sync::Arc, time::Duration};
 
+use futures::stream::FuturesUnordered;
 use proptest::{
     prelude::{Arbitrary as _, BoxedStrategy, Just},
     strategy::Strategy,
 };
 use rand::seq::SliceRandom;
+use tokio_stream::StreamExt as _;
 use tonic::async_trait;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
     fmt::SummaryDebug,
+    serialization::ZcashSerialize,
+    transaction::SerializedTransaction,
     LedgerState,
 };
 use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
     chain_index::{
-        source::BlockchainSourceResult,
+        source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, proptest_blockgen::proptest_helpers::add_segment},
+        types::BestChainLocation,
         NonFinalizedSnapshot,
     },
     BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
-    TransactionHash,
+    NodeBackedChainIndexSubscriber, NonfinalizedBlockCacheSnapshot, TransactionHash,
 };
 
-#[test]
-fn make_chain() {
+/// Handle all the boilerplate for a passthrough
+fn passthrough_test(
+    // The actual assertions. Takes as args:
+    test: impl AsyncFn(
+        // The mockchain, to use a a source of truth
+        &ProptestMockchain,
+        // The subscriber to test against
+        NodeBackedChainIndexSubscriber<ProptestMockchain>,
+        // A snapshot, which will have only the genesis block
+        Arc<NonfinalizedBlockCacheSnapshot>,
+    ),
+) {
     init_tracing();
     let network = Network::Regtest(ActivationHeights::default());
-    // The length of the initial segment, and of the branches
-    // TODO: it would be useful to allow branches of different lengths.
-    let segment_length = 12;
+    // Long enough to have some finalized blocks to play with
+    let segment_length = 120;
+    // No need to worry about non-best chains for this test
+    let branch_count = 1;
 
-    // The number of separate branches, after the branching point at the tip
-    // of the initial segment.
-    let branch_count = 2;
-
-    // default is 256. As each case takes multiple seconds, this seems too many.
-    // TODO: this should be higher than 1. Currently set to 1 for ease of iteration
-    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(2, segment_length, network))| {
+    // from this line to `runtime.block_on(async {` are all
+    // copy-pasted. Could a macro get rid of some of this boilerplate?
+    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
             let (genesis_segment, branching_segments) = segments;
             let mockchain = ProptestMockchain {
                 genesis_segment,
                 branching_segments,
+                // This number can be played with. We want to slow down
+                // sync enough to trigger passthrough without
+                // slowing down passthrough more than we need to
+                delay: Some(Duration::from_secs(1)),
             };
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
@@ -66,7 +82,286 @@ fn make_chain() {
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let index_reader = indexer.subscriber().await;
+            let index_reader = indexer.subscriber();
+            let snapshot = index_reader.snapshot_nonfinalized_state();
+            // 101 instead of 100 as heights are 0-indexed
+            assert_eq!(snapshot.validator_finalized_height.0 as usize, (2 * segment_length) - 101);
+            assert_eq!(snapshot.best_tip.height.0, 0);
+
+
+            test(&mockchain, index_reader, snapshot).await;
+
+
+
+
+        });
+    })
+}
+
+#[test]
+fn passthrough_find_fork_point() {
+    // TODO: passthrough_test handles a good chunck of boilerplate, but there's
+    // still a lot more inside of the closures being passed to passthrough_test.
+    // Can we DRY out more of it?
+    passthrough_test(async |mockchain, index_reader, snapshot| {
+        // We use a futures-unordered instead of only a for loop
+        // as this lets us call all the get_raw_transaction requests
+        // at the same time and wait for them in parallel
+        //
+        // This allows the artificial delays to happen in parallel
+        let mut parallel = FuturesUnordered::new();
+        // As we only have one branch, arbitrary branch order is fine
+        for (height, hash) in mockchain
+            .all_blocks_arb_branch_order()
+            .map(|block| (block.coinbase_height().unwrap(), block.hash()))
+        {
+            let index_reader = index_reader.clone();
+            let snapshot = snapshot.clone();
+            parallel.push(async move {
+                let fork_point = index_reader
+                    .find_fork_point(&snapshot, &hash.into())
+                    .await
+                    .unwrap();
+
+                if height <= snapshot.validator_finalized_height {
+                    // passthrough fork point can only ever be the requested block
+                    // as we don't passthrough to nonfinalized state
+                    assert_eq!(hash, fork_point.unwrap().0);
+                    assert_eq!(height, fork_point.unwrap().1);
+                } else {
+                    assert!(fork_point.is_none());
+                }
+            })
+        }
+        while let Some(_success) = parallel.next().await {}
+    });
+}
+
+#[test]
+fn passthrough_get_transaction_status() {
+    passthrough_test(async |mockchain, index_reader, snapshot| {
+        // We use a futures-unordered instead of only a for loop
+        // as this lets us call all the get_raw_transaction requests
+        // at the same time and wait for them in parallel
+        //
+        // This allows the artificial delays to happen in parallel
+        let mut parallel = FuturesUnordered::new();
+        // As we only have one branch, arbitrary branch order is fine
+        for (height, txid) in mockchain
+            .all_blocks_arb_branch_order()
+            .map(|block| {
+                block
+                    .transactions
+                    .iter()
+                    .map(|transaction| (block.coinbase_height().unwrap(), transaction.hash()))
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
+        {
+            let index_reader = index_reader.clone();
+            let snapshot = snapshot.clone();
+            parallel.push(async move {
+                let transaction_status = index_reader
+                    .get_transaction_status(&snapshot, &txid.into())
+                    .await
+                    .unwrap();
+
+                if height <= snapshot.validator_finalized_height {
+                    // passthrough transaction status can only ever be on the best
+                    // chain as we don't passthrough to nonfinalized state
+                    let Some(BestChainLocation::Block(_block_hash, transaction_height)) =
+                        transaction_status.0
+                    else {
+                        panic!("expected best chain location")
+                    };
+                    assert_eq!(height, transaction_height);
+                } else {
+                    assert!(transaction_status.0.is_none());
+                }
+                assert!(transaction_status.1.is_empty());
+            })
+        }
+        while let Some(_success) = parallel.next().await {}
+    });
+}
+
+#[test]
+fn passthrough_get_raw_transaction() {
+    passthrough_test(async |mockchain, index_reader, snapshot| {
+        // We use a futures-unordered instead of only a for loop
+        // as this lets us call all the get_raw_transaction requests
+        // at the same time and wait for them in parallel
+        //
+        // This allows the artificial delays to happen in parallel
+        let mut parallel = FuturesUnordered::new();
+        // As we only have one branch, arbitrary branch order is fine
+        for (expected_transaction, height) in mockchain
+            .all_blocks_arb_branch_order()
+            .map(|block| {
+                block
+                    .transactions
+                    .iter()
+                    .map(|transaction| (transaction, block.coinbase_height().unwrap()))
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
+        {
+            let index_reader = index_reader.clone();
+            let snapshot = snapshot.clone();
+            parallel.push(async move {
+                let actual_transaction = index_reader
+                    .get_raw_transaction(
+                        &snapshot,
+                        &TransactionHash::from(expected_transaction.hash()),
+                    )
+                    .await
+                    .unwrap();
+                let Some((raw_transaction, _branch_id)) = actual_transaction else {
+                    panic!("missing transaction at height {}", height.0)
+                };
+                assert_eq!(
+                    raw_transaction,
+                    SerializedTransaction::from(expected_transaction.clone()).as_ref()
+                )
+            })
+        }
+        while let Some(_success) = parallel.next().await {}
+    });
+}
+
+#[test]
+fn passthrough_get_block_height() {
+    passthrough_test(async |mockchain, index_reader, snapshot| {
+        // We use a futures-unordered instead of only a for loop
+        // as this lets us call all the get_raw_transaction requests
+        // at the same time and wait for them in parallel
+        //
+        // This allows the artificial delays to happen in parallel
+        let mut parallel = FuturesUnordered::new();
+
+        for (expected_height, hash) in mockchain
+            .all_blocks_arb_branch_order()
+            .map(|block| (block.coinbase_height().unwrap(), block.hash()))
+        {
+            let index_reader = index_reader.clone();
+            let snapshot = snapshot.clone();
+            parallel.push(async move {
+                let height = index_reader
+                    .get_block_height(&snapshot, hash.into())
+                    .await
+                    .unwrap();
+                if expected_height <= snapshot.validator_finalized_height {
+                    assert_eq!(height, Some(expected_height.into()));
+                } else {
+                    assert_eq!(height, None);
+                }
+            });
+        }
+        while let Some(_success) = parallel.next().await {}
+    })
+}
+
+#[test]
+fn passthrough_get_block_range() {
+    passthrough_test(async |mockchain, index_reader, snapshot| {
+        // We use a futures-unordered instead of only a for loop
+        // as this lets us call all the get_raw_transaction requests
+        // at the same time and wait for them in parallel
+        //
+        // This allows the artificial delays to happen in parallel
+        let mut parallel = FuturesUnordered::new();
+
+        for expected_start_height in mockchain
+            .all_blocks_arb_branch_order()
+            .map(|block| block.coinbase_height().unwrap())
+        {
+            let expected_end_height = (expected_start_height + 9).unwrap();
+            if expected_end_height.0 as usize <= mockchain.all_blocks_arb_branch_order().count() {
+                let index_reader = index_reader.clone();
+                let snapshot = snapshot.clone();
+                parallel.push(async move {
+                    let block_range_stream = index_reader.get_block_range(
+                        &snapshot,
+                        expected_start_height.into(),
+                        Some(expected_end_height.into()),
+                    );
+                    if expected_start_height <= snapshot.validator_finalized_height {
+                        let mut block_range_stream = Box::pin(block_range_stream.unwrap());
+                        let mut num_blocks_in_stream = 0;
+                        while let Some(block) = block_range_stream.next().await {
+                            let expected_block = mockchain
+                                .all_blocks_arb_branch_order()
+                                .nth(expected_start_height.0 as usize + num_blocks_in_stream)
+                                .unwrap()
+                                .zcash_serialize_to_vec()
+                                .unwrap();
+                            assert_eq!(block.unwrap(), expected_block);
+                            num_blocks_in_stream += 1;
+                        }
+                        assert_eq!(
+                            num_blocks_in_stream,
+                            // expect 10 blocks
+                            10.min(
+                                // unless the provided range overlaps the finalized boundary.
+                                // in that case, expect all blocks between start height
+                                // and finalized height, (+1 for inclusive range)
+                                snapshot
+                                    .validator_finalized_height
+                                    .0
+                                    .saturating_sub(expected_start_height.0)
+                                    + 1
+                            ) as usize
+                        );
+                    } else {
+                        assert!(block_range_stream.is_none())
+                    }
+                });
+            }
+        }
+        while let Some(_success) = parallel.next().await {}
+    })
+}
+
+#[test]
+fn make_chain() {
+    init_tracing();
+    let network = Network::Regtest(ActivationHeights::default());
+    let segment_length = 12;
+
+    let branch_count = 2;
+
+    // default is 256. As each case takes multiple seconds, this seems too many.
+    // TODO: this should be higher than 1. Currently set to 1 for ease of iteration
+    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network))| {
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
+        runtime.block_on(async {
+            let (genesis_segment, branching_segments) = segments;
+            let mockchain = ProptestMockchain {
+                genesis_segment,
+                branching_segments,
+                delay: None
+            };
+            let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
+            let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
+
+            let config = BlockCacheConfig {
+                storage: StorageConfig {
+                    database: DatabaseConfig {
+                        path: db_path,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                db_version: 1,
+                network,
+
+            };
+
+            let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let index_reader = indexer.subscriber();
             let snapshot = index_reader.snapshot_nonfinalized_state();
             let best_tip_hash = snapshot.best_chaintip().blockhash;
             let best_tip_block = snapshot
@@ -76,16 +371,16 @@ fn make_chain() {
                 if hash != &best_tip_hash {
                     assert!(block.chainwork().to_u256() <= best_tip_block.chainwork().to_u256());
                     if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
-                        assert_eq!(index_reader.find_fork_point(&snapshot, hash).unwrap().unwrap().0, *hash);
+                        assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
                     } else {
-                        assert_ne!(index_reader.find_fork_point(&snapshot, hash).unwrap().unwrap().0, *hash);
+                        assert_ne!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
                     }
                 }
             }
-            assert_eq!(snapshot.heights_to_hashes.len(), (segment_length * 2) + 2);
+            assert_eq!(snapshot.heights_to_hashes.len(), (segment_length * 2) );
             assert_eq!(
                 snapshot.blocks.len(),
-                (segment_length * (branch_count + 1)) + 2
+                segment_length * (branch_count + 1)
             );
         });
     });
@@ -95,6 +390,7 @@ fn make_chain() {
 struct ProptestMockchain {
     genesis_segment: ChainSegment,
     branching_segments: Vec<ChainSegment>,
+    delay: Option<Duration>,
 }
 
 impl ProptestMockchain {
@@ -121,7 +417,9 @@ impl ProptestMockchain {
                 None => best_branch_and_work = Some((branch, branch_chainwork)),
             }
         }
-        best_branch_and_work.unwrap().0
+        let mut combined = self.genesis_segment.clone();
+        combined.append(&mut best_branch_and_work.unwrap().0.clone());
+        combined
     }
 
     fn all_blocks_arb_branch_order(&self) -> impl Iterator<Item = &Arc<zebra_chain::block::Block>> {
@@ -167,6 +465,9 @@ impl BlockchainSource for ProptestMockchain {
         &self,
         id: HashOrHeight,
     ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
         match id {
             HashOrHeight::Hash(hash) => {
                 let matches_hash = |block: &&Arc<zebra_chain::block::Block>| block.hash() == hash;
@@ -208,6 +509,9 @@ impl BlockchainSource for ProptestMockchain {
         Option<(zebra_chain::sapling::tree::Root, u64)>,
         Option<(zebra_chain::orchard::tree::Root, u64)>,
     )> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
         let Some(chain_up_to_block) =
             self.get_block_and_all_preceeding(|block| block.hash().0 == id.0)
         else {
@@ -278,6 +582,9 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_mempool_txids(
         &self,
     ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
         Ok(Some(Vec::new()))
     }
 
@@ -285,13 +592,26 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_transaction(
         &self,
         txid: TransactionHash,
-    ) -> BlockchainSourceResult<Option<Arc<zebra_chain::transaction::Transaction>>> {
+    ) -> BlockchainSourceResult<
+        Option<(
+            Arc<zebra_chain::transaction::Transaction>,
+            GetTransactionLocation,
+        )>,
+    > {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
         Ok(self.all_blocks_arb_branch_order().find_map(|block| {
             block
                 .transactions
                 .iter()
                 .find(|transaction| transaction.hash() == txid.into())
                 .cloned()
+                .zip(Some(if self.best_branch().contains(block) {
+                    GetTransactionLocation::BestChain(block.coinbase_height().unwrap())
+                } else {
+                    GetTransactionLocation::NonbestChain
+                }))
         }))
     }
 
@@ -299,7 +619,26 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_best_block_hash(
         &self,
     ) -> BlockchainSourceResult<Option<zebra_chain::block::Hash>> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
         Ok(Some(self.best_branch().last().unwrap().hash()))
+    }
+
+    /// Returns the hash of the block at the tip of the best chain.
+    async fn get_best_block_height(
+        &self,
+    ) -> BlockchainSourceResult<Option<zebra_chain::block::Height>> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(Some(
+            self.best_branch()
+                .last()
+                .unwrap()
+                .coinbase_height()
+                .unwrap(),
+        ))
     }
 
     /// Get a listener for new nonfinalized blocks,
@@ -328,48 +667,52 @@ impl BlockchainSource for ProptestMockchain {
 }
 
 type ChainSegment = SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>;
+
 fn make_branching_chain(
+    // The number of separate branches, after the branching point at the tip
+    // of the initial segment.
     num_branches: usize,
+    // The length of the initial segment, and of the branches
+    // TODO: it would be useful to allow branches of different lengths.
     chain_size: usize,
     network_override: Network,
 ) -> BoxedStrategy<(ChainSegment, Vec<ChainSegment>)> {
     let network_override = Some(network_override.to_zebra_network());
-    // these feel like they shouldn't be needed. The closure lifetimes are fighting me
-    let n_o_clone = network_override.clone();
-    let n_o_clone_2 = network_override.clone();
-    add_segment(SummaryDebug(Vec::new()), network_override.clone(), 1)
-        .prop_flat_map(move |segment| add_segment(segment, n_o_clone.clone(), 1))
-        .prop_flat_map(move |segment| add_segment(segment, n_o_clone_2.clone(), chain_size))
-        .prop_flat_map(move |segment| {
-            (
-                Just(segment.clone()),
-                LedgerState::arbitrary_with(LedgerStateOverride {
-                    height_override: segment.last().unwrap().coinbase_height().unwrap() + 1,
-                    previous_block_hash_override: Some(segment.last().unwrap().hash()),
-                    network_upgrade_override: None,
-                    transaction_version_override: None,
-                    transaction_has_valid_network_upgrade: true,
-                    always_has_coinbase: true,
-                    network_override: network_override.clone(),
-                }),
-            )
-        })
-        .prop_flat_map(move |(segment, ledger)| {
-            (
-                Just(segment),
-                std::iter::repeat_with(|| {
-                    zebra_chain::block::Block::partial_chain_strategy(
-                        ledger.clone(),
-                        chain_size,
-                        arbitrary::allow_all_transparent_coinbase_spends,
-                        true,
-                    )
-                })
-                .take(num_branches)
-                .collect::<Vec<_>>(),
-            )
-        })
-        .boxed()
+    add_segment(
+        SummaryDebug(Vec::new()),
+        network_override.clone(),
+        chain_size,
+    )
+    .prop_flat_map(move |segment| {
+        (
+            Just(segment.clone()),
+            LedgerState::arbitrary_with(LedgerStateOverride {
+                height_override: segment.last().unwrap().coinbase_height().unwrap() + 1,
+                previous_block_hash_override: Some(segment.last().unwrap().hash()),
+                network_upgrade_override: None,
+                transaction_version_override: None,
+                transaction_has_valid_network_upgrade: true,
+                always_has_coinbase: true,
+                network_override: network_override.clone(),
+            }),
+        )
+    })
+    .prop_flat_map(move |(segment, ledger)| {
+        (
+            Just(segment),
+            std::iter::repeat_with(|| {
+                zebra_chain::block::Block::partial_chain_strategy(
+                    ledger.clone(),
+                    chain_size,
+                    arbitrary::allow_all_transparent_coinbase_spends,
+                    true,
+                )
+            })
+            .take(num_branches)
+            .collect::<Vec<_>>(),
+        )
+    })
+    .boxed()
 }
 
 mod proptest_helpers {

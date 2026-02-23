@@ -124,18 +124,18 @@ where
             loop {
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
-                    indexer.log_status().await;
+                    indexer.log_status();
                     last_log_time = Instant::now();
                 }
 
                 // Check for restart signals.
-                if indexer.check_for_critical_errors().await {
+                if indexer.check_for_critical_errors() {
                     indexer.close().await;
                     return Err(IndexerError::Restart);
                 }
 
                 // Check for shutdown signals.
-                if indexer.check_for_shutdown().await {
+                if indexer.check_for_shutdown() {
                     indexer.close().await;
                     return Ok(());
                 }
@@ -148,14 +148,14 @@ where
     }
 
     /// Checks indexers status and servers internal statuses for either offline of critical error signals.
-    async fn check_for_critical_errors(&self) -> bool {
-        let status = self.status_int().await;
+    fn check_for_critical_errors(&self) -> bool {
+        let status = self.status_int();
         status == 5 || status >= 7
     }
 
     /// Checks indexers status and servers internal status for closure signal.
-    async fn check_for_shutdown(&self) -> bool {
-        if self.status_int().await == 4 {
+    fn check_for_shutdown(&self) -> bool {
+        if self.status_int() == 4 {
             return true;
         }
         false
@@ -179,10 +179,10 @@ where
         }
     }
 
-    /// Returns the indexers current status usize, caliculates from internal statuses.
-    async fn status_int(&self) -> usize {
+    /// Returns the indexers current status usize, calculates from internal statuses.
+    fn status_int(&self) -> usize {
         let service_status = match &self.service {
-            Some(service) => service.inner_ref().status().await,
+            Some(service) => service.inner_ref().status(),
             None => return 7,
         };
 
@@ -204,14 +204,14 @@ where
     }
 
     /// Returns the current StatusType of the indexer.
-    pub async fn status(&self) -> StatusType {
-        StatusType::from(self.status_int().await)
+    pub fn status(&self) -> StatusType {
+        StatusType::from(self.status_int())
     }
 
     /// Logs the indexers status.
-    pub async fn log_status(&self) {
+    pub fn log_status(&self) {
         let service_status = match &self.service {
-            Some(service) => service.inner_ref().status().await,
+            Some(service) => service.inner_ref().status(),
             None => StatusType::Offline,
         };
 

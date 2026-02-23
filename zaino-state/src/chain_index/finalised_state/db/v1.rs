@@ -458,6 +458,7 @@ impl TransparentHistExt for DbV1 {
 
 // ───────────────────────── ZainoDb v1 Implementation ─────────────────────────
 
+#[derive(Debug)]
 /// Zaino’s Finalised State database V1.
 ///
 /// This type owns an LMDB [`Environment`] and a fixed set of named databases representing the V1
@@ -942,9 +943,11 @@ impl DbV1 {
     }
 
     // *** DB write / delete methods ***
-    // These should only ever be used in a single DB control task.
+    // **These should only ever be used in a single DB control task.**
 
     /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
+    ///
+    /// NOTE: This method should never leave a block partially written to the database.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
         let block_hash = *block.index().hash();
@@ -952,12 +955,44 @@ impl DbV1 {
         let block_height = block.index().height();
         let block_height_bytes = block_height.to_bytes()?;
 
-        // check this is the *next* block in the chain.
-        tokio::task::block_in_place(|| {
+        // Check if this specific block already exists (idempotent write support for shared DB).
+        // This handles the case where multiple processes share the same ZainoDB.
+        let block_already_exists = tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
-            let cur = ro.open_ro_cursor(self.headers)?;
 
-            // Position the cursor at the last header we currently have
+            // First, check if a block at this specific height already exists
+            match ro.get(self.headers, &block_height_bytes) {
+                Ok(stored_header_bytes) => {
+                    // Block exists at this height - verify it's the same block
+                    // Data is stored as StoredEntryVar<BlockHeaderData>, so deserialize properly
+                    let stored_entry =
+                        StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
+                            .map_err(|e| {
+                                FinalisedStateError::Custom(format!(
+                                    "header decode error during idempotency check: {e}"
+                                ))
+                            })?;
+                    let stored_header = stored_entry.inner();
+                    if *stored_header.index().hash() == block_hash {
+                        // Same block already written, this is a no-op success
+                        return Ok(true);
+                    } else {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "block at height {block_height:?} already exists with different hash \
+                             (stored: {:?}, incoming: {:?})",
+                            stored_header.index().hash(),
+                            block_hash
+                        )));
+                    }
+                }
+                Err(lmdb::Error::NotFound) => {
+                    // Block doesn't exist at this height, check if it's the next in sequence
+                }
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            }
+
+            // Now verify this is the next block in the chain
+            let cur = ro.open_ro_cursor(self.headers)?;
             match cur.get(None, None, lmdb_sys::MDB_LAST) {
                 // Database already has blocks
                 Ok((last_height_bytes, _last_header_bytes)) => {
@@ -983,8 +1018,18 @@ impl DbV1 {
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             }
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, FinalisedStateError>(false)
         })?;
+
+        // If block already exists with same hash, return success without re-writing
+        if block_already_exists {
+            self.status.store(StatusType::Ready);
+            info!(
+                "Block {} at height {} already exists in ZainoDB, skipping write.",
+                &block_hash, &block_height.0
+            );
+            return Ok(());
+        }
 
         // Build DBHeight
         let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.index().height());
@@ -1310,13 +1355,94 @@ impl DbV1 {
 
                 Ok(())
             }
+            Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
+                // Block write failed because key already exists - another process wrote it
+                // between our check and our write.
+                //
+                // Wait briefly and verify it's the same block and was fully written to the finalised state.
+                // Partially written block should be deleted from the database and the write error reported
+                // so the on disk tables are never corrupted by a partial block writes.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                let height_bytes = block_height.to_bytes()?;
+                let verification_result = tokio::task::block_in_place(|| {
+                    // Sync to see latest commits from other processes
+                    self.env.sync(true).ok();
+                    let ro = self.env.begin_ro_txn()?;
+                    match ro.get(self.headers, &height_bytes) {
+                        Ok(stored_header_bytes) => {
+                            // Data is stored as StoredEntryVar<BlockHeaderData>
+                            let stored_entry =
+                                StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "header decode error in KeyExist handler: {e}"
+                                        ))
+                                    })?;
+                            let stored_header = stored_entry.inner();
+                            if *stored_header.index().hash() == block_hash {
+                                // Block hash exists, verify block was fully written.
+                                self.validate_block_blocking(block_height, block_hash)
+                                    .map(|()| true)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "Block write fail at height {}, with hash {:?}, \
+                                            validation error: {}",
+                                            block_height.0, block_hash, e
+                                        ))
+                                    })
+                            } else {
+                                Err(FinalisedStateError::Custom(format!(
+                                    "KeyExist race: different block at height {} \
+                                     (stored: {:?}, incoming: {:?})",
+                                    block_height.0,
+                                    stored_header.index().hash(),
+                                    block_hash
+                                )))
+                            }
+                        }
+                        Err(lmdb::Error::NotFound) => Err(FinalisedStateError::Custom(format!(
+                            "KeyExist but block not found at height {} after sync",
+                            block_height.0
+                        ))),
+                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                    }
+                });
+
+                match verification_result {
+                    Ok(_) => {
+                        // Block was already written correctly by another process
+                        self.status.store(StatusType::Ready);
+                        info!(
+                            "Block {} at height {} was already written by another process, skipping.",
+                            &block_hash, &block_height.0
+                        );
+                        Ok(())
+                    }
+                    Err(e) => {
+                        warn!("Error writing block to DB: {e}");
+
+                        let _ = self.delete_block(&block).await;
+                        tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
+                            FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
+                        })?;
+                        self.status.store(StatusType::CriticalError);
+                        self.status.store(StatusType::RecoverableError);
+                        Err(FinalisedStateError::InvalidBlock {
+                            height: block_height.0,
+                            hash: block_hash,
+                            reason: e.to_string(),
+                        })
+                    }
+                }
+            }
             Err(e) => {
-                warn!("Error writing block to DB.");
+                warn!("Error writing block to DB: {e}");
 
                 let _ = self.delete_block(&block).await;
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-                self.status.store(StatusType::RecoverableError);
+                self.status.store(StatusType::CriticalError);
                 Err(FinalisedStateError::InvalidBlock {
                     height: block_height.0,
                     hash: block_hash,
@@ -3393,6 +3519,8 @@ impl DbV1 {
 
         // Bounded channel provides backpressure so the blocking task cannot run unbounded ahead of
         // the gRPC consumer.
+        //
+        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically base on resources.
         let (sender, receiver) =
             tokio::sync::mpsc::channel::<Result<CompactBlock, tonic::Status>>(128);
 

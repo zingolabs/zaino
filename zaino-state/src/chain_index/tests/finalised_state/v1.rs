@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
-use zaino_proto::proto::utils::PoolTypeFilter;
+use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::capability::IndexedBlockExt;
 use crate::chain_index::finalised_state::db::DbBackend;
@@ -18,7 +18,6 @@ use crate::chain_index::tests::vectors::{
 };
 use crate::chain_index::types::TransactionHash;
 use crate::error::FinalisedStateError;
-use crate::local_cache::compact_block_with_pool_types;
 use crate::{
     AddrScript, BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height,
     IndexedBlock, Outpoint,
