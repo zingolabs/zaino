@@ -45,6 +45,11 @@ RUN apt-get -qq update && \
 
 COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
 
+# Writable home for XDG defaults (config, cache, etc.)
+# The actual UID is mapped at runtime via --userns=keep-id or --user.
+RUN mkdir -p /home/zaino && chmod 777 /home/zaino
+ENV HOME=/home/zaino
+
 EXPOSE 8137 8237
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
@@ -53,4 +58,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # Run as non-root. The caller MUST map their host user:
 #   podman: podman run --userns=keep-id zaino
 #   docker: docker run --user "$(id -u):$(id -g)" zaino
-CMD ["zainod", "start"]
+ENTRYPOINT ["zainod"]
+CMD ["start"]
