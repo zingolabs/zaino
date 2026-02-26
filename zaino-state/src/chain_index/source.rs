@@ -164,7 +164,7 @@ impl BlockchainSource for ValidatorConnector {
                             RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) => Ok(None),
                             RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
                             _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
-                        },  
+                        },
                     }
                 }
                 Ok(otherwise) => panic!(
