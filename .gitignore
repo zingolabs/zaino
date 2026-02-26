@@ -15,4 +15,4 @@ container-target/
 .local/
 .failed-tests
 **/proptest-regressions/**
-zainod_config/
+.zainod_config/
