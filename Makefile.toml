@@ -632,22 +632,14 @@ description = "Build zainod container image (usage: makers build-zainod <podman|
 extend = "base-zainod"
 private = false
 script.main = '''
-info "Building zainod builder image"
+info "Building zainod runtime image"
 info "Engine:  $ENGINE"
 info "Rust:    $RUST_VERSION"
 info "Commit:  $COMMIT"
-info "Tag:     $BUILDER_TAG"
+info "Tag:     $RUNTIME_TAG"
 
-$ENGINE build -f Containerfile.builder \
+$ENGINE build -f Containerfile.build \
   --build-arg RUST_VERSION="$RUST_VERSION" \
-  -t "$BUILDER_TAG" \
-  .
-
-info "Building zainod runtime base image"
-info "Tag: $RUNTIME_TAG"
-
-$ENGINE build -f Containerfile.runtime \
-  --build-arg BUILDER_IMAGE="$BUILDER_TAG" \
   -t "$RUNTIME_TAG" \
   .
 

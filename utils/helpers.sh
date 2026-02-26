@@ -59,11 +59,10 @@ require_clean_worktree() {
 }
 
 # Compute image tags from the current rust toolchain and HEAD commit.
-# Exports: RUST_VERSION, COMMIT, BUILDER_TAG, RUNTIME_TAG, ZAINOD_TAG
+# Exports: RUST_VERSION, COMMIT, RUNTIME_TAG, ZAINOD_TAG
 compute_zainod_tags() {
   RUST_VERSION=$(rustc --version | awk '{print $2}')
   COMMIT=$(git rev-parse --short HEAD)
-  BUILDER_TAG="zaino-builder:${RUST_VERSION}-${COMMIT}"
   RUNTIME_TAG="zaino-runtime:${RUST_VERSION}-${COMMIT}"
   ZAINOD_TAG="zainod:${RUST_VERSION}-${COMMIT}"
 }
