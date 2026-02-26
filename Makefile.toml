@@ -629,6 +629,7 @@ script.main = "err 'base-zainod: override script.main in the extending task'"
 [tasks.build-zainod]
 description = "Build zainod container image (usage: makers build-zainod <podman|docker>)"
 extend = "base-zainod"
+private = false
 script.main = '''
 info "Building zainod builder image"
 info "Engine:  $ENGINE"
@@ -666,6 +667,7 @@ info "Done. Run with: makers run-zainod $ENGINE"
 [tasks.run-zainod]
 description = "Build, configure, and run zainod (usage: makers run-zainod <podman|docker>)"
 extend = "base-zainod"
+private = false
 script.main = '''
 # Skip build if image already exists
 if $ENGINE image inspect "$ZAINOD_TAG" > /dev/null 2>&1; then
