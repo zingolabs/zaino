@@ -35,6 +35,8 @@ echo "  container-test             Run integration tests using the local image"
 echo "  container-test-save-failures    Run tests, save failures to .failed-tests"
 echo "  container-test-retry-failures   Rerun only the previously failed tests"
 echo "  build-image                Build the Docker image with current artifact versions"
+echo "  build-zainod               Build zainod container image (makers build-zainod <podman|docker>)"
+echo "  run-zainod                 Build, configure, and run zainod (makers run-zainod <podman|docker>)"
 echo "  push-image                 Push the image (used in CI, can be used manually)"
 echo "  compute-image-tag          Compute the tag for the Docker image based on versions"
 echo "  get-docker-hash            Get DOCKER_DIR_HASH value (hash for the image defining files)"
@@ -606,41 +608,28 @@ script.post = "makers notify"
 
 # -------------------------------------------------------------------
 
-[tasks.build-zainod]
-description = "Build zainod container image (usage: makers build-zainod <podman|docker>)"
+[tasks.base-zainod]
+private = true
 script_runner = "bash"
-script = '''
+script.pre = '''
 set -euo pipefail
 source "./utils/helpers.sh"
 
-ENGINE="${1:?Usage: makers build-zainod <podman|docker>}"
+validate_engine "${1:-}"
+require_clean_worktree
+compute_zainod_tags
 
-if [ -n "$(git status --porcelain)" ]; then
-  if [ "${FORCE:-}" = "true" ]; then
-    warn "Working directory is dirty — proceeding because FORCE=true"
-  else
-    err "Working directory is dirty. Commit your changes or run with: makers --env FORCE=true build-zainod $ENGINE"
-    exit 1
-  fi
-fi
+TAIL_FILE=$(tail_file_for_engine)
+CMD_PREFIX=$(cmd_prefix_for_engine)
+'''
+script.main = "err 'base-zainod: override script.main in the extending task'"
 
-if [ "$ENGINE" != "podman" ] && [ "$ENGINE" != "docker" ]; then
-  err "Unknown engine: $ENGINE (use podman or docker)"
-  exit 1
-fi
+# -------------------------------------------------------------------
 
-RUST_VERSION=$(rustc --version | awk '{print $2}')
-COMMIT=$(git rev-parse --short HEAD)
-BUILDER_TAG="zaino-builder:${RUST_VERSION}-${COMMIT}"
-RUNTIME_TAG="zaino-runtime:${RUST_VERSION}-${COMMIT}"
-ZAINOD_TAG="zainod:${RUST_VERSION}-${COMMIT}"
-
-if [ "$ENGINE" = "podman" ]; then
-  TAIL_FILE="Containerfile.tail"
-else
-  TAIL_FILE="Dockerfile.tail"
-fi
-
+[tasks.build-zainod]
+description = "Build zainod container image (usage: makers build-zainod <podman|docker>)"
+extend = "base-zainod"
+script.main = '''
 info "Building zainod builder image"
 info "Engine:  $ENGINE"
 info "Rust:    $RUST_VERSION"
@@ -669,5 +658,51 @@ $ENGINE build -f "$TAIL_FILE" \
   -t "$ZAINOD_TAG" \
   .
 
-info "Done. Run with: $ENGINE run --rm $ZAINOD_TAG"
+info "Done. Run with: makers run-zainod $ENGINE"
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.run-zainod]
+description = "Build, configure, and run zainod (usage: makers run-zainod <podman|docker>)"
+extend = "base-zainod"
+script.main = '''
+# Skip build if image already exists
+if $ENGINE image inspect "$ZAINOD_TAG" > /dev/null 2>&1; then
+  info "Image $ZAINOD_TAG already exists — skipping build"
+else
+  info "Image $ZAINOD_TAG not found — building..."
+  makers build-zainod "$ENGINE"
+fi
+
+CONFIG_DIR=".zainod_config"
+CONFIG_FILE="${CONFIG_DIR}/zainod.toml"
+
+# Generate config if it doesn't exist
+if [ ! -f "$CONFIG_FILE" ]; then
+  info "Generating default config at $CONFIG_FILE"
+  mkdir -p "$CONFIG_DIR"
+  $ENGINE run --rm \
+    --user "$(id -u):$(id -g)" \
+    -v "$PWD/$CONFIG_DIR:/config" \
+    "$ZAINOD_TAG" \
+    $CMD_PREFIX generate-config -o /config/zainod.toml
+
+  # Patch gRPC listen address for container networking
+  sed -i 's/listen_address = "127\.0\.0\.1:8137"/listen_address = "0.0.0.0:8137"/' "$CONFIG_FILE"
+  info "Patched gRPC listen_address to 0.0.0.0:8137 for container networking"
+  warn "Review $CONFIG_FILE and set validator_settings for your setup"
+fi
+
+info "Starting zainod"
+info "Engine:  $ENGINE"
+info "Image:   $ZAINOD_TAG"
+info "Config:  $CONFIG_FILE"
+
+$ENGINE run --rm \
+  -p 8137:8137 \
+  -p 8237:8237 \
+  -v "$PWD/$CONFIG_DIR:/config" \
+  "$ZAINOD_TAG" \
+  $CMD_PREFIX start -c /config/zainod.toml
 '''
