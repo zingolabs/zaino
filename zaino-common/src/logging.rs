@@ -10,8 +10,8 @@
 //! - `RUST_LOG`: Standard tracing filter. By default only zaino crates are logged.
 //!   Set `RUST_LOG=info` to include all crates (zebra, etc.), or use specific
 //!   filters like `RUST_LOG=zaino=debug,zebra_state=info`.
-//! - `ZAINO_LOG_FORMAT`: Output format ("stream", "tree", or "json")
-//! - `ZAINO_LOG_COLOR`: Color mode ("true"/"false"/"auto"). Defaults to color enabled.
+//! - `ZAINOLOG_FORMAT`: Output format ("stream", "tree", or "json")
+//! - `ZAINOLOG_COLOR`: Color mode ("true"/"false"/"auto"). Defaults to color enabled.
 //!
 //! # Example
 //!
@@ -65,9 +65,9 @@ impl LogFormat {
         }
     }
 
-    /// Get from ZAINO_LOG_FORMAT environment variable.
+    /// Get from ZAINOLOG_FORMAT environment variable.
     pub fn from_env() -> Self {
-        env::var("ZAINO_LOG_FORMAT")
+        env::var("ZAINOLOG_FORMAT")
             .ok()
             .and_then(|s| Self::from_str(&s))
             .unwrap_or_default()
@@ -99,12 +99,12 @@ pub struct LogConfig {
 
 impl Default for LogConfig {
     fn default() -> Self {
-        // Check ZAINO_LOG_COLOR env var:
+        // Check ZAINOLOG_COLOR env var:
         // - "true"/"1"/etc: force color on
         // - "false"/"0"/etc: force color off
         // - "auto": auto-detect TTY (default behavior)
         // If not set, default to color enabled (better dev experience)
-        let color = env::var("ZAINO_LOG_COLOR")
+        let color = env::var("ZAINOLOG_COLOR")
             .ok()
             .and_then(|s| match s.to_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" => Some(true),
@@ -156,7 +156,7 @@ impl LogConfig {
 
 /// Initialize logging with default configuration.
 ///
-/// Reads `ZAINO_LOG_FORMAT` environment variable to determine format:
+/// Reads `ZAINOLOG_FORMAT` environment variable to determine format:
 /// - "stream" (default): Flat chronological output with timestamps
 /// - "tree": Hierarchical span-based output
 /// - "json": Machine-parseable JSON

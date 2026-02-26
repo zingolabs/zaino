@@ -7,8 +7,8 @@ Zaino provides flexible logging with three output formats and configurable verbo
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `RUST_LOG` | Filter string | `zaino=info,zainod=info` | Log level filter |
-| `ZAINO_LOG_FORMAT` | `stream`, `tree`, `json` | `stream` | Output format |
-| `ZAINO_LOG_COLOR` | `true`, `false`, `auto` | `true` | ANSI color output |
+| `ZAINOLOG_FORMAT` | `stream`, `tree`, `json` | `stream` | Output format |
+| `ZAINOLOG_COLOR` | `true`, `false`, `auto` | `true` | ANSI color output |
 
 ## Log Formats
 
@@ -43,7 +43,7 @@ Machine-parseable output. Best for log aggregation systems (ELK, Loki, etc).
 zainod start
 
 # Tree format for debugging span hierarchies
-ZAINO_LOG_FORMAT=tree zainod start
+ZAINOLOG_FORMAT=tree zainod start
 
 # Debug level for zaino crates
 RUST_LOG=zaino=debug,zainod=debug zainod start
@@ -55,7 +55,7 @@ RUST_LOG=info zainod start
 RUST_LOG="zaino_state=debug,zaino_serve=info,zebra_state=warn" zainod start
 
 # Disable colors (for file output)
-ZAINO_LOG_COLOR=false zainod start 2>&1 | tee zainod.log
+ZAINOLOG_COLOR=false zainod start 2>&1 | tee zainod.log
 ```
 
 ### Makefile / Container Tests
@@ -67,23 +67,23 @@ The test environment passes logging variables through to containers:
 makers container-test
 
 # Tree format in tests
-ZAINO_LOG_FORMAT=tree makers container-test
+ZAINOLOG_FORMAT=tree makers container-test
 
 # Debug logging in tests
-RUST_LOG=debug ZAINO_LOG_FORMAT=tree makers container-test
+RUST_LOG=debug ZAINOLOG_FORMAT=tree makers container-test
 
 # JSON output for parsing test logs
-ZAINO_LOG_FORMAT=json makers container-test 2>&1 | jq .
+ZAINOLOG_FORMAT=json makers container-test 2>&1 | jq .
 ```
 
 ### Production
 
 ```bash
 # JSON for log aggregation
-ZAINO_LOG_FORMAT=json ZAINO_LOG_COLOR=false zainod start
+ZAINOLOG_FORMAT=json ZAINOLOG_COLOR=false zainod start
 
 # Structured logging to file
-ZAINO_LOG_FORMAT=json ZAINO_LOG_COLOR=false zainod start 2>> /var/log/zainod.json
+ZAINOLOG_FORMAT=json ZAINOLOG_COLOR=false zainod start 2>> /var/log/zainod.json
 
 # Minimal logging
 RUST_LOG=warn zainod start
