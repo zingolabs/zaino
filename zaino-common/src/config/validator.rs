@@ -4,19 +4,29 @@
 // use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 use std::path::PathBuf;
 
-/// Validator (full-node) type for Zaino configuration.
+/// Validator (full-node) connection settings.
+///
+/// Configures how Zaino connects to the backing validator (Zebra or Zcashd).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ValidatorConfig {
-    /// Full node / validator gprc listen port. Only exists for zebra
+    /// Validator gRPC listen address (Zebra only).
+    ///
+    /// Must be a "private" address as defined in IETF RFC 1918 (IPv4) or RFC 4193 (IPv6).
+    /// Cookie or user/password authentication is recommended for non-localhost addresses.
     pub validator_grpc_listen_address: Option<String>,
-    /// Full node / validator listen address (supports hostname:port or ip:port format).
+    /// Validator JSON-RPC listen address.
+    ///
+    /// Supports hostname:port or ip:port format.
+    /// Must be a "private" address as defined in IETF RFC 1918 (IPv4) or RFC 4193 (IPv6).
     pub validator_jsonrpc_listen_address: String,
-    /// Path to the validator cookie file. Enable validator rpc cookie authentication with Some.
+    /// Path to the validator cookie file for cookie-based authentication.
+    ///
+    /// When set, enables cookie authentication instead of user/password.
     pub validator_cookie_path: Option<PathBuf>,
-    /// Full node / validator Username.
+    /// Validator RPC username for user/password authentication.
     pub validator_user: Option<String>,
-    /// full node / validator Password.
+    /// Validator RPC password for user/password authentication.
     pub validator_password: Option<String>,
 }
 

@@ -12,12 +12,38 @@ use tracing::warn;
 
 use crate::error::IndexerError;
 use zaino_common::{
-    try_resolve_address, AddressResolution, CacheConfig, DatabaseConfig, DatabaseSize, Network,
-    ServiceConfig, StorageConfig, ValidatorConfig,
+    try_resolve_address, AddressResolution, Network, ServiceConfig, StorageConfig, ValidatorConfig,
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 #[allow(deprecated)]
 use zaino_state::{BackendType, FetchServiceConfig, StateServiceConfig};
+
+/// Header for generated configuration files.
+pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
+#
+# Generated with `zainod generate-config`
+#
+# Configuration sources are layered (highest priority first):
+#   1. Environment variables (prefix: ZAINO_)
+#   2. TOML configuration file
+#   3. Built-in defaults
+#
+# For detailed documentation, see:
+#   https://github.com/zingolabs/zaino
+
+"#;
+
+/// Generate default configuration file content.
+///
+/// Returns the full config file content including header and TOML-serialized defaults.
+pub fn generate_default_config() -> Result<String, IndexerError> {
+    let config = ZainodConfig::default();
+
+    let toml_content = toml::to_string_pretty(&config)
+        .map_err(|e| IndexerError::ConfigError(format!("Failed to serialize config: {}", e)))?;
+
+    Ok(format!("{}{}", GENERATED_CONFIG_HEADER, toml_content))
+}
 
 /// Sensitive key suffixes that should not be set via environment variables.
 const SENSITIVE_KEY_SUFFIXES: [&str; 5] = ["password", "secret", "token", "cookie", "private_key"];
@@ -30,26 +56,33 @@ fn is_sensitive_leaf_key(leaf_key: &str) -> bool {
         .any(|suffix| key.ends_with(suffix))
 }
 
-/// Config information required for Zaino.
+/// Zaino daemon configuration.
+///
+/// Field order matters for TOML serialization: simple values must come before tables.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ZainodConfig {
-    /// Type of backend to be used.
+    // Simple values first (TOML requirement)
+    /// Backend type for fetching blockchain data.
     pub backend: BackendType,
-    /// Enable JsonRPC server with a valid Some value.
-    pub json_server_settings: Option<JsonRpcServerConfig>,
-    /// gRPC server settings including listen addr, tls status, key and cert.
-    pub grpc_settings: GrpcServerConfig,
-    /// Full node / validator configuration settings.
-    pub validator_settings: ValidatorConfig,
-    /// Service-level configuration (timeout, channel size).
-    pub service: ServiceConfig,
-    /// Storage configuration (cache and database).
-    pub storage: StorageConfig,
-    /// Block Cache database file path (ZebraDB location).
+    /// Path to Zebra's state database.
+    ///
+    /// Required when using the `state` backend.
     pub zebra_db_path: PathBuf,
-    /// Network chain type.
+    /// Network to connect to (Mainnet, Testnet, or Regtest).
     pub network: Network,
+
+    // Table sections
+    /// JSON-RPC server settings. Set to enable Zaino's JSON-RPC interface.
+    pub json_server_settings: Option<JsonRpcServerConfig>,
+    /// gRPC server settings (listen address, TLS configuration).
+    pub grpc_settings: GrpcServerConfig,
+    /// Validator connection settings.
+    pub validator_settings: ValidatorConfig,
+    /// Service-level settings (timeout, channel size).
+    pub service: ServiceConfig,
+    /// Storage settings (cache and database).
+    pub storage: StorageConfig,
 }
 
 impl ZainodConfig {
@@ -173,14 +206,8 @@ impl Default for ZainodConfig {
                 validator_password: Some("xxxxxx".to_string()),
             },
             service: ServiceConfig::default(),
-            storage: StorageConfig {
-                cache: CacheConfig::default(),
-                database: DatabaseConfig {
-                    path: default_zaino_db_path(),
-                    size: DatabaseSize::default(),
-                },
-            },
-            zebra_db_path: default_zebra_db_path().unwrap(),
+            storage: StorageConfig::default(),
+            zebra_db_path: default_zebra_db_path(),
             network: Network::Testnet,
         }
     }
@@ -195,22 +222,9 @@ pub fn default_ephemeral_cookie_path() -> PathBuf {
     }
 }
 
-/// Loads the default file path for zaino's local db.
-pub fn default_zaino_db_path() -> PathBuf {
-    match std::env::var("HOME") {
-        Ok(home) => PathBuf::from(home).join(".cache").join("zaino"),
-        Err(_) => PathBuf::from("/tmp").join("zaino").join(".cache"),
-    }
-}
-
-/// Loads the default file path for zebras's local db.
-pub fn default_zebra_db_path() -> Result<PathBuf, IndexerError> {
-    match std::env::var("HOME") {
-        Ok(home) => Ok(PathBuf::from(home).join(".cache").join("zebra")),
-        Err(e) => Err(IndexerError::ConfigError(format!(
-            "Unable to find home directory: {e}",
-        ))),
-    }
+/// Loads the default file path for zebra's local db.
+pub fn default_zebra_db_path() -> PathBuf {
+    zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zebra")
 }
 
 /// Resolves a hostname to a SocketAddr.
@@ -737,24 +751,6 @@ listen_address = "127.0.0.1:8137"
     }
 
     #[test]
-    fn test_parse_zindexer_toml_integration() {
-        let _guard = EnvGuard::new();
-        let temp_dir = TempDir::new().unwrap();
-        let zindexer_toml_content = include_str!("../zindexer.toml");
-
-        let config_path =
-            create_test_config_file(&temp_dir, zindexer_toml_content, "zindexer_test.toml");
-        let config = load_config(&config_path).expect("load_config failed to parse zindexer.toml");
-        let defaults = ZainodConfig::default();
-
-        assert_eq!(config.backend, BackendType::Fetch);
-        assert_eq!(
-            config.validator_settings.validator_user,
-            defaults.validator_settings.validator_user
-        );
-    }
-
-    #[test]
     fn test_env_override_toml_and_defaults() {
         let guard = EnvGuard::new();
         let temp_dir = TempDir::new().unwrap();
@@ -967,5 +963,38 @@ listen_address = "127.0.0.1:8137"
         let config_path = create_test_config_file(&temp_dir, toml_content, "unknown_fields.toml");
         let result = load_config(&config_path);
         assert!(result.is_err());
+    }
+
+    /// Verifies that `generate_default_config()` produces valid TOML.
+    ///
+    /// TOML requires simple values before table sections. If ZainodConfig field
+    /// order changes incorrectly, serialization fails with "values must be
+    /// emitted before tables". This test catches that regression.
+    #[test]
+    fn test_generate_default_config_produces_valid_toml() {
+        let content = generate_default_config().expect("should generate config");
+        assert!(content.starts_with(GENERATED_CONFIG_HEADER));
+
+        let toml_part = content.strip_prefix(GENERATED_CONFIG_HEADER).unwrap();
+        let parsed: Result<toml::Value, _> = toml::from_str(toml_part);
+        assert!(parsed.is_ok(), "Generated config is not valid TOML: {:?}", parsed.err());
+    }
+
+    /// Verifies config survives serialize → deserialize → serialize roundtrip.
+    ///
+    /// Catches regressions in custom serde impls (DatabaseSize, Network) and
+    /// ensures field ordering remains stable. If the second serialization differs
+    /// from the first, something is being lost or transformed during the roundtrip.
+    #[test]
+    fn test_config_roundtrip_serialize_deserialize() {
+        let original = ZainodConfig::default();
+
+        let toml_str = toml::to_string_pretty(&original).expect("should serialize");
+        let roundtripped: ZainodConfig =
+            toml::from_str(&toml_str).expect("should deserialize");
+        let toml_str_again =
+            toml::to_string_pretty(&roundtripped).expect("should serialize again");
+
+        assert_eq!(toml_str, toml_str_again, "config roundtrip should be stable");
     }
 }
