@@ -977,7 +977,11 @@ listen_address = "127.0.0.1:8137"
 
         let toml_part = content.strip_prefix(GENERATED_CONFIG_HEADER).unwrap();
         let parsed: Result<toml::Value, _> = toml::from_str(toml_part);
-        assert!(parsed.is_ok(), "Generated config is not valid TOML: {:?}", parsed.err());
+        assert!(
+            parsed.is_ok(),
+            "Generated config is not valid TOML: {:?}",
+            parsed.err()
+        );
     }
 
     /// Verifies config survives serialize → deserialize → serialize roundtrip.
@@ -990,11 +994,12 @@ listen_address = "127.0.0.1:8137"
         let original = ZainodConfig::default();
 
         let toml_str = toml::to_string_pretty(&original).expect("should serialize");
-        let roundtripped: ZainodConfig =
-            toml::from_str(&toml_str).expect("should deserialize");
-        let toml_str_again =
-            toml::to_string_pretty(&roundtripped).expect("should serialize again");
+        let roundtripped: ZainodConfig = toml::from_str(&toml_str).expect("should deserialize");
+        let toml_str_again = toml::to_string_pretty(&roundtripped).expect("should serialize again");
 
-        assert_eq!(toml_str, toml_str_again, "config roundtrip should be stable");
+        assert_eq!(
+            toml_str, toml_str_again,
+            "config roundtrip should be stable"
+        );
     }
 }
