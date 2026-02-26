@@ -170,7 +170,7 @@ pub fn init_with_config(config: LogConfig) {
     // Users can set RUST_LOG=info to see all crates including zebra.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "zaino={level},zainod={level}",
+            "zaino={level},zainod={level},zainodlib={level}",
             level = config.level.as_str()
         ))
     });
@@ -193,7 +193,7 @@ pub fn try_init() {
 pub fn try_init_with_config(config: LogConfig) {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "zaino={level},zainod={level}",
+            "zaino={level},zainod={level},zainodlib={level}",
             level = config.level.as_str()
         ))
     });
