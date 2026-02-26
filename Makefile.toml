@@ -651,10 +651,12 @@ $ENGINE build -f Containerfile.builder \
 info "Building zainod runtime image"
 info "Runtime file: $RUNTIME_FILE"
 
+ZAINOD_TAG="zainod:${RUST_VERSION}-${COMMIT}"
+
 $ENGINE build -f "$RUNTIME_FILE" \
   --build-arg BUILDER_IMAGE="$BUILDER_TAG" \
-  -t zainod \
+  -t "$ZAINOD_TAG" \
   .
 
-info "Done. Run with: $ENGINE run --rm zainod"
+info "Done. Run with: $ENGINE run --rm $ZAINOD_TAG"
 '''
