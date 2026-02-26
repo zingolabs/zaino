@@ -3,7 +3,7 @@
 ############################
 # Builder
 ############################
-ARG RUST_VERSION=1.86.0
+ARG RUST_VERSION
 
 FROM rust:${RUST_VERSION}-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -31,32 +31,3 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     else \
       cargo install --locked --path zainod --bin zainod --root /out; \
     fi
-
-############################
-# Runtime
-############################
-FROM debian:bookworm-slim AS runtime
-
-# Runtime deps
-RUN apt-get -qq update && \
-    apt-get -qq install -y --no-install-recommends \
-      ca-certificates libssl3 libgcc-s1 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
-
-# Writable home for XDG defaults (config, cache, etc.)
-# The actual UID is mapped at runtime via --userns=keep-id or --user.
-RUN mkdir -p /home/zaino && chmod 777 /home/zaino
-ENV HOME=/home/zaino
-
-EXPOSE 8137 8237
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
-
-# Run as non-root. The caller MUST map their host user:
-#   podman: podman run --userns=keep-id zaino
-#   docker: docker run --user "$(id -u):$(id -g)" zaino
-ENTRYPOINT ["zainod"]
-CMD ["start"]

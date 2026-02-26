@@ -603,3 +603,58 @@ info "Filter: $FILTER"
 makers container-test -E "$FILTER" "${@}"
 '''
 script.post = "makers notify"
+
+# -------------------------------------------------------------------
+
+[tasks.build-zainod]
+description = "Build zainod container image (usage: makers build-zainod <podman|docker>)"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+source "./utils/helpers.sh"
+
+ENGINE="${1:?Usage: makers build-zainod <podman|docker>}"
+
+if [ -n "$(git status --porcelain)" ]; then
+  if [ "${FORCE:-}" = "true" ]; then
+    warn "Working directory is dirty — proceeding because FORCE=true"
+  else
+    err "Working directory is dirty. Commit your changes or run with: makers --env FORCE=true build-zainod $ENGINE"
+    exit 1
+  fi
+fi
+
+RUST_VERSION=$(rustc --version | awk '{print $2}')
+COMMIT=$(git rev-parse --short HEAD)
+BUILDER_TAG="zaino-builder:${RUST_VERSION}-${COMMIT}"
+
+if [ "$ENGINE" = "podman" ]; then
+  RUNTIME_FILE="Containerfile.runtime"
+elif [ "$ENGINE" = "docker" ]; then
+  RUNTIME_FILE="Dockerfile.runtime"
+else
+  err "Unknown engine: $ENGINE (use podman or docker)"
+  exit 1
+fi
+
+info "Building zainod builder image"
+info "Engine:  $ENGINE"
+info "Rust:    $RUST_VERSION"
+info "Commit:  $COMMIT"
+info "Tag:     $BUILDER_TAG"
+
+$ENGINE build -f Containerfile.builder \
+  --build-arg RUST_VERSION="$RUST_VERSION" \
+  -t "$BUILDER_TAG" \
+  .
+
+info "Building zainod runtime image"
+info "Runtime file: $RUNTIME_FILE"
+
+$ENGINE build -f "$RUNTIME_FILE" \
+  --build-arg BUILDER_IMAGE="$BUILDER_TAG" \
+  -t zainod \
+  .
+
+info "Done. Run with: $ENGINE run --rm zainod"
+'''

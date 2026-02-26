@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+
+ARG BUILDER_IMAGE
+FROM ${BUILDER_IMAGE} AS builder
+
+############################
+# Runtime
+############################
+FROM debian:bookworm-slim AS runtime
+
+# Runtime deps
+RUN apt-get -qq update && \
+    apt-get -qq install -y --no-install-recommends \
+      ca-certificates libssl3 libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
+
+EXPOSE 8137 8237
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
+
+# Docker-specific: baked-in non-root user
+ARG UID=1000
+ARG GID=1000
+ARG USER=container_user
+ARG HOME=/home/container_user
+
+RUN addgroup --gid "${GID}" "${USER}" && \
+    adduser  --uid "${UID}" --gid "${GID}" --home "${HOME}" \
+             --disabled-password --gecos "" "${USER}"
+
+WORKDIR ${HOME}
+RUN mkdir -p .cache/zaino
+RUN chown -R "${UID}:${GID}" "${HOME}"
+USER ${USER}
+
+CMD ["zainod"]
