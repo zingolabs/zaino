@@ -88,3 +88,14 @@ cmd_prefix_for_engine() {
   fi
 }
 
+# Return extra flags for "$ENGINE run" that differ between engines.
+# Podman: --userns=keep-id maps the host UID into the container.
+# Docker: --user flag to run as the host user.
+run_flags_for_engine() {
+  if [ "$ENGINE" = "podman" ]; then
+    echo "--userns=keep-id"
+  else
+    echo "--user $(id -u):$(id -g)"
+  fi
+}
+

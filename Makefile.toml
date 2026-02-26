@@ -621,6 +621,7 @@ compute_zainod_tags
 
 TAIL_FILE=$(tail_file_for_engine)
 CMD_PREFIX=$(cmd_prefix_for_engine)
+RUN_FLAGS=$(run_flags_for_engine)
 '''
 script.main = "err 'base-zainod: override script.main in the extending task'"
 
@@ -685,7 +686,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   info "Generating default config at $CONFIG_FILE"
   mkdir -p "$CONFIG_DIR"
   $ENGINE run --rm \
-    --user "$(id -u):$(id -g)" \
+    $RUN_FLAGS \
     -v "$PWD/$CONFIG_DIR:/config" \
     "$ZAINOD_TAG" \
     $CMD_PREFIX generate-config -o /config/zainod.toml
@@ -702,6 +703,7 @@ info "Image:   $ZAINOD_TAG"
 info "Config:  $CONFIG_FILE"
 
 $ENGINE run --rm \
+  $RUN_FLAGS \
   -p 8137:8137 \
   -p 8237:8237 \
   -v "$PWD/$CONFIG_DIR:/config" \
