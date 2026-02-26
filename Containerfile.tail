@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+
+ARG RUNTIME_IMAGE
+FROM ${RUNTIME_IMAGE}
+
+# Writable home for XDG defaults (config, cache, etc.)
+# The actual UID is mapped at runtime via --userns=keep-id or --user.
+RUN mkdir -p /home/zaino && chmod 777 /home/zaino
+ENV HOME=/home/zaino
+
+ENTRYPOINT ["zainod"]
+CMD ["start"]

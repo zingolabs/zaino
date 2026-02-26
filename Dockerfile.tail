@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+
+ARG RUNTIME_IMAGE
+FROM ${RUNTIME_IMAGE}
+
+# Docker-specific: baked-in non-root user
+ARG UID=1000
+ARG GID=1000
+ARG USER=container_user
+ARG HOME=/home/container_user
+
+RUN addgroup --gid "${GID}" "${USER}" && \
+    adduser  --uid "${UID}" --gid "${GID}" --home "${HOME}" \
+             --disabled-password --gecos "" "${USER}"
+
+WORKDIR ${HOME}
+RUN mkdir -p .cache/zaino
+RUN chown -R "${UID}:${GID}" "${HOME}"
+USER ${USER}
+
+CMD ["zainod"]

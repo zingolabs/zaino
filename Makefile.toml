@@ -624,17 +624,21 @@ if [ -n "$(git status --porcelain)" ]; then
   fi
 fi
 
+if [ "$ENGINE" != "podman" ] && [ "$ENGINE" != "docker" ]; then
+  err "Unknown engine: $ENGINE (use podman or docker)"
+  exit 1
+fi
+
 RUST_VERSION=$(rustc --version | awk '{print $2}')
 COMMIT=$(git rev-parse --short HEAD)
 BUILDER_TAG="zaino-builder:${RUST_VERSION}-${COMMIT}"
+RUNTIME_TAG="zaino-runtime:${RUST_VERSION}-${COMMIT}"
+ZAINOD_TAG="zainod:${RUST_VERSION}-${COMMIT}"
 
 if [ "$ENGINE" = "podman" ]; then
-  RUNTIME_FILE="Containerfile.runtime"
-elif [ "$ENGINE" = "docker" ]; then
-  RUNTIME_FILE="Dockerfile.runtime"
+  TAIL_FILE="Containerfile.tail"
 else
-  err "Unknown engine: $ENGINE (use podman or docker)"
-  exit 1
+  TAIL_FILE="Dockerfile.tail"
 fi
 
 info "Building zainod builder image"
@@ -648,13 +652,20 @@ $ENGINE build -f Containerfile.builder \
   -t "$BUILDER_TAG" \
   .
 
-info "Building zainod runtime image"
-info "Runtime file: $RUNTIME_FILE"
+info "Building zainod runtime base image"
+info "Tag: $RUNTIME_TAG"
 
-ZAINOD_TAG="zainod:${RUST_VERSION}-${COMMIT}"
-
-$ENGINE build -f "$RUNTIME_FILE" \
+$ENGINE build -f Containerfile.runtime \
   --build-arg BUILDER_IMAGE="$BUILDER_TAG" \
+  -t "$RUNTIME_TAG" \
+  .
+
+info "Building final zainod image"
+info "Tail file: $TAIL_FILE"
+info "Tag:       $ZAINOD_TAG"
+
+$ENGINE build -f "$TAIL_FILE" \
+  --build-arg RUNTIME_IMAGE="$RUNTIME_TAG" \
   -t "$ZAINOD_TAG" \
   .
 
