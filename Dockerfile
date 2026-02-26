@@ -1,17 +1,10 @@
 # syntax=docker/dockerfile:1
 
 ############################
-# Global build args
-############################
-ARG RUST_VERSION=1.86.0
-ARG UID=1000
-ARG GID=1000
-ARG USER=container_user
-ARG HOME=/home/container_user
-
-############################
 # Builder
 ############################
+ARG RUST_VERSION=1.86.0
+
 FROM rust:${RUST_VERSION}-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
@@ -45,10 +38,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bookworm-slim AS runtime
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-ARG UID
-ARG GID
-ARG USER
-ARG HOME
+ARG UID=1000
+ARG GID=1000
+ARG USER=container_user
+ARG HOME=/home/container_user
 
 # Only the dynamic libs needed by a Rust/OpenSSL binary
 RUN apt-get -qq update && \
