@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+use hex::ToHex;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
@@ -947,7 +948,7 @@ async fn check_faucet_spent_map() {
         .zip(faucet_ouptpoints_spent_status.iter())
     {
         let outpoint_tuple = (
-            TransactionHash::from(*outpoint.prev_txid()).to_string(),
+            TransactionHash::from(*outpoint.prev_txid()).encode_hex::<String>(),
             outpoint.prev_index(),
         );
         match spender_option {
@@ -1116,7 +1117,7 @@ async fn check_recipient_spent_map() {
         .zip(recipient_ouptpoints_spent_status.iter())
     {
         let outpoint_tuple = (
-            TransactionHash::from(*outpoint.prev_txid()).to_string(),
+            TransactionHash::from(*outpoint.prev_txid()).encode_hex::<String>(),
             outpoint.prev_index(),
         );
         match spender_option {
