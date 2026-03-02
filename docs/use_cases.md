@@ -14,14 +14,17 @@ Recently the newest GCC version on Arch has broken a build script in the `rocksd
 
 - Then to launch Zaino: [in separate terminals]:
 3) Run `$ zebrad --config #PATH_TO_CONF/zebrad.toml start`
-4) Run `$ zainod --config #PATH_TO_CONF/zindexer.toml`
+4) Run `$ zainod start` (uses default config at `~/.config/zaino/zainod.toml`)
+   Or with explicit config: `$ zainod start -c #PATH_TO_CONF/zainod.toml`
+
+   To generate a default config file: `$ zainod generate-config`
 
 NOTE: Unless the `no_db` option is set to true in the config file zaino will sync its internal `CompactBlock` cache with the validator it is connected to on launch. This can be a very slow process the first time Zaino's DB is synced with a new chain and zaino will not be operable until the database is fully synced. If Zaino exits during this process the database is saved in its current state, enabling the chain to be synced in several stages.
 
 - To launch Zingo-Cli running through Zaino [from #PATH_TO/zingolib]:
 5) Run `$ cargo run --release --package zingo-cli -- --chain "CHAIN_TYPE" --server "ZAINO_LISTEN_ADDR" --data-dir #PATH_TO_WALLET_DATA_DIR`
 
-- Example Config files for running Zebra and Zaino on testnet are given in `zaino/zainod/*`
+- Example Config files for running Zebra on testnet are given in `zaino/zainod/`
 
 A system architecture diagram for this service can be seen at [Live Service System Architecture](./zaino_live_system_architecture.pdf).
 

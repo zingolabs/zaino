@@ -66,6 +66,7 @@ WORKDIR ${HOME}
 # Copy the installed binary from builder
 COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
 
+RUN mkdir -p .cache/zaino
 RUN chown -R "${UID}:${GID}" "${HOME}"
 USER ${USER}
 

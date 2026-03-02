@@ -43,6 +43,52 @@
 //! building the new database in full. This enables developers to minimise transient disk usage
 //! during migrations.
 //!
+//! # Notes on MigrationType
+//!
+//! Database versioning (and migration) is split into three distinct types, dependant of the severity
+//! of changes being made to the database:
+//! - Major versions / migrations:
+//!   - Major schema / capability changes, notably changes that require refetching the complete
+//!     blockchain from the backing validator / finaliser to build / update database indices.
+//!   - Migrations should follow the "primary" database / "shadow" database model. The legacy database
+//!     should be spawned as the "primary" and set to carry on serving data during migration. The new
+//!     database version is then spawned as the "shadow" and built in a background process. Once the
+//!     "shadow" is built to "primary" db tip height it is promoted to primary, taking over serving
+//!     data from the legacy database, the demoted database can then be safely removed from disk. It is
+//!     also possible to partially build the new database version , promote specific database capability,
+//!     and delete specific tables from the legacy database, reducing transient disk usage.
+//! - Minor versions / migrations:
+//!   - Updates involving minor schema / capability changes, notably changes that can be rebuilt in place
+//!     (changes that do not require fetching new data from the backing validator / finaliser) or that can
+//!     rely on updates to the versioned serialisation / deserialisation of database structures.
+//!   - Migrations for minor patch bumps can follow several paths. If the database table being updated
+//!     holds variable length items, and the actual data being held is not changed (only format changes
+//!     being applied) then it may be possible to rely on serialisation / deserialisation updates to the
+//!     items being chenged, with the database table holding a mix of serialisation versions. However,
+//!     if the table being updated is of fixed length items, or the actual data held is being updated,
+//!     then it will be necessary to rebuild that table in full, possibly requiring database downtime for
+//!     the migration. Since this only involves moving data already held in the database (rather than
+//!     fetching new data from the backing validator) migration should be quick and short downtimes are
+//!     accepted.
+//! - Patch versions / migrations:
+//!   - Changes to database code that do not touch the database schema, these include bug fixes,
+//!     performance improvements etc.
+//!   - Migrations for patch updates only need to handle updating the stored DbMetadata singleton.
+//!
+//! # Development: adding a new migration step
+//!
+//! 1. Introduce a new `struct MigrationX_Y_ZToA_B_C;` and implement `Migration<T>`.
+//! 2. Add a new `MigrationStep` variant and register it in `MigrationManager::get_migration()` by
+//!    matching on the *current* version.
+//! 3. Ensure the migration is:
+//!    - deterministic,
+//!    - resumable (use `DbMetadata::migration_status` and/or shadow tip),
+//!    - crash-safe (never leaves a partially promoted DB).
+//! 4. Add tests/fixtures for:
+//!    - starting from the old version,
+//!    - resuming mid-build if applicable,
+//!    - validating the promoted DB serves required capabilities.
+//!
 //! # Implemented migrations
 //!
 //! ## v0.0.0 → v1.0.0
@@ -79,50 +125,8 @@
 //! This release also introduces [`MigrationStep`], the enum-based migration dispatcher used by
 //! [`MigrationManager`], to allow selecting between multiple concrete migration implementations.
 //!
-//! # Development: adding a new migration step
-//!
-//! 1. Introduce a new `struct MigrationX_Y_ZToA_B_C;` and implement `Migration<T>`.
-//! 2. Add a new `MigrationStep` variant and register it in `MigrationManager::get_migration()` by
-//!    matching on the *current* version.
-//! 3. Ensure the migration is:
-//!    - deterministic,
-//!    - resumable (use `DbMetadata::migration_status` and/or shadow tip),
-//!    - crash-safe (never leaves a partially promoted DB).
-//! 4. Add tests/fixtures for:
-//!    - starting from the old version,
-//!    - resuming mid-build if applicable,
-//!    - validating the promoted DB serves required capabilities.
-//!
-//! # Notes on MigrationType
-//! Database versioning (and migration) is split into three distinct types, dependant of the severity
-//! of changes being made to the database:
-//! - Major versions / migrations:
-//!   - Major schema / capability changes, notably changes that require refetching the complete
-//!     blockchain from the backing validator / finaliser to build / update database indices.
-//!   - Migrations should follow the "primary" database / "shadow" database model. The legacy database
-//!     should be spawned as the "primary" and set to carry on serving data during migration. The new
-//!     database version is then spawned as the "shadow" and built in a background process. Once the
-//!     "shadow" is built to "primary" db tip height it is promoted to primary, taking over serving
-//!     data from the legacy database, the demoted database can then be safely removed from disk. It is
-//!     also possible to partially build the new database version , promote specific database capability,
-//!     and delete specific tables from the legacy database, reducing transient disk usage.
-//! - Minor versions / migrations:
-//!   - Updates involving minor schema / capability changes, notably changes that can be rebuilt in place
-//!     (changes that do not require fetching new data from the backing validator / finaliser) or that can
-//!     rely on updates to the versioned serialisation / deserialisation of database structures.
-//!   - Migrations for minor patch bumps can follow several paths. If the database table being updated
-//!     holds variable length items, and the actual data being held is not changed (only format changes
-//!     being applied) then it may be possible to rely on serialisation / deserialisation updates to the
-//!     items being chenged, with the database table holding a mix of serialisation versions. However,
-//!     if the table being updated is of fixed length items, or the actual data held is being updated,
-//!     then it will be necessary to rebuild that table in full, possibly requiring database downtime for
-//!     the migration. Since this only involves moving data already held in the database (rather than
-//!     fetching new data from the backing validator) migration should be quick and short downtimes are
-//!     accepted.
-//! - Patch versions / migrations:
-//!   - Changes to database code that do not touch the database schema, these include bug fixes,
-//!     performance improvements etc.
-//!   - Migrations for patch updates only need to handle updating the stored DbMetadata singleton.
+//! Bug Fixes:
+//! - Added safety check for idempotent DB writes
 
 use super::{
     capability::{
@@ -141,10 +145,11 @@ use crate::{
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock,
 };
 
+use zebra_chain::parameters::NetworkKind;
+
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::info;
-use zebra_chain::parameters::NetworkKind;
 
 /// Broad categorisation of migration severity.
 ///
@@ -539,6 +544,9 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
 ///
 /// Because the persisted schema contract is unchanged, this migration only updates the stored
 /// [`DbMetadata::version`] from `1.0.0` to `1.1.0`.
+///
+/// Bug Fixes:
+/// - Added safety check for idempotent DB writes
 ///
 /// Safety and resumability:
 /// - Idempotent: if run more than once, it will re-write the same metadata.
