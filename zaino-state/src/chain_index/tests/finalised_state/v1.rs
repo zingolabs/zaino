@@ -576,7 +576,7 @@ async fn get_faucet_txids() {
         let block_txids: Vec<String> = chain_block
             .transactions()
             .iter()
-            .map(|tx_data| tx_data.txid().to_string())
+            .map(|tx_data| tx_data.txid().encode_hex::<String>())
             .collect();
         let filtered_block_txids: Vec<String> = block_txids
             .into_iter()
@@ -592,7 +592,7 @@ async fn get_faucet_txids() {
         let mut reader_block_txids = Vec::new();
         for tx_location in reader_faucet_tx_locations {
             let txid = db_reader.get_txid(tx_location).await.unwrap();
-            reader_block_txids.push(txid.to_string());
+            reader_block_txids.push(txid.encode_hex::<String>());
         }
         dbg!(&reader_block_txids);
 
@@ -609,7 +609,7 @@ async fn get_faucet_txids() {
     let mut reader_faucet_txids = Vec::new();
     for tx_location in reader_faucet_tx_locations {
         let txid = db_reader.get_txid(tx_location).await.unwrap();
-        reader_faucet_txids.push(txid.to_string());
+        reader_faucet_txids.push(txid.encode_hex::<String>());
     }
 
     assert_eq!(faucet.txids.len(), reader_faucet_txids.len());
@@ -683,7 +683,7 @@ async fn get_recipient_txids() {
         let block_txids: Vec<String> = chain_block
             .transactions()
             .iter()
-            .map(|tx_data| tx_data.txid().to_string())
+            .map(|tx_data| tx_data.txid().encode_hex::<String>())
             .collect();
 
         // Get block txids that are relevant to recipient.
@@ -704,7 +704,7 @@ async fn get_recipient_txids() {
         let mut reader_block_txids = Vec::new();
         for tx_location in reader_recipient_tx_locations {
             let txid = db_reader.get_txid(tx_location).await.unwrap();
-            reader_block_txids.push(txid.to_string());
+            reader_block_txids.push(txid.encode_hex::<String>());
         }
         dbg!(&reader_block_txids);
 
@@ -722,7 +722,7 @@ async fn get_recipient_txids() {
     let mut reader_recipient_txids = Vec::new();
     for tx_location in reader_recipient_tx_locations {
         let txid = db_reader.get_txid(tx_location).await.unwrap();
-        reader_recipient_txids.push(txid.to_string());
+        reader_recipient_txids.push(txid.encode_hex::<String>());
     }
 
     assert_eq!(recipient.txids.len(), reader_recipient_txids.len());
@@ -748,7 +748,7 @@ async fn get_faucet_utxos() {
     for utxo in faucet.utxos.iter() {
         let (_faucet_address, txid, output_index, _faucet_script, satoshis, _height) =
             utxo.into_parts();
-        cleaned_utxos.push((txid.to_string(), output_index.index(), satoshis));
+        cleaned_utxos.push((txid.encode_hex::<String>(), output_index.index(), satoshis));
     }
 
     let reader_faucet_utxo_indexes = db_reader
@@ -760,7 +760,7 @@ async fn get_faucet_utxos() {
     let mut reader_faucet_utxos = Vec::new();
 
     for (tx_location, vout, value) in reader_faucet_utxo_indexes {
-        let txid = db_reader.get_txid(tx_location).await.unwrap().to_string();
+        let txid = db_reader.get_txid(tx_location).await.unwrap().encode_hex::<String>();
         reader_faucet_utxos.push((txid, vout as u32, value));
     }
 
@@ -793,7 +793,7 @@ async fn get_recipient_utxos() {
     for utxo in recipient.utxos.iter() {
         let (_recipient_address, txid, output_index, _recipient_script, satoshis, _height) =
             utxo.into_parts();
-        cleaned_utxos.push((txid.to_string(), output_index.index(), satoshis));
+        cleaned_utxos.push((txid.encode_hex::<String>(), output_index.index(), satoshis));
     }
 
     let reader_recipient_utxo_indexes = db_reader
@@ -805,7 +805,7 @@ async fn get_recipient_utxos() {
     let mut reader_recipient_utxos = Vec::new();
 
     for (tx_location, vout, value) in reader_recipient_utxo_indexes {
-        let txid = db_reader.get_txid(tx_location).await.unwrap().to_string();
+        let txid = db_reader.get_txid(tx_location).await.unwrap().encode_hex::<String>();
         reader_recipient_utxos.push((txid, vout as u32, value));
     }
 
@@ -933,7 +933,7 @@ async fn check_faucet_spent_map() {
     for utxo in faucet.utxos.iter() {
         let (_faucet_address, txid, output_index, _faucet_script, _satoshis, _height) =
             utxo.into_parts();
-        faucet_utxo_indexes.push((txid.to_string(), output_index.index()));
+        faucet_utxo_indexes.push((txid.encode_hex::<String>(), output_index.index()));
     }
 
     // check full spent outpoints map
@@ -1102,7 +1102,7 @@ async fn check_recipient_spent_map() {
     for utxo in recipient.utxos.iter() {
         let (_recipient_address, txid, output_index, _recipient_script, _satoshis, _height) =
             utxo.into_parts();
-        recipient_utxo_indexes.push((txid.to_string(), output_index.index()));
+        recipient_utxo_indexes.push((txid.encode_hex::<String>(), output_index.index()));
     }
 
     // check full spent outpoints map
