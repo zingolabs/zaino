@@ -24,6 +24,8 @@ pub mod indexer;
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     init_logging();
 
+    info!("zainod v{}", env!("CARGO_PKG_VERSION"));
+
     let config = load_config(&config_path)?;
 
     loop {

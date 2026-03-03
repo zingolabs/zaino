@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     fi
 
 ############################
-# Runtime (slim, non-root)
+# Runtime
 ############################
 FROM debian:bookworm-slim AS runtime
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -50,33 +50,43 @@ ARG GID
 ARG USER
 ARG HOME
 
-# Only the dynamic libs needed by a Rust/OpenSSL binary
+# Runtime deps + setpriv for privilege dropping
 RUN apt-get -qq update && \
     apt-get -qq install -y --no-install-recommends \
-      ca-certificates libssl3 libgcc-s1 \
+      ca-certificates libssl3 libgcc-s1 util-linux \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
+# Create non-root user (entrypoint will drop privileges to this user)
 RUN addgroup --gid "${GID}" "${USER}" && \
     adduser  --uid "${UID}" --gid "${GID}" --home "${HOME}" \
              --disabled-password --gecos "" "${USER}"
 
+# Make UID/GID available to entrypoint
+ENV UID=${UID} GID=${GID} HOME=${HOME}
+
 WORKDIR ${HOME}
 
-# Copy the installed binary from builder
+# Create ergonomic mount points with symlinks to XDG defaults
+# Users mount to /app/config and /app/data, zaino uses ~/.config/zaino and ~/.cache/zaino
+RUN mkdir -p /app/config /app/data && \
+    mkdir -p ${HOME}/.config ${HOME}/.cache && \
+    ln -s /app/config ${HOME}/.config/zaino && \
+    ln -s /app/data ${HOME}/.cache/zaino && \
+    chown -R ${UID}:${GID} /app ${HOME}/.config ${HOME}/.cache
+
+# Copy binary and entrypoint
 COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-RUN mkdir -p .cache/zaino
-RUN chown -R "${UID}:${GID}" "${HOME}"
-USER ${USER}
-
-# Default ports (adjust if your app uses different ones)
+# Default ports
 ARG ZAINO_GRPC_PORT=8137
 ARG ZAINO_JSON_RPC_PORT=8237
 EXPOSE ${ZAINO_GRPC_PORT} ${ZAINO_JSON_RPC_PORT}
 
-# Healthcheck that doesn't assume specific HTTP/gRPC endpoints
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
 
-CMD ["zainod"]
+# Start as root; entrypoint drops privileges after setting up directories
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["start"]

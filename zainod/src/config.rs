@@ -215,11 +215,7 @@ impl Default for ZainodConfig {
 
 /// Returns the default path for Zaino's ephemeral authentication cookie.
 pub fn default_ephemeral_cookie_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime_dir).join("zaino").join(".cookie")
-    } else {
-        PathBuf::from("/tmp").join("zaino").join(".cookie")
-    }
+    zaino_common::xdg::resolve_path_with_xdg_runtime_defaults("zaino/.cookie")
 }
 
 /// Loads the default file path for zebra's local db.
