@@ -91,7 +91,7 @@ async fn sync_to_height() {
 
     let (_db_dir, zaino_db) = spawn_v1_zaino_db(source.clone()).await.unwrap();
 
-    zaino_db.sync_to_height(Height(200), source).await.unwrap();
+    zaino_db.sync_to_height(Height(200), &source).await.unwrap();
 
     zaino_db.wait_until_ready().await;
     dbg!(zaino_db.status());

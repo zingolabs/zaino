@@ -942,9 +942,11 @@ impl DbV1 {
     }
 
     // *** DB write / delete methods ***
-    // These should only ever be used in a single DB control task.
+    // **These should only ever be used in a single DB control task.**
 
     /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
+    ///
+    /// NOTE: This method should never leave a block partially written to the database.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
         let block_hash = *block.index().hash();
@@ -962,10 +964,13 @@ impl DbV1 {
                 Ok(stored_header_bytes) => {
                     // Block exists at this height - verify it's the same block
                     // Data is stored as StoredEntryVar<BlockHeaderData>, so deserialize properly
-                    let stored_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
-                        .map_err(|e| FinalisedStateError::Custom(format!(
-                            "header decode error during idempotency check: {e}"
-                        )))?;
+                    let stored_entry =
+                        StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
+                            .map_err(|e| {
+                                FinalisedStateError::Custom(format!(
+                                    "header decode error during idempotency check: {e}"
+                                ))
+                            })?;
                     let stored_header = stored_entry.inner();
                     if *stored_header.index().hash() == block_hash {
                         // Same block already written, this is a no-op success
@@ -1185,8 +1190,7 @@ impl DbV1 {
             status: self.status.clone(),
             config: self.config.clone(),
         };
-        let post_result = tokio::task::spawn_blocking(move || {
-            // let post_result: Result<(), FinalisedStateError> = (async {
+        let join_handle = tokio::task::spawn_blocking(move || {
             // Write block to ZainoDB
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
@@ -1239,11 +1243,7 @@ impl DbV1 {
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            txn.commit()?;
-
             // Write spent to ZainoDB
-            let mut txn = zaino_db.env.begin_rw_txn()?;
-
             for (outpoint, tx_location) in spent_map {
                 let outpoint_bytes = &outpoint.to_bytes()?;
                 let tx_location_entry_bytes =
@@ -1256,11 +1256,7 @@ impl DbV1 {
                 )?;
             }
 
-            txn.commit()?;
-
             // Write outputs to ZainoDB addrhist
-            let mut txn = zaino_db.env.begin_rw_txn()?;
-
             for (addr_script, records) in addrhist_outputs_map {
                 let addr_bytes = addr_script.to_bytes()?;
 
@@ -1288,8 +1284,6 @@ impl DbV1 {
                 }
             }
 
-            txn.commit()?;
-
             // Write inputs to ZainoDB addrhist
             for (addr_script, records) in addrhist_inputs_map {
                 let addr_bytes = addr_script.to_bytes()?;
@@ -1311,47 +1305,98 @@ impl DbV1 {
                 for (_record, record_entry_bytes, (prev_output_script, prev_output_record)) in
                     stored_entries
                 {
-                    let mut txn = zaino_db.env.begin_rw_txn()?;
                     txn.put(
                         zaino_db.address_history,
                         &addr_bytes,
                         &record_entry_bytes,
                         WriteFlags::empty(),
                     )?;
-                    txn.commit()?;
+
                     // mark corresponding output as spent
-                    let _updated = zaino_db.mark_addr_hist_record_spent_blocking(
+                    let prev_addr_bytes = prev_output_script.to_bytes()?;
+                    let packed_prev =
+                        AddrEventBytes::from_record(&prev_output_record).map_err(|e| {
+                            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
+                        })?;
+                    let prev_entry_bytes =
+                        StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
+                    let updated = zaino_db.mark_addr_hist_record_spent_in_txn(
+                        &mut txn,
                         &prev_output_script,
-                        prev_output_record.tx_location(),
-                        prev_output_record.out_index(),
+                        &prev_entry_bytes,
                     )?;
+                    if !updated {
+                        // Log and treat as invalid block — marking the prev-output must succeed.
+                        return Err(FinalisedStateError::InvalidBlock {
+                            height: block_height.0,
+                            hash: block_hash,
+                            reason: format!(
+                                "failed to mark prev-output spent: addr={} tloc={:?} vout={}",
+                                hex::encode(addr_bytes),
+                                prev_output_record.tx_location(),
+                                prev_output_record.out_index()
+                            ),
+                        });
+                    }
                 }
             }
+
+            txn.commit()?;
+
+            zaino_db.env.sync(true).map_err(|e| {
+                FinalisedStateError::Custom(format!("LMDB sync failed before validation: {e}"))
+            })?;
 
             zaino_db.validate_block_blocking(block_height, block_hash)?;
 
             Ok::<_, FinalisedStateError>(())
-        })
-        .await
-        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))?;
+        });
+
+        // Wait for the join and handle panic / cancellation explicitly so we can
+        // attempt to remove any partially written block.
+        let post_result = match join_handle.await {
+            Ok(inner_res) => inner_res,
+            Err(join_err) => {
+                warn!("Tokio task error (spawn_blocking join error): {}", join_err);
+
+                // Best-effort delete of partially written block; ignore delete result.
+                let _ = self.delete_block(&block).await;
+
+                return Err(FinalisedStateError::Custom(format!(
+                    "Tokio task error: {}",
+                    join_err
+                )));
+            }
+        };
 
         match post_result {
             Ok(_) => {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
-
-                info!(
-                    "Successfully committed block {} at height {} to ZainoDB.",
-                    &block.index().hash(),
-                    &block.index().height()
-                );
+                if block.index().height().0.is_multiple_of(100) {
+                    info!(
+                        "Successfully committed block {} at height {} to ZainoDB.",
+                        &block.index().hash(),
+                        &block.index().height()
+                    );
+                } else {
+                    tracing::debug!(
+                        "Successfully committed block {} at height {} to ZainoDB.",
+                        &block.index().hash(),
+                        &block.index().height()
+                    );
+                }
 
                 Ok(())
             }
             Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
                 // Block write failed because key already exists - another process wrote it
-                // between our check and our write. Wait briefly and verify it's the same block.
+                // between our check and our write.
+                //
+                // Wait briefly and verify it's the same block and was fully written to the finalised state.
+                // Partially written block should be deleted from the database and the write error reported
+                // so the on disk tables are never corrupted by a partial block writes.
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                 let height_bytes = block_height.to_bytes()?;
@@ -1362,13 +1407,25 @@ impl DbV1 {
                     match ro.get(self.headers, &height_bytes) {
                         Ok(stored_header_bytes) => {
                             // Data is stored as StoredEntryVar<BlockHeaderData>
-                            let stored_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
-                                .map_err(|e| FinalisedStateError::Custom(format!(
-                                    "header decode error in KeyExist handler: {e}"
-                                )))?;
+                            let stored_entry =
+                                StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "header decode error in KeyExist handler: {e}"
+                                        ))
+                                    })?;
                             let stored_header = stored_entry.inner();
                             if *stored_header.index().hash() == block_hash {
-                                Ok(true) // Block already written correctly
+                                // Block hash exists, verify block was fully written.
+                                self.validate_block_blocking(block_height, block_hash)
+                                    .map(|()| true)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "Block write fail at height {}, with hash {:?}, \
+                                            validation error: {}",
+                                            block_height.0, block_hash, e
+                                        ))
+                                    })
                             } else {
                                 Err(FinalisedStateError::Custom(format!(
                                     "KeyExist race: different block at height {} \
@@ -1379,12 +1436,10 @@ impl DbV1 {
                                 )))
                             }
                         }
-                        Err(lmdb::Error::NotFound) => {
-                            Err(FinalisedStateError::Custom(format!(
-                                "KeyExist but block not found at height {} after sync",
-                                block_height.0
-                            )))
-                        }
+                        Err(lmdb::Error::NotFound) => Err(FinalisedStateError::Custom(format!(
+                            "KeyExist but block not found at height {} after sync",
+                            block_height.0
+                        ))),
                         Err(e) => Err(FinalisedStateError::LmdbError(e)),
                     }
                 });
@@ -1401,6 +1456,16 @@ impl DbV1 {
                     }
                     Err(e) => {
                         warn!("Error writing block to DB: {e}");
+                        warn!(
+                            "Deleting corrupt block from DB at height: {} with hash: {:?}",
+                            block_height.0, block_hash.0
+                        );
+
+                        let _ = self.delete_block(&block).await;
+                        tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
+                            FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
+                        })?;
+                        self.status.store(StatusType::CriticalError);
                         self.status.store(StatusType::RecoverableError);
                         Err(FinalisedStateError::InvalidBlock {
                             height: block_height.0,
@@ -1412,8 +1477,12 @@ impl DbV1 {
             }
             Err(e) => {
                 warn!("Error writing block to DB: {e}");
+                warn!(
+                    "Deleting corrupt block from DB at height: {} with hash: {:?}",
+                    block_height.0, block_hash.0
+                );
 
-                // let _ = self.delete_block(&block).await;
+                let _ = self.delete_block(&block).await;
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::CriticalError);
@@ -1673,32 +1742,65 @@ impl DbV1 {
                     Err(e) => return Err(FinalisedStateError::LmdbError(e)),
                 }
             }
-            let _ = txn.commit();
 
             // Delete addrhist input data and mark old outputs spent in this block as unspent
             for (addr_script, records) in &addrhist_inputs_map {
+                let addr_bytes = addr_script.to_bytes()?;
+
                 // Mark outputs spent in this block as unspent
                 for (_record, (prev_output_script, prev_output_record)) in records {
                     {
-                        let _updated = zaino_db
-                            .mark_addr_hist_record_unspent_blocking(
-                                prev_output_script,
-                                prev_output_record.tx_location(),
-                                prev_output_record.out_index(),
-                            )
-                            // TODO: check internals to propagate important errors.
-                            .map_err(|_| FinalisedStateError::InvalidBlock {
+                        let prev_addr_bytes = prev_output_script.to_bytes()?;
+                        let packed_prev =
+                            AddrEventBytes::from_record(prev_output_record).map_err(|e| {
+                                FinalisedStateError::Custom(format!(
+                                    "AddrEventBytes pack error: {e:?}"
+                                ))
+                            })?;
+
+                        // Build the *spent* form of the stored entry so it matches the DB
+                        // (mark_addr_hist_record_spent_blocking sets FLAG_SPENT and
+                        // recomputes the checksum).  We must pass the spent bytes here
+                        // because the DB currently contains the spent version.
+                        let prev_entry_bytes =
+                            StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
+
+                        // Turn the mined-entry into the spent-entry (mutate flags + checksum)
+                        let mut spent_prev_entry = prev_entry_bytes.clone();
+                        // Set SPENT flag (flags byte is at index 10 in StoredEntry layout)
+                        spent_prev_entry[10] |= AddrHistRecord::FLAG_SPENT;
+                        // Recompute checksum over bytes 1..19 as StoredEntryFixed expects.
+                        let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
+                            &[&prev_addr_bytes, &spent_prev_entry[1..19]].concat(),
+                        );
+                        spent_prev_entry[19..51].copy_from_slice(&checksum);
+
+                        let updated = zaino_db.mark_addr_hist_record_unspent_in_txn(
+                            &mut txn,
+                            prev_output_script,
+                            &spent_prev_entry,
+                        )?;
+
+                        if !updated {
+                            // Log and treat as invalid block — marking the prev-output must succeed.
+                            return Err(FinalisedStateError::InvalidBlock {
                                 height: block_height.0,
                                 hash: block_hash,
-                                reason: "Corrupt block data: failed to mark output unspent"
-                                    .to_string(),
-                            })?;
+                                reason: format!(
+                                    "failed to mark prev-output spent: addr={} tloc={:?} vout={}",
+                                    hex::encode(addr_bytes),
+                                    prev_output_record.tx_location(),
+                                    prev_output_record.out_index()
+                                ),
+                            });
+                        }
                     }
                 }
 
                 // Delete all input records created in this block.
                 zaino_db
-                    .delete_addrhist_dups_blocking(
+                    .delete_addrhist_dups_in_txn(
+                        &mut txn,
                         &addr_script
                             .to_bytes()
                             .map_err(|_| FinalisedStateError::InvalidBlock {
@@ -1722,7 +1824,8 @@ impl DbV1 {
 
             // Delete addrhist output data
             for (addr_script, records) in &addrhist_outputs_map {
-                zaino_db.delete_addrhist_dups_blocking(
+                zaino_db.delete_addrhist_dups_in_txn(
+                    &mut txn,
                     &addr_script
                         .to_bytes()
                         .map_err(|_| FinalisedStateError::InvalidBlock {
@@ -1739,8 +1842,6 @@ impl DbV1 {
             }
 
             // Delete block data
-            let mut txn = zaino_db.env.begin_rw_txn()?;
-
             for &db in &[
                 zaino_db.headers,
                 zaino_db.txids,
@@ -4608,6 +4709,7 @@ impl DbV1 {
             reason: reason.to_owned(),
         };
 
+        self.env.sync(true).ok();
         let ro = self.env.begin_ro_txn()?;
 
         // *** header ***
@@ -4776,7 +4878,7 @@ impl DbV1 {
             }
 
             // Inputs: check spent + addrhist input record
-            for input in tx.inputs() {
+            for (input_index, input) in tx.inputs().iter().enumerate() {
                 // Continue if coinbase.
                 if input.is_null_prevout() {
                     continue;
@@ -4817,9 +4919,10 @@ impl DbV1 {
                     // - [19..=50] checksum
 
                     let flags = val[10];
-                    let vout = u16::from_be_bytes([val[8], val[9]]);
+                    let stored_vout = u16::from_be_bytes([val[8], val[9]]);
+
                     (flags & AddrEventBytes::FLAG_IS_INPUT) != 0
-                        && vout == input.prevout_index() as u16
+                        && stored_vout as usize == input_index
                 });
 
                 if !matched {
@@ -5332,12 +5435,14 @@ impl DbV1 {
 
         for (key, val) in cursor.iter_dup_of(&addr_script_bytes)? {
             if key.len() != AddrScript::VERSIONED_LEN {
-                // TODO: Return error?
-                break;
+                return Err(FinalisedStateError::Custom(
+                    "address history key length mismatch".into(),
+                ));
             }
             if val.len() != StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN {
-                // TODO: Return error?
-                break;
+                return Err(FinalisedStateError::Custom(
+                    "address history value length mismatch".into(),
+                ));
             }
 
             // Check tx_location match without deserializing
@@ -5424,9 +5529,10 @@ impl DbV1 {
     ///
     /// `expected` is the number of records to delete;
     ///
-    /// WARNING: This is a blocking function and **MUST** be called within a blocking thread / task.
-    fn delete_addrhist_dups_blocking(
+    /// WARNING: This operates *inside* an existing RW txn and must **not** commit it.
+    fn delete_addrhist_dups_in_txn(
         &self,
+        txn: &mut lmdb::RwTransaction<'_>,
         addr_bytes: &[u8],
         block_height: Height,
         delete_inputs: bool,
@@ -5447,7 +5553,6 @@ impl DbV1 {
         let mut remaining = expected;
         let height_be = block_height.0.to_be_bytes();
 
-        let mut txn = self.env.begin_rw_txn()?;
         let mut cur = txn.open_rw_cursor(self.address_history)?;
 
         match cur
@@ -5506,7 +5611,6 @@ impl DbV1 {
         }
 
         drop(cur);
-        txn.commit()?;
         Ok(())
     }
 
@@ -5515,81 +5619,65 @@ impl DbV1 {
     ///
     /// Returns Ok(true) if a record was updated, Ok(false) if not found, or Err on DB error.
     ///
-    /// WARNING: This is a blocking function and **MUST** be called within a blocking thread / task.
-    fn mark_addr_hist_record_spent_blocking(
+    /// WARNING: This operates *inside* an existing RW txn and must **not** commit it.
+    fn mark_addr_hist_record_spent_in_txn(
         &self,
+        txn: &mut lmdb::RwTransaction<'_>,
         addr_script: &AddrScript,
-        tx_location: TxLocation,
-        vout: u16,
+
+        expected_prev_entry_bytes: &[u8],
     ) -> Result<bool, FinalisedStateError> {
         let addr_bytes = addr_script.to_bytes()?;
-        let mut txn = self.env.begin_rw_txn()?;
-        {
-            let mut cur = txn.open_rw_cursor(self.address_history)?;
 
-            for (key, val) in cur.iter_dup_of(&addr_bytes)? {
-                if key.len() != AddrScript::VERSIONED_LEN {
-                    // TODO: Return error?
-                    break;
-                }
-                if val.len() != StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN {
-                    // TODO: Return error?
-                    break;
-                }
-                let mut hist_record = [0u8; StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN];
-                hist_record.copy_from_slice(val);
+        let mut cur = txn.open_rw_cursor(self.address_history)?;
 
-                // Parse the tx_location out of arr:
-                // - [0] StoredEntry tag
-                // - [1] record tag
-                // - [2..=5] height
-                // - [6..=7] tx_index
-                // - [8..=9] vout
-                // - [10] flags
-                // - [11..=18] value
-                // - [19..=50] checksum
-
-                let block_height = u32::from_be_bytes([
-                    hist_record[2],
-                    hist_record[3],
-                    hist_record[4],
-                    hist_record[5],
-                ]);
-                let tx_idx = u16::from_be_bytes([hist_record[6], hist_record[7]]);
-                let rec_vout = u16::from_be_bytes([hist_record[8], hist_record[9]]);
-                let flags = hist_record[10];
-
-                // Skip if this row is an input or already marked spent.
-                if flags & AddrHistRecord::FLAG_IS_INPUT != 0
-                    || flags & AddrHistRecord::FLAG_SPENT != 0
-                {
-                    continue;
-                }
-
-                // Match on (height, tx_location, vout).
-                if block_height == tx_location.block_height()
-                    && tx_idx == tx_location.tx_index()
-                    && rec_vout == vout
-                {
-                    // Flip FLAG_SPENT.
-                    hist_record[10] |= AddrHistRecord::FLAG_SPENT;
-
-                    // Recompute checksum over entry header + payload (bytes 1‥19).
-                    let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                        &[&addr_bytes, &hist_record[1..19]].concat(),
-                    );
-                    hist_record[19..51].copy_from_slice(&checksum);
-
-                    // Write back in place.
-                    cur.put(&addr_bytes, &hist_record, WriteFlags::CURRENT)?;
-                    drop(cur);
-                    txn.commit()?;
-
-                    return Ok(true);
-                }
+        for (key, val) in cur.iter_dup_of(&addr_bytes)? {
+            if key.len() != AddrScript::VERSIONED_LEN {
+                return Err(FinalisedStateError::Custom(
+                    "address history key length mismatch".into(),
+                ));
             }
+            if val.len() != StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN {
+                return Err(FinalisedStateError::Custom(
+                    "address history value length mismatch".into(),
+                ));
+            }
+
+            if val != expected_prev_entry_bytes {
+                continue;
+            }
+
+            let mut hist_record = [0u8; StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN];
+            hist_record.copy_from_slice(val);
+
+            let flags = hist_record[10];
+            if (flags & AddrHistRecord::FLAG_IS_INPUT) != 0 {
+                return Err(FinalisedStateError::Custom(
+                    "attempt to mark an input-row as spent".into(),
+                ));
+            }
+            // idempotent
+            if (flags & AddrHistRecord::FLAG_SPENT) != 0 {
+                return Ok(true);
+            }
+
+            if (flags & AddrHistRecord::FLAG_MINED) == 0 {
+                return Err(FinalisedStateError::Custom(
+                    "attempt to mark non-mined addrhist record as spent".into(),
+                ));
+            }
+
+            hist_record[10] |= AddrHistRecord::FLAG_SPENT;
+
+            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
+                &[&addr_bytes, &hist_record[1..19]].concat(),
+            );
+            hist_record[19..51].copy_from_slice(&checksum);
+
+            cur.put(&addr_bytes, &hist_record, WriteFlags::CURRENT)?;
+            return Ok(true);
         }
-        txn.commit()?;
+
         Ok(false)
     }
 
@@ -5598,81 +5686,78 @@ impl DbV1 {
     ///
     /// Returns Ok(true) if a record was updated, Ok(false) if not found, or Err on DB error.
     ///
-    /// WARNING: This is a blocking function and **MUST** be called within a blocking thread / task.
-    fn mark_addr_hist_record_unspent_blocking(
+    /// WARNING: This operates *inside* an existing RW txn and must **not** commit it.
+    fn mark_addr_hist_record_unspent_in_txn(
         &self,
+        txn: &mut lmdb::RwTransaction<'_>,
         addr_script: &AddrScript,
-        tx_location: TxLocation,
-        vout: u16,
+
+        expected_prev_entry_bytes: &[u8],
     ) -> Result<bool, FinalisedStateError> {
         let addr_bytes = addr_script.to_bytes()?;
-        let mut txn = self.env.begin_rw_txn()?;
-        {
-            let mut cur = txn.open_rw_cursor(self.address_history)?;
 
-            for (key, val) in cur.iter_dup_of(&addr_bytes)? {
-                if key.len() != AddrScript::VERSIONED_LEN {
-                    // TODO: Return error?
-                    break;
-                }
-                if val.len() != StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN {
-                    // TODO: Return error?
-                    break;
-                }
-                let mut hist_record = [0u8; StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN];
-                hist_record.copy_from_slice(val);
+        let mut cur = txn.open_rw_cursor(self.address_history)?;
 
-                // Parse the tx_location out of arr:
-                // - [0] StoredEntry tag
-                // - [1] record tag
-                // - [2..=5] height
-                // - [6..=7] tx_index
-                // - [8..=9] vout
-                // - [10] flags
-                // - [11..=18] value
-                // - [19..=50] checksum
-
-                let block_height = u32::from_be_bytes([
-                    hist_record[2],
-                    hist_record[3],
-                    hist_record[4],
-                    hist_record[5],
-                ]);
-                let tx_idx = u16::from_be_bytes([hist_record[6], hist_record[7]]);
-                let rec_vout = u16::from_be_bytes([hist_record[8], hist_record[9]]);
-                let flags = hist_record[10];
-
-                // Skip if this row is an input or already marked unspent.
-                if (flags & AddrHistRecord::FLAG_IS_INPUT) != 0
-                    || (flags & AddrHistRecord::FLAG_SPENT) == 0
-                {
-                    continue;
-                }
-
-                // Match on (height, tx_location, vout).
-                if block_height == tx_location.block_height()
-                    && tx_idx == tx_location.tx_index()
-                    && rec_vout == vout
-                {
-                    // Flip FLAG_SPENT.
-                    hist_record[10] &= !AddrHistRecord::FLAG_SPENT;
-
-                    // Recompute checksum over entry header + payload (bytes 1‥19).
-                    let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                        &[&addr_bytes, &hist_record[1..19]].concat(),
-                    );
-                    hist_record[19..51].copy_from_slice(&checksum);
-
-                    // Write back in place.
-                    cur.put(&addr_bytes, &hist_record, WriteFlags::CURRENT)?;
-                    drop(cur);
-                    txn.commit()?;
-
-                    return Ok(true);
-                }
+        for (key, val) in cur.iter_dup_of(&addr_bytes)? {
+            if key.len() != AddrScript::VERSIONED_LEN {
+                return Err(FinalisedStateError::Custom(
+                    "address history key length mismatch".into(),
+                ));
             }
+            if val.len() != StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN {
+                return Err(FinalisedStateError::Custom(
+                    "address history value length mismatch".into(),
+                ));
+            }
+
+            if val != expected_prev_entry_bytes {
+                continue;
+            }
+
+            // we've located the exact duplicate bytes we built earlier.
+            let mut hist_record = [0u8; StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN];
+            hist_record.copy_from_slice(val);
+
+            // parse flags (located at byte index 10 in the StoredEntry layout)
+            let flags = hist_record[10];
+
+            // Sanity: the record we intend to mark should be a mined output (not an input).
+            if (flags & AddrHistRecord::FLAG_IS_INPUT) != 0 {
+                return Err(FinalisedStateError::Custom(
+                    "attempt to mark an input-row as unspent".into(),
+                ));
+            }
+
+            // If it's already unspent, treat as successful (idempotent).
+            if (flags & AddrHistRecord::FLAG_SPENT) == 0 {
+                drop(cur);
+                return Ok(true);
+            }
+
+            // If the record is not marked MINED, that's an invariant failure.
+            // We surface it rather than producing a non-mined record.
+            if (flags & AddrHistRecord::FLAG_MINED) == 0 {
+                return Err(FinalisedStateError::Custom(
+                    "attempt to mark non-mined addrhist record as unspent".into(),
+                ));
+            }
+
+            // Preserve all existing flags (including MINED), and remove SPENT.
+            hist_record[10] &= !AddrHistRecord::FLAG_SPENT;
+
+            // Recompute checksum over entry header + payload (bytes 1..19).
+            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
+                &[&addr_bytes, &hist_record[1..19]].concat(),
+            );
+            hist_record[19..51].copy_from_slice(&checksum);
+
+            // Write back in place for the exact duplicate we matched.
+            cur.put(&addr_bytes, &hist_record, WriteFlags::CURRENT)?;
+            drop(cur);
+
+            return Ok(true);
         }
-        txn.commit()?;
+
         Ok(false)
     }
 

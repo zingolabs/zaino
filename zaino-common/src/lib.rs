@@ -7,6 +7,7 @@ pub mod config;
 pub mod net;
 pub mod probing;
 pub mod status;
+pub mod xdg;
 
 // Re-export network utilities
 pub use net::{resolve_socket_addr, try_resolve_address, AddressResolution};

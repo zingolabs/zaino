@@ -2561,8 +2561,8 @@ impl FixedEncodedLen for TxLocation {
 pub struct AddrHistRecord {
     tx_location: TxLocation,
     out_index: u16,
-    value: u64,
     flags: u8,
+    value: u64,
 }
 
 /* ----- flag helpers ----- */
@@ -2581,8 +2581,8 @@ impl AddrHistRecord {
         Self {
             tx_location,
             out_index,
-            value,
             flags,
+            value,
         }
     }
 
@@ -2636,16 +2636,16 @@ impl ZainoVersionedSerde for AddrHistRecord {
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.tx_location.serialize_with_version(&mut *w, 1)?;
         write_u16_be(&mut *w, self.out_index)?;
-        write_u64_le(&mut *w, self.value)?;
-        w.write_all(&[self.flags])
+        w.write_all(&[self.flags])?;
+        write_u64_le(&mut *w, self.value)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let tx_location = TxLocation::deserialize(&mut *r)?;
         let out_index = read_u16_be(&mut *r)?;
-        let value = read_u64_le(&mut *r)?;
         let mut flag = [0u8; 1];
         r.read_exact(&mut flag)?;
+        let value = read_u64_le(&mut *r)?;
 
         Ok(AddrHistRecord::new(tx_location, out_index, value, flag[0]))
     }
