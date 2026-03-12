@@ -8,9 +8,13 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
+[features]
+default = ["zebra"]
+zebra = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
+
 [dependencies]
-zebra-state = { workspace = true }
-zebra-chain = { workspace = true }
+zebra-state = { workspace = true, optional = true }
+zebra-chain = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tonic = { workspace = true }
@@ -20,4 +24,4 @@ prost = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true, features = ["prost"] }
-which = { workspace = true }
+which = { workspace = true, optional = true }
