@@ -2,9 +2,9 @@ use crate::proto::{
     compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction},
     service::{BlockId, BlockRange, PoolType},
 };
-#[cfg(feature = "zebra")]
+#[cfg(feature = "heavy")]
 use zebra_chain::block::Height;
-#[cfg(feature = "zebra")]
+#[cfg(feature = "heavy")]
 use zebra_state::HashOrHeight;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -288,7 +288,7 @@ impl PoolTypeFilter {
     }
 }
 
-#[cfg(feature = "zebra")]
+#[cfg(feature = "heavy")]
 /// Converts [`BlockId`] into [`HashOrHeight`] Zebra type
 pub fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
     <[u8; 32]>::try_from(block_id.hash)

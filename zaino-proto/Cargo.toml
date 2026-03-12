@@ -9,8 +9,8 @@ license = { workspace = true }
 version = { workspace = true }
 
 [features]
-default = ["zebra"]
-zebra = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
+default = ["heavy"]
+heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
 
 [dependencies]
 zebra-state = { workspace = true, optional = true }
