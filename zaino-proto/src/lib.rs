@@ -7,7 +7,7 @@
 
 pub mod proto;
 
-#[cfg(feature = "mock_server")]
+#[cfg(feature = "grpc_proxy_server")]
 pub use prost;
-#[cfg(feature = "mock_server")]
+#[cfg(feature = "grpc_proxy_server")]
 pub use tonic;

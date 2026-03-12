@@ -11,7 +11,7 @@ version = { workspace = true }
 [features]
 default = ["heavy"]
 heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
-mock_server = []
+grpc_proxy_server = []
 
 [dependencies]
 zebra-state = { workspace = true, optional = true }
