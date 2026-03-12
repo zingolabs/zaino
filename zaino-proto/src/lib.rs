@@ -6,3 +6,8 @@
 #![forbid(unsafe_code)]
 
 pub mod proto;
+
+#[cfg(feature = "mock_server")]
+pub use prost;
+#[cfg(feature = "mock_server")]
+pub use tonic;
