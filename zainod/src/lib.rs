@@ -22,6 +22,9 @@ pub mod indexer;
 /// Logging should be initialized by the caller before calling this function.
 /// Returns an error if config loading or indexer startup fails.
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
+    init_logging();
+
+    info!("zainod v{}", env!("CARGO_PKG_VERSION"));
     let config = load_config(&config_path)?;
 
     loop {
