@@ -57,7 +57,7 @@ echo "  Defined by: .env.testing-artifacts"
 echo "  Affects:    RUST_VERSION, ZCASH_VERSION, ZEBRA_VERSION"
 echo ""
 echo "Build Context:"
-echo "  test_environment/          Directory containing the Docker build environment"
+echo "  testing/ci-image/          Directory containing the Docker build environment"
 echo "    ├── Dockerfile          Dockerfile for CI/test container"
 echo "    └── entrypoint.sh       Entrypoint script that sets up test binaries"
 echo ""
@@ -158,7 +158,7 @@ echo "DOCKER_DIR_HASH=$HASH"
 [tasks.ensure-image-exists]
 description = "Ensure the image exists locally or on Docker Hub before building"
 # This task checks if the required Docker image exists locally or on Docker Hub.
-# If not found, it triggers the build-image task to build from test_environment.
+# If not found, it triggers the build-image task to build from testing/ci-image.
 dependencies = ["init-docker-volumes"]
 extend = "base-script"
 script.main = '''
@@ -179,9 +179,9 @@ fi
 
 [tasks.build-image]
 description = "Build the Docker image for testing artifacts"
-# Note: This task builds the Docker image from the test_environment directory,
+# Note: This task builds the Docker image from the testing/ci-image directory,
 # which contains the Dockerfile and entrypoint.sh for the CI/test environment.
-# The build context is set to test_environment to keep paths simple.
+# The build context is set to testing/ci-image to keep paths simple.
 script_runner = "bash"
 extend = "base-script"
 script.main = '''
@@ -201,7 +201,7 @@ info "Target: $TARGET"
 info "Current directory: $(pwd)"
 info "Files in utils/: $(ls -la utils/ | head -5)"
 
-cd test_environment && \
+cd testing/ci-image && \
 docker build -f Dockerfile \
   --target "$TARGET" \
   --build-arg ZCASH_VERSION=$ZCASH_VERSION \
@@ -235,9 +235,9 @@ docker push ${IMAGE_NAME}:$TAG
 [tasks.container-test]
 clear = true
 description = "Run integration tests using the local image"
-# This task runs tests inside the Docker container built from test_environment.
+# This task runs tests inside the Docker container built from testing/ci-image.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
-# by creating symlinks from /home/container_user/artifacts to the expected test_binaries/bins location.
+# by creating symlinks from /home/container_user/artifacts to the expected testing/binaries location.
 dependencies = ["init-docker-volumes", "ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
@@ -356,7 +356,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-v", &format!("{}/container-target:/home/container_user/zaino/target", working_dir),
             "-v", &format!("{}/docker_cargo/git:/home/container_user/.cargo/git", working_dir),
             "-v", &format!("{}/docker_cargo/registry:/home/container_user/.cargo/registry", working_dir),
-            "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/test_binaries/bins",
+            "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/testing/binaries",
             "-e", "CARGO_TARGET_DIR=/home/container_user/zaino/target",
             "-w", "/home/container_user/zaino",
             "-u", "container_user",
