@@ -4,9 +4,9 @@
 /docs/cargo_docs/debug
 /.helix
 /test_binaries/bins/*
-/integration-tests/chain_cache/*
-!/integration-tests/chain_cache/testnet_get_subtree_roots_sapling
-!/integration-tests/chain_cache/testnet_get_subtree_roots_orchard
+/crates/integration-tests/chain_cache/*
+!/crates/integration-tests/chain_cache/testnet_get_subtree_roots_sapling
+!/crates/integration-tests/chain_cache/testnet_get_subtree_roots_orchard
 .cargo
 test_binaries/
 docker_cargo/**/*

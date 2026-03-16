@@ -1,15 +1,15 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
-    "zaino-common",
-    "integration-tests",
-    "zaino-testutils",
-    "zainod",
-    "zaino-serve",
-    "zaino-state",
-    "zaino-fetch",
-    "zaino-proto",
-    "zaino-testvectors",
+    "crates/zaino-common",
+    "crates/integration-tests",
+    "crates/zaino-testutils",
+    "crates/zainod",
+    "crates/zaino-serve",
+    "crates/zaino-state",
+    "crates/zaino-fetch",
+    "crates/zaino-proto",
+    "crates/zaino-testvectors",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -107,14 +107,14 @@ bitflags = "2.9"
 # Test
 portpicker = "0.1"
 tempfile = "3.2"
-zaino-fetch = { path = "zaino-fetch" }
-zaino-proto = { path = "zaino-proto" }
-zaino-serve = { path = "zaino-serve" }
-zaino-state = { path = "zaino-state" }
-zaino-common.path = "zaino-common"
-zaino-testutils = { path = "zaino-testutils" }
-zaino-testvectors = { path = "zaino-testvectors" }
-zainod = { path = "zainod" }
+zaino-fetch.path = "crates/zaino-fetch"
+zaino-proto.path = "crates/zaino-proto"
+zaino-serve.path = "crates/zaino-serve"
+zaino-state.path = "crates/zaino-state"
+zaino-common.path = "crates/zaino-common"
+zaino-testutils.path = "crates/zaino-testutils"
+zaino-testvectors.path = "crates/zaino-testvectors"
+zainod.path = "crates/zainod"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
 proptest = "~1.6"
