@@ -9,6 +9,20 @@ license = { workspace = true }
 version = { workspace = true }
 publish = false
 
+[features]
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = [
+    "zaino-state/transparent_address_history_experimental",
+    "zaino-serve/transparent_address_history_experimental",
+    "zainod/transparent_address_history_experimental"
+]
+
 [dependencies]
 # Zaino
 zaino-proto = { workspace = true }

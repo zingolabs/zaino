@@ -9,8 +9,17 @@ license = { workspace = true }
 version = { workspace = true }
 
 [features]
-state_service = []
+# Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-roots"]
+
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = ["zaino-state/transparent_address_history_experimental"]
 
 [dependencies]
 zaino-proto = { workspace = true }
