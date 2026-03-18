@@ -78,14 +78,15 @@
 use core::fmt;
 
 use crate::{
-    chain_index::types::{AddrEventBytes, TransactionHash},
-    error::FinalisedStateError,
-    read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
-    AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream,
-    FixedEncodedLen, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
-    TxLocation, TxidList, ZainoVersionedSerde,
+    chain_index::types::TransactionHash, error::FinalisedStateError, read_fixed_le, read_u32_le,
+    read_u8, version, write_fixed_le, write_u32_le, write_u8, BlockHash, BlockHeaderData,
+    CommitmentTreeData, CompactBlockStream, FixedEncodedLen, Height, IndexedBlock,
+    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerde,
 };
+
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::{chain_index::types::AddrEventBytes, AddrScript, Outpoint};
 
 use async_trait::async_trait;
 use bitflags::bitflags;
@@ -151,6 +152,7 @@ bitflags! {
         const CHAIN_BLOCK_EXT       = 0b0100_0000;
 
         /// Backend implements [`TransparentHistExt`] (transparent address history indices).
+        #[cfg(feature = "transparent_address_history_experimental")]
         const TRANSPARENT_HIST_EXT  = 0b1000_0000;
     }
 }
@@ -162,14 +164,24 @@ impl Capability {
     /// sync with:
     /// - the latest on-disk schema (`DbV1` today, `DbV2` in the future),
     /// - and [`DbVersion::capability`] for that schema.
-    pub(crate) const LATEST: Capability = Capability::READ_CORE
-        .union(Capability::WRITE_CORE)
-        .union(Capability::BLOCK_CORE_EXT)
-        .union(Capability::BLOCK_TRANSPARENT_EXT)
-        .union(Capability::BLOCK_SHIELDED_EXT)
-        .union(Capability::COMPACT_BLOCK_EXT)
-        .union(Capability::CHAIN_BLOCK_EXT)
-        .union(Capability::TRANSPARENT_HIST_EXT);
+    pub(crate) const LATEST: Capability = {
+        let base = Capability::READ_CORE
+            .union(Capability::WRITE_CORE)
+            .union(Capability::BLOCK_CORE_EXT)
+            .union(Capability::BLOCK_TRANSPARENT_EXT)
+            .union(Capability::BLOCK_SHIELDED_EXT)
+            .union(Capability::COMPACT_BLOCK_EXT)
+            .union(Capability::CHAIN_BLOCK_EXT);
+
+        #[cfg(feature = "transparent_address_history_experimental")]
+        {
+            base.union(Capability::TRANSPARENT_HIST_EXT)
+        }
+        #[cfg(not(feature = "transparent_address_history_experimental"))]
+        {
+            base
+        }
+    };
 
     /// Returns `true` if `self` includes **all** bits from `other`.
     ///
@@ -212,6 +224,7 @@ pub(crate) enum CapabilityRequest {
     IndexedBlockExt,
 
     /// Request the [`TransparentHistExt`] extension surface.
+    #[cfg(feature = "transparent_address_history_experimental")]
     TransparentHistExt,
 }
 
@@ -231,6 +244,7 @@ impl CapabilityRequest {
             CapabilityRequest::BlockShieldedExt => Capability::BLOCK_SHIELDED_EXT,
             CapabilityRequest::CompactBlockExt => Capability::COMPACT_BLOCK_EXT,
             CapabilityRequest::IndexedBlockExt => Capability::CHAIN_BLOCK_EXT,
+            #[cfg(feature = "transparent_address_history_experimental")]
             CapabilityRequest::TransparentHistExt => Capability::TRANSPARENT_HIST_EXT,
         }
     }
@@ -249,6 +263,7 @@ impl CapabilityRequest {
             CapabilityRequest::BlockShieldedExt => "BLOCK_SHIELDED_EXT",
             CapabilityRequest::CompactBlockExt => "COMPACT_BLOCK_EXT",
             CapabilityRequest::IndexedBlockExt => "CHAIN_BLOCK_EXT",
+            #[cfg(feature = "transparent_address_history_experimental")]
             CapabilityRequest::TransparentHistExt => "TRANSPARENT_HIST_EXT",
         }
     }
@@ -452,15 +467,23 @@ impl DbVersion {
             }
 
             // V1: Adds chainblockv1 and transparent transaction history data.
-            (1, 0) | (1, 1) => {
-                Capability::READ_CORE
+            (1, 0) => {
+                let base = Capability::READ_CORE
                     | Capability::WRITE_CORE
                     | Capability::BLOCK_CORE_EXT
                     | Capability::BLOCK_TRANSPARENT_EXT
                     | Capability::BLOCK_SHIELDED_EXT
                     | Capability::COMPACT_BLOCK_EXT
-                    | Capability::CHAIN_BLOCK_EXT
-                    | Capability::TRANSPARENT_HIST_EXT
+                    | Capability::CHAIN_BLOCK_EXT;
+
+                #[cfg(feature = "transparent_address_history_experimental")]
+                {
+                    base | Capability::TRANSPARENT_HIST_EXT
+                }
+                #[cfg(not(feature = "transparent_address_history_experimental"))]
+                {
+                    base
+                }
             }
 
             // Unknown / unsupported
@@ -893,7 +916,8 @@ pub trait IndexedBlockExt: Send + Sync {
 ///
 /// Range semantics:
 /// - Methods that accept `start_height` and `end_height` interpret the range as inclusive:
-///   `[start_height, end_height]`.
+///   `[start_height, end_height]`
+#[cfg(feature = "transparent_address_history_experimental")]
 #[async_trait]
 pub trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.

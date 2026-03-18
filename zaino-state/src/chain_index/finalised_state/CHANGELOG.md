@@ -102,8 +102,7 @@ Migration
 Bug Fixes / Optimisations
 - Complete DB rework
 --------------------------------------------------------------------------------
-DB VERSION v1.1.0 (from v1.0.0)
-Date: 2026-01-27
+DB VERSION v1.0.0 (RC Bug Fixes)
 --------------------------------------------------------------------------------
 
 Summary
@@ -140,15 +139,6 @@ API / capabilities
   - Changed:
     - CompactBlockExt::get_compact_block(height, pool_types: PoolTypeFilter) signature updated.
     - Compact block contents are now filtered by PoolTypeFilter, and may include transparent transaction data (vin/vout) when selected.
-
-Migration
-- Strategy: In-place (metadata-only).
-- Backfill: None.
-- Completion criteria:
-  - DbMetadata.version updated from 1.0.0 to 1.1.0.
-  - DbMetadata.migration_status reset to Empty.
-- Failure handling:
-  - Idempotent: re-running re-writes the same metadata; no partial state beyond metadata.
 
 Bug Fixes / Optimisations
 - Added safety check for idempotent DB writes
