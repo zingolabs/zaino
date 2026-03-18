@@ -45,6 +45,8 @@ Migration
 - Completion criteria: <how we decide migration is done>
 - Failure handling: <rollback / retry behavior>
 
+Bug Fixes / Optimisations
+
 --------------------------------------------------------------------------------
 DB VERSION v1.0.0 (from v0.0.0)
 Date: 2025-08-13
@@ -97,9 +99,10 @@ Migration
 - Failure handling:
   - do not promote partially built v1; continue using v0 if present; rebuild v1 on retry.
 
+Bug Fixes / Optimisations
+- Complete DB rework
 --------------------------------------------------------------------------------
-DB VERSION v1.0.0 (from v1.1.0)
-Date: 2026-01-27
+DB VERSION v1.0.0 (RC Bug Fixes)
 --------------------------------------------------------------------------------
 
 Summary
@@ -137,14 +140,10 @@ API / capabilities
     - CompactBlockExt::get_compact_block(height, pool_types: PoolTypeFilter) signature updated.
     - Compact block contents are now filtered by PoolTypeFilter, and may include transparent transaction data (vin/vout) when selected.
 
-Migration
-- Strategy: In-place (metadata-only).
-- Backfill: None.
-- Completion criteria:
-  - DbMetadata.version updated from 1.0.0 to 1.1.0.
-  - DbMetadata.migration_status reset to Empty.
-- Failure handling:
-  - Idempotent: re-running re-writes the same metadata; no partial state beyond metadata.
+Bug Fixes / Optimisations
+- Added safety check for idempotent DB writes
+- Updated 'fix_addr_hist_records_by_addr_and_index_blocking' to take and reuse an lmdb ro transaction, improving initial sync performance.
+
 
 --------------------------------------------------------------------------------
 (append new entries below)

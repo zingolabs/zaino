@@ -18,7 +18,7 @@ pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeigh
 
 /// Network type for Zaino configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(from = "NetworkDeserialize")]
+#[serde(from = "NetworkSerde", into = "NetworkSerde")]
 pub enum Network {
     /// Mainnet network
     Mainnet,
@@ -28,23 +28,33 @@ pub enum Network {
     Regtest(ActivationHeights),
 }
 
+/// Helper type for Network serialization/deserialization.
+///
+/// This allows Network to serialize as simple strings ("Mainnet", "Testnet", "Regtest")
+/// while the actual Network::Regtest variant carries activation heights internally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-enum NetworkDeserialize {
+enum NetworkSerde {
     Mainnet,
     Testnet,
-    // This hack doesn't allow deserializing
-    // non-default ActivationHeights, this
-    // will need to be revisited if we want
-    // to support that in read configs
     Regtest,
 }
 
-impl From<NetworkDeserialize> for Network {
-    fn from(value: NetworkDeserialize) -> Self {
+impl From<NetworkSerde> for Network {
+    fn from(value: NetworkSerde) -> Self {
         match value {
-            NetworkDeserialize::Mainnet => Network::Mainnet,
-            NetworkDeserialize::Testnet => Network::Testnet,
-            NetworkDeserialize::Regtest => Network::Regtest(ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
+            NetworkSerde::Mainnet => Network::Mainnet,
+            NetworkSerde::Testnet => Network::Testnet,
+            NetworkSerde::Regtest => Network::Regtest(ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
+        }
+    }
+}
+
+impl From<Network> for NetworkSerde {
+    fn from(value: Network) -> Self {
+        match value {
+            Network::Mainnet => NetworkSerde::Mainnet,
+            Network::Testnet => NetworkSerde::Testnet,
+            Network::Regtest(_) => NetworkSerde::Regtest,
         }
     }
 }

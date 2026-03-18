@@ -17,7 +17,7 @@ use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{AtomicStatus, CompactBlockStream, StatusType, SyncError};
+use crate::{AtomicStatus, CompactBlockStream, NodeConnectionError, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -510,9 +510,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// an error indicates a failure to cleanly shutdown. Dropping the
     /// chain index should still stop everything
     pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+        self.status.store(StatusType::Closing);
         self.finalized_db.shutdown().await?;
         self.mempool.close();
-        self.status.store(StatusType::Closing);
         Ok(())
     }
 
@@ -534,6 +534,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
+        let source = self.non_finalized_state.source.clone();
+
         tokio::task::spawn(async move {
             let result: Result<(), SyncError> = async {
                 loop {
@@ -542,44 +544,38 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     }
 
                     status.store(StatusType::Syncing);
+
+                    // Sync fs to chain tip - 100.
+                    let chain_height = source
+                        .clone()
+                        .get_best_block_height()
+                        .await
+                        .map_err(|error| {
+                            SyncError::ValidatorConnectionError(
+                                NodeConnectionError::UnrecoverableError(Box::new(error)),
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            SyncError::ValidatorConnectionError(
+                                NodeConnectionError::UnrecoverableError(Box::new(
+                                    std::io::Error::other("node returned no best block height"),
+                                )),
+                            )
+                        })?;
+                    let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
+
+                    // TODO / FIX: Improve error handling here, fix and rebuild db on error.
+                    fs.sync_to_height(finalised_height, &source)
+                        .await
+                        .map_err(|error| {
+                            SyncError::ValidatorConnectionError(
+                                NodeConnectionError::UnrecoverableError(Box::new(error)),
+                            )
+                        })?;
+
                     // Sync nfs to chain tip, trimming blocks to finalized tip.
                     nfs.sync(fs.clone()).await?;
 
-                    // Sync fs to chain tip - 100.
-                    {
-                        let snapshot = nfs.get_snapshot();
-                        while snapshot.best_tip.height.0
-                            > (fs
-                                .to_reader()
-                                .db_height()
-                                .await
-                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                                .unwrap_or(types::Height(0))
-                                .0
-                                + 100)
-                        {
-                            let next_finalized_height = fs
-                                .to_reader()
-                                .db_height()
-                                .await
-                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                                .map(|height| height + 1)
-                                .unwrap_or(types::Height(0));
-                            let next_finalized_block = snapshot
-                                .blocks
-                                .get(
-                                    snapshot
-                                        .heights_to_hashes
-                                        .get(&(next_finalized_height))
-                                        .ok_or(SyncError::CompetingSyncProcess)?,
-                                )
-                                .ok_or(SyncError::CompetingSyncProcess)?;
-                            // TODO: Handle write errors better (fix db and continue)
-                            fs.write_block(next_finalized_block.clone())
-                                .await
-                                .map_err(|_e| SyncError::CompetingSyncProcess)?;
-                        }
-                    }
                     status.store(StatusType::Ready);
                     // TODO: configure sleep duration?
                     tokio::time::sleep(Duration::from_millis(500)).await
