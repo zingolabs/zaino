@@ -25,17 +25,30 @@ version = "0.2.0"
 
 
 [workspace.dependencies]
+
+# Zingo 
+
+zingo_common_components = { version = "0.2", features = [ "for_test" ]}
+zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.2.0" }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "e57492df94d319a49256d1a7f023a417557f1f7c", features = [
+    "testutils",
+] }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "e57492df94d319a49256d1a7f023a417557f1f7c" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "a303cad" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "a303cad" }
+
 # Librustzcash
-zcash_address = "0.9"
-zcash_keys = "0.10"
-zcash_protocol = "0.6"
+zcash_address = "0.10"
+zcash_keys = "0.12"
+zcash_protocol = "0.7.2"
 zcash_primitives = "0.26.0"
-zcash_transparent = "0.4"
+zcash_transparent = "0.6.3"
+zcash_client_backend = "0.21.0"
 
 # Zebra
-zebra-chain = "3.1.0"
-zebra-state = "3.1.0"
-zebra-rpc = "3.1.0"
+zebra-chain = "5.0.0"
+zebra-state = "4.0.0"
+zebra-rpc = "5.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -61,9 +74,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 tower = { version = "0.4", features = ["buffer", "util"] }
-tonic = "0.12"
-tonic-build = "0.12"
-prost = "0.13"
+tonic = { version = "0.14" }
+tonic-build = "0.14"
+prost = "0.14"
 serde = "1.0"
 serde_json = "1.0"
 jsonrpsee-core = "0.24"
@@ -129,12 +142,12 @@ derive_more = "2.0.1"
 lazy_static = "1.5.0"
 
 [patch.crates-io]
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "3ba772c9b8"}
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "3ba772c9b8"}
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "3ba772c9b8"}
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "3ba772c9b8"}
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "3ba772c9b8"}
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "3ba772c9b8"}
+#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
+#zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
+#zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
+#zcash_primitives = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
+#zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
+#zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 
 
 [profile.test]

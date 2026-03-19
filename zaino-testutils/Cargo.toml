@@ -36,32 +36,30 @@ zainod = { workspace = true }
 zcash_protocol = { version = "0.7.0", features = [
   "local-consensus",
 ] }
-zcash_client_backend = { version = "0.20", features = ["lightwalletd-tonic"] }
+zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
 
 # Zebra
 zebra-chain = { workspace = true }
 zebra-state.workspace = true
 
 # Zingo-infra
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }
+zcash_local_net = { workspace = true }
+zingo_test_vectors = { workspace = true }
 
 # Zingo-common
-zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.1.0", features = [ "for_test" ]}
-zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "b64dfd6d6a2a597a5456d1cc7b2bc9b649328187"  }
+zingo_common_components = { workspace = true, features = [ "for_test" ]}
+zingo-netutils.workspace = true
 
 # ZingoLib
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "dev", features = [
-    "testutils",
-] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "dev" }
+zingolib = { workspace = true, features = [ "testutils"] }
+zingolib_testutils.workspace = true
 
 # Miscellaneous
 http = { workspace = true }
 once_cell = { workspace = true }
 portpicker = { workspace = true }
 tokio = { workspace = true }
-tonic = { version = "0.13" } # TODO: unify in the workspace
+tonic.workspace = true
 tempfile = { workspace = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = [

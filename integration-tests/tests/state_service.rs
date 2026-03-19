@@ -241,7 +241,7 @@ async fn state_service_check_info<V: ValidatorExt>(
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     let (
@@ -272,7 +272,7 @@ async fn state_service_check_info<V: ValidatorExt>(
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     assert_eq!(cleaned_fetch_info, cleaned_state_info);
@@ -1285,12 +1285,14 @@ async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         clients.faucet.sync_and_await().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
 
     let tx = from_inputs::quick_send(
