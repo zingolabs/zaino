@@ -15,8 +15,5 @@ zebra-chain = { workspace = true }
 # Serialization
 serde = { workspace = true, features = ["derive"] }
 
-# Error handling
-thiserror = { workspace = true }
-
 # Zingo 
 zingo_common_components = { workspace = true }
