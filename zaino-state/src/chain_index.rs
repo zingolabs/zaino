@@ -513,11 +513,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         }
     }
 
-    /// Returns a read-only handle to the finalized database.
-    pub fn finalized_db_reader(&self) -> finalised_state::reader::DbReader {
-        self.finalized_db.to_reader()
-    }
-
     /// Returns the in-memory MMR tree handle.
     pub fn mmr(&self) -> &mmr::MmrHandle {
         &self.mmr

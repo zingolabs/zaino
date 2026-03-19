@@ -22,12 +22,16 @@ use zaino_proto::proto::service::MmrNode;
 /// Errors that can occur during MMR operations.
 #[derive(Debug, thiserror::Error)]
 pub enum MmrError {
+    /// Error reading from the finalized database.
     #[error("Database error: {0}")]
     Database(String),
+    /// Error in MMR tree operations (append, truncate, proof generation).
     #[error("MMR tree error: {0}")]
     Tree(String),
+    /// IO error during entry serialization/deserialization.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// The MMR tree has no entries.
     #[error("MMR is empty")]
     Empty,
 }
@@ -60,7 +64,7 @@ pub struct InMemoryMmrTree {
 
 impl InMemoryMmrTree {
     /// Build the MMR tree from LMDB data for the current epoch.
-    pub async fn build_from_db(
+    pub(crate) async fn build_from_db(
         db: &DbReader,
         network: &Network,
         epoch_start: Height,
@@ -127,8 +131,7 @@ impl InMemoryMmrTree {
             };
             prev_chainwork = Some(current_chainwork);
 
-            let mut work_bytes = [0u8; 32];
-            work_bytes = block_work.to_little_endian();
+            let work_bytes = block_work.to_little_endian();
 
             let node_data_bytes = serialize_v2_leaf_data(
                 branch_id,
@@ -404,7 +407,7 @@ impl InMemoryMmrTree {
 /// - Builds from scratch on first call or epoch change
 /// - Appends new blocks when the DB has grown
 /// - Truncates leaves when the DB has shrunk (reorg)
-pub async fn update_mmr_after_sync(mmr: &MmrHandle, db: &DbReader, network: &Network) {
+pub(crate) async fn update_mmr_after_sync(mmr: &MmrHandle, db: &DbReader, network: &Network) {
     let db_height = match db.db_height().await {
         Ok(Some(h)) => h,
         _ => return,
