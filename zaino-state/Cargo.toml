@@ -67,6 +67,7 @@ prost = { workspace = true }
 primitive-types = { workspace = true }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
+zcash_history = "0.4"
 core2 = { workspace = true }
 bs58 = { workspace = true }
 nonempty = { workspace = true }

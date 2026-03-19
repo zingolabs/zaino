@@ -2987,7 +2987,7 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "core2 0.4.0",
@@ -8626,7 +8626,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-common"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -8635,7 +8635,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-fetch"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "base64",
  "byteorder",
@@ -8663,7 +8663,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-proto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -8678,7 +8678,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "futures",
  "jsonrpsee",
@@ -8698,7 +8698,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -8741,6 +8741,7 @@ dependencies = [
  "zaino-fetch",
  "zaino-proto",
  "zcash_address",
+ "zcash_history",
  "zcash_keys",
  "zcash_primitives",
  "zcash_protocol",
@@ -8752,7 +8753,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-testutils"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "http",
  "lazy_static",
@@ -8785,14 +8786,14 @@ dependencies = [
 
 [[package]]
 name = "zaino-testvectors"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "lazy_static",
 ]
 
 [[package]]
 name = "zainod"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "clap",
  "config",

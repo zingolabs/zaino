@@ -1783,4 +1783,13 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             "Ping not yet implemented. If you require this RPC please open an issue or PR at the Zaino github (https://github.com/zingolabs/zaino.git)."
         )))
     }
+
+    async fn get_block_inclusion_proof(
+        &self,
+        _request: zaino_proto::proto::service::BlockId,
+    ) -> Result<zaino_proto::proto::service::BlockInclusionProof, Self::Error> {
+        Err(FetchServiceError::TonicStatusError(tonic::Status::unimplemented(
+            "GetBlockInclusionProof is not supported by the FetchService backend. Use StateService instead."
+        )))
+    }
 }

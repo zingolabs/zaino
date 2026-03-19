@@ -142,6 +142,9 @@ pub struct StateService {
 
     /// Thread-safe status indicator.
     status: AtomicStatus,
+
+    /// In-memory MMR tree for FlyClient chain proofs (ZIP-221).
+    mmr: crate::chain_index::mmr::MmrHandle,
 }
 
 impl StateService {
@@ -283,6 +286,9 @@ impl ZcashService for StateService {
         .await
         .unwrap();
 
+        // The MMR tree is owned by the chain index and updated in its sync loop.
+        let mmr = chain_index.mmr().clone();
+
         let state_service = Self {
             chain_tip_change,
             read_state_service,
@@ -293,6 +299,7 @@ impl ZcashService for StateService {
             data,
             config,
             status: AtomicStatus::new(StatusType::Spawning),
+            mmr,
         };
 
         state_service.status.store(StatusType::Ready);
@@ -309,6 +316,7 @@ impl ZcashService for StateService {
             data: self.data.clone(),
             config: self.config.clone(),
             chain_tip_change: self.chain_tip_change.clone(),
+            mmr: self.mmr.clone(),
         })
     }
 
@@ -356,6 +364,9 @@ pub struct StateServiceSubscriber {
 
     /// Service metadata.
     pub data: ServiceMetadata,
+
+    /// In-memory MMR tree for FlyClient chain proofs (ZIP-221).
+    mmr: crate::chain_index::mmr::MmrHandle,
 }
 
 impl Status for StateServiceSubscriber {
@@ -2634,6 +2645,74 @@ impl LightWalletIndexer for StateServiceSubscriber {
             issue or PR at the Zaino github (https://github.com/zingolabs/zaino.git).",
             ),
         ))
+    }
+
+    async fn get_block_inclusion_proof(
+        &self,
+        request: zaino_proto::proto::service::BlockId,
+    ) -> Result<zaino_proto::proto::service::BlockInclusionProof, Self::Error> {
+        let height: u32 = request.height.try_into().map_err(|_| {
+            StateServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                "Height out of range",
+            ))
+        })?;
+
+        let mmr_guard = self.mmr.read().await;
+        let mmr_tree = mmr_guard.as_ref().ok_or_else(|| {
+            StateServiceError::TonicStatusError(tonic::Status::unavailable(
+                "MMR tree not yet initialized. The server is still syncing.",
+            ))
+        })?;
+
+        // Compute MMR root
+        let mmr_root = mmr_tree.root_hash().map_err(|e| {
+            StateServiceError::TonicStatusError(tonic::Status::internal(format!(
+                "Failed to compute MMR root: {e}"
+            )))
+        })?;
+
+        // Compute auth_data_root from the tip block's transactions (ZIP-244)
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let tip = snapshot.best_chaintip();
+        let response = self
+            .read_state_service
+            .clone()
+            .ready()
+            .and_then(|service| {
+                service.call(ReadRequest::Block(HashOrHeight::Height(Height(
+                    tip.height.0,
+                ))))
+            })
+            .await
+            .map_err(|e| {
+                StateServiceError::TonicStatusError(tonic::Status::internal(format!(
+                    "Failed to get tip block: {e}"
+                )))
+            })?;
+        let block = expected_read_response!(response, Block).ok_or_else(|| {
+            StateServiceError::TonicStatusError(tonic::Status::internal(
+                "Tip block not found in state",
+            ))
+        })?;
+        let auth_data_root: [u8; 32] = block
+            .transactions
+            .iter()
+            .collect::<zebra_chain::block::merkle::AuthDataRoot>()
+            .into();
+
+        // Generate the inclusion proof
+        let (leaf, siblings) = mmr_tree.prove_inclusion(height).map_err(|e| {
+            StateServiceError::TonicStatusError(tonic::Status::not_found(format!(
+                "Failed to generate inclusion proof: {e}"
+            )))
+        })?;
+
+        Ok(zaino_proto::proto::service::BlockInclusionProof {
+            mmr_root: mmr_root.to_vec(),
+            auth_data_root: auth_data_root.to_vec(),
+            leaf: Some(leaf),
+            siblings,
+        })
     }
 }
 

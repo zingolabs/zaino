@@ -16,9 +16,9 @@ use zaino_fetch::jsonrpsee::response::{
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
-        AddressList, Balance, BlockId, BlockRange, Duration, GetAddressUtxosArg,
-        GetAddressUtxosReplyList, GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo,
-        PingResponse, RawTransaction, SendResponse, ShieldedProtocol, SubtreeRoot,
+        AddressList, Balance, BlockId, BlockInclusionProof, BlockRange, Duration,
+        GetAddressUtxosArg, GetAddressUtxosReplyList, GetMempoolTxRequest, GetSubtreeRootsArg,
+        LightdInfo, PingResponse, RawTransaction, SendResponse, ShieldedProtocol, SubtreeRoot,
         TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
@@ -843,6 +843,15 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     ///
     /// NOTE: Currently unimplemented in Zaino.
     async fn ping(&self, request: Duration) -> Result<PingResponse, Self::Error>;
+
+    /// Get an MMR inclusion proof for a specific block (ZIP-221).
+    ///
+    /// Returns the MMR root, auth data root, and a Merkle path proving
+    /// the block is included in the current chain tip's committed history.
+    async fn get_block_inclusion_proof(
+        &self,
+        request: BlockId,
+    ) -> Result<BlockInclusionProof, Self::Error>;
 }
 
 /// Zcash Service functionality.
