@@ -8819,7 +8819,6 @@ name = "zaino-testutils"
 version = "0.2.0"
 dependencies = [
  "http",
- "lazy_static",
  "once_cell",
  "portpicker",
  "proptest",
@@ -8829,7 +8828,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zaino-common",
- "zaino-proto",
  "zaino-serve",
  "zaino-state",
  "zaino-testvectors",
@@ -8838,9 +8836,7 @@ dependencies = [
  "zcash_local_net",
  "zcash_protocol",
  "zebra-chain",
- "zebra-state",
  "zingo-netutils",
- "zingo_common_components",
  "zingo_test_vectors",
  "zingolib",
  "zingolib_testutils",

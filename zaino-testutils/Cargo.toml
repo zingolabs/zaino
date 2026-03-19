@@ -25,7 +25,6 @@ transparent_address_history_experimental = [
 
 [dependencies]
 # Zaino
-zaino-proto = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
 zaino-serve.workspace = true
 zaino-testvectors.workspace = true
@@ -40,19 +39,19 @@ zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }
 
 # Zebra
 zebra-chain = { workspace = true }
-zebra-state.workspace = true
 
 # Zingo-infra
 zcash_local_net = { workspace = true }
 zingo_test_vectors = { workspace = true }
 
 # Zingo-common
-zingo_common_components = { workspace = true }
 zingo-netutils.workspace = true
 
 # ZingoLib
 zingolib = { workspace = true, features = [ "testutils"] }
 zingolib_testutils.workspace = true
+
+zip32 = {workspace = true}
 
 # Miscellaneous
 http = { workspace = true }
@@ -77,5 +76,3 @@ tracing-subscriber = { workspace = true, features = [
 # TODO: Investigate whether proptest has violated semver guarentees with
 # its rand version update.
 proptest = { workspace = true }
-lazy_static = { workspace = true }
-zip32 = {workspace = true}
