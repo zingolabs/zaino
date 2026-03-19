@@ -3043,7 +3043,6 @@ dependencies = [
  "core2 0.4.0",
  "futures",
  "hex",
- "prost",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3058,7 +3057,6 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
- "zingo_test_vectors",
  "zip32",
 ]
 
@@ -8700,7 +8698,6 @@ version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
- "zcash_local_net",
  "zebra-chain",
  "zingo_common_components",
 ]
