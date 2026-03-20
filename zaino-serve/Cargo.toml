@@ -9,7 +9,6 @@ license = { workspace = true }
 version = { workspace = true }
 
 [features]
-
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 

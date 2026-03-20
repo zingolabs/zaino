@@ -71,7 +71,7 @@ mod chain_query_interface {
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
     use zebra_chain::{
-        parameters::{testnet::RegtestParameters, NetworkKind},
+        parameters::{NetworkKind, testnet::{ConfiguredActivationHeights, RegtestParameters}},
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
     };
 
@@ -115,8 +115,21 @@ mod chain_query_interface {
                 };
                 let network = match test_manager.network {
                     NetworkKind::Regtest => {
+                        let local_net_activation_heights = test_manager.local_net.get_activation_heights().await;
+
                         zebra_chain::parameters::Network::new_regtest(RegtestParameters::from(
-                            test_manager.local_net.get_activation_heights().await,
+                            ConfiguredActivationHeights {
+                                before_overwinter: local_net_activation_heights.overwinter(),
+                                overwinter: local_net_activation_heights.overwinter(),
+                                sapling: local_net_activation_heights.sapling(),
+                                blossom: local_net_activation_heights.blossom(),
+                                heartwood: local_net_activation_heights.heartwood(),
+                                canopy: local_net_activation_heights.canopy(),
+                                nu5: local_net_activation_heights.nu5(),
+                                nu6: local_net_activation_heights.nu6(),
+                                nu6_1: local_net_activation_heights.nu6_1(),
+                                nu7: local_net_activation_heights.nu7(),
+                            }    
                         ))
                     }
 
@@ -133,6 +146,7 @@ mod chain_query_interface {
                         debug_validity_check_interval: None,
                         // todo: does this matter?
                         should_backup_non_finalized_state: true,
+                        debug_skip_non_finalized_state_backup_task: false,
                     },
                     test_manager.full_node_rpc_listen_address.to_string(),
                     test_manager.full_node_grpc_listen_address,
