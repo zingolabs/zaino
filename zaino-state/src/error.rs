@@ -14,6 +14,10 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 // #[deprecated]
 #[derive(Debug, thiserror::Error)]
 pub enum StateServiceError {
+    /// Critical Errors, Restart Zaino.
+    #[error("Critical error: {0}")]
+    Critical(String),
+
     /// An rpc-specific error we haven't accounted for
     #[error("unhandled fallible RPC call {0}")]
     UnhandledRpcError(String),
@@ -110,6 +114,7 @@ impl From<GetBlockRangeError> for StateServiceError {
 impl From<StateServiceError> for tonic::Status {
     fn from(error: StateServiceError) -> Self {
         match error {
+            StateServiceError::Critical(message) => tonic::Status::internal(message),
             StateServiceError::Custom(message) => tonic::Status::internal(message),
             StateServiceError::JoinError(err) => {
                 tonic::Status::internal(format!("Join error: {err}"))
@@ -600,13 +605,16 @@ impl ChainIndexError {
         }
     }
 
-    pub(crate) fn database_hole(missing_block: impl Display) -> Self {
+    pub(crate) fn database_hole(
+        missing_block: impl Display,
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
             message: format!(
                 "InternalServerError: hole in validator database, missing block {missing_block}"
             ),
-            source: None,
+            source,
         }
     }
 

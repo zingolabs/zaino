@@ -54,7 +54,7 @@ use zaino_proto::proto::{
 };
 
 use crate::{
-    chain_index::NonFinalizedSnapshot as _, ChainIndex, NodeBackedChainIndex,
+    ChainIndex, NodeBackedChainIndex,
     NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
@@ -145,8 +145,19 @@ impl ZcashService for FetchService {
             config,
         };
 
-        while fetch_service.status() != StatusType::Ready {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // wait for sync to complete, return error on sync fail.
+        loop {
+            match fetch_service.status() {
+                StatusType::Ready | StatusType::Closing => break,
+                StatusType::CriticalError => {
+                    return Err(FetchServiceError::Critical(
+                        "ChainIndex initial sync failed, check full log for details.".to_string(),
+                    ));
+                }
+                _ => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
         }
 
         Ok(fetch_service)
@@ -894,7 +905,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_chaintip().height.0;
+                // Use the snapshot tip directly, as this function doesn't support passthrough
+                let chain_height = snapshot.best_tip.height.0;
 
                 match fetch_service_clone
                     .indexer
@@ -1003,7 +1015,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_chaintip().height.0;
+                
+                // Use the snapshot tip directly, as this function doesn't support passthrough
+                let chain_height = snapshot.best_tip.height.0;
 
                 match fetch_service_clone
                     .indexer

@@ -28,14 +28,15 @@ version = "0.2.0"
 
 # Zingo 
 
-zingo_common_components = { version = "0.2", features = [ "for_test" ]}
-zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.2.0" }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "e57492df94d319a49256d1a7f023a417557f1f7c", features = [
+zingo_common_components = "0.3.0"
+zingo-netutils = "2.0.2"
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "14a69853a8bd2e473dee8a433004c4c06aaf5308", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "e57492df94d319a49256d1a7f023a417557f1f7c" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "a303cad" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "a303cad" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "14a69853a8bd2e473dee8a433004c4c06aaf5308" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f" }
+
 
 # Librustzcash
 zcash_address = "0.10"
@@ -46,9 +47,9 @@ zcash_transparent = "0.6.3"
 zcash_client_backend = "0.21.0"
 
 # Zebra
-zebra-chain = "5.0.0"
-zebra-state = "4.0.0"
-zebra-rpc = "5.0.0"
+zebra-chain = "6.0.0"
+zebra-state = "5.0.0"
+zebra-rpc = "6.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -148,7 +149,6 @@ lazy_static = "1.5.0"
 #zcash_primitives = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-
 
 [profile.test]
 opt-level = 3

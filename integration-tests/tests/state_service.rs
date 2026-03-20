@@ -64,16 +64,16 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
         _ => zaino_common::Network::Regtest({
             let activation_heights = test_manager.local_net.get_activation_heights().await;
             ActivationHeights {
-                before_overwinter: activation_heights.before_overwinter,
-                overwinter: activation_heights.overwinter,
-                sapling: activation_heights.sapling,
-                blossom: activation_heights.blossom,
-                heartwood: activation_heights.heartwood,
-                canopy: activation_heights.canopy,
-                nu5: activation_heights.nu5,
-                nu6: activation_heights.nu6,
-                nu6_1: activation_heights.nu6_1,
-                nu7: activation_heights.nu7,
+                before_overwinter: activation_heights.overwinter(),
+                overwinter: activation_heights.overwinter(),
+                sapling: activation_heights.sapling(),
+                blossom: activation_heights.blossom(),
+                heartwood: activation_heights.heartwood(),
+                canopy: activation_heights.canopy(),
+                nu5: activation_heights.nu5(),
+                nu6: activation_heights.nu6(),
+                nu6_1: activation_heights.nu6_1(),
+                nu7: activation_heights.nu7(),
             }
         }),
     };
@@ -118,6 +118,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             debug_stop_at_height: None,
             debug_validity_check_interval: None,
             should_backup_non_finalized_state: false,
+            debug_skip_non_finalized_state_backup_task: false,
         },
         test_manager.full_node_rpc_listen_address.to_string(),
         test_manager.full_node_grpc_listen_address,

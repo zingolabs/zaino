@@ -5,7 +5,7 @@ use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
-        types as chain_types, ChainIndex, NonFinalizedSnapshot,
+        types as chain_types, ChainIndex,
     },
     config::StateServiceConfig,
     error::ChainIndexError,
@@ -261,12 +261,6 @@ impl ZcashService for StateService {
             }
         }
 
-        // let block_cache = BlockCache::spawn(
-        //     &rpc_client,
-        //     Some(&read_state_service),
-        //     config.clone().into(),
-        // )
-        // .await?;
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
             read_state_service: read_state_service.clone(),
             mempool_fetcher: rpc_client.clone(),
@@ -302,7 +296,24 @@ impl ZcashService for StateService {
             mmr,
         };
 
-        state_service.status.store(StatusType::Ready);
+        // wait for sync to complete, return error on sync fail.
+        loop {
+            match state_service.status() {
+                StatusType::Ready => {
+                    state_service.status.store(StatusType::Ready);
+                    break;
+                }
+                StatusType::CriticalError => {
+                    return Err(StateServiceError::Critical(
+                        "Chain index sync failed".to_string(),
+                    ));
+                }
+                StatusType::Closing => break,
+                _ => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
 
         Ok(state_service)
     }
@@ -576,7 +587,7 @@ impl StateServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = state_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_chaintip().height.0;
+                let chain_height = snapshot.best_tip.height.0;
 
                 match state_service_clone
                     .indexer
@@ -684,7 +695,7 @@ impl StateServiceSubscriber {
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let chain_height = snapshot.best_chaintip().height.0;
+        let chain_height = snapshot.best_tip.height.0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
@@ -1754,7 +1765,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                                     PoolTypeFilter::includes_all(),
                                 )
                                 .await?
-                                .ok_or_else(|| ChainIndexError::database_hole(tx.height.0))?;
+                                .ok_or_else(|| ChainIndexError::database_hole(tx.height.0, None))?;
                             let tx_object = TransactionObject::from_transaction(
                                 tx.tx.clone(),
                                 best_chain_height,
@@ -2392,7 +2403,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let mempool_height = snapshot.best_chaintip().height.0;
+        let mempool_height = snapshot.best_tip.height.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
