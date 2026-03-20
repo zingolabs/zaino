@@ -51,5 +51,5 @@ hex = { workspace = true }
 tokio = { workspace = true }
 
 # Zingo-infra
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "a303cad" }
+zcash_local_net = { workspace = true }
 zingo_test_vectors = { workspace = true }

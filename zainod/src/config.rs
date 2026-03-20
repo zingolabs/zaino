@@ -354,6 +354,7 @@ impl TryFrom<ZainodConfig> for StateServiceConfig {
                 debug_stop_at_height: None,
                 debug_validity_check_interval: None,
                 should_backup_non_finalized_state: true,
+                debug_skip_non_finalized_state_backup_task: false,
             },
             validator_rpc_address: cfg
                 .validator_settings
