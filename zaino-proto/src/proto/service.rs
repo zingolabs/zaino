@@ -329,21 +329,22 @@ pub struct MmrNode {
 }
 /// An MMR inclusion proof for a block in the chain history tree (ZIP-221).
 ///
-/// Contains the MMR root and auth data root for the current chain tip,
+/// Contains the MMR root and auth data root for a specific chain tip,
 /// plus the Merkle path proving the requested block is in the committed chain.
 /// The client can verify:
 /// hashBlockCommitments = BLAKE2b-256("ZcashBlockCommit" || mmr_root || auth_data_root || \[0u8;32\])
-/// against the tip block header (obtainable via GetBlock) to authenticate the
-/// MMR root, then verify the inclusion proof against it.
+/// against the block header at `tip_height` (obtainable via GetBlock) to
+/// authenticate the MMR root, then verify the inclusion proof against it.
 ///
 /// Future optimization: a range variant could batch multiple proofs sharing
 /// common MMR subtree nodes.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BlockInclusionProof {
-    /// hashLightClientRoot: the MMR root for the current chain tip (32 bytes).
+    /// hashLightClientRoot: the MMR root committed in the block at tip_height (32 bytes).
     #[prost(bytes = "vec", tag = "1")]
     pub mmr_root: ::prost::alloc::vec::Vec<u8>,
-    /// hashAuthDataRoot: the transaction auth data commitment from ZIP-244 (32 bytes).
+    /// hashAuthDataRoot: the transaction auth data commitment from ZIP-244
+    /// for the block at tip_height (32 bytes).
     #[prost(bytes = "vec", tag = "2")]
     pub auth_data_root: ::prost::alloc::vec::Vec<u8>,
     /// The MMR leaf entry for the requested block.
@@ -352,6 +353,11 @@ pub struct BlockInclusionProof {
     /// Sibling nodes along the path from leaf to root (bottom-up order).
     #[prost(message, repeated, tag = "4")]
     pub siblings: ::prost::alloc::vec::Vec<MmrNode>,
+    /// Height of the block whose header commits to mmr_root and auth_data_root.
+    /// The client should fetch this block's header (via GetBlock) and verify
+    /// hashBlockCommitments against the returned mmr_root and auth_data_root.
+    #[prost(uint32, tag = "5")]
+    pub tip_height: u32,
 }
 /// An identifier for a Zcash value pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

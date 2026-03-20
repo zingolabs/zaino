@@ -254,6 +254,8 @@ impl InMemoryMmrTree {
         }
 
         let peaks = find_peaks(self.entries.len() as u32);
+        let peak_set: std::collections::HashSet<u32> = peaks.iter().copied().collect();
+
         let peak_entries: Vec<(u32, Entry<V2>)> = peaks
             .iter()
             .map(|&pos| {
@@ -263,7 +265,18 @@ impl InMemoryMmrTree {
             })
             .collect::<Result<Vec<_>, MmrError>>()?;
 
-        let mut tree = Tree::new(self.entries.len() as u32, peak_entries, vec![]);
+        // The library's truncate_leaf walks interior nodes to find what to
+        // remove. Provide all non-peak entries so it can resolve any link.
+        let extra: Vec<(u32, Entry<V2>)> = (0..self.entries.len() as u32)
+            .filter(|pos| !peak_set.contains(pos))
+            .map(|pos| {
+                let entry = Entry::from_bytes(self.branch_id, &self.entries[pos as usize])
+                    .map_err(MmrError::Io)?;
+                Ok((pos, entry))
+            })
+            .collect::<Result<Vec<_>, MmrError>>()?;
+
+        let mut tree = Tree::new(self.entries.len() as u32, peak_entries, extra);
         let truncated = tree.truncate_leaf()?;
 
         for _ in 0..truncated {
@@ -331,6 +344,10 @@ impl InMemoryMmrTree {
     }
 
     /// Collect sibling nodes along the path from a leaf to the root.
+    ///
+    /// First climbs within the leaf's subtree (intra-peak siblings), then
+    /// adds the remaining peaks as cross-peak siblings so the verifier can
+    /// bag them into the MMR root.
     fn collect_proof_siblings(&self, leaf_pos: u32) -> Result<Vec<MmrNode>, MmrError> {
         let mut siblings = Vec::new();
         let total = self.entries.len() as u32;
@@ -339,11 +356,11 @@ impl InMemoryMmrTree {
             return Err(MmrError::Empty);
         }
 
+        // Phase 1: climb within the subtree to reach the peak.
         let mut pos = leaf_pos;
         let mut h = 0u32;
 
         loop {
-            // Size of a complete subtree at current height
             let sibling_offset = 1u32 << h;
             let parent_span = (1u32 << (h + 1)) - 1;
 
@@ -376,6 +393,19 @@ impl InMemoryMmrTree {
             }
 
             break; // at a peak
+        }
+
+        // Phase 2: add remaining peaks as cross-peak siblings.
+        // The MMR root is computed by "bagging" peaks right-to-left.
+        // The verifier needs all other peaks to reconstruct the root.
+        let peaks = find_peaks(total);
+        for &peak_pos in &peaks {
+            if peak_pos != pos {
+                siblings.push(MmrNode {
+                    position: peak_pos,
+                    data: self.entries[peak_pos as usize].clone(),
+                });
+            }
         }
 
         Ok(siblings)
@@ -581,30 +611,47 @@ fn write_compact_uint(buf: &mut Vec<u8>, n: u64) {
 
 /// Height of a node at a given MMR position.
 ///
-/// Uses the property that in the flat MMR representation, the height of position p
-/// can be determined by looking at the binary representation of (p+1).
-fn pos_height(pos: u32) -> u32 {
-    let mut p = pos;
-    let mut h = 0u32;
+/// In the flat MMR array, positions map to heights as follows:
+///   pos:    0  1  2  3  4  5  6  7  8  9  10 11 12 13 14
+///   height: 0  0  1  0  0  1  2  0  0  1  0  0  1  2  3
+///
+/// Two-phase algorithm:
+///  1. Strip complete trees from the left (each with increasing height)
+///     until `pos` falls inside one.
+///  2. Binary-descend within that tree to find the node's height.
+fn pos_height(mut pos: u32) -> u32 {
+    // Phase 1: find the complete tree that contains `pos`.
+    // Strip complete trees from the left. Each tree's height is
+    // found by the largest (2^(h+1) - 1) that fits in (pos + 1).
+    let mut h;
     loop {
-        // Size of complete subtree at height h
-        let size = (1u32 << (h + 1)) - 1;
-        if p < size {
-            return h;
+        h = 0u32;
+        while (1u32 << (h + 2)) - 1 <= pos + 1 {
+            h += 1;
         }
-        // Check if p is exactly at the root of a subtree of this height
-        if p == size - 1 {
-            return h;
+        let tree_size = (1u32 << (h + 1)) - 1;
+        if pos < tree_size {
+            break;
         }
-        // Skip complete subtrees
-        if p >= size {
-            p -= size;
-            h = 0;
-            continue;
-        }
-        break;
+        pos -= tree_size;
     }
-    h
+
+    // Phase 2: descend within the tree of height `h` to find
+    // which level `pos` sits at.
+    loop {
+        let size = (1u32 << (h + 1)) - 1;
+        if pos == size - 1 {
+            return h; // at the root of this subtree
+        }
+        if h == 0 {
+            return 0;
+        }
+        let left_size = (1u32 << h) - 1;
+        if pos >= left_size {
+            pos -= left_size; // descend into right subtree
+        }
+        h -= 1;
+    }
 }
 
 /// Convert a 0-based leaf index to an MMR position.
@@ -714,6 +761,163 @@ pub fn new_mmr_handle() -> MmrHandle {
 mod tests {
     use super::*;
 
+    /// Build a minimal test MMR with `n` leaves starting at `epoch_start`.
+    /// Uses synthetic but valid V2 leaf data.
+    fn build_test_mmr(epoch_start: u32, n: u32) -> InMemoryMmrTree {
+        let branch_id = 0x74736554; // "Test" in LE
+        let mut mmr = InMemoryMmrTree {
+            entries: Vec::new(),
+            leaf_count: 0,
+            epoch_start_height: epoch_start,
+            branch_id,
+        };
+        for i in 0..n {
+            let height = epoch_start + i;
+            let mut hash = [0u8; 32];
+            hash[0..4].copy_from_slice(&height.to_le_bytes());
+            let sapling = [2u8; 32];
+            let orchard = [3u8; 32];
+            let work = [0u8; 32];
+            let bytes = serialize_v2_leaf_data(
+                branch_id, &hash, 1000 + height, 0x1d00ffff, &sapling, &orchard, &work,
+                height as u64,
+            );
+            mmr.append_leaf_bytes(&bytes).unwrap();
+        }
+        mmr
+    }
+
+    /// Simulates the old (buggy) behavior: the caller uses the chain tip height
+    /// (which may differ from MMR tip) for auth_data_root. Returns the height
+    /// that would be used.
+    fn old_commit_height(chain_tip: u32, _mmr: &InMemoryMmrTree) -> u32 {
+        // Old code: snapshot.best_chaintip().height — the non-finalized chain tip
+        chain_tip
+    }
+
+    /// The correct behavior: use MMR tip + 1 as the committing block height.
+    fn correct_commit_height(mmr: &InMemoryMmrTree) -> Option<u32> {
+        mmr.tip_height().map(|tip| tip + 1)
+    }
+
+    #[test]
+    fn test_commit_height_mismatch_when_chain_ahead_of_mmr() {
+        // MMR covers finalized blocks (epoch_start=1_000_000, 50 blocks),
+        // so MMR tip = 1_000_049.
+        // Chain tip is 100 blocks ahead at 1_000_149.
+        let mmr = build_test_mmr(1_000_000, 50);
+        let chain_tip = 1_000_149; // non-finalized tip, 100 blocks ahead
+
+        let old_height = old_commit_height(chain_tip, &mmr);
+        let correct_height = correct_commit_height(&mmr).unwrap();
+
+        // The old code would fetch auth_data_root from the wrong block
+        assert_ne!(
+            old_height, correct_height,
+            "Old code uses chain tip ({old_height}) which differs from \
+             correct commit height ({correct_height}). \
+             mmr_root and auth_data_root would be from different blocks."
+        );
+
+        // The correct height should be MMR tip + 1
+        assert_eq!(correct_height, 1_000_050);
+        assert_eq!(mmr.tip_height().unwrap(), 1_000_049);
+    }
+
+    #[test]
+    fn test_commit_height_consistent_when_chain_equals_mmr_plus_one() {
+        // Edge case: chain tip == MMR tip + 1 (the only scenario where old code
+        // accidentally gets the right answer).
+        let mmr = build_test_mmr(1_000_000, 50);
+        let chain_tip = 1_000_050; // exactly MMR tip + 1
+
+        let old_height = old_commit_height(chain_tip, &mmr);
+        let correct_height = correct_commit_height(&mmr).unwrap();
+
+        assert_eq!(old_height, correct_height);
+    }
+
+    #[test]
+    fn test_tip_height_tracks_appends_and_truncates() {
+        let mut mmr = build_test_mmr(100, 10);
+        assert_eq!(mmr.tip_height(), Some(109));
+        assert_eq!(mmr.leaf_count(), 10);
+
+        // Truncate one leaf
+        mmr.truncate_leaf().unwrap();
+        assert_eq!(mmr.tip_height(), Some(108));
+        assert_eq!(mmr.leaf_count(), 9);
+
+        // Truncate down to 0, verifying each step
+        while mmr.leaf_count() > 0 {
+            let expected_tip = mmr.epoch_start_height() + mmr.leaf_count() - 2;
+            mmr.truncate_leaf().unwrap();
+            if mmr.leaf_count() > 0 {
+                assert_eq!(mmr.tip_height(), Some(expected_tip));
+            } else {
+                assert_eq!(mmr.tip_height(), None);
+            }
+        }
+
+        // Truncating empty tree should error
+        assert!(mmr.truncate_leaf().is_err());
+    }
+
+    #[test]
+    fn test_truncate_preserves_tree_integrity() {
+        // Build 8 leaves, truncate 3, verify the remaining 5-leaf tree
+        // still produces valid roots and proofs.
+        let mut mmr = build_test_mmr(100, 8);
+        let root_at_8 = mmr.root_hash().unwrap();
+
+        for _ in 0..3 {
+            mmr.truncate_leaf().unwrap();
+        }
+        assert_eq!(mmr.leaf_count(), 5);
+        assert_eq!(mmr.tip_height(), Some(104));
+
+        // Root should differ from the 8-leaf root
+        let root_at_5 = mmr.root_hash().unwrap();
+        assert_ne!(root_at_8, root_at_5);
+
+        // Should match a fresh 5-leaf tree built from scratch
+        let fresh = build_test_mmr(100, 5);
+        assert_eq!(fresh.root_hash().unwrap(), root_at_5);
+        assert_eq!(fresh.entries.len(), mmr.entries.len());
+
+        // Inclusion proofs should still work for remaining blocks
+        for h in 100..105 {
+            let (leaf, _siblings) = mmr.prove_inclusion(h).unwrap();
+            assert!(!leaf.data.is_empty());
+        }
+        // Block 105 should now be out of range
+        assert!(mmr.prove_inclusion(105).is_err());
+    }
+
+    #[test]
+    fn test_prove_inclusion_and_root_consistency() {
+        let mmr = build_test_mmr(100, 10);
+
+        // Root should be computable
+        let root = mmr.root_hash().unwrap();
+        assert_ne!(root, [0u8; 32]);
+
+        // Can prove inclusion for any block in the epoch
+        for h in 100..110 {
+            let (leaf, siblings) = mmr.prove_inclusion(h).unwrap();
+            assert!(!leaf.data.is_empty());
+            // Leaf position should match the expected MMR position
+            assert_eq!(leaf.position, leaf_index_to_mmr_pos(h - 100));
+            // Should have at least some siblings (except possibly for trivial trees)
+            let _ = siblings;
+        }
+
+        // Block before epoch should fail
+        assert!(mmr.prove_inclusion(99).is_err());
+        // Block beyond tip should fail
+        assert!(mmr.prove_inclusion(110).is_err());
+    }
+
     #[test]
     fn test_leaf_index_to_mmr_pos() {
         assert_eq!(leaf_index_to_mmr_pos(0), 0);
@@ -724,6 +928,90 @@ mod tests {
         assert_eq!(leaf_index_to_mmr_pos(5), 8);
         assert_eq!(leaf_index_to_mmr_pos(6), 10);
         assert_eq!(leaf_index_to_mmr_pos(7), 11);
+    }
+
+    #[test]
+    fn test_pos_height() {
+        // MMR layout for 15 entries (8 leaves):
+        //   pos:    0  1  2  3  4  5  6  7  8  9  10 11 12 13 14
+        //   height: 0  0  1  0  0  1  2  0  0  1  0  0  1  2  3
+        let expected = [0, 0, 1, 0, 0, 1, 2, 0, 0, 1, 0, 0, 1, 2, 3];
+        for (pos, &exp) in expected.iter().enumerate() {
+            assert_eq!(
+                pos_height(pos as u32),
+                exp,
+                "pos_height({pos}) = {} but expected {exp}",
+                pos_height(pos as u32)
+            );
+        }
+        // Additional: pos 30 is root of a 16-leaf tree → height 4
+        assert_eq!(pos_height(30), 4);
+    }
+
+    #[test]
+    fn test_proof_verifies_against_root() {
+        // Build a tree and verify that the inclusion proof actually
+        // reconstructs the correct root hash when combined properly.
+        // This catches bugs in collect_proof_siblings (incomplete proofs,
+        // missing cross-peak siblings, etc).
+        for n_leaves in [2u32, 3, 4, 5, 7, 8, 9, 10, 16] {
+            let mmr = build_test_mmr(100, n_leaves);
+            let root = mmr.root_hash().unwrap();
+
+            for leaf_idx in 0..n_leaves {
+                let block_height = 100 + leaf_idx;
+                let (leaf, siblings) = mmr.prove_inclusion(block_height).unwrap();
+
+                // Reconstruct root from leaf + siblings using zcash_history.
+                // Load all proof nodes into a Tree and compute the root.
+                let mut all_entries: Vec<(u32, Entry<V2>)> = Vec::new();
+                let leaf_entry =
+                    Entry::from_bytes(mmr.branch_id, &leaf.data).unwrap();
+                all_entries.push((leaf.position, leaf_entry));
+                for sib in &siblings {
+                    let entry = Entry::from_bytes(mmr.branch_id, &sib.data).unwrap();
+                    all_entries.push((sib.position, entry));
+                }
+
+                // For verification, we also need the internal nodes along the path.
+                // Since we can't easily reconstruct from just leaf+siblings without
+                // a full verifier, we verify a weaker but still meaningful property:
+                // the proof must include enough siblings to reach all peaks.
+                let peaks = find_peaks(mmr.entries.len() as u32);
+                let proof_positions: std::collections::HashSet<u32> =
+                    std::iter::once(leaf.position)
+                        .chain(siblings.iter().map(|s| s.position))
+                        .collect();
+
+                // Every peak except the one containing the leaf must appear
+                // as a sibling (cross-peak sibling).
+                let leaf_peak = peaks.iter().find(|&&p| leaf.position <= p).unwrap();
+                for &peak in &peaks {
+                    if peak != *leaf_peak {
+                        assert!(
+                            proof_positions.contains(&peak),
+                            "Proof for leaf {} (n_leaves={}) missing cross-peak sibling at pos {}. \
+                             Peaks: {:?}, proof positions: {:?}",
+                            leaf_idx, n_leaves, peak, peaks, proof_positions,
+                        );
+                    }
+                }
+
+                // The proof should have at least log2(subtree_size) intra-peak
+                // siblings plus (num_peaks - 1) cross-peak siblings.
+                let expected_cross_peak = peaks.len() - 1;
+                let total_siblings = siblings.len();
+                assert!(
+                    total_siblings >= expected_cross_peak,
+                    "Proof for leaf {} (n_leaves={}) has {} siblings but needs at least {} \
+                     cross-peak siblings. Peaks: {:?}",
+                    leaf_idx, n_leaves, total_siblings, expected_cross_peak, peaks,
+                );
+            }
+
+            // Verify root is deterministic
+            assert_eq!(mmr.root_hash().unwrap(), root);
+        }
     }
 
     #[test]

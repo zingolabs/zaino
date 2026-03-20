@@ -2671,28 +2671,33 @@ impl LightWalletIndexer for StateServiceSubscriber {
             )))
         })?;
 
-        // Compute auth_data_root from the tip block's transactions (ZIP-244)
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let tip = snapshot.best_chaintip();
+        // The MMR root corresponds to the tree state at mmr_tip.
+        // The block that commits to this root in its header is mmr_tip + 1.
+        let mmr_tip = mmr_tree.tip_height().ok_or_else(|| {
+            StateServiceError::TonicStatusError(tonic::Status::internal("MMR has no tip height"))
+        })?;
+        let commit_height = mmr_tip + 1;
+
+        // Compute auth_data_root from the committing block's transactions (ZIP-244)
         let response = self
             .read_state_service
             .clone()
             .ready()
             .and_then(|service| {
                 service.call(ReadRequest::Block(HashOrHeight::Height(Height(
-                    tip.height.0,
+                    commit_height,
                 ))))
             })
             .await
             .map_err(|e| {
                 StateServiceError::TonicStatusError(tonic::Status::internal(format!(
-                    "Failed to get tip block: {e}"
+                    "Failed to get block at height {commit_height}: {e}"
                 )))
             })?;
         let block = expected_read_response!(response, Block).ok_or_else(|| {
-            StateServiceError::TonicStatusError(tonic::Status::internal(
-                "Tip block not found in state",
-            ))
+            StateServiceError::TonicStatusError(tonic::Status::internal(format!(
+                "Block at height {commit_height} not found in state"
+            )))
         })?;
         let auth_data_root: [u8; 32] = block
             .transactions
@@ -2712,6 +2717,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             auth_data_root: auth_data_root.to_vec(),
             leaf: Some(leaf),
             siblings,
+            tip_height: commit_height,
         })
     }
 }
