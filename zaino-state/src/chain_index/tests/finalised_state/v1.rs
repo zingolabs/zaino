@@ -17,12 +17,15 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, load_test_vectors, TestVectorBlockData, TestVectorData,
 };
+
+#[cfg(feature = "transparent_address_history_experimental")]
 use crate::chain_index::types::TransactionHash;
+
 use crate::error::FinalisedStateError;
-use crate::{
-    AddrScript, BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height,
-    IndexedBlock, Outpoint,
-};
+use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
+
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::{AddrScript, Outpoint};
 
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockchainSource,
@@ -514,6 +517,7 @@ async fn get_compact_block_stream() {
     }
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_faucet_txids() {
     init_tracing();
@@ -616,6 +620,7 @@ async fn get_faucet_txids() {
     assert_eq!(faucet.txids, reader_faucet_txids);
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_recipient_txids() {
     init_tracing();
@@ -729,6 +734,7 @@ async fn get_recipient_txids() {
     assert_eq!(recipient.txids, reader_recipient_txids);
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_faucet_utxos() {
     init_tracing();
@@ -768,6 +774,7 @@ async fn get_faucet_utxos() {
     assert_eq!(cleaned_utxos, reader_faucet_utxos);
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_recipient_utxos() {
     init_tracing();
@@ -813,6 +820,7 @@ async fn get_recipient_utxos() {
     assert_eq!(cleaned_utxos, reader_recipient_utxos);
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_balance() {
     init_tracing();
@@ -856,6 +864,7 @@ async fn get_balance() {
     assert_eq!(test_vector_data.recipient.balance, reader_recipient_balance);
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[tokio::test(flavor = "multi_thread")]
 async fn check_faucet_spent_map() {
     init_tracing();
@@ -1019,6 +1028,7 @@ async fn check_faucet_spent_map() {
     }
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[tokio::test(flavor = "multi_thread")]
 async fn check_recipient_spent_map() {
     init_tracing();

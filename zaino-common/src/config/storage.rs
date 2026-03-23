@@ -45,7 +45,7 @@ pub struct DatabaseSize(pub usize);
 
 impl Default for DatabaseSize {
     fn default() -> Self {
-        DatabaseSize(128) // Default to 128 GB
+        DatabaseSize(384) // Default to 384 GB
     }
 }
 

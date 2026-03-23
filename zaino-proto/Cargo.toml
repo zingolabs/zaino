@@ -17,7 +17,10 @@ tonic = { workspace = true }
 
 # Miscellaneous Crate
 prost = { workspace = true }
+tonic-prost = "0.14"
 
 [build-dependencies]
-tonic-build = { workspace = true, features = ["prost"] }
+tonic-build = { workspace = true }
 which = { workspace = true }
+tonic-prost-build = "0.14"
+prost-build = "0.14"

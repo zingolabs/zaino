@@ -64,16 +64,16 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
         _ => zaino_common::Network::Regtest({
             let activation_heights = test_manager.local_net.get_activation_heights().await;
             ActivationHeights {
-                before_overwinter: activation_heights.before_overwinter,
-                overwinter: activation_heights.overwinter,
-                sapling: activation_heights.sapling,
-                blossom: activation_heights.blossom,
-                heartwood: activation_heights.heartwood,
-                canopy: activation_heights.canopy,
-                nu5: activation_heights.nu5,
-                nu6: activation_heights.nu6,
-                nu6_1: activation_heights.nu6_1,
-                nu7: activation_heights.nu7,
+                before_overwinter: activation_heights.overwinter(),
+                overwinter: activation_heights.overwinter(),
+                sapling: activation_heights.sapling(),
+                blossom: activation_heights.blossom(),
+                heartwood: activation_heights.heartwood(),
+                canopy: activation_heights.canopy(),
+                nu5: activation_heights.nu5(),
+                nu6: activation_heights.nu6(),
+                nu6_1: activation_heights.nu6_1(),
+                nu7: activation_heights.nu7(),
             }
         }),
     };
@@ -118,6 +118,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             debug_stop_at_height: None,
             debug_validity_check_interval: None,
             should_backup_non_finalized_state: false,
+            debug_skip_non_finalized_state_backup_task: false,
         },
         test_manager.full_node_rpc_listen_address.to_string(),
         test_manager.full_node_grpc_listen_address,
@@ -241,7 +242,7 @@ async fn state_service_check_info<V: ValidatorExt>(
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     let (
@@ -272,7 +273,7 @@ async fn state_service_check_info<V: ValidatorExt>(
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     assert_eq!(cleaned_fetch_info, cleaned_state_info);
@@ -1285,12 +1286,14 @@ async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         clients.faucet.sync_and_await().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
         test_manager.local_net.generate_blocks(1).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.sync_and_await().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
 
     let tx = from_inputs::quick_send(

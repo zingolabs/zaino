@@ -159,7 +159,7 @@ async fn launch_json_server_check_info() {
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     let (
@@ -190,7 +190,7 @@ async fn launch_json_server_check_info() {
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     assert_eq!(cleaned_zcashd_info, cleaned_zaino_info);

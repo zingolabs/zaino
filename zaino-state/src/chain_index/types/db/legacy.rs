@@ -2577,6 +2577,7 @@ impl FixedEncodedLen for AddrHistRecord {
 #[allow(dead_code)]
 pub(crate) struct AddrEventBytes([u8; 17]);
 
+#[allow(dead_code)]
 impl AddrEventBytes {
     const LEN: usize = 17;
 
