@@ -128,10 +128,10 @@ bitflags = "2.9"
 portpicker = "0.1"
 tempfile = "3.2"
 zaino-fetch = { path = "packages/zaino-fetch" }
-zaino-proto = { path = "packages/zaino-proto" }
+zaino-proto = "0.1.0"
 zaino-serve = { path = "packages/zaino-serve" }
 zaino-state = { path = "packages/zaino-state" }
-zaino-common = { path = "packages/zaino-common" }
+zaino-common = "0.1.0"
 wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "packages/zainod" }
 config = { version = "0.15", default-features = false, features = ["toml"] }
