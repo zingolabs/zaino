@@ -943,6 +943,225 @@ async fn state_service_get_block_range_returns_all_pools<V: ValidatorExt>(
     test_manager.close().await;
 }
 
+// tests whether the `GetBlockRange` returns all blocks until the first requested block in the 
+// range can't be bound
+async fn state_service_get_block_range_out_of_range_test_upper_bound<V: ValidatorExt>(
+    validator: &ValidatorKind,
+) {
+    let (
+        mut test_manager,
+        _fetch_service,
+        fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    clients.faucet.sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        generate_blocks_and_poll_all_chain_indexes(
+            100,
+            &test_manager,
+            fetch_service_subscriber.clone(),
+            state_service_subscriber.clone(),
+        )
+        .await;
+        clients.faucet.sync_and_await().await.unwrap();
+        for _ in 1..4 {
+            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+
+            clients.faucet.sync_and_await().await.unwrap();
+        }
+    };
+
+
+    let start_height: u64 = 1;
+    let end_height: u64 = 106;
+
+    let block_range = BlockRange {
+        start: Some(BlockId {
+            height: start_height,
+            hash: vec![],
+        }),
+        end: Some(BlockId {
+            height: end_height,
+            hash: vec![],
+        }),
+        pool_types: vec![
+            PoolType::Transparent as i32,
+            PoolType::Sapling as i32,
+            PoolType::Orchard as i32,
+        ],
+    };
+
+    let mut fetch_service_stream = fetch_service_subscriber
+        .get_block_range(block_range.clone())
+        .await
+        .expect("get_block_range call itself should not fail");
+
+    let mut fetch_service_blocks = Vec::new();
+    let mut fetch_service_terminal_error = None;
+
+     while let Some(item) = fetch_service_stream.next().await {
+        match item {
+            Ok(block) => fetch_service_blocks.push(block),
+            Err(e) => { fetch_service_terminal_error = Some(e); break; }
+        }
+    }
+
+    let mut state_service_stream = state_service_subscriber
+        .get_block_range(block_range)
+        .await
+        .expect("get_block_range call itself should not fail");
+
+    let mut state_service_blocks = Vec::new();
+    let mut state_service_terminal_error = None;
+
+    while let Some(item) = state_service_stream.next().await {
+        match item {
+            Ok(block) => state_service_blocks.push(block),
+            Err(e) => { state_service_terminal_error = Some(e); break; }
+        }
+    }
+    // check that the block range is the same
+    assert_eq!(fetch_service_blocks, state_service_blocks);
+
+    let compact_block = state_service_blocks.last().unwrap();
+
+    assert_eq!(compact_block.height, end_height);
+
+    assert_eq!(fetch_service_blocks.len(), 100);
+
+    // Assert – then an error, not a clean end-of-stream
+    let _ = state_service_terminal_error.expect("state service stream should terminate with an error, not cleanly");
+    let _ = fetch_service_terminal_error.expect("fetch service stream should terminate with an error, not cleanly");
+    // assert!(
+    //     matches!(err, ZainoStateError::BlockOutOfRange { .. }),
+    //     "unexpected error variant: {err:?}"
+    // );
+
+    test_manager.close().await;
+}
+
+// tests whether the `GetBlockRange` returns all blocks until the first requested block in the 
+// range can't be bound
+async fn state_service_get_block_range_out_of_range_test_lower_bound<V: ValidatorExt>(
+    validator: &ValidatorKind,
+) {
+    let (
+        mut test_manager,
+        _fetch_service,
+        fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    clients.faucet.sync_and_await().await.unwrap();
+
+    if matches!(validator, ValidatorKind::Zebrad) {
+        generate_blocks_and_poll_all_chain_indexes(
+            100,
+            &test_manager,
+            fetch_service_subscriber.clone(),
+            state_service_subscriber.clone(),
+        )
+        .await;
+        clients.faucet.sync_and_await().await.unwrap();
+        for _ in 1..4 {
+            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+            generate_blocks_and_poll_all_chain_indexes(
+                1,
+                &test_manager,
+                fetch_service_subscriber.clone(),
+                state_service_subscriber.clone(),
+            )
+            .await;
+
+            clients.faucet.sync_and_await().await.unwrap();
+        }
+    };
+
+
+    let start_height: u64 = 106;
+    let end_height: u64 = 1;
+
+    let block_range = BlockRange {
+        start: Some(BlockId {
+            height: start_height,
+            hash: vec![],
+        }),
+        end: Some(BlockId {
+            height: end_height,
+            hash: vec![],
+        }),
+        pool_types: vec![
+            PoolType::Transparent as i32,
+            PoolType::Sapling as i32,
+            PoolType::Orchard as i32,
+        ],
+    };
+
+    let mut fetch_service_stream = fetch_service_subscriber
+        .get_block_range(block_range.clone())
+        .await
+        .expect("get_block_range call itself should not fail");
+
+    let mut fetch_service_blocks = Vec::new();
+    let mut fetch_service_terminal_error = None;
+
+     while let Some(item) = fetch_service_stream.next().await {
+        match item {
+            Ok(block) => fetch_service_blocks.push(block),
+            Err(e) => { fetch_service_terminal_error = Some(e); break; }
+        }
+    }
+
+    let mut state_service_stream = state_service_subscriber
+        .get_block_range(block_range)
+        .await
+        .expect("get_block_range call itself should not fail");
+
+    let mut state_service_blocks = Vec::new();
+    let mut state_service_terminal_error = None;
+
+    while let Some(item) = state_service_stream.next().await {
+        match item {
+            Ok(block) => state_service_blocks.push(block),
+            Err(e) => { state_service_terminal_error = Some(e); break; }
+        }
+    }
+    // check that the block range is the same
+    assert_eq!(fetch_service_blocks, state_service_blocks);
+
+
+    assert!(fetch_service_blocks.is_empty());
+
+    // Assert – then an error, not a clean end-of-stream
+    let _ = state_service_terminal_error.expect("state service stream should terminate with an error, not cleanly");
+    let _ = fetch_service_terminal_error.expect("fetch service stream should terminate with an error, not cleanly");
+    // assert!(
+    //     matches!(err, ZainoStateError::BlockOutOfRange { .. }),
+    //     "unexpected error variant: {err:?}"
+    // );
+
+    test_manager.close().await;
+}
+
 async fn state_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKind) {
     let (
         mut test_manager,
@@ -2052,6 +2271,18 @@ mod zebra {
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn get_block_range_default_request_returns_all_pools_regtest() {
                 state_service_get_block_range_returns_all_pools::<Zebrad>(&ValidatorKind::Zebrad)
+                    .await;
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            pub(crate) async fn get_block_range_out_of_range_test_upper_bound_regtest() {
+                state_service_get_block_range_out_of_range_test_upper_bound::<Zebrad>(&ValidatorKind::Zebrad)
+                    .await;
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            pub(crate) async fn get_block_range_out_of_range_test_lower_bound_regtest() {
+                state_service_get_block_range_out_of_range_test_lower_bound::<Zebrad>(&ValidatorKind::Zebrad)
                     .await;
             }
 

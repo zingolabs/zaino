@@ -8700,7 +8700,6 @@ version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
- "zcash_local_net",
  "zebra-chain",
  "zingo_common_components",
 ]
