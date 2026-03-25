@@ -127,7 +127,7 @@ bitflags = "2.9"
 # Test
 portpicker = "0.1"
 tempfile = "3.2"
-zaino-fetch = { path = "packages/zaino-fetch" }
+zaino-fetch = "0.1.0"
 zaino-proto = "0.1.0"
 zaino-serve = { path = "packages/zaino-serve" }
 zaino-state = { path = "packages/zaino-state" }
