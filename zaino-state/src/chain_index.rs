@@ -956,10 +956,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ) -> Result<Option<CompactBlockStream>, Self::Error> {
         let chain_tip_height = self.best_chaintip(nonfinalized_snapshot).await?.height;
 
-        if start_height > chain_tip_height || end_height > chain_tip_height {
-            return Ok(None);
-        }
-
         // The nonfinalized cache holds the tip block plus the previous 99 blocks (100 total),
         // so the lowest possible cached height is `tip - 99` (saturating at 0).
         let lowest_nonfinalized_height = types::Height(chain_tip_height.0.saturating_sub(99));

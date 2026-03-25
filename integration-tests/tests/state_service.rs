@@ -971,18 +971,6 @@ async fn state_service_get_block_range_out_of_range_test_upper_bound<V: Validato
         )
         .await;
         clients.faucet.sync_and_await().await.unwrap();
-        for _ in 1..4 {
-            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-            generate_blocks_and_poll_all_chain_indexes(
-                1,
-                &test_manager,
-                fetch_service_subscriber.clone(),
-                state_service_subscriber.clone(),
-            )
-            .await;
-
-            clients.faucet.sync_and_await().await.unwrap();
-        }
     };
 
 
@@ -1039,17 +1027,13 @@ async fn state_service_get_block_range_out_of_range_test_upper_bound<V: Validato
 
     let compact_block = state_service_blocks.last().unwrap();
 
-    assert_eq!(compact_block.height, end_height);
+    assert!(compact_block.height < end_height);
 
     assert_eq!(fetch_service_blocks.len(), 100);
 
     // Assert – then an error, not a clean end-of-stream
     let _ = state_service_terminal_error.expect("state service stream should terminate with an error, not cleanly");
     let _ = fetch_service_terminal_error.expect("fetch service stream should terminate with an error, not cleanly");
-    // assert!(
-    //     matches!(err, ZainoStateError::BlockOutOfRange { .. }),
-    //     "unexpected error variant: {err:?}"
-    // );
 
     test_manager.close().await;
 }
@@ -1082,18 +1066,6 @@ async fn state_service_get_block_range_out_of_range_test_lower_bound<V: Validato
         )
         .await;
         clients.faucet.sync_and_await().await.unwrap();
-        for _ in 1..4 {
-            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-            generate_blocks_and_poll_all_chain_indexes(
-                1,
-                &test_manager,
-                fetch_service_subscriber.clone(),
-                state_service_subscriber.clone(),
-            )
-            .await;
-
-            clients.faucet.sync_and_await().await.unwrap();
-        }
     };
 
 
