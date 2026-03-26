@@ -129,7 +129,7 @@ portpicker = "0.1"
 tempfile = "3.2"
 zaino-fetch = "0.1.0"
 zaino-proto = "0.1.0"
-zaino-serve = { path = "packages/zaino-serve" }
+zaino-serve = "0.1.0"
 zaino-state = "0.1.0"
 zaino-common = "0.1.0"
 wire_serialized_transaction_test_data = "1.0.0"
@@ -152,6 +152,7 @@ zaino-common = { path = "zaino-common" }
 zaino-fetch = { path = "zaino-fetch" }
 zaino-proto = { path = "zaino-proto" }
 zaino-state = { path = "zaino-state" }
+zaino-serve = { path = "zaino-serve" }
 
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
