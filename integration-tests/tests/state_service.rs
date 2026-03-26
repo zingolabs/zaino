@@ -962,9 +962,17 @@ async fn state_service_get_block_range_out_of_range_test_upper_bound<V: Validato
         .expect("Clients are not initialized");
     clients.faucet.sync_and_await().await.unwrap();
 
+    // Test manager generates blocks on startup, check current height to ensure we only generate up to height 100
+    let chain_height = state_service_subscriber
+        .get_latest_block()
+        .await
+        .unwrap()
+        .height as u32;
+    let block_required_height_100 = 100 - chain_height;
+
     if matches!(validator, ValidatorKind::Zebrad) {
         generate_blocks_and_poll_all_chain_indexes(
-            100,
+            block_required_height_100,
             &test_manager,
             fetch_service_subscriber.clone(),
             state_service_subscriber.clone(),
@@ -1064,9 +1072,17 @@ async fn state_service_get_block_range_out_of_range_test_lower_bound<V: Validato
         .expect("Clients are not initialized");
     clients.faucet.sync_and_await().await.unwrap();
 
+    // Test manager generates blocks on startup, check current height to ensure we only generate up to height 100
+    let chain_height = state_service_subscriber
+        .get_latest_block()
+        .await
+        .unwrap()
+        .height as u32;
+    let block_required_height_100 = 100 - chain_height;
+
     if matches!(validator, ValidatorKind::Zebrad) {
         generate_blocks_and_poll_all_chain_indexes(
-            100,
+            block_required_height_100,
             &test_manager,
             fetch_service_subscriber.clone(),
             state_service_subscriber.clone(),
