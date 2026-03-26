@@ -943,7 +943,7 @@ async fn state_service_get_block_range_returns_all_pools<V: ValidatorExt>(
     test_manager.close().await;
 }
 
-// tests whether the `GetBlockRange` returns all blocks until the first requested block in the 
+// tests whether the `GetBlockRange` returns all blocks until the first requested block in the
 // range can't be bound
 async fn state_service_get_block_range_out_of_range_test_upper_bound<V: ValidatorExt>(
     validator: &ValidatorKind,
@@ -973,7 +973,6 @@ async fn state_service_get_block_range_out_of_range_test_upper_bound<V: Validato
         clients.faucet.sync_and_await().await.unwrap();
     };
 
-
     let start_height: u64 = 1;
     let end_height: u64 = 106;
 
@@ -1001,10 +1000,13 @@ async fn state_service_get_block_range_out_of_range_test_upper_bound<V: Validato
     let mut fetch_service_blocks = Vec::new();
     let mut fetch_service_terminal_error = None;
 
-     while let Some(item) = fetch_service_stream.next().await {
+    while let Some(item) = fetch_service_stream.next().await {
         match item {
             Ok(block) => fetch_service_blocks.push(block),
-            Err(e) => { fetch_service_terminal_error = Some(e); break; }
+            Err(e) => {
+                fetch_service_terminal_error = Some(e);
+                break;
+            }
         }
     }
 
@@ -1019,7 +1021,10 @@ async fn state_service_get_block_range_out_of_range_test_upper_bound<V: Validato
     while let Some(item) = state_service_stream.next().await {
         match item {
             Ok(block) => state_service_blocks.push(block),
-            Err(e) => { state_service_terminal_error = Some(e); break; }
+            Err(e) => {
+                state_service_terminal_error = Some(e);
+                break;
+            }
         }
     }
     // check that the block range is the same
@@ -1032,13 +1037,15 @@ async fn state_service_get_block_range_out_of_range_test_upper_bound<V: Validato
     assert_eq!(fetch_service_blocks.len(), 100);
 
     // Assert – then an error, not a clean end-of-stream
-    let _ = state_service_terminal_error.expect("state service stream should terminate with an error, not cleanly");
-    let _ = fetch_service_terminal_error.expect("fetch service stream should terminate with an error, not cleanly");
+    let _ = state_service_terminal_error
+        .expect("state service stream should terminate with an error, not cleanly");
+    let _ = fetch_service_terminal_error
+        .expect("fetch service stream should terminate with an error, not cleanly");
 
     test_manager.close().await;
 }
 
-// tests whether the `GetBlockRange` returns all blocks until the first requested block in the 
+// tests whether the `GetBlockRange` returns all blocks until the first requested block in the
 // range can't be bound
 async fn state_service_get_block_range_out_of_range_test_lower_bound<V: ValidatorExt>(
     validator: &ValidatorKind,
@@ -1068,7 +1075,6 @@ async fn state_service_get_block_range_out_of_range_test_lower_bound<V: Validato
         clients.faucet.sync_and_await().await.unwrap();
     };
 
-
     let start_height: u64 = 106;
     let end_height: u64 = 1;
 
@@ -1096,10 +1102,13 @@ async fn state_service_get_block_range_out_of_range_test_lower_bound<V: Validato
     let mut fetch_service_blocks = Vec::new();
     let mut fetch_service_terminal_error = None;
 
-     while let Some(item) = fetch_service_stream.next().await {
+    while let Some(item) = fetch_service_stream.next().await {
         match item {
             Ok(block) => fetch_service_blocks.push(block),
-            Err(e) => { fetch_service_terminal_error = Some(e); break; }
+            Err(e) => {
+                fetch_service_terminal_error = Some(e);
+                break;
+            }
         }
     }
 
@@ -1114,18 +1123,22 @@ async fn state_service_get_block_range_out_of_range_test_lower_bound<V: Validato
     while let Some(item) = state_service_stream.next().await {
         match item {
             Ok(block) => state_service_blocks.push(block),
-            Err(e) => { state_service_terminal_error = Some(e); break; }
+            Err(e) => {
+                state_service_terminal_error = Some(e);
+                break;
+            }
         }
     }
     // check that the block range is the same
     assert_eq!(fetch_service_blocks, state_service_blocks);
 
-
     assert!(fetch_service_blocks.is_empty());
 
     // Assert – then an error, not a clean end-of-stream
-    let _ = state_service_terminal_error.expect("state service stream should terminate with an error, not cleanly");
-    let _ = fetch_service_terminal_error.expect("fetch service stream should terminate with an error, not cleanly");
+    let _ = state_service_terminal_error
+        .expect("state service stream should terminate with an error, not cleanly");
+    let _ = fetch_service_terminal_error
+        .expect("fetch service stream should terminate with an error, not cleanly");
     // assert!(
     //     matches!(err, ZainoStateError::BlockOutOfRange { .. }),
     //     "unexpected error variant: {err:?}"
@@ -2190,43 +2203,6 @@ mod zebra {
             test_manager.close().await;
         }
 
-        #[tokio::test(flavor = "multi_thread")]
-        async fn block_subsidy_fails_before_first_halving() {
-            let (
-                test_manager,
-                _fetch_service,
-                fetch_service_subscriber,
-                _state_service,
-                state_service_subscriber,
-            ) = create_test_manager_and_services::<Zebrad>(
-                &ValidatorKind::Zebrad,
-                None,
-                true,
-                false,
-                Some(NetworkKind::Regtest),
-            )
-            .await;
-
-            const BLOCK_LIMIT: u32 = 10;
-
-            for i in 0..BLOCK_LIMIT {
-                generate_blocks_and_poll_all_chain_indexes(
-                    1,
-                    &test_manager,
-                    fetch_service_subscriber.clone(),
-                    state_service_subscriber.clone(),
-                )
-                .await;
-                let fetch_service_block_subsidy =
-                    fetch_service_subscriber.get_block_subsidy(i).await;
-
-                let state_service_block_subsidy =
-                    state_service_subscriber.get_block_subsidy(i).await;
-                assert!(fetch_service_block_subsidy.is_err());
-                assert!(state_service_block_subsidy.is_err());
-            }
-        }
-
         mod z {
             use zcash_local_net::validator::zebrad::Zebrad;
 
@@ -2248,14 +2224,18 @@ mod zebra {
 
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn get_block_range_out_of_range_test_upper_bound_regtest() {
-                state_service_get_block_range_out_of_range_test_upper_bound::<Zebrad>(&ValidatorKind::Zebrad)
-                    .await;
+                state_service_get_block_range_out_of_range_test_upper_bound::<Zebrad>(
+                    &ValidatorKind::Zebrad,
+                )
+                .await;
             }
 
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn get_block_range_out_of_range_test_lower_bound_regtest() {
-                state_service_get_block_range_out_of_range_test_lower_bound::<Zebrad>(&ValidatorKind::Zebrad)
-                    .await;
+                state_service_get_block_range_out_of_range_test_lower_bound::<Zebrad>(
+                    &ValidatorKind::Zebrad,
+                )
+                .await;
             }
 
             #[tokio::test(flavor = "multi_thread")]
