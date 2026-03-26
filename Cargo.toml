@@ -148,6 +148,11 @@ derive_more = "2.0.1"
 lazy_static = "1.5.0"
 
 [patch.crates-io]
+zaino-common = { path = "zaino-common" }
+zaino-fetch = { path = "zaino-fetch" }
+zaino-proto = { path = "zaino-proto" }
+zaino-state = { path = "zaino-state" }
+
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
