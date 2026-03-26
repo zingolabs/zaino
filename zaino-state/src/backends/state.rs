@@ -1467,7 +1467,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             .get_mempool_txids()
             .await?
             .into_iter()
-            .map(|txid| txid.to_string())
+            .map(|txid| txid.to_rpc_hex())
             .collect())
     }
 

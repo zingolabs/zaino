@@ -6,7 +6,6 @@
 use std::path::PathBuf;
 
 use tracing::{error, info};
-
 use crate::config::load_config;
 use crate::error::IndexerError;
 use crate::indexer::start_indexer;
@@ -22,7 +21,7 @@ pub mod indexer;
 /// Logging should be initialized by the caller before calling this function.
 /// Returns an error if config loading or indexer startup fails.
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
-    init_logging();
+    zaino_common::logging::try_init();
 
     info!("zainod v{}", env!("CARGO_PKG_VERSION"));
     let config = load_config(&config_path)?;

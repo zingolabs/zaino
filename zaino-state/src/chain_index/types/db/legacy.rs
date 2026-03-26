@@ -69,6 +69,17 @@ impl BlockHash {
 
         BlockHash(internal_byte_order)
     }
+
+    /// Full hex string (big-endian / display order) for use in RPC interfaces.
+    ///
+    /// Unlike [`Display`], which is truncated for log readability, this always
+    /// returns the complete 64-character hex string required by RPC consumers.
+    ///
+    /// HACK: ad-hoc method to decouple serialisation from `Display` so PR #888
+    /// can land cleanly. The proper destination-specific API is tracked in #640.
+    pub fn to_rpc_hex(&self) -> String {
+        self.encode_hex()
+    }
 }
 
 impl fmt::Display for BlockHash {
@@ -209,6 +220,17 @@ impl TransactionHash {
         internal_byte_order.reverse();
 
         TransactionHash(internal_byte_order)
+    }
+
+    /// Full hex string (big-endian / display order) for use in RPC interfaces.
+    ///
+    /// Unlike [`Display`], which is truncated for log readability, this always
+    /// returns the complete 64-character hex string required by RPC consumers.
+    ///
+    /// HACK: ad-hoc method to decouple serialisation from `Display` so PR #888
+    /// can land cleanly. The proper destination-specific API is tracked in #640.
+    pub fn to_rpc_hex(&self) -> String {
+        self.encode_hex()
     }
 }
 

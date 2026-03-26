@@ -1218,7 +1218,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         if let Some(mempool_tx) = self
             .mempool
             .get_transaction(&mempool::MempoolKey {
-                txid: txid.to_string(),
+                txid: txid.to_rpc_hex(),
             })
             .await
         {
@@ -1306,7 +1306,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let in_mempool = self
             .mempool
             .contains_txid(&mempool::MempoolKey {
-                txid: txid.to_string(),
+                txid: txid.to_rpc_hex(),
             })
             .await;
         if in_mempool {
