@@ -130,7 +130,7 @@ tempfile = "3.2"
 zaino-fetch = "0.1.0"
 zaino-proto = "0.1.0"
 zaino-serve = { path = "packages/zaino-serve" }
-zaino-state = { path = "packages/zaino-state" }
+zaino-state = "0.1.0"
 zaino-common = "0.1.0"
 wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "packages/zainod" }
