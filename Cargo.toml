@@ -127,13 +127,13 @@ bitflags = "2.9"
 # Test
 portpicker = "0.1"
 tempfile = "3.2"
-zaino-fetch = "0.1.0"
-zaino-proto = "0.1.0"
-zaino-serve = "0.1.0"
-zaino-state = "0.1.0"
-zaino-common = "0.1.0"
-wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "packages/zainod" }
+zaino-common = { path = "packages/zaino-common", version = "0.1.0" }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.1.0" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.1.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.1.0" }
+zaino-serve = { path = "packages/zaino-serve", version = "0.1.0" }
+wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
 proptest = "~1.6"
@@ -148,12 +148,6 @@ derive_more = "2.0.1"
 lazy_static = "1.5.0"
 
 [patch.crates-io]
-zaino-common = { path = "zaino-common" }
-zaino-fetch = { path = "zaino-fetch" }
-zaino-proto = { path = "zaino-proto" }
-zaino-state = { path = "zaino-state" }
-zaino-serve = { path = "zaino-serve" }
-
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
