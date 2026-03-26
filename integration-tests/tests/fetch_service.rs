@@ -775,11 +775,6 @@ async fn fetch_service_get_block_subsidy<V: ValidatorExt>(validator: &ValidatorK
         test_manager
             .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
             .await;
-        // Zebrad does not support the founders' reward block subsidy
-        if i < first_halving_height.0 && validator == &ValidatorKind::Zebrad {
-            assert!(fetch_service_subscriber.get_block_subsidy(i).await.is_err());
-            continue;
-        }
         let fetch_service_get_block_subsidy =
             fetch_service_subscriber.get_block_subsidy(i).await.unwrap();
 
