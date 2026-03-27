@@ -185,16 +185,13 @@ mod chain_query_interface {
                         test_manager.local_net.get_activation_heights().await,
                     )),
                 };
-                let chain_index = NodeBackedChainIndex::new(
-                    ValidatorConnector::State(chain_index::source::State {
-                        read_state_service: state_service.read_state_service().clone(),
-                        mempool_fetcher: json_service.clone(),
-                        network: config.network,
-                    }),
-                    config,
-                )
-                .await
-                .unwrap();
+                let source = ValidatorConnector::Fetch(json_service.clone());
+                // let source = ValidatorConnector::State(chain_index::source::State {
+                //     read_state_service: state_service.read_state_service().clone(),
+                //     mempool_fetcher: json_service.clone(),
+                //     network: config.network,
+                // });
+                let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
                 let index_reader = chain_index.subscriber();
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
