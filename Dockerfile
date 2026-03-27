@@ -3,7 +3,7 @@
 ############################
 # Global build args
 ############################
-ARG RUST_VERSION=1.86.0
+ARG RUST_IMAGE=rust:bookworm
 ARG UID=1000
 ARG GID=1000
 ARG USER=container_user
@@ -12,7 +12,7 @@ ARG HOME=/home/container_user
 ############################
 # Planner — extract dependency recipe from full source
 ############################
-FROM rust:${RUST_VERSION}-bookworm AS planner
+FROM ${RUST_IMAGE} AS planner
 WORKDIR /app
 RUN cargo install cargo-chef --locked
 COPY . .
@@ -21,7 +21,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 ############################
 # Cook — build dependencies only (cached when Cargo.toml/lock unchanged)
 ############################
-FROM rust:${RUST_VERSION}-bookworm AS cook
+FROM ${RUST_IMAGE} AS cook
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
