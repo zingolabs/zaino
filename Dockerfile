@@ -10,13 +10,21 @@ ARG USER=container_user
 ARG HOME=/home/container_user
 
 ############################
-# Builder
+# Planner — extract dependency recipe from full source
 ############################
-FROM rust:${RUST_VERSION}-bookworm AS builder
+FROM rust:${RUST_VERSION}-bookworm AS planner
+WORKDIR /app
+RUN cargo install cargo-chef --locked
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+############################
+# Cook — build dependencies only (cached when Cargo.toml/lock unchanged)
+############################
+FROM rust:${RUST_VERSION}-bookworm AS cook
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
-# Toggle to build without TLS feature if needed
 ARG NO_TLS=false
 
 # Build deps incl. protoc for prost-build
@@ -25,11 +33,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy entire workspace (prevents missing members)
+RUN cargo install cargo-chef --locked
+
+# Copy only the dependency recipe — this layer is invalidated only when
+# Cargo.toml, Cargo.lock, or workspace member manifests change.
+COPY --from=planner /app/recipe.json recipe.json
+
+# Cook dependencies. The --mount caches still help when using BuildKit;
+# kaniko ignores them but the layer cache does the heavy lifting instead.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    if [ "${NO_TLS}" = "true" ]; then \
+      cargo chef cook --release --recipe-path recipe.json \
+        --package zainod --features no_tls_use_unencrypted_traffic; \
+    else \
+      cargo chef cook --release --recipe-path recipe.json \
+        --package zainod; \
+    fi
+
+############################
+# Builder — compile source (dependencies already built)
+############################
+FROM cook AS builder
+WORKDIR /app
+
+ARG NO_TLS=false
+
+# Copy full source on top of cooked dependencies
 COPY . .
 
-# Efficient caches + install to a known prefix (/out)
-# This avoids relying on target/release/<bin> paths.
+# Build the binary. Dependencies are already compiled — only zainod source is rebuilt.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
