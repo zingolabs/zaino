@@ -67,11 +67,14 @@ mod chain_query_interface {
             chain_index::{self, ChainIndex},
             BlockCacheConfig,
         },
-        Height, StateService, StateServiceConfig, ZcashService,
+        FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
     use zebra_chain::{
-        parameters::{NetworkKind, testnet::{ConfiguredActivationHeights, RegtestParameters}},
+        parameters::{
+            testnet::{ConfiguredActivationHeights, RegtestParameters},
+            NetworkKind,
+        },
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
     };
 
@@ -115,7 +118,8 @@ mod chain_query_interface {
                 };
                 let network = match test_manager.network {
                     NetworkKind::Regtest => {
-                        let local_net_activation_heights = test_manager.local_net.get_activation_heights().await;
+                        let local_net_activation_heights =
+                            test_manager.local_net.get_activation_heights().await;
 
                         zebra_chain::parameters::Network::new_regtest(RegtestParameters::from(
                             ConfiguredActivationHeights {
@@ -129,7 +133,7 @@ mod chain_query_interface {
                                 nu6: local_net_activation_heights.nu6(),
                                 nu6_1: local_net_activation_heights.nu6_1(),
                                 nu7: local_net_activation_heights.nu7(),
-                            }    
+                            },
                         ))
                     }
 
@@ -232,16 +236,16 @@ mod chain_query_interface {
         }
     }
 
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_zebrad() {
-        get_block_range::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+        get_block_range::<Zebrad, FetchService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_zcashd() {
-        get_block_range::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
+        get_block_range::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
     }
 
     async fn get_block_range<C, Service>(validator: &ValidatorKind)
@@ -285,16 +289,16 @@ mod chain_query_interface {
         }
     }
 
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn find_fork_point_zebrad() {
-        find_fork_point::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+        find_fork_point::<Zebrad, FetchService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn find_fork_point_zcashd() {
-        find_fork_point::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
+        find_fork_point::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
     }
 
     async fn find_fork_point<C, Service>(validator: &ValidatorKind)
@@ -329,16 +333,16 @@ mod chain_query_interface {
         }
     }
 
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_transaction_zebrad() {
-        get_raw_transaction::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+        get_raw_transaction::<Zebrad, FetchService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_transaction_zcashd() {
-        get_raw_transaction::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
+        get_raw_transaction::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
     }
 
     async fn get_raw_transaction<C, Service>(validator: &ValidatorKind)
@@ -394,16 +398,16 @@ mod chain_query_interface {
         }
     }
 
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_status_zebrad() {
-        get_transaction_status::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+        get_transaction_status::<Zebrad, FetchService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_status_zcashd() {
-        get_transaction_status::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
+        get_transaction_status::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
     }
 
     async fn get_transaction_status<C, Service>(validator: &ValidatorKind)
@@ -443,16 +447,16 @@ mod chain_query_interface {
         }
     }
 
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain_zebrad() {
-        sync_large_chain::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+        sync_large_chain::<Zebrad, FetchService>(&ValidatorKind::Zebrad).await
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain_zcashd() {
-        sync_large_chain::<Zcashd, StateService>(&ValidatorKind::Zcashd).await
+        sync_large_chain::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
     }
 
     async fn sync_large_chain<C, Service>(validator: &ValidatorKind)
@@ -525,6 +529,69 @@ mod chain_query_interface {
             block
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_mempool_stream_fresh_snapshot_repeated_zebrad() {
+        get_mempool_stream_fresh_snapshot_repeated::<Zebrad, FetchService>(&ValidatorKind::Zebrad)
+            .await
+    }
+
+    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_mempool_stream_fresh_snapshot_repeated_zcashd() {
+        get_mempool_stream_fresh_snapshot_repeated::<Zcashd, FetchService>(&ValidatorKind::Zcashd)
+            .await
+    }
+
+    async fn get_mempool_stream_fresh_snapshot_repeated<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
+        use futures::StreamExt as _;
+        use tokio::time::{timeout, Duration};
+
+        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+
+        test_manager
+            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .await;
+
+        for iteration in 0..5 {
+            let snapshot = indexer.snapshot_nonfinalized_state();
+            let snapshot_tip = snapshot.best_tip;
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let mut mempool_stream =
+                indexer
+                    .get_mempool_stream(Some(&snapshot))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "fresh snapshot unexpectedly returned None on iteration {iteration}: \
+                     snapshot best tip height={:?} hash={:?}",
+                            snapshot_tip.height, snapshot_tip.blockhash,
+                        )
+                    });
+
+            test_manager
+                .generate_blocks_and_poll_chain_index(1, &indexer)
+                .await;
+
+            timeout(Duration::from_secs(20), async {
+                while let Some(item) = mempool_stream.next().await {
+                    item.expect("mempool stream yielded unexpected error");
+                }
+            })
+            .await
+            .expect("mempool stream did not close after chain tip changed");
         }
     }
 }
