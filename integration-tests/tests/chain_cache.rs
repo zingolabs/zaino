@@ -59,6 +59,7 @@ mod chain_query_interface {
     use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
     use zaino_state::{
         chain_index::{
+            non_finalised_state::BestTip,
             source::ValidatorConnector,
             types::{BestChainLocation, TransactionHash},
             NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
@@ -589,6 +590,125 @@ mod chain_query_interface {
             })
             .await
             .expect("mempool stream did not close after chain tip changed");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zallet_like_steady_state_loop_zebrad() {
+        zallet_like_steady_state_loop::<Zebrad, FetchService>(&ValidatorKind::Zebrad).await
+    }
+
+    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zallet_like_steady_state_loop_zcashd() {
+        zallet_like_steady_state_loop::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
+    }
+
+    async fn zallet_like_steady_state_loop<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
+        use futures::{StreamExt as _, TryStreamExt as _};
+        use tokio::time::{timeout, Duration};
+        use zaino_state::Height;
+
+        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+
+        test_manager
+            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .await;
+
+        let initial_snapshot = indexer.snapshot_nonfinalized_state();
+        let mut prev_tip: BestTip = indexer.best_chaintip(&initial_snapshot).await.unwrap();
+
+        for iteration in 0..5 {
+            let snapshot = indexer.snapshot_nonfinalized_state();
+            let current_tip = indexer.best_chaintip(&snapshot).await.unwrap();
+
+            let fork_point = indexer
+            .find_fork_point(&snapshot, &prev_tip.blockhash)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no fork point found on iteration {iteration}: prev_tip=({:?}, {:?}) current_tip=({:?}, {:?})",
+                    prev_tip.height,
+                    prev_tip.blockhash,
+                    current_tip.height,
+                    current_tip.blockhash,
+                )
+            });
+
+            assert!(
+                fork_point.1 <= current_tip.height,
+                "fork point height {:?} above current tip {:?} on iteration {iteration}",
+                fork_point.1,
+                current_tip.height,
+            );
+
+            if fork_point.1 < current_tip.height {
+                let start_height = Height::from(fork_point.1 + 1);
+                let end_height = Some(current_tip.height);
+
+                let blocks_to_apply = indexer
+                .get_block_range(&snapshot, start_height, end_height)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected block range on iteration {iteration}: start={:?} end={:?} snapshot_tip={:?}",
+                        start_height,
+                        end_height,
+                        snapshot.best_tip,
+                    )
+                });
+
+                let applied_blocks = blocks_to_apply.try_collect::<Vec<_>>().await.unwrap();
+
+                let expected_count = u32::from(current_tip.height) - u32::from(fork_point.1);
+
+                assert_eq!(
+                    applied_blocks.len(),
+                    expected_count as usize,
+                    "unexpected number of applied blocks on iteration {iteration}",
+                );
+            }
+
+            let mut mempool_stream =
+                indexer
+                    .get_mempool_stream(Some(&snapshot))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "fresh snapshot unexpectedly returned None on iteration {iteration}: \
+                     snapshot best tip height={:?} hash={:?}, \
+                     current tip height={:?} hash={:?}, \
+                     prev_tip height={:?} hash={:?}",
+                            snapshot.best_tip.height,
+                            snapshot.best_tip.blockhash,
+                            current_tip.height,
+                            current_tip.blockhash,
+                            prev_tip.height,
+                            prev_tip.blockhash,
+                        )
+                    });
+
+            test_manager
+                .generate_blocks_and_poll_chain_index(1, &indexer)
+                .await;
+
+            timeout(Duration::from_secs(20), async {
+                while let Some(item) = mempool_stream.next().await {
+                    item.expect("mempool stream yielded unexpected error");
+                }
+            })
+            .await
+            .expect("mempool stream did not close after chain tip changed");
+
+            prev_tip = current_tip;
         }
     }
 }
