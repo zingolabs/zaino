@@ -1,4 +1,5 @@
 //! Zaino Indexer daemon.
+//! Build optimization test - source change only.
 
 use clap::Parser;
 
