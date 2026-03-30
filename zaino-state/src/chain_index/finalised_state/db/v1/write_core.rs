@@ -478,18 +478,12 @@ impl DbV1 {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
-                if block.index().height().0 % 100 == 0 {
-                    info!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.index().hash(),
-                        &block.index().height()
-                    );
+                let height = block.index().height().0;
+                let hash = block.index().hash().to_string();
+                if height % 100 == 0 {
+                    info!(height, block_hash = %hash, "Committed block to ZainoDB");
                 } else {
-                    tracing::debug!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.index().hash(),
-                        &block.index().height()
-                    );
+                    tracing::debug!(height, block_hash = %hash, "Committed block to ZainoDB");
                 }
 
                 Ok(())
