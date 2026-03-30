@@ -84,10 +84,12 @@ impl BlockHash {
 
 impl fmt::Display for BlockHash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // Show truncated hash for cleaner logs (first 8 hex chars = 4 bytes)
+        // Show first 8 + last 8 hex chars for identification.
+        // First chars are usually 00000000 (PoW leading zeros), last chars
+        // are the distinguishing part.
         let full_hex: String = self.encode_hex();
-        if full_hex.len() > 8 {
-            write!(f, "{}..", &full_hex[..8])
+        if full_hex.len() > 16 {
+            write!(f, "{}..{}", &full_hex[..8], &full_hex[full_hex.len() - 8..])
         } else {
             f.write_str(&full_hex)
         }
