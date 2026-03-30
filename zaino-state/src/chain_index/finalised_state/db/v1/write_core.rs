@@ -33,7 +33,8 @@ impl DbV1 {
     ///
     /// NOTE: This method should never leave a block partially written to the database.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Syncing);
+        // Status transitions (Syncing → Ready) are owned by the db handler lifecycle,
+        // not individual block writes. Only error statuses are set here.
         let block_hash = *block.index().hash();
         let block_hash_bytes = block_hash.to_bytes()?;
         let block_height = block.index().height();
@@ -107,7 +108,6 @@ impl DbV1 {
 
         // If block already exists with same hash, return success without re-writing
         if block_already_exists {
-            self.status.store(StatusType::Ready);
             info!(
                 "Block {} at height {} already exists in ZainoDB, skipping write.",
                 &block_hash, &block_height.0
@@ -477,7 +477,6 @@ impl DbV1 {
             Ok(_) => {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-                self.status.store(StatusType::Ready);
                 let height = block.index().height().0;
                 let hash = block.index().hash().to_string();
                 if height % 100 == 0 {
@@ -545,7 +544,6 @@ impl DbV1 {
                 match verification_result {
                     Ok(_) => {
                         // Block was already written correctly by another process
-                        self.status.store(StatusType::Ready);
                         info!(
                             "Block {} at height {} was already written by another process, skipping.",
                             &block_hash, &block_height.0
@@ -563,7 +561,6 @@ impl DbV1 {
                         tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
                             FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
                         })?;
-                        self.status.store(StatusType::CriticalError);
                         self.status.store(StatusType::RecoverableError);
                         Err(FinalisedStateError::InvalidBlock {
                             height: block_height.0,
