@@ -8,13 +8,14 @@ use crate::chain_index::{
 };
 use async_trait::async_trait;
 use futures::{future::join, TryFutureExt as _};
+use incrementalmerkletree::frontier::CommitmentTree;
 use tower::{Service, ServiceExt as _};
 use zaino_common::Network;
 use zaino_fetch::jsonrpsee::{
     connector::{JsonRpSeeConnector, RpcRequestError},
     response::{GetBlockError, GetBlockResponse, GetTransactionResponse, GetTreestateResponse},
 };
-use zcash_primitives::merkle_tree::read_commitment_tree;
+use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
 use zebra_chain::{
     block::TryIntoHeight, serialization::ZcashDeserialize, subtree::NoteCommitmentSubtreeIndex,
 };
@@ -271,23 +272,29 @@ impl BlockchainSource for ValidatorConnector {
                     sapling, orchard, ..
                 } = tree_responses;
                 let sapling_frontier = sapling
-                    .commitments()
-                    .final_state()
-                    .as_ref()
-                    .map(|final_state| {
-                        read_commitment_tree::<sapling_crypto::Node, _, 32>(final_state.as_slice())
-                    })
+                    .map_or_else(
+                        || Some(Ok(CommitmentTree::empty())),
+                        |t| {
+                            t.commitments().final_state().as_ref().map(|final_state| {
+                                read_commitment_tree::<sapling_crypto::Node, _, 32>(
+                                    final_state.as_slice(),
+                                )
+                            })
+                        },
+                    )
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let orchard_frontier = orchard
-                    .commitments()
-                    .final_state()
-                    .as_ref()
-                    .map(|final_state| {
-                        read_commitment_tree::<zebra_chain::orchard::tree::Node, _, 32>(
-                            final_state.as_slice(),
-                        )
-                    })
+                    .map_or_else(
+                        || Some(Ok(CommitmentTree::empty())),
+                        |t| {
+                            t.commitments().final_state().as_ref().map(|final_state| {
+                                read_commitment_tree::<zebra_chain::orchard::tree::Node, _, 32>(
+                                    final_state.as_slice(),
+                                )
+                            })
+                        },
+                    )
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let sapling_root = sapling_frontier
@@ -413,11 +420,30 @@ impl BlockchainSource for ValidatorConnector {
                         )
                     })?;
 
-                let sapling = treestate.sapling.commitments().final_state();
+                let sapling = treestate.sapling.map_or_else(
+                    || {
+                        let mut tree = vec![];
+                        write_commitment_tree(&sapling_crypto::CommitmentTree::empty(), &mut tree)
+                            .expect("can write to Vec");
+                        Some(tree)
+                    },
+                    |t| t.commitments().final_state().clone(),
+                );
 
-                let orchard = treestate.orchard.commitments().final_state();
+                let orchard = treestate.orchard.map_or_else(
+                    || {
+                        let mut tree = vec![];
+                        write_commitment_tree(
+                            &CommitmentTree::<zebra_chain::orchard::tree::Node, 32>::empty(),
+                            &mut tree,
+                        )
+                        .expect("can write to Vec");
+                        Some(tree)
+                    },
+                    |t| t.commitments().final_state().clone(),
+                );
 
-                Ok((sapling.clone(), orchard.clone()))
+                Ok((sapling, orchard))
             }
         }
     }

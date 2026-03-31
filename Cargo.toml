@@ -40,6 +40,7 @@ zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev
 
 
 # Librustzcash
+incrementalmerkletree = "0.8"
 zcash_address = "0.10"
 zcash_keys = "0.12"
 zcash_protocol = "0.7.2"
