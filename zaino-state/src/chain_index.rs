@@ -602,6 +602,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         let blocks_synced = batch_target.0.saturating_sub(db_height);
                         let blocks_remaining =
                             finalised_target.0.saturating_sub(batch_target.0);
+                        let progress_pct = if finalised_target.0 > 0 {
+                            (batch_target.0 as f64 / finalised_target.0 as f64 * 100.0)
+                                as u32
+                        } else {
+                            0
+                        };
 
                         // Sync nfs to chain tip, trimming blocks to finalized tip.
                         nfs.sync(fs.clone()).await?;
@@ -617,6 +623,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             to_height = batch_target.0,
                             chain_tip = chain_height.0,
                             blocks_remaining,
+                            progress_pct,
                             caught_up = blocks_remaining == 0,
                             "Sync batch complete"
                         );
