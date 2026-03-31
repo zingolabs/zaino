@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 use tempfile::TempDir;
-
-use hex::ToHex;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
