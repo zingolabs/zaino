@@ -599,6 +599,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 )
                             })?;
 
+                        let blocks_synced = batch_target.0.saturating_sub(db_height);
+                        let blocks_remaining =
+                            finalised_target.0.saturating_sub(batch_target.0);
+
                         // Sync nfs to chain tip, trimming blocks to finalized tip.
                         nfs.sync(fs.clone()).await?;
 
@@ -606,6 +610,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         if batch_target.0 >= finalised_target.0 {
                             status.store(StatusType::Ready);
                         }
+
+                        info!(
+                            blocks_synced,
+                            from_height = db_height,
+                            to_height = batch_target.0,
+                            chain_tip = chain_height.0,
+                            blocks_remaining,
+                            caught_up = blocks_remaining == 0,
+                            "Sync batch complete"
+                        );
 
                         Ok(())
                     }
