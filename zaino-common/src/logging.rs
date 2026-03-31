@@ -351,15 +351,28 @@ fn init_otel_provider() -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
         .build()
         .ok()?;
 
+    let mut resource_builder = opentelemetry_sdk::Resource::builder()
+        .with_service_name(
+            env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "zainod".to_string()),
+        );
+
+    // Attach k8s namespace or custom deployment identifier if available.
+    // OTEL_RESOURCE_ATTRIBUTES is also picked up automatically by the SDK,
+    // but we check common k8s env vars as a convenience.
+    if let Ok(ns) = env::var("POD_NAMESPACE") {
+        resource_builder = resource_builder.with_attribute(
+            opentelemetry::KeyValue::new("k8s.namespace.name", ns),
+        );
+    }
+    if let Ok(pod) = env::var("POD_NAME") {
+        resource_builder = resource_builder.with_attribute(
+            opentelemetry::KeyValue::new("k8s.pod.name", pod),
+        );
+    }
+
     let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
-        .with_resource(
-            opentelemetry_sdk::Resource::builder()
-                .with_service_name(
-                    env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "zainod".to_string()),
-                )
-                .build(),
-        )
+        .with_resource(resource_builder.build())
         .build();
 
     opentelemetry::global::set_tracer_provider(provider.clone());
