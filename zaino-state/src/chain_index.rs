@@ -544,45 +544,58 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
         tokio::task::spawn(async move {
             let result: Result<(), SyncError> = async {
+                let mut iteration: u64 = 0;
                 loop {
                     if status.load() == StatusType::Closing {
                         break;
                     }
 
-                    status.store(StatusType::Syncing);
+                    let iter_result: Result<(), SyncError> = async {
+                        status.store(StatusType::Syncing);
 
-                    // Sync fs to chain tip - 100.
-                    let chain_height = source
-                        .clone()
-                        .get_best_block_height()
-                        .await
-                        .map_err(|error| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(error)),
-                            )
-                        })?
-                        .ok_or_else(|| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(
-                                    std::io::Error::other("node returned no best block height"),
-                                )),
-                            )
-                        })?;
-                    let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
+                        // Sync fs to chain tip - 100.
+                        let chain_height = source
+                            .clone()
+                            .get_best_block_height()
+                            .await
+                            .map_err(|error| {
+                                SyncError::ValidatorConnectionError(
+                                    NodeConnectionError::UnrecoverableError(Box::new(error)),
+                                )
+                            })?
+                            .ok_or_else(|| {
+                                SyncError::ValidatorConnectionError(
+                                    NodeConnectionError::UnrecoverableError(Box::new(
+                                        std::io::Error::other(
+                                            "node returned no best block height",
+                                        ),
+                                    )),
+                                )
+                            })?;
+                        let finalised_height =
+                            crate::Height(chain_height.0.saturating_sub(100));
 
-                    // TODO / FIX: Improve error handling here, fix and rebuild db on error.
-                    fs.sync_to_height(finalised_height, &source)
-                        .await
-                        .map_err(|error| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(error)),
-                            )
-                        })?;
+                        // TODO / FIX: Improve error handling here, fix and rebuild db on error.
+                        fs.sync_to_height(finalised_height, &source)
+                            .await
+                            .map_err(|error| {
+                                SyncError::ValidatorConnectionError(
+                                    NodeConnectionError::UnrecoverableError(Box::new(error)),
+                                )
+                            })?;
 
-                    // Sync nfs to chain tip, trimming blocks to finalized tip.
-                    nfs.sync(fs.clone()).await?;
+                        // Sync nfs to chain tip, trimming blocks to finalized tip.
+                        nfs.sync(fs.clone()).await?;
 
-                    status.store(StatusType::Ready);
+                        status.store(StatusType::Ready);
+                        Ok(())
+                    }
+                    .instrument(tracing::info_span!("sync_iteration", iteration))
+                    .await;
+
+                    iter_result?;
+                    iteration += 1;
+
                     // TODO: configure sleep duration?
                     tokio::time::sleep(Duration::from_millis(500)).await
                     // TODO: Check for shutdown signal.
