@@ -544,7 +544,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
         tokio::task::spawn(async move {
             let result: Result<(), SyncError> = async {
-                const BATCH_SIZE: u32 = 1000;
+                const BATCH_SIZE: u32 = 100;
                 let mut iteration: u64 = 0;
                 loop {
                     if status.load() == StatusType::Closing {
