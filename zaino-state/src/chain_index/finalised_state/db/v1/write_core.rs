@@ -32,6 +32,7 @@ impl DbV1 {
     /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
     ///
     /// NOTE: This method should never leave a block partially written to the database.
+    #[tracing::instrument(name = "DbV1::write_block", skip(self, block), fields(height = block.index().height().0))]
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         // Status transitions (Syncing → Ready) are owned by the db handler lifecycle,
         // not individual block writes. Only error statuses are set here.
