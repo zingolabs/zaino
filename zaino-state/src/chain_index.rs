@@ -544,6 +544,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
         tokio::task::spawn(async move {
             let result: Result<(), SyncError> = async {
+                const BATCH_SIZE: u32 = 1000;
                 let mut iteration: u64 = 0;
                 loop {
                     if status.load() == StatusType::Closing {
@@ -553,7 +554,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     let iter_result: Result<(), SyncError> = async {
                         status.store(StatusType::Syncing);
 
-                        // Sync fs to chain tip - 100.
+                        // Get chain tip from validator.
                         let chain_height = source
                             .clone()
                             .get_best_block_height()
@@ -572,11 +573,25 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                     )),
                                 )
                             })?;
-                        let finalised_height =
+                        let finalised_target =
                             crate::Height(chain_height.0.saturating_sub(100));
 
-                        // TODO / FIX: Improve error handling here, fix and rebuild db on error.
-                        fs.sync_to_height(finalised_height, &source)
+                        // Sync finalized state in bounded batches.
+                        let db_height = fs
+                            .db_height()
+                            .await
+                            .map_err(|e| {
+                                SyncError::ValidatorConnectionError(
+                                    NodeConnectionError::UnrecoverableError(Box::new(e)),
+                                )
+                            })?
+                            .map(|h| h.0)
+                            .unwrap_or(0);
+                        let batch_target = crate::Height(
+                            std::cmp::min(db_height + BATCH_SIZE, finalised_target.0),
+                        );
+
+                        fs.sync_to_height(batch_target, &source)
                             .await
                             .map_err(|error| {
                                 SyncError::ValidatorConnectionError(
@@ -587,7 +602,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         // Sync nfs to chain tip, trimming blocks to finalized tip.
                         nfs.sync(fs.clone()).await?;
 
-                        status.store(StatusType::Ready);
+                        // Only mark Ready when caught up to finalized target.
+                        if batch_target.0 >= finalised_target.0 {
+                            status.store(StatusType::Ready);
+                        }
+
                         Ok(())
                     }
                     .instrument(tracing::info_span!("sync_iteration", iteration))
@@ -596,9 +615,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     iter_result?;
                     iteration += 1;
 
-                    // TODO: configure sleep duration?
-                    tokio::time::sleep(Duration::from_millis(500)).await
-                    // TODO: Check for shutdown signal.
+                    // Only sleep when caught up. During bulk sync (status still Syncing),
+                    // iterate immediately to process the next batch.
+                    if status.load() == StatusType::Ready {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
                 }
                 Ok(())
             }
