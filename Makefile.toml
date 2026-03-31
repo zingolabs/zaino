@@ -266,6 +266,8 @@ docker run --rm \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "CARGO_TARGET_DIR=/home/container_user/zaino/target" \
+  -e "ZAINOLOG_FORMAT=${ZAINOLOG_FORMAT:-stream}" \
+  -e "RUST_LOG=${RUST_LOG:-}" \
   -w /home/container_user/zaino \
   -u container_user \
   "${IMAGE_NAME}:$TAG" \

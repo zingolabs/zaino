@@ -32,7 +32,7 @@ pub async fn start_indexer(
     config: ZainodConfig,
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
     startup_message();
-    info!("Starting Zaino..");
+    info!("Starting Zaino");
     spawn_indexer(config).await
 }
 
@@ -41,7 +41,10 @@ pub async fn spawn_indexer(
     config: ZainodConfig,
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.check_config()?;
-    info!("Checking connection with node..");
+    info!(
+        address = %config.validator_settings.validator_jsonrpc_listen_address,
+        "Checking connection with node"
+    );
     let zebrad_uri = test_node_and_return_url(
         &config.validator_settings.validator_jsonrpc_listen_address,
         config.validator_settings.validator_cookie_path.clone(),
@@ -50,10 +53,7 @@ pub async fn spawn_indexer(
     )
     .await?;
 
-    info!(
-        " - Connected to node using JsonRPSee at address {}.",
-        zebrad_uri
-    );
+    info!(uri = %zebrad_uri, "Connected to node via JsonRPSee");
 
     #[allow(deprecated)]
     match config.backend {

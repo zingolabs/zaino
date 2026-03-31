@@ -182,7 +182,7 @@ use db::{DbBackend, VERSION_DIRS};
 use migrations::MigrationManager;
 use reader::*;
 use router::Router;
-use tracing::info;
+use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
 use crate::{
@@ -276,6 +276,7 @@ impl ZainoDB {
     /// - the on-disk database version is unsupported,
     /// - opening or creating the database fails,
     /// - or any migration step fails.
+    #[instrument(name = "ZainoDB::spawn", skip(cfg, source), fields(db_version = cfg.db_version))]
     pub(crate) async fn spawn<T>(
         cfg: BlockCacheConfig,
         source: T,
@@ -305,7 +306,7 @@ impl ZainoDB {
 
         let backend = match version_opt {
             Some(version) => {
-                info!("Opening ZainoDBv{} from file.", version);
+                info!(version, "Opening ZainoDB from file");
                 match version {
                     0 => DbBackend::spawn_v0(&cfg).await?,
                     1 => DbBackend::spawn_v1(&cfg).await?,
@@ -317,7 +318,7 @@ impl ZainoDB {
                 }
             }
             None => {
-                info!("Creating new ZainoDBv{}.", target_version);
+                info!(version = %target_version, "Creating new ZainoDB");
                 match target_version.major() {
                     0 => DbBackend::spawn_v0(&cfg).await?,
                     1 => DbBackend::spawn_v1(&cfg).await?,
@@ -335,8 +336,9 @@ impl ZainoDB {
 
         if version_opt.is_some() && current_version < target_version {
             info!(
-                "Starting ZainoDB migration manager, migratiing database from v{} to v{}.",
-                current_version, target_version
+                from_version = %current_version,
+                to_version = %target_version,
+                "Starting ZainoDB migration"
             );
             let mut migration_manager = MigrationManager {
                 router: Arc::clone(&router),

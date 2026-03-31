@@ -6,7 +6,7 @@ use tokio::time::interval;
 use tonic::transport::Server;
 use tracing::warn;
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zaino_state::{AtomicStatus, IndexerSubscriber, LightWalletIndexer, StatusType, ZcashIndexer};
+use zaino_state::{IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer};
 
 use crate::{
     rpc::GrpcClient,
@@ -16,7 +16,7 @@ use crate::{
 /// LightWallet gRPC server capable of servicing clients over TCP.
 pub struct TonicServer {
     /// Current status of the server.
-    pub status: AtomicStatus,
+    pub status: NamedAtomicStatus,
     /// JoinHandle for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
 }
@@ -31,7 +31,7 @@ impl TonicServer {
         service_subscriber: IndexerSubscriber<Indexer>,
         server_config: GrpcServerConfig,
     ) -> Result<Self, ServerError> {
-        let status = AtomicStatus::new(StatusType::Spawning);
+        let status = NamedAtomicStatus::new("gRPC", StatusType::Spawning);
 
         let svc = CompactTxStreamerServer::new(GrpcClient {
             service_subscriber: service_subscriber.clone(),

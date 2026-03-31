@@ -49,7 +49,7 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    status::{AtomicStatus, StatusType},
+    status::{NamedAtomicStatus, StatusType},
     CompactBlockStream, Height, IndexedBlock,
 };
 
@@ -255,7 +255,7 @@ pub struct DbV0 {
     db_handler: Option<tokio::task::JoinHandle<()>>,
 
     /// Backend lifecycle status.
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 
     /// Configuration snapshot used for path/network selection and sizing parameters.
     config: BlockCacheConfig,
@@ -319,7 +319,7 @@ impl DbV0 {
             heights_to_hashes,
             hashes_to_blocks,
             db_handler: None,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
             config: config.clone(),
         };
 

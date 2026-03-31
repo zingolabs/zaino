@@ -16,8 +16,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
-use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing::{debug, info, instrument};
 use zaino_common::{
     network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
     probing::{Liveness, Readiness},
@@ -71,12 +70,14 @@ pub fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
 ///
 /// Returns `true` if the component became ready within the timeout,
 /// `false` if the timeout was reached.
+#[instrument(name = "poll_until_ready", skip(component), fields(timeout_ms = timeout.as_millis() as u64))]
 pub async fn poll_until_ready(
     component: &impl Readiness,
     poll_interval: std::time::Duration,
     timeout: std::time::Duration,
 ) -> bool {
-    tokio::time::timeout(timeout, async {
+    debug!("[POLL] Waiting for component to be ready");
+    let result = tokio::time::timeout(timeout, async {
         let mut interval = tokio::time::interval(poll_interval);
         loop {
             interval.tick().await;
@@ -86,7 +87,13 @@ pub async fn poll_until_ready(
         }
     })
     .await
-    .is_ok()
+    .is_ok();
+    if result {
+        debug!("[POLL] Component is ready");
+    } else {
+        debug!("[POLL] Timeout waiting for component");
+    }
+    result
 }
 
 // temporary until activation heights are unified to zebra-chain type.
@@ -158,7 +165,7 @@ pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     Some(home_path.join(".cache/zebra"))
 });
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 /// Represents the type of validator to launch.
 pub enum ValidatorKind {
     /// Zcashd.
@@ -308,6 +315,11 @@ where
     /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
     ///
     /// TODO: Remove validator argument in favour of adding C::VALIDATOR associated const
+    #[instrument(
+        name = "TestManager::launch",
+        skip(activation_heights, chain_cache),
+        fields(validator = ?validator, network = ?network, enable_zaino, enable_clients)
+    )]
     pub async fn launch(
         validator: &ValidatorKind,
         network: Option<NetworkKind>,
@@ -322,13 +334,7 @@ where
                 "Cannot use state backend with zcashd.",
             ));
         }
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-            )
-            .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-            .with_target(true)
-            .try_init();
+        zaino_common::logging::try_init();
 
         let activation_heights = activation_heights.unwrap_or_else(|| match validator {
             ValidatorKind::Zcashd => ActivationHeights::default(),
@@ -357,10 +363,15 @@ where
             chain_cache.clone(),
         );
 
+        debug!("[TEST] Launching validator");
         let (local_net, validator_settings) = C::launch_validator_and_return_config(config)
             .await
             .expect("to launch a default validator");
         let rpc_listen_port = local_net.get_port();
+        debug!(
+            rpc_port = rpc_listen_port,
+            "[TEST] Validator launched"
+        );
         let full_node_rpc_listen_address =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_listen_port);
 
@@ -386,7 +397,11 @@ where
             let zaino_json_listen_port = portpicker::pick_unused_port().expect("No ports free");
             let zaino_json_listen_address =
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_json_listen_port);
-            info!("{:?}", validator_settings.validator_grpc_listen_address);
+            debug!(
+                grpc_address = %zaino_grpc_listen_address,
+                json_address = %zaino_json_listen_address,
+                "[TEST] Launching Zaino indexer"
+            );
             let indexer_config = zainodlib::config::ZainodConfig {
                 // TODO: Make configurable.
                 backend: Service::BACKEND_TYPE,
@@ -402,7 +417,7 @@ where
                     listen_address: zaino_grpc_listen_address,
                     tls: None,
                 },
-                validator_settings: dbg!(validator_settings.clone()),
+                validator_settings: validator_settings.clone(),
                 service: ServiceConfig::default(),
                 storage: StorageConfig {
                     cache: CacheConfig::default(),
@@ -490,6 +505,7 @@ where
 
         // Wait for zaino to be ready to serve requests
         if let Some(ref subscriber) = test_manager.service_subscriber {
+            debug!("[TEST] Waiting for Zaino to be ready");
             poll_until_ready(
                 subscriber,
                 std::time::Duration::from_millis(100),
@@ -498,6 +514,7 @@ where
             .await;
         }
 
+        debug!("[TEST] Test environment ready");
         Ok(test_manager)
     }
 
@@ -685,9 +702,12 @@ impl<C: Validator, Service: LightWalletService + Send + Sync + 'static> Drop
     for TestManager<C, Service>
 {
     fn drop(&mut self) {
+        debug!("[TEST] Shutting down test environment");
         if let Some(handle) = &self.zaino_handle {
+            debug!("[TEST] Aborting Zaino handle");
             handle.abort();
         };
+        debug!("[TEST] Test environment shutdown complete");
     }
 }
 

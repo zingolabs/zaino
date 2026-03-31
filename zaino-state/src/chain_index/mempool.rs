@@ -9,10 +9,10 @@ use crate::{
         types::db::metadata::MempoolInfo,
     },
     error::{MempoolError, StatusError},
-    status::{AtomicStatus, StatusType},
+    status::{NamedAtomicStatus, StatusType},
     BlockHash,
 };
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
 use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 
@@ -50,11 +50,12 @@ pub struct Mempool<T: BlockchainSource> {
     /// Mempool sync handle.
     sync_task_handle: Option<std::sync::Mutex<tokio::task::JoinHandle<()>>>,
     /// mempool status.
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl<T: BlockchainSource> Mempool<T> {
     /// Spawns a new [`Mempool`].
+    #[instrument(name = "Mempool::spawn", skip(fetcher, capacity_and_shard_amount))]
     pub async fn spawn(
         fetcher: T,
         capacity_and_shard_amount: Option<(usize, usize)>,
@@ -66,7 +67,7 @@ impl<T: BlockchainSource> Mempool<T> {
                     break;
                 }
                 Err(_) => {
-                    info!(" - Waiting for Validator mempool to come online..");
+                    info!("Waiting for Validator mempool to come online");
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 }
             }
@@ -90,7 +91,7 @@ impl<T: BlockchainSource> Mempool<T> {
 
         let (chain_tip_sender, _chain_tip_reciever) = tokio::sync::watch::channel(best_block_hash);
 
-        info!("Launching Mempool..");
+        info!(chain_tip = %best_block_hash, "Launching Mempool");
         let mut mempool = Mempool {
             fetcher: fetcher.clone(),
             state: match capacity_and_shard_amount {
@@ -101,7 +102,7 @@ impl<T: BlockchainSource> Mempool<T> {
             },
             mempool_chain_tip: chain_tip_sender,
             sync_task_handle: None,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
         };
 
         loop {
@@ -360,7 +361,7 @@ pub struct MempoolSubscriber {
     subscriber: BroadcastSubscriber<MempoolKey, MempoolValue>,
     seen_txids: HashSet<MempoolKey>,
     mempool_chain_tip: tokio::sync::watch::Receiver<BlockHash>,
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl MempoolSubscriber {

@@ -5,7 +5,7 @@ use hex::FromHex;
 use std::{io::Cursor, time};
 use tokio::{sync::mpsc, time::timeout};
 use tonic::async_trait;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{
@@ -113,8 +113,13 @@ impl ZcashService for FetchService {
     type Config = FetchServiceConfig;
 
     /// Initializes a new FetchService instance and starts sync process.
+    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.network))]
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
-        info!("Launching Chain Fetch Service..");
+        info!(
+            rpc_address = %config.validator_rpc_address,
+            network = %config.network,
+            "Launching Fetch Service"
+        );
 
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
             &config.validator_rpc_address,
@@ -131,7 +136,7 @@ impl ZcashService for FetchService {
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
-        info!("Using Zcash build: {}", data);
+        info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
         let source = ValidatorConnector::Fetch(fetcher.clone());
         let indexer = NodeBackedChainIndex::new(source, config.clone().into())
@@ -518,7 +523,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .get_mempool_txids()
             .await?
             .iter()
-            .map(|txid| txid.to_string())
+            .map(|txid| txid.to_rpc_hex())
             .collect())
     }
 

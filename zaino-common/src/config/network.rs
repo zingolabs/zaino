@@ -1,5 +1,7 @@
 //! Network type for Zaino configuration.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
@@ -26,6 +28,16 @@ pub enum Network {
     Testnet,
     /// Regtest network (for local testing)
     Regtest(ActivationHeights),
+}
+
+impl fmt::Display for Network {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Network::Mainnet => write!(f, "Mainnet"),
+            Network::Testnet => write!(f, "Testnet"),
+            Network::Regtest(_) => write!(f, "Regtest"),
+        }
+    }
 }
 
 /// Helper type for Network serialization/deserialization.
