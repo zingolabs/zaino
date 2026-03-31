@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [features]
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
+otel = ["zaino-common/otel"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.

@@ -27,5 +27,15 @@ atty = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
 
-# Zingo 
+# OpenTelemetry (optional, behind feature flag)
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+
+# Zingo
 zingo_common_components = { workspace = true }
+
+[features]
+default = ["otel"]
+otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
