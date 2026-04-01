@@ -8800,7 +8800,6 @@ dependencies = [
  "tracing-tree",
  "zebra-chain",
  "zingo_common_components",
- "zingolib",
 ]
 
 [[package]]
