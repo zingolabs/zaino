@@ -28,7 +28,7 @@ version = "0.2.0"
 
 # Zingo 
 
-zingo_common_components =  { git = "https://github.com/zingolabs/zingo-common", tag = "zingo-netutils-v4.0.0" }
+zingo_common_components =  "0.3.0"
 zingo-netutils = { git = "https://github.com/zingolabs/zingo-common", tag = "zingo-netutils-v4.0.0", features = ["back_compatible"] }
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
     "testutils",
@@ -154,7 +154,6 @@ lazy_static = "1.5.0"
 #zcash_primitives = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-zingo_common_components =  { git = "https://github.com/zingolabs/zingo-common", tag = "zingo-netutils-v4.0.0" }
 
 [profile.test]
 opt-level = 3

@@ -9761,7 +9761,8 @@ dependencies = [
 [[package]]
 name = "zingo_common_components"
 version = "0.3.0"
-source = "git+https://github.com/zingolabs/zingo-common?tag=zingo-netutils-v4.0.0#196ec7b57393ea63a3b51fb1eca143b865024523"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ed7ebc771980a59ec5f208d5dcf40c010dce2b5d493164c9d2f7baa73e9284"
 
 [[package]]
 name = "zingo_test_vectors"
