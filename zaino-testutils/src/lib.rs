@@ -10,11 +10,9 @@ pub mod test_vectors {
 
 use once_cell::sync::Lazy;
 use tonic::transport::Channel;
-// use zingo_common_components::protocol::{ActivationHeights, ActivationHeightsBuilder};
+use zingolib::{config::WalletConfig, wallet::SyncConfig};
 use std::{
-    future::Future,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::PathBuf,
+    future::Future, net::{IpAddr, Ipv4Addr, SocketAddr}, num::{NonZero, NonZeroU32}, path::PathBuf
 };
 use tracing::{debug, info, instrument};
 use zaino_common::{
@@ -41,7 +39,7 @@ use zcash_local_net::{
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zcash_protocol::PoolType;
 use zebra_chain::parameters::NetworkKind;
-use zingo_netutils::{GetClientError, get_client};
+use zingo_netutils::{GetClientError, GrpcIndexer};
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
@@ -457,16 +455,15 @@ where
                         .port(),
                 ),
                 tempfile::tempdir().unwrap(),
-            );
-            
+            ); 
 
-            let faucet = client_builder.build_faucet(true, activation_heights.into());
+            let config = WalletConfig::MnemonicPhrase { mnemonic_phrase: seeds::HOSPITAL_MUSEUM_SEED.to_string(), no_of_accounts: NonZeroU32::new(1).expect("this should not fail"), birthday: 1, wallet_settings: zingolib::wallet::WalletSettings { sync_config:SyncConfig::default(), min_confirmations: NonZero::<u32>::new(1).expect("this should not fail") } };
+            let faucet = client_builder.build_faucet(true, activation_heights.into()).await;
             let recipient = client_builder.build_client(
-                seeds::HOSPITAL_MUSEUM_SEED.to_string(),
-                1,
+                config,
                 true,
                 activation_heights.into(),
-            );
+            ).await;
             Some(Clients {
                 client_builder,
                 faucet,
@@ -715,7 +712,7 @@ impl<C: Validator, Service: LightWalletService + Send + Sync + 'static> Drop
 async fn build_client(
     uri: http::Uri,
 ) -> Result<CompactTxStreamerClient<Channel>, GetClientError> {
-    get_client(uri).await
+    GrpcIndexer::new(uri)?.get_zcb_client().await
 }
 
 #[cfg(test)]

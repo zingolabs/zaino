@@ -436,7 +436,7 @@ where
     .unwrap();
 
     println!("\n\nStarting Mempool!\n");
-    clients.recipient.wallet.write().await.clear_all();
+    clients.recipient.wallet().write().await.clear_all();
     clients.recipient.sync_and_await().await.unwrap();
 
     // test_manager.local_net.print_stdout();

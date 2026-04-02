@@ -2766,9 +2766,7 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
- "log",
  "rustls 0.23.37",
- "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -3077,11 +3075,11 @@ dependencies = [
  "zaino-state",
  "zaino-testutils",
  "zainod",
- "zcash_local_net",
+ "zcash_local_net 0.4.0 (git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe)",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
- "zingo_test_vectors",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe)",
  "zip32",
 ]
 
@@ -3414,7 +3412,6 @@ version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
 dependencies = [
- "cc",
  "pkg-config",
  "vcpkg",
 ]
@@ -3441,6 +3438,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "zcash_script",
+]
+
+[[package]]
+name = "lightwallet-protocol"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d72a1e80c511125c79cf54cc35fe263fed710abe88d6291f64e6e1ca4b909ec"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -4149,7 +4157,7 @@ dependencies = [
 [[package]]
 name = "pepper-sync"
 version = "0.2.0"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=14a69853a8bd2e473dee8a433004c4c06aaf5308#14a69853a8bd2e473dee8a433004c4c06aaf5308"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=823a8f77b85592064ecd8daaa584a027766ee1ab#823a8f77b85592064ecd8daaa584a027766ee1ab"
 dependencies = [
  "bip32",
  "byteorder",
@@ -4178,7 +4186,6 @@ dependencies = [
  "zcash_protocol",
  "zcash_transparent",
  "zingo-memo",
- "zingo-netutils",
  "zingo-status",
  "zip32",
 ]
@@ -8933,13 +8940,13 @@ dependencies = [
  "zaino-testvectors",
  "zainod",
  "zcash_client_backend",
- "zcash_local_net",
+ "zcash_local_net 0.4.0 (git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe)",
  "zcash_protocol",
  "zebra-chain",
  "zebra-state",
- "zingo-netutils",
+ "zingo-netutils 4.0.0 (git+https://github.com/zingolabs/zingo-common?tag=zingo-netutils-v4.0.0)",
  "zingo_common_components",
- "zingo_test_vectors",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe)",
  "zingolib",
  "zingolib_testutils",
  "zip32",
@@ -9109,6 +9116,28 @@ dependencies = [
 [[package]]
 name = "zcash_local_net"
 version = "0.4.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe#1a75152f4744b9e130a7d7f249a5b7691a6bf2fe"
+dependencies = [
+ "getset",
+ "hex",
+ "json",
+ "portpicker",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zcash_protocol",
+ "zebra-chain",
+ "zebra-node-services",
+ "zebra-rpc",
+ "zingo_common_components",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe)",
+]
+
+[[package]]
+name = "zcash_local_net"
+version = "0.4.0"
 source = "git+https://github.com/zingolabs/infrastructure.git?rev=69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f#69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f"
 dependencies = [
  "getset",
@@ -9125,7 +9154,7 @@ dependencies = [
  "zebra-node-services",
  "zebra-rpc",
  "zingo_common_components",
- "zingo_test_vectors",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f)",
 ]
 
 [[package]]
@@ -9678,14 +9707,25 @@ dependencies = [
 
 [[package]]
 name = "zingo-netutils"
-version = "2.0.2"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d2ca11c717feb94a0032da1e6cffb2928ce2c34aca3b430e85cac02fd0ab425"
+checksum = "b6a5967ccc7ca23d0afd438c60ba9b5e32e0ca63c86d2fba584f9d8bfb97bc07"
 dependencies = [
  "http",
- "hyper",
- "hyper-rustls",
- "hyper-util",
+ "lightwallet-protocol",
+ "thiserror 1.0.69",
+ "tokio-rustls",
+ "tonic",
+ "zcash_client_backend",
+]
+
+[[package]]
+name = "zingo-netutils"
+version = "4.0.0"
+source = "git+https://github.com/zingolabs/zingo-common?tag=zingo-netutils-v4.0.0#196ec7b57393ea63a3b51fb1eca143b865024523"
+dependencies = [
+ "http",
+ "lightwallet-protocol",
  "thiserror 1.0.69",
  "tokio-rustls",
  "tonic",
@@ -9695,7 +9735,7 @@ dependencies = [
 [[package]]
 name = "zingo-price"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=14a69853a8bd2e473dee8a433004c4c06aaf5308#14a69853a8bd2e473dee8a433004c4c06aaf5308"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=823a8f77b85592064ecd8daaa584a027766ee1ab#823a8f77b85592064ecd8daaa584a027766ee1ab"
 dependencies = [
  "byteorder",
  "reqwest",
@@ -9727,6 +9767,14 @@ checksum = "b7ed7ebc771980a59ec5f208d5dcf40c010dce2b5d493164c9d2f7baa73e9284"
 [[package]]
 name = "zingo_test_vectors"
 version = "0.0.1"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe#1a75152f4744b9e130a7d7f249a5b7691a6bf2fe"
+dependencies = [
+ "bip0039 0.12.0",
+]
+
+[[package]]
+name = "zingo_test_vectors"
+version = "0.0.1"
 source = "git+https://github.com/zingolabs/infrastructure.git?rev=69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f#69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f"
 dependencies = [
  "bip0039 0.12.0",
@@ -9735,7 +9783,7 @@ dependencies = [
 [[package]]
 name = "zingolib"
 version = "3.0.0"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=14a69853a8bd2e473dee8a433004c4c06aaf5308#14a69853a8bd2e473dee8a433004c4c06aaf5308"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=823a8f77b85592064ecd8daaa584a027766ee1ab#823a8f77b85592064ecd8daaa584a027766ee1ab"
 dependencies = [
  "append-only-vec",
  "bech32",
@@ -9749,8 +9797,6 @@ dependencies = [
  "futures",
  "hex",
  "http",
- "hyper-rustls",
- "hyper-util",
  "incrementalmerkletree",
  "json",
  "jubjub",
@@ -9762,24 +9808,18 @@ dependencies = [
  "prost",
  "rand 0.8.5",
  "ring",
- "rusqlite",
  "rust-embed",
  "rustls 0.23.37",
  "sapling-crypto",
  "secp256k1 0.31.1",
  "secrecy",
  "serde",
- "serde_json",
  "shardtree",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-rustls",
- "tonic",
- "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
- "webpki-roots 1.0.6",
  "zcash_address",
  "zcash_client_backend",
  "zcash_encoding",
@@ -9789,28 +9829,28 @@ dependencies = [
  "zcash_protocol",
  "zcash_transparent",
  "zingo-memo",
- "zingo-netutils",
+ "zingo-netutils 4.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zingo-price",
  "zingo-status",
  "zingo_common_components",
- "zingo_test_vectors",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f)",
  "zip32",
 ]
 
 [[package]]
 name = "zingolib_testutils"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingolib.git?rev=14a69853a8bd2e473dee8a433004c4c06aaf5308#14a69853a8bd2e473dee8a433004c4c06aaf5308"
+source = "git+https://github.com/zingolabs/zingolib.git?rev=823a8f77b85592064ecd8daaa584a027766ee1ab#823a8f77b85592064ecd8daaa584a027766ee1ab"
 dependencies = [
  "bip0039 0.14.0",
  "http",
  "pepper-sync",
  "portpicker",
  "tempfile",
- "zcash_local_net",
+ "zcash_local_net 0.4.0 (git+https://github.com/zingolabs/infrastructure.git?rev=69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f)",
  "zcash_protocol",
  "zingo_common_components",
- "zingo_test_vectors",
+ "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f)",
  "zingolib",
  "zip32",
 ]

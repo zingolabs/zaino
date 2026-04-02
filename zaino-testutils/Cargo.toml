@@ -33,7 +33,7 @@ zaino-common.workspace = true
 zainod = { workspace = true }
 
 # Librustzcash
-zcash_protocol = { version = "0.7.0", features = [
+zcash_protocol = { workspace = true, features = [
   "local-consensus",
 ] }
 zcash_client_backend = { workspace = true, features = ["lightwalletd-tonic"] }

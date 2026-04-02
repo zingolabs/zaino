@@ -1506,7 +1506,7 @@ async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
         clients.faucet.sync_and_await().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
