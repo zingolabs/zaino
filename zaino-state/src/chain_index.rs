@@ -935,7 +935,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
     /// Streams *compact* blocks for an inclusive height range.
     ///
-    /// Returns `None` if either requested height is greater than the snapshot's tip.
+    /// Returns `Ok(None)` if the request is descending and `start_height` exceeds the chain tip.
+    /// For ascending requests that exceed the tip, returns a stream that ends with an
+    /// `out_of_range` error after all available blocks have been sent.
     ///
     /// - The stream covers `[start_height, end_height]` (inclusive).
     /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
@@ -957,24 +959,34 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ) -> Result<Option<CompactBlockStream>, Self::Error> {
         let chain_tip_height = self.best_chaintip(nonfinalized_snapshot).await?.height;
 
-        if start_height > chain_tip_height || end_height > chain_tip_height {
-            return Ok(None);
-        }
-
         // The nonfinalized cache holds the tip block plus the previous 99 blocks (100 total),
         // so the lowest possible cached height is `tip - 99` (saturating at 0).
         let lowest_nonfinalized_height = types::Height(chain_tip_height.0.saturating_sub(99));
 
         let is_ascending = start_height <= end_height;
 
+        // Descending: the first block we'd try to return is already above the tip → error immediately.
+        if !is_ascending && start_height > chain_tip_height {
+            return Ok(None);
+        }
+
         let pool_types_vector = pool_types.to_pool_types_vector();
+
+        // For ascending requests that extend past the tip: cap the streaming range at the tip,
+        // then append a trailing out_of_range error after all valid blocks have been sent.
+        let needs_out_of_range = is_ascending && end_height > chain_tip_height;
+        let capped_end_height = if needs_out_of_range {
+            chain_tip_height
+        } else {
+            end_height
+        };
 
         // Pre-create any finalized-state stream(s) we will need so that errors are returned
         // from this method (not deferred into the spawned task).
         let finalized_stream: Option<CompactBlockStream> = if is_ascending {
             if start_height < lowest_nonfinalized_height {
                 let finalized_end_height = types::Height(std::cmp::min(
-                    end_height.0,
+                    capped_end_height.0,
                     lowest_nonfinalized_height.0.saturating_sub(1),
                 ));
 
@@ -1018,7 +1030,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         };
 
         let nonfinalized_snapshot = nonfinalized_snapshot.clone();
-        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically base on resources.
+        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically based on resources.
         let (channel_sender, channel_receiver) = tokio::sync::mpsc::channel(128);
 
         tokio::spawn(async move {
@@ -1036,7 +1048,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 let nonfinalized_start_height =
                     types::Height(std::cmp::max(start_height.0, lowest_nonfinalized_height.0));
 
-                for height_value in nonfinalized_start_height.0..=end_height.0 {
+                for height_value in nonfinalized_start_height.0..=capped_end_height.0 {
                     let Some(indexed_block) = nonfinalized_snapshot
                         .get_chainblock_by_height(&types::Height(height_value))
                     else {
@@ -1054,6 +1066,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     if channel_sender.send(Ok(compact_block)).await.is_err() {
                         return;
                     }
+                }
+                // If the original end_height was above the tip, signal out_of_range after all valid blocks.
+                if needs_out_of_range {
+                    let _ = channel_sender
+                          .send(Err(tonic::Status::out_of_range(format!(
+                              "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
+                              end_height.0, chain_tip_height.0,
+                          ))))
+                          .await;
                 }
             } else {
                 // 1) Nonfinalized segment, descending.
