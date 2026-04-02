@@ -17,11 +17,15 @@ use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{NamedAtomicStatus, CompactBlockStream, NodeConnectionError, StatusType, SyncError};
+use crate::{
+    CompactBlockStream, NamedAtomicStatus, NodeConnectionError, NonFinalizedState, StatusType,
+    SyncError,
+};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
+use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
 use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
@@ -454,10 +458,12 @@ pub trait ChainIndex {
 pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
-    non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
+    non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
+    network: ZebraNetwork,
+    source: Source,
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
@@ -482,19 +488,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             None
         };
 
-        let non_finalized_state = crate::NonFinalizedState::initialize(
-            source.clone(),
-            config.network.to_zebra_network(),
-            top_of_finalized,
-        )
-        .await?;
-
         let mut chain_index = Self {
             mempool: std::sync::Arc::new(mempool_state),
-            non_finalized_state: std::sync::Arc::new(non_finalized_state),
+            non_finalized_state: Arc::new(ArcSwapOption::empty()),
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
+            network: config.network.to_zebra_network(),
+            source,
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
@@ -509,6 +510,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             non_finalized_state: self.non_finalized_state.clone(),
             finalized_state: self.finalized_db.to_reader(),
             status: self.status.clone(),
+            network: self.network.clone(),
+            source: self.source.clone(),
         }
     }
 
@@ -541,11 +544,18 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
-        let source = self.non_finalized_state.source.clone();
+        let source = self.source.clone();
+        let network = self.network.clone();
 
         tokio::task::spawn(async move {
-            let result: Result<(), SyncError> = async {
+            let source = source.clone();
+            let status = status.clone();
+            let status_clone = status.clone();
+            let result: Result<(), SyncError> = async move {
+                let source = source.clone();
                 loop {
+                    let network = network.clone();
+                    let source = source.clone();
                     if status.load() == StatusType::Closing {
                         break;
                     }
@@ -580,8 +590,29 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             )
                         })?;
 
+                    let intermediate_nfs_for_scoping = nfs.load();
+                    let non_finalized_state = match *intermediate_nfs_for_scoping {
+                        Some(ref nfs) => nfs,
+                        None => {
+                            nfs.store(Some(Arc::new(
+                                NonFinalizedState::initialize(
+                                    source,
+                                    network,
+                                    fs.to_reader()
+                                        .get_chain_block(finalised_height)
+                                        .await
+                                        .expect("todo"),
+                                )
+                                .await
+                                .expect("todo"),
+                            )));
+                            &nfs.load_full().expect("just set to Some")
+                        }
+                    };
+
                     // Sync nfs to chain tip, trimming blocks to finalized tip.
-                    nfs.sync(fs.clone()).await?;
+                    non_finalized_state.sync(fs.clone()).await?;
+                    std::mem::drop(intermediate_nfs_for_scoping);
 
                     status.store(StatusType::Ready);
                     // TODO: configure sleep duration?
@@ -596,7 +627,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             // so that liveness checks can detect the failure.
             if let Err(e) = result {
                 tracing::error!("Sync loop exited with error: {e:?}");
-                status.store(StatusType::CriticalError);
+                status_clone.store(StatusType::CriticalError);
 
                 return Err(e);
             }
@@ -614,14 +645,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 #[derive(Clone, Debug)]
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
     mempool: mempool::MempoolSubscriber,
-    non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
+    non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_state: finalised_state::reader::DbReader,
     status: NamedAtomicStatus,
+    network: ZebraNetwork,
+    source: Source,
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     fn source(&self) -> &Source {
-        &self.non_finalized_state.source
+        &self.source
     }
 
     /// Returns the combined status of all chain index components.
@@ -772,11 +805,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
 
     fn mempool_branch_id(&self, snapshot: &NonfinalizedBlockCacheSnapshot) -> Option<u32> {
         self.get_mempool_height(snapshot).and_then(|height| {
-            ConsensusBranchId::current(
-                &self.non_finalized_state.network,
-                zebra_chain::block::Height::from(height + 1),
-            )
-            .map(u32::from)
+            ConsensusBranchId::current(&self.network, zebra_chain::block::Height::from(height + 1))
+                .map(u32::from)
         })
     }
 }
@@ -1286,7 +1316,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             zebra_chain::transaction::SerializedTransaction::from(transaction)
                 .as_ref()
                 .to_vec(),
-            ConsensusBranchId::current(&self.non_finalized_state.network, height).map(u32::from),
+            ConsensusBranchId::current(&self.network, height).map(u32::from),
         )))
     }
 
@@ -1348,19 +1378,18 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             } else {
                 // the best chain and the mempool have divergent tip hashes
                 // get a new snapshot and use it to find the height of the mempool
-                let target_height = self
-                    .non_finalized_state
-                    .get_snapshot()
-                    .blocks
-                    .iter()
-                    .find_map(|(hash, block)| {
-                        if *hash == mempool_tip_hash {
-                            Some(block.height() + 1)
-                            // found the block that is the tip that the mempool is hanging on to
-                        } else {
-                            None
-                        }
-                    });
+                let target_height =
+                    self.snapshot_nonfinalized_state()
+                        .blocks
+                        .iter()
+                        .find_map(|(hash, block)| {
+                            if *hash == mempool_tip_hash {
+                                Some(block.height() + 1)
+                                // found the block that is the tip that the mempool is hanging on to
+                            } else {
+                                None
+                            }
+                        });
                 non_best_chain_blocks.insert(NonBestChainLocation::Mempool(target_height));
             }
         }
