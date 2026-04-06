@@ -8642,6 +8642,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "wire_serialized_transaction_test_data"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aebb4f5d78d0832cc4a1760a20288470c6fafa02f18e555a7ece133cd8cef5ca"
+
+[[package]]
 name = "wit-bindgen"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8823,9 +8829,9 @@ dependencies = [
  "tonic",
  "tracing",
  "url",
+ "wire_serialized_transaction_test_data",
  "zaino-common",
  "zaino-proto",
- "zaino-testvectors",
  "zebra-chain",
  "zebra-rpc",
 ]

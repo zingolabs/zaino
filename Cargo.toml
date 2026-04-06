@@ -133,6 +133,7 @@ zaino-state = { path = "zaino-state" }
 zaino-common.path = "zaino-common"
 zaino-testutils = { path = "zaino-testutils" }
 zaino-testvectors = { path = "zaino-testvectors" }
+wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "zainod" }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
