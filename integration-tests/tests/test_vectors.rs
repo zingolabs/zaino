@@ -22,7 +22,7 @@ use zaino_state::StateService;
 use zaino_state::ZcashIndexer;
 use zaino_state::{ChainWork, IndexedBlock};
 use zaino_testutils::from_inputs;
-use zaino_testutils::test_vectors::transactions::get_test_vectors;
+use wire_serialized_transaction_test_data::transactions::get_test_vectors;
 use zaino_testutils::{TestManager, ValidatorKind};
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};

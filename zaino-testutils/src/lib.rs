@@ -3,11 +3,6 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-/// Convenience reexport of zaino_testvectors
-pub mod test_vectors {
-    pub use zaino_testvectors::*;
-}
-
 use once_cell::sync::Lazy;
 use tonic::transport::Channel;
 use zingolib::{config::WalletConfig, wallet::SyncConfig};
