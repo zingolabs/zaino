@@ -1,5 +1,6 @@
 //! Holds tests for the V1 database.
 
+use hex::ToHex;
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
