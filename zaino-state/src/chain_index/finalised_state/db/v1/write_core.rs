@@ -149,7 +149,8 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
-        for tx in block.transactions().iter() {
+        #[allow(clippy::unused_enumerate_index)]
+        for (_tx_index, tx) in block.transactions().iter().enumerate() {
             let hash = tx.txid();
 
             if txid_set.insert(*hash) {
@@ -727,7 +728,8 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
-        for tx in block.transactions().iter() {
+        #[allow(clippy::unused_enumerate_index)]
+        for (_tx_index, tx) in block.transactions().iter().enumerate() {
             let hash = tx.txid();
 
             if txid_set.insert(*hash) {
