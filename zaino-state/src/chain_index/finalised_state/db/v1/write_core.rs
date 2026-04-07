@@ -149,7 +149,7 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
-        for (_tx_index, tx) in block.transactions().iter().enumerate() {
+        for tx in block.transactions().iter() {
             let hash = tx.txid();
 
             if txid_set.insert(*hash) {
@@ -478,7 +478,7 @@ impl DbV1 {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
-                if block.index().height().0 % 100 == 0 {
+                if block.index().height().0.is_multiple_of(100) {
                     info!(
                         "Successfully committed block {} at height {} to ZainoDB.",
                         &block.index().hash(),
@@ -727,7 +727,7 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
-        for (_tx_index, tx) in block.transactions().iter().enumerate() {
+        for tx in block.transactions().iter() {
             let hash = tx.txid();
 
             if txid_set.insert(*hash) {
