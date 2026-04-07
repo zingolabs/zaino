@@ -252,7 +252,10 @@ impl ZcashService for StateService {
             )?;
 
             if server_height.0 == syncer_height.0 {
-                info!(height = syncer_height.0, "ReadStateService synced with Zebra");
+                info!(
+                    height = syncer_height.0,
+                    "ReadStateService synced with Zebra"
+                );
                 break;
             } else {
                 info!(

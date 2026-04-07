@@ -53,10 +53,6 @@ use zaino_proto::proto::{
     },
 };
 
-use crate::{
-    ChainIndex, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber,
-};
 #[allow(deprecated)]
 use crate::{
     chain_index::{source::ValidatorConnector, types},
@@ -73,6 +69,7 @@ use crate::{
     utils::{get_build_info, ServiceMetadata},
     BackendType,
 };
+use crate::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
 ///
@@ -1020,7 +1017,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
-                
+
                 // Use the snapshot tip directly, as this function doesn't support passthrough
                 let chain_height = snapshot.best_tip.height.0;
 

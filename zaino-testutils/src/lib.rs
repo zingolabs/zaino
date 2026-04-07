@@ -9,11 +9,13 @@ pub mod test_vectors {
 }
 
 use once_cell::sync::Lazy;
-use tonic::transport::Channel;
-use zingolib::{config::WalletConfig, wallet::SyncConfig};
 use std::{
-    future::Future, net::{IpAddr, Ipv4Addr, SocketAddr}, num::{NonZero, NonZeroU32}, path::PathBuf
+    future::Future,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    num::{NonZero, NonZeroU32},
+    path::PathBuf,
 };
+use tonic::transport::Channel;
 use tracing::{debug, info, instrument};
 use zaino_common::{
     network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
@@ -44,6 +46,7 @@ use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
 pub use zingolib::testutils::lightclient::from_inputs;
+use zingolib::{config::WalletConfig, wallet::SyncConfig};
 use zingolib_testutils::scenarios::ClientBuilder;
 
 use zcash_client_backend::proto::service::{
@@ -289,13 +292,13 @@ where
     Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
-
-    pub(crate)fn grpc_socket_to_uri(&self) -> http::Uri {
+    pub(crate) fn grpc_socket_to_uri(&self) -> http::Uri {
         http::Uri::builder()
             .scheme("http")
-            .authority(self.zaino_grpc_listen_address
-                .expect("grpc_listen_address should be set")
-                .to_string()
+            .authority(
+                self.zaino_grpc_listen_address
+                    .expect("grpc_listen_address should be set")
+                    .to_string(),
             )
             .path_and_query("/")
             .build()
@@ -366,10 +369,7 @@ where
             .await
             .expect("to launch a default validator");
         let rpc_listen_port = local_net.get_port();
-        debug!(
-            rpc_port = rpc_listen_port,
-            "[TEST] Validator launched"
-        );
+        debug!(rpc_port = rpc_listen_port, "[TEST] Validator launched");
         let full_node_rpc_listen_address =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_listen_port);
 
@@ -455,15 +455,23 @@ where
                         .port(),
                 ),
                 tempfile::tempdir().unwrap(),
-            ); 
+            );
 
-            let config = WalletConfig::MnemonicPhrase { mnemonic_phrase: seeds::HOSPITAL_MUSEUM_SEED.to_string(), no_of_accounts: NonZeroU32::new(1).expect("this should not fail"), birthday: 1, wallet_settings: zingolib::wallet::WalletSettings { sync_config:SyncConfig::default(), min_confirmations: NonZero::<u32>::new(1).expect("this should not fail") } };
-            let faucet = client_builder.build_faucet(true, activation_heights.into()).await;
-            let recipient = client_builder.build_client(
-                config,
-                true,
-                activation_heights.into(),
-            ).await;
+            let config = WalletConfig::MnemonicPhrase {
+                mnemonic_phrase: seeds::HOSPITAL_MUSEUM_SEED.to_string(),
+                no_of_accounts: NonZeroU32::new(1).expect("this should not fail"),
+                birthday: 1,
+                wallet_settings: zingolib::wallet::WalletSettings {
+                    sync_config: SyncConfig::default(),
+                    min_confirmations: NonZero::<u32>::new(1).expect("this should not fail"),
+                },
+            };
+            let faucet = client_builder
+                .build_faucet(true, activation_heights.into())
+                .await;
+            let recipient = client_builder
+                .build_client(config, true, activation_heights.into())
+                .await;
             Some(Clients {
                 client_builder,
                 faucet,
@@ -517,9 +525,7 @@ where
 
     /// Generate `n` blocks for the local network and poll zaino via gRPC until the chain index is synced to the target height.
     pub async fn generate_blocks_and_poll(&self, n: u32) {
-        let mut grpc_client = build_client(self.grpc_socket_to_uri())
-        .await
-        .unwrap();
+        let mut grpc_client = build_client(self.grpc_socket_to_uri()).await.unwrap();
         let chain_height = self.local_net.get_chain_height().await;
         let mut next_block_height = u64::from(chain_height) + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
@@ -709,9 +715,7 @@ impl<C: Validator, Service: LightWalletService + Send + Sync + 'static> Drop
 }
 
 /// Builds a client for creating RPC requests to the indexer/light-node
-async fn build_client(
-    uri: http::Uri,
-) -> Result<CompactTxStreamerClient<Channel>, GetClientError> {
+async fn build_client(uri: http::Uri) -> Result<CompactTxStreamerClient<Channel>, GetClientError> {
     GrpcIndexer::new(uri)?.get_zcb_client().await
 }
 
@@ -798,11 +802,9 @@ mod launch_testmanager {
             .await
             .unwrap();
 
-           
-           
             let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
-            .await
-            .unwrap();
+                .await
+                .unwrap();
             test_manager.close().await;
         }
 
@@ -952,8 +954,8 @@ mod launch_testmanager {
                 .await
                 .unwrap();
                 let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
                 test_manager.close().await;
             }
 
@@ -1228,8 +1230,8 @@ mod launch_testmanager {
                 .await
                 .unwrap();
                 let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
                 test_manager.close().await;
             }
 

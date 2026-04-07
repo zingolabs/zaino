@@ -17,7 +17,7 @@ use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{NamedAtomicStatus, CompactBlockStream, NodeConnectionError, StatusType, SyncError};
+use crate::{CompactBlockStream, NamedAtomicStatus, NodeConnectionError, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};

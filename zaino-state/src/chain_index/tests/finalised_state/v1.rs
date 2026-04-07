@@ -1,5 +1,6 @@
 //! Holds tests for the V1 database.
 
+#[cfg(feature = "transparent_address_history_experimental")]
 use hex::ToHex;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -765,7 +766,11 @@ async fn get_faucet_utxos() {
     let mut reader_faucet_utxos = Vec::new();
 
     for (tx_location, vout, value) in reader_faucet_utxo_indexes {
-        let txid = db_reader.get_txid(tx_location).await.unwrap().encode_hex::<String>();
+        let txid = db_reader
+            .get_txid(tx_location)
+            .await
+            .unwrap()
+            .encode_hex::<String>();
         reader_faucet_utxos.push((txid, vout as u32, value));
     }
 
@@ -811,7 +816,11 @@ async fn get_recipient_utxos() {
     let mut reader_recipient_utxos = Vec::new();
 
     for (tx_location, vout, value) in reader_recipient_utxo_indexes {
-        let txid = db_reader.get_txid(tx_location).await.unwrap().encode_hex::<String>();
+        let txid = db_reader
+            .get_txid(tx_location)
+            .await
+            .unwrap()
+            .encode_hex::<String>();
         reader_recipient_utxos.push((txid, vout as u32, value));
     }
 
