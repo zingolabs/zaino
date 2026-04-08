@@ -56,7 +56,7 @@ pub enum LogFormat {
 
 impl LogFormat {
     /// Parse from string (case-insensitive).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "tree" => Some(LogFormat::Tree),
             "stream" => Some(LogFormat::Stream),
@@ -69,7 +69,7 @@ impl LogFormat {
     pub fn from_env() -> Self {
         env::var("ZAINOLOG_FORMAT")
             .ok()
-            .and_then(|s| Self::from_str(&s))
+            .and_then(|s| Self::parse_str(&s))
             .unwrap_or_default()
     }
 }
@@ -349,11 +349,11 @@ mod tests {
 
     #[test]
     fn test_log_format_from_str() {
-        assert_eq!(LogFormat::from_str("tree"), Some(LogFormat::Tree));
-        assert_eq!(LogFormat::from_str("TREE"), Some(LogFormat::Tree));
-        assert_eq!(LogFormat::from_str("stream"), Some(LogFormat::Stream));
-        assert_eq!(LogFormat::from_str("json"), Some(LogFormat::Json));
-        assert_eq!(LogFormat::from_str("unknown"), None);
+        assert_eq!(LogFormat::parse_str("tree"), Some(LogFormat::Tree));
+        assert_eq!(LogFormat::parse_str("TREE"), Some(LogFormat::Tree));
+        assert_eq!(LogFormat::parse_str("stream"), Some(LogFormat::Stream));
+        assert_eq!(LogFormat::parse_str("json"), Some(LogFormat::Json));
+        assert_eq!(LogFormat::parse_str("unknown"), None);
     }
 
     #[test]

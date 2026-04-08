@@ -2,14 +2,15 @@
 [workspace]
 members = [
     "zaino-common",
-    "integration-tests",
-    "zaino-testutils",
     "zainod",
     "zaino-serve",
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
-    "zaino-testvectors",
+]
+exclude = [
+    "integration-tests",
+    "zaino-testutils",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -28,14 +29,14 @@ version = "0.2.0"
 
 # Zingo 
 
-zingo_common_components = "0.3.0"
-zingo-netutils = "2.0.2"
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "14a69853a8bd2e473dee8a433004c4c06aaf5308", features = [
+zingo_common_components =  "0.3.0"
+zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "14a69853a8bd2e473dee8a433004c4c06aaf5308" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "69d7a4b72ebe871d2c6bc6f18d93d5b4c9dbec9f" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
 
 
 # Librustzcash
@@ -47,9 +48,9 @@ zcash_transparent = "0.6.3"
 zcash_client_backend = "0.21.0"
 
 # Zebra
-zebra-chain = "6.0.0"
+zebra-chain = "6.0.1"
 zebra-state = "5.0.0"
-zebra-rpc = "6.0.0"
+zebra-rpc = "6.0.1"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -131,8 +132,7 @@ zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
 zaino-common.path = "zaino-common"
-zaino-testutils = { path = "zaino-testutils" }
-zaino-testvectors = { path = "zaino-testvectors" }
+wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "zainod" }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"

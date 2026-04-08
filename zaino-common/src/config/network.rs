@@ -126,18 +126,18 @@ impl Default for ActivationHeights {
     }
 }
 
-impl Into<zingo_common_components::protocol::ActivationHeights> for ActivationHeights {
-    fn into(self) -> zingo_common_components::protocol::ActivationHeights {   
+impl From<ActivationHeights> for zingo_common_components::protocol::ActivationHeights {
+    fn from(val: ActivationHeights) -> Self {
         zingo_common_components::protocol::ActivationHeightsBuilder::new()
-            .set_overwinter(self.overwinter)
-            .set_sapling(self.sapling)
-            .set_blossom(self.blossom)
-            .set_heartwood(self.heartwood)
-            .set_canopy(self.canopy)
-            .set_nu5(self.nu5)
-            .set_nu6(self.nu6)
-            .set_nu6_1(self.nu6_1)
-            .set_nu7(self.nu7)
+            .set_overwinter(val.overwinter)
+            .set_sapling(val.sapling)
+            .set_blossom(val.blossom)
+            .set_heartwood(val.heartwood)
+            .set_canopy(val.canopy)
+            .set_nu5(val.nu5)
+            .set_nu6(val.nu6)
+            .set_nu6_1(val.nu6_1)
+            .set_nu7(val.nu7)
             .build()
     }
 }
@@ -202,10 +202,8 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
 }
 
 impl From<zingo_common_components::protocol::ActivationHeights> for ActivationHeights {
-    fn from(
-        activation_heights: zingo_common_components::protocol::ActivationHeights
-    ) -> Self {
-        ActivationHeights { 
+    fn from(activation_heights: zingo_common_components::protocol::ActivationHeights) -> Self {
+        ActivationHeights {
             before_overwinter: activation_heights.overwinter(),
             overwinter: activation_heights.overwinter(),
             sapling: activation_heights.sapling(),

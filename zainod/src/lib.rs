@@ -5,10 +5,10 @@
 
 use std::path::PathBuf;
 
-use tracing::{error, info};
 use crate::config::load_config;
 use crate::error::IndexerError;
 use crate::indexer::start_indexer;
+use tracing::{error, info};
 
 pub mod cli;
 pub mod config;

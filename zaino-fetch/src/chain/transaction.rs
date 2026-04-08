@@ -1250,7 +1250,7 @@ impl FullTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_testvectors::transactions::get_test_vectors;
+    use wire_serialized_transaction_test_data::transactions::get_test_vectors;
 
     /// Test parsing v1 transactions using test vectors.
     /// Validates that FullTransaction::parse_from_slice correctly handles v1 transaction format.

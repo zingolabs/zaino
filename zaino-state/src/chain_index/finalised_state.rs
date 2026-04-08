@@ -18,28 +18,28 @@
 //!
 //! The finalised-state subsystem is split into the following files:
 //!
-//! - [`capability`]
+//! - `capability`
 //!   - Defines the *capability model* used to represent which features a given DB version supports.
 //!   - Defines the core DB traits (`DbRead`, `DbWrite`, `DbCore`) and extension traits
 //!     (`BlockCoreExt`, `TransparentHistExt`, etc.).
 //!   - Defines versioned metadata (`DbMetadata`, `DbVersion`, `MigrationStatus`) persisted on disk.
 //!
-//! - [`db`]
+//! - `db`
 //!   - Houses concrete DB implementations by **major** version (`db::v0`, `db::v1`) and the
-//!     version-erased facade enum [`db::DbBackend`] that implements the capability traits.
+//!     version-erased facade enum `db::DbBackend` that implements the capability traits.
 //!
-//! - [`router`]
-//!   - Implements [`router::Router`], a capability router that can direct calls to either the
+//! - `router`
+//!   - Implements `router::Router`, a capability router that can direct calls to either the
 //!     primary DB or a shadow DB during major migrations.
 //!
-//! - [`migrations`]
+//! - `migrations`
 //!   - Implements migration orchestration (`MigrationManager`) and concrete migration steps.
 //!
-//! - [`reader`]
-//!   - Defines [`reader::DbReader`], a read-only view that routes each query through the router
+//! - `reader`
+//!   - Defines `reader::DbReader`, a read-only view that routes each query through the router
 //!     using the appropriate capability request.
 //!
-//! - [`entry`]
+//! - `entry`
 //!   - Defines integrity-preserving wrappers (`StoredEntryFixed`, `StoredEntryVar`) used by
 //!     versioned DB implementations for checksummed key/value storage.
 //!
@@ -72,9 +72,9 @@
 //! This “version-tagged value” model allows individual record layouts to evolve while keeping
 //! backward compatibility via `decode_vN` implementations. Any incompatible change to persisted
 //! types must be coordinated with the database schema versioning in this module (see
-//! [`capability::DbVersion`]) and, where required, accompanied by a migration (see [`migrations`]).
+//! `capability::DbVersion`) and, where required, accompanied by a migration (see `migrations`).
 //!
-//! Database implementations additionally use the integrity wrappers in [`entry`] to store values
+//! Database implementations additionally use the integrity wrappers in `entry` to store values
 //! with a BLAKE2b-256 checksum bound to the encoded key (`key || encoded_value`), providing early
 //! detection of corruption or key/value mismatches.
 //!
@@ -89,7 +89,7 @@
 //! - **Legacy v0 layout:** network directories `live/`, `test/`, `local/` containing LMDB
 //!   `data.mdb` + `lock.mdb`.
 //! - **Versioned v1+ layout:** network directories `mainnet/`, `testnet/`, `regtest/` containing
-//!   version subdirectories enumerated by [`db::VERSION_DIRS`] (e.g. `v1/`).
+//!   version subdirectories enumerated by `db::VERSION_DIRS` (e.g. `v1/`).
 //!
 //! # Versioning and migration strategy
 //!
@@ -97,7 +97,7 @@
 //! against the **current on-disk version** read from `DbMetadata`.
 //!
 //! - If no database exists, a new DB is created at the configured target version.
-//! - If a database exists and `current_version < target_version`, the [`migrations::MigrationManager`]
+//! - If a database exists and `current_version < target_version`, the `migrations::MigrationManager`
 //!   is invoked to migrate the database.
 //!
 //! Major migrations are designed to be low-downtime and disk-conscious:
@@ -105,7 +105,7 @@
 //! - the router continues serving from the primary DB until the shadow is complete,
 //! - then the shadow is promoted to primary, and the old DB is deleted once all handles are dropped.
 //!
-//! Migration progress is tracked via `DbMetadata::migration_status` (see [`capability::MigrationStatus`])
+//! Migration progress is tracked via `DbMetadata::migration_status` (see `capability::MigrationStatus`)
 //! to support resumption after crashes.
 //!
 //! **Downgrades are not supported.** If a higher version exists on disk than the configured target,
@@ -117,12 +117,12 @@
 //! `ZainoDB` provides:
 //!
 //! - Lifecycle:
-//!   - [`ZainoDB::spawn`], [`ZainoDB::shutdown`], [`ZainoDB::status`], [`ZainoDB::wait_until_ready`]
+//!   - `ZainoDB::spawn`, `ZainoDB::shutdown`, `ZainoDB::status`, `ZainoDB::wait_until_ready`
 //!
 //! - Writes:
-//!   - [`ZainoDB::write_block`]: append-only; **must** write `db_tip + 1`
-//!   - [`ZainoDB::delete_block_at_height`]/[`ZainoDB::delete_block`]: pop-only; **must** delete tip
-//!   - [`ZainoDB::sync_to_height`]: convenience sync loop that fetches blocks from a `BlockchainSource`
+//!   - `ZainoDB::write_block`: append-only; **must** write `db_tip + 1`
+//!   - `ZainoDB::delete_block_at_height`/`ZainoDB::delete_block`: pop-only; **must** delete tip
+//!   - `ZainoDB::sync_to_height`: convenience sync loop that fetches blocks from a `BlockchainSource`
 //!
 //! - Reads:
 //!   - `db_height`, `get_block_height`, `get_block_hash`, `get_metadata`
@@ -152,16 +152,16 @@
 //! Common tasks and where they belong:
 //!
 //! - **Add a new query/index:** implement it in the latest DB version (e.g. `db::v1`), then expose it
-//!   via a capability extension trait in [`capability`], route it via [`reader`], and gate it via
+//!   via a capability extension trait in `capability`, route it via `reader`, and gate it via
 //!   `Capability` / `DbVersion::capability`.
 //!
 //! - **Add a new DB major version (v2):**
 //!   1. Add `db::v2` module and `DbV2` implementation.
-//!   2. Extend [`db::DbBackend`] with a `V2(DbV2)` variant and delegate trait impls.
-//!   3. Append `"v2"` to [`db::VERSION_DIRS`] (no gaps; order matters for discovery).
+//!   2. Extend `db::DbBackend` with a `V2(DbV2)` variant and delegate trait impls.
+//!   3. Append `"v2"` to `db::VERSION_DIRS` (no gaps; order matters for discovery).
 //!   4. Extend `ZainoDB::spawn` config mapping to accept `cfg.db_version == 2`.
-//!   5. Update [`capability::DbVersion::capability`] for `(2, 0)`.
-//!   6. Add a migration step in [`migrations`] and register it in `MigrationManager::get_migration`.
+//!   5. Update `capability::DbVersion::capability` for `(2, 0)`.
+//!   6. Add a migration step in `migrations` and register it in `MigrationManager::get_migration`.
 //!
 //! - **Change an on-disk encoding:** treat it as a schema change. Either implement a migration or
 //!   bump the DB major version and rebuild in shadow.
@@ -256,7 +256,7 @@ impl ZainoDB {
     /// 3. Opens the existing database at the detected version, or creates a new database at the
     ///    target version.
     /// 4. If an existing database is older than the target (`current_version < target_version`),
-    ///    runs migrations using [`migrations::MigrationManager`].
+    ///    runs migrations using `migrations::MigrationManager`.
     ///
     /// ## Version selection rules
     /// - `cfg.db_version == 0` targets `DbVersion { 0, 0, 0 }` (legacy layout).
@@ -367,7 +367,7 @@ impl ZainoDB {
 
     /// Returns the runtime status of the serving database.
     ///
-    /// This status is provided by the backend implementing [`capability::DbCore::status`]. During
+    /// This status is provided by the backend implementing `capability::DbCore::status`. During
     /// migrations, the router determines which backend serves `READ_CORE`, and the status reflects
     /// that routing decision.
     pub(crate) fn status(&self) -> StatusType {
@@ -418,7 +418,7 @@ impl ZainoDB {
     ///
     /// - **Versioned v1+ layout**
     ///   - Network directories: `mainnet/`, `testnet/`, `regtest/`
-    ///   - Version subdirectories: enumerated by [`db::VERSION_DIRS`] (e.g. `"v1"`)
+    ///   - Version subdirectories: enumerated by `db::VERSION_DIRS` (e.g. `"v1"`)
     ///   - Presence check: both `data.mdb` and `lock.mdb` exist within a version directory
     ///   - Reported version: `Some(i + 1)` where `i` is the index in `VERSION_DIRS`
     ///
@@ -486,7 +486,7 @@ impl ZainoDB {
     /// - and appends the block via [`ZainoDB::write_block`].
     ///
     /// ## Chainwork handling
-    /// For database versions that expose [`capability::BlockCoreExt`], chainwork is retrieved from
+    /// For database versions that expose `capability::BlockCoreExt`, chainwork is retrieved from
     /// stored header data and threaded through `BlockMetadata`.
     ///
     /// Legacy v0 databases do not expose header/chainwork APIs; in that case, chainwork is set to
@@ -742,7 +742,7 @@ impl ZainoDB {
 
     /// Returns the persisted database metadata.
     ///
-    /// See [`capability::DbMetadata`] for the precise fields and on-disk encoding.
+    /// See `capability::DbMetadata` for the precise fields and on-disk encoding.
     pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         self.db.get_metadata().await
     }
