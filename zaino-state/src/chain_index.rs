@@ -539,7 +539,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
         const SYNC_LOOP_INTERVAL: Duration = Duration::from_millis(500);
         const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
-        const MAX_BACKOFF: Duration = Duration::from_secs(15);
+        const MAX_BACKOFF: Duration = Duration::from_secs(8);
         const MAX_CONSECUTIVE_FAILURES: u32 = 10;
 
         /// Returns `Ok(backoff_duration)` if the caller should retry, or
