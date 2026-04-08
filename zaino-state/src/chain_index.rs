@@ -554,31 +554,29 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 status.store(StatusType::Syncing);
 
                 let sync_result: Result<(), SyncError> = async {
+                    fn unrecoverable(
+                        error: impl std::error::Error + Send + Sync + 'static,
+                    ) -> SyncError {
+                        SyncError::ValidatorConnectionError(
+                            NodeConnectionError::UnrecoverableError(Box::new(error)),
+                        )
+                    }
+
                     let chain_height = source
                         .clone()
                         .get_best_block_height()
                         .await
-                        .map_err(|error| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(error)),
-                            )
-                        })?
+                        .map_err(unrecoverable)?
                         .ok_or_else(|| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(
-                                    std::io::Error::other("node returned no best block height"),
-                                )),
-                            )
+                            unrecoverable(std::io::Error::other(
+                                "node returned no best block height",
+                            ))
                         })?;
                     let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
 
                     fs.sync_to_height(finalised_height, &source)
                         .await
-                        .map_err(|error| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(error)),
-                            )
-                        })?;
+                        .map_err(unrecoverable)?;
 
                     nfs.sync(fs.clone()).await?;
 
