@@ -62,6 +62,17 @@ pub enum ChainIndexSnapshot {
     StillSyncingFinalizedState { validator_finalized_height: Height },
 }
 
+impl ChainIndexSnapshot {
+    pub(super) fn get_nfs_snapshot(&self) -> Option<&NonfinalizedBlockCacheSnapshot> {
+        match self {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => Some(&non_finalized_snapshot),
+            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
 pub struct NonfinalizedBlockCacheSnapshot {

@@ -792,18 +792,22 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     }
 
     // Get the height of the mempool
-    fn get_mempool_height(
-        &self,
-        snapshot: &NonfinalizedBlockCacheSnapshot,
-    ) -> Option<types::Height> {
-        snapshot
+    fn get_mempool_height(&self, snapshot: &ChainIndexSnapshot) -> Option<types::Height> {
+        let ChainIndexSnapshot::NonFinalizedStateExists {
+            non_finalized_snapshot,
+        } = snapshot
+        else {
+            return None;
+        };
+
+        non_finalized_snapshot
             .blocks
             .iter()
             .find(|(hash, _block)| **hash == self.mempool.mempool_chain_tip())
             .map(|(_hash, block)| block.height())
     }
 
-    fn mempool_branch_id(&self, snapshot: &NonfinalizedBlockCacheSnapshot) -> Option<u32> {
+    fn mempool_branch_id(&self, snapshot: &ChainIndexSnapshot) -> Option<u32> {
         self.get_mempool_height(snapshot).and_then(|height| {
             ConsensusBranchId::current(&self.network, zebra_chain::block::Height::from(height + 1))
                 .map(u32::from)
@@ -1315,15 +1319,20 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 // if the tranasction isn't on the best chain
                 // check our indexes. We need to find out the height from our index
                 // to determine the consensus branch ID
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    // If we don't have a block containing the transaction
+                    // locally and the transaction's not on the validator's
+                    // best chain, we can't determine its consensus branch ID
+                    return Ok(None);
+                };
+
                 match self
-                    .blocks_containing_transaction(snapshot, txid.0)
+                    .blocks_containing_transaction(non_finalized_snapshot, txid.0)
                     .await?
                     .next()
                 {
                     Some(block) => block.index.height.into(),
-                    // If we don't have a block containing the transaction
-                    // locally and the transaction's not on the validator's
-                    // best chain, we can't determine its consensus branch ID
+                    // As above Ok(None)
                     None => return Ok(None),
                 }
             }
