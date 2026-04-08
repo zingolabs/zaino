@@ -17,7 +17,7 @@ use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{CompactBlockStream, NamedAtomicStatus, NodeConnectionError, StatusType, SyncError};
+use crate::{CompactBlockStream, NamedAtomicStatus, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -538,6 +538,32 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
         const SYNC_LOOP_INTERVAL: Duration = Duration::from_millis(500);
+        const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+        const MAX_BACKOFF: Duration = Duration::from_secs(15);
+        const MAX_CONSECUTIVE_FAILURES: u32 = 10;
+
+        /// Returns `Ok(backoff_duration)` if the caller should retry, or
+        /// `Err(())` if the failure limit has been reached.
+        fn doubling_interval_retries(
+            consecutive_failures: u32,
+            current_backoff: Duration,
+            error: &SyncError,
+        ) -> Result<Duration, ()> {
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                tracing::error!(
+                    "Sync loop failed {consecutive_failures} consecutive times, \
+                     giving up: {error:?}"
+                );
+                return Err(());
+            }
+
+            let next_backoff = (current_backoff * 2).min(MAX_BACKOFF);
+            tracing::warn!(
+                "Sync loop iteration failed ({consecutive_failures}/\
+                 {MAX_CONSECUTIVE_FAILURES}), retrying in {current_backoff:?}: {error:?}"
+            );
+            Ok(next_backoff)
+        }
 
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
@@ -546,6 +572,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let source = self.non_finalized_state.source.clone();
 
         tokio::task::spawn(async move {
+            let mut consecutive_failures: u32 = 0;
+            let mut current_backoff = INITIAL_BACKOFF;
+
             loop {
                 if status.load() == StatusType::Closing {
                     return Ok(());
@@ -554,21 +583,19 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 status.store(StatusType::Syncing);
 
                 let sync_result: Result<(), SyncError> = async {
-                    fn unrecoverable(
-                        error: impl std::error::Error + Send + Sync + 'static,
+                    fn source_error(
+                        error: impl std::error::Error + Send + 'static,
                     ) -> SyncError {
-                        SyncError::ValidatorConnectionError(
-                            NodeConnectionError::UnrecoverableError(Box::new(error)),
-                        )
+                        SyncError::ErrorFromSource(Box::new(error))
                     }
 
                     let chain_height = source
                         .clone()
                         .get_best_block_height()
                         .await
-                        .map_err(unrecoverable)?
+                        .map_err(source_error)?
                         .ok_or_else(|| {
-                            unrecoverable(std::io::Error::other(
+                            source_error(std::io::Error::other(
                                 "node returned no best block height",
                             ))
                         })?;
@@ -576,7 +603,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
                     fs.sync_to_height(finalised_height, &source)
                         .await
-                        .map_err(unrecoverable)?;
+                        .map_err(source_error)?;
 
                     nfs.sync(fs.clone()).await?;
 
@@ -586,15 +613,26 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
                 match sync_result {
                     Ok(()) => {
+                        consecutive_failures = 0;
+                        current_backoff = INITIAL_BACKOFF;
                         status.store(StatusType::Ready);
+                        tokio::time::sleep(SYNC_LOOP_INTERVAL).await;
                     }
                     Err(e) => {
-                        tracing::warn!("Sync loop iteration failed, retrying: {e:?}");
-                        status.store(StatusType::RecoverableError);
+                        consecutive_failures += 1;
+                        match doubling_interval_retries(consecutive_failures, current_backoff, &e) {
+                            Ok(next_backoff) => {
+                                status.store(StatusType::RecoverableError);
+                                tokio::time::sleep(current_backoff).await;
+                                current_backoff = next_backoff;
+                            }
+                            Err(()) => {
+                                status.store(StatusType::CriticalError);
+                                return Err(e);
+                            }
+                        }
                     }
                 }
-
-                tokio::time::sleep(SYNC_LOOP_INTERVAL).await;
             }
         })
     }
