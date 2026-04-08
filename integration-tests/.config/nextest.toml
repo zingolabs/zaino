@@ -1,5 +1,4 @@
 [profile.default]
-test-threads = 6
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = "10" }
 # retries = 1
