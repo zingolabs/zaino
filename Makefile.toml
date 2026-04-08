@@ -1,6 +1,7 @@
 extend = [
     { path = "makefiles/lints.toml" },
     { path = "makefiles/notify.toml" },
+    { path = "makefiles/rocksdb.toml" },
 ]
 env_files = [".env.testing-artifacts"]
 
@@ -51,6 +52,12 @@ echo "  fmt                        Check formatting (cargo fmt --all -- --check)
 echo "  clippy                     Run Clippy with -D warnings (--all-targets --all-features)"
 echo "  doc                        Build docs (no deps, all features, document private items) with RUSTDOCFLAGS='-D warnings'"
 echo "  toggle-hooks               Toggle the git config for core.hooksPath to use .githooks/"
+echo ""
+echo "Build speed:"
+echo "  use-system-rocksdb         Link against system RocksDB (skips slow C++ build)"
+echo "  use-bundled-rocksdb        Revert to building RocksDB from source"
+echo "  check-system-rocksdb       Check system RocksDB compatibility"
+echo "  audit-system-rocksdb       Re-audit if Cargo.lock or system version changed"
 echo ""
 echo "Environment:"
 echo "  Defined by: .env.testing-artifacts"
