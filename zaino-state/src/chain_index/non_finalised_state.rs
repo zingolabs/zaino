@@ -43,6 +43,7 @@ pub struct BestTip {
     pub blockhash: BlockHash,
 }
 
+#[derive(Debug, Clone)]
 /// A snapshot of the chain index
 ///
 /// If zaino has synced above the validator's finalized tip,
@@ -367,7 +368,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 NonfinalizedBlockCacheSnapshot::from_initial_block(
                     finalized_db
                         .to_reader()
-                        .get_chain_block(
+                        .get_chain_block_by_height(
                             local_finalized_tip.expect("known to be some due to above if"),
                         )
                         .await?

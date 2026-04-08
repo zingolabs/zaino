@@ -822,14 +822,19 @@ impl<Source: BlockchainSource> Status for NodeBackedChainIndexSubscriber<Source>
 }
 
 impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Source> {
-    type Snapshot = Arc<ChainIndexSnapshot>;
+    type Snapshot = ChainIndexSnapshot;
     type Error = ChainIndexError;
 
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot {
-        self.non_finalized_state.get_snapshot()
+        match self.non_finalized_state.load() {
+            Some(non_finalised_state) => ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot: non_finalised_state,
+            },
+            None => todo!("get validator finalized height"),
+        }
     }
 
     /// Returns Some(Height) for the given block hash *if* it is currently in the best chain.
@@ -847,7 +852,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // todo: possible efficiency boost by checking mempool for a negative?
 
         // ChainIndex steps 2-4:
-        match snapshot.as_ref() {
+        match snapshot {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
             } => {
@@ -950,7 +955,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
-        match snapshot.as_ref() {
+        match snapshot {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
             } => {
@@ -1185,16 +1190,20 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // mempool blocks have no canon height, guaranteed to return None
         // todo: possible efficiency boost by checking mempool for a negative?
 
-        match snapshot.as_ref() {
+        match snapshot {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
             } => {
-                match snapshot.as_ref().get_chainblock_by_hash(hash) {
+                match non_finalized_snapshot.get_chainblock_by_hash(hash) {
                     Some(block) => {
                         // At this point, we know that
                         // The block is non-FINALIZED in the INDEXER
                         // ChainIndex step 3:
-                        if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
+                        if non_finalized_snapshot
+                            .heights_to_hashes
+                            .get(&block.height())
+                            == Some(block.hash())
+                        {
                             // The block is in the best chain.
                             Ok(Some((*block.hash(), block.height())))
                         } else {
@@ -1565,39 +1574,37 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         self.mempool.get_mempool_info().await
     }
 
-    async fn best_chaintip(
-        &self,
-        nonfinalized_snapshot: &Self::Snapshot,
-    ) -> Result<BestTip, Self::Error> {
-        Ok(
-            if nonfinalized_snapshot.max_serviceable_height > nonfinalized_snapshot.best_tip.height
-            {
+    async fn best_chaintip(&self, snapshot: &Self::Snapshot) -> Result<BestTip, Self::Error> {
+        Ok(match snapshot {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => non_finalized_snapshot.best_tip,
+
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => {
                 BestTip {
-                    height: nonfinalized_snapshot.max_serviceable_height,
+                    height: *validator_finalized_height,
                     blockhash: self
                         .source()
                         // TODO: do something more efficient than getting the whole block
-                        .get_block(HashOrHeight::Height(
-                            nonfinalized_snapshot.max_serviceable_height.into(),
-                        ))
+                        .get_block(HashOrHeight::Height((*validator_finalized_height).into()))
                         .await
                         .map_err(|e| {
                             ChainIndexError::database_hole(
-                                nonfinalized_snapshot.max_serviceable_height,
+                                validator_finalized_height,
                                 Some(Box::new(e)),
                             )
                         })?
                         .ok_or(ChainIndexError::database_hole(
-                            nonfinalized_snapshot.max_serviceable_height,
+                            validator_finalized_height,
                             None,
                         ))?
                         .hash()
                         .into(),
                 }
-            } else {
-                nonfinalized_snapshot.best_tip
-            },
-        )
+            }
+        })
     }
 }
 
@@ -1611,6 +1618,10 @@ where
 
     fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
         self.as_ref().get_chainblock_by_height(target_height)
+    }
+
+    fn max_serviceable_height(&self) -> &types::Height {
+        self.as_ref().max_serviceable_height()
     }
 }
 
