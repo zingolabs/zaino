@@ -85,7 +85,7 @@ fn passthrough_test(
             let index_reader = indexer.subscriber();
             let snapshot = index_reader.snapshot_nonfinalized_state();
             // 101 instead of 100 as heights are 0-indexed
-            assert_eq!(snapshot.validator_finalized_height.0 as usize, (2 * segment_length) - 101);
+            assert_eq!(snapshot.max_serviceable_height.0 as usize, (2 * segment_length) - 101);
             assert_eq!(snapshot.best_tip.height.0, 0);
 
 
@@ -123,7 +123,7 @@ fn passthrough_find_fork_point() {
                     .await
                     .unwrap();
 
-                if height <= snapshot.validator_finalized_height {
+                if height <= snapshot.max_serviceable_height {
                     // passthrough fork point can only ever be the requested block
                     // as we don't passthrough to nonfinalized state
                     assert_eq!(hash, fork_point.unwrap().0);
@@ -166,7 +166,7 @@ fn passthrough_get_transaction_status() {
                     .await
                     .unwrap();
 
-                if height <= snapshot.validator_finalized_height {
+                if height <= snapshot.max_serviceable_height {
                     // passthrough transaction status can only ever be on the best
                     // chain as we don't passthrough to nonfinalized state
                     let Some(BestChainLocation::Block(_block_hash, transaction_height)) =
@@ -268,7 +268,7 @@ fn passthrough_get_block_height() {
                     .get_block_height(&snapshot, hash.into())
                     .await
                     .unwrap();
-                if expected_height <= snapshot.validator_finalized_height {
+                if expected_height <= snapshot.max_serviceable_height {
                     assert_eq!(height, Some(expected_height.into()));
                 } else {
                     assert_eq!(height, None);
@@ -303,7 +303,7 @@ fn passthrough_get_block_range() {
                         expected_start_height.into(),
                         Some(expected_end_height.into()),
                     );
-                    if expected_start_height <= snapshot.validator_finalized_height {
+                    if expected_start_height <= snapshot.max_serviceable_height {
                         let mut block_range_stream = Box::pin(block_range_stream.unwrap());
                         let mut num_blocks_in_stream = 0;
                         while let Some(block) = block_range_stream.next().await {
@@ -324,7 +324,7 @@ fn passthrough_get_block_range() {
                                 // in that case, expect all blocks between start height
                                 // and finalized height, (+1 for inclusive range)
                                 snapshot
-                                    .validator_finalized_height
+                                    .max_serviceable_height
                                     .0
                                     .saturating_sub(expected_start_height.0)
                                     + 1

@@ -43,6 +43,25 @@ pub struct BestTip {
     pub blockhash: BlockHash,
 }
 
+/// A snapshot of the chain index
+///
+/// If zaino has synced above the validator's finalized tip,
+/// this contains a snapshot of the non-finalized state.
+///
+/// If zaino is still syncing, this contains only the height
+/// of the validator's finalized tip as of snapshot creation,
+/// which is used to determine how high we can pass through
+/// calls to the backing validator without serving nonfinalized
+/// data.
+pub enum ChainIndexSnapshot {
+    /// Zaino is ready to serve non-finalized data.
+    NonFinalizedStateExists {
+        non_finalized_snapshot: NonfinalizedBlockCacheSnapshot,
+    },
+    /// Zaino is not ready to serve non-finalized data.
+    StillSyncingFinalizedState { validator_finalized_height: Height },
+}
+
 #[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
 pub struct NonfinalizedBlockCacheSnapshot {
@@ -59,11 +78,6 @@ pub struct NonfinalizedBlockCacheSnapshot {
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
     pub best_tip: BestTip,
-
-    /// if the validator has finalized above the tip
-    /// of the snapshot, we can use it for some queries
-    /// and pass through to the validator
-    pub validator_finalized_height: Height,
 }
 
 #[derive(Debug)]
@@ -184,7 +198,6 @@ impl NonfinalizedBlockCacheSnapshot {
             blocks,
             heights_to_hashes,
             best_tip,
-            validator_finalized_height,
         }
     }
 
@@ -534,16 +547,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.handle_reorg(&mut new_snapshot, best_block)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
-
-        let validator_tip = self
-            .source
-            .get_best_block_height()
-            .await
-            .map_err(|e| UpdateError::ValidatorConnectionError(Box::new(e)))?
-            .ok_or(UpdateError::ValidatorConnectionError(Box::new(
-                MissingBlockError("no best block height".to_string()),
-            )))?;
-        new_snapshot.validator_finalized_height = Height(validator_tip.0.saturating_sub(100));
 
         // Need to get best hash at some point in this process
         let stored = self

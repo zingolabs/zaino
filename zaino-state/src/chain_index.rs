@@ -11,7 +11,7 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::non_finalised_state::BestTip;
+use crate::chain_index::non_finalised_state::{BestTip, ChainIndexSnapshot};
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
@@ -753,7 +753,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
 
     async fn get_block_height_passthrough(
         &self,
-        snapshot: &NonfinalizedBlockCacheSnapshot,
+        max_serviceable_height: &types::Height,
         hash: types::BlockHash,
     ) -> Result<Option<types::Height>, ChainIndexError> {
         //ChainIndex step 5:
@@ -773,7 +773,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                     Some(height) => {
                         // The VALIDATOR returned a block with a height.
                         // However, there is as of yet no guaranteed the Block is FINALIZED
-                        if height <= snapshot.validator_finalized_height {
+                        if height <= *max_serviceable_height {
                             Ok(Some(types::Height::from(height)))
                         } else {
                             // non-finalized block
@@ -818,7 +818,7 @@ impl<Source: BlockchainSource> Status for NodeBackedChainIndexSubscriber<Source>
 }
 
 impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Source> {
-    type Snapshot = Arc<NonfinalizedBlockCacheSnapshot>;
+    type Snapshot = Arc<ChainIndexSnapshot>;
     type Error = ChainIndexError;
 
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
@@ -843,9 +843,19 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // todo: possible efficiency boost by checking mempool for a negative?
 
         // ChainIndex steps 2-4:
-        match self.get_indexed_block_height(snapshot, hash).await? {
-            Some(h) => Ok(Some(h)),
-            None => self.get_block_height_passthrough(snapshot, hash).await, // ChainIndex step 5
+        match snapshot.as_ref() {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                self.get_indexed_block_height(non_finalized_snapshot, hash)
+                    .await
+            }
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => {
+                self.get_block_height_passthrough(snapshot.max_serviceable_height(), hash)
+                    .await
+            } // ChainIndex step 5
         }
     }
 
@@ -863,15 +873,12 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // ChainIndex step 1: Skip
         // mempool blocks have no canon height
 
-        // We can serve blocks above where the validator has finalized
-        // only if we have those blocks in our nonfinalized snapshot
-        let max_servable_height = snapshot
-            .validator_finalized_height
-            .max(snapshot.best_tip.height);
         // The lower of the end of the provided range, and the highest block we can serve
-        let end = end.unwrap_or(max_servable_height).min(max_servable_height);
+        let end = end
+            .unwrap_or(*snapshot.max_serviceable_height())
+            .min(*snapshot.max_serviceable_height());
         // Serve as high as we can, or to the provided end if it's lower
-        if start <= max_servable_height.min(end) {
+        if start <= *snapshot.max_serviceable_height().min(&end) {
             Some(
                 futures::stream::iter((start.0)..=(end.0)).then(move |height| async move {
                     // For blocks above validator_finalized_height, it's not reorg-safe to get blocks by height. It is reorg-safe to get blocks by hash. What we need to do in this case is use our snapshot index to look up the hash at a given height, and then get that hash from the validator.
@@ -935,31 +942,44 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// is greater than the snapshot's tip
     async fn get_compact_block(
         &self,
-        nonfinalized_snapshot: &Self::Snapshot,
+        snapshot: &Self::Snapshot,
         height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
-        if height <= nonfinalized_snapshot.best_tip.height {
-            Ok(Some(
-                match nonfinalized_snapshot.get_chainblock_by_height(&height) {
-                    Some(block) => compact_block_with_pool_types(
-                        block.to_compact_block(),
-                        &pool_types.to_pool_types_vector(),
-                    ),
-                    None => match self
-                        .finalized_state
-                        .get_compact_block(height, pool_types)
-                        .await
-                    {
-                        Ok(block) => block,
-                        Err(e) => {
-                            return Err(ChainIndexError::database_hole(height, Some(Box::new(e))))
-                        }
-                    },
-                },
-            ))
-        } else {
-            Ok(None)
+        match snapshot.as_ref() {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                if height <= non_finalized_snapshot.best_tip.height {
+                    Ok(Some(match snapshot.get_chainblock_by_height(&height) {
+                        Some(block) => compact_block_with_pool_types(
+                            block.to_compact_block(),
+                            &pool_types.to_pool_types_vector(),
+                        ),
+                        None => match self
+                            .finalized_state
+                            .get_compact_block(height, pool_types)
+                            .await
+                        {
+                            Ok(block) => block,
+                            Err(e) => {
+                                return Err(ChainIndexError::database_hole(
+                                    height,
+                                    Some(Box::new(e)),
+                                ))
+                            }
+                        },
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height: _,
+                //TODO: Once we make chainwork an option field we should be able to
+                // support passthrougth for this
+            } => Ok(None),
         }
     }
 
@@ -1210,7 +1230,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                                     Some(height) => {
                                         // The VALIDATOR returned a block with a height.
                                         // However, there is as of yet no guaranteed the Block is FINALIZED
-                                        if height <= snapshot.validator_finalized_height {
+                                        if height <= snapshot.max_serviceable_height {
                                             Ok(Some((
                                                 types::BlockHash::from(block.hash()),
                                                 types::Height::from(height),
@@ -1403,7 +1423,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 .await
                 .map_err(ChainIndexError::backing_validator)?
             {
-                if height <= snapshot.validator_finalized_height {
+                if height <= snapshot.max_serviceable_height {
                     if let Some(block) = self
                         .source()
                         .get_block(HashOrHeight::Height(height))
@@ -1534,26 +1554,25 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         nonfinalized_snapshot: &Self::Snapshot,
     ) -> Result<BestTip, Self::Error> {
         Ok(
-            if nonfinalized_snapshot.validator_finalized_height
-                > nonfinalized_snapshot.best_tip.height
+            if nonfinalized_snapshot.max_serviceable_height > nonfinalized_snapshot.best_tip.height
             {
                 BestTip {
-                    height: nonfinalized_snapshot.validator_finalized_height,
+                    height: nonfinalized_snapshot.max_serviceable_height,
                     blockhash: self
                         .source()
                         // TODO: do something more efficient than getting the whole block
                         .get_block(HashOrHeight::Height(
-                            nonfinalized_snapshot.validator_finalized_height.into(),
+                            nonfinalized_snapshot.max_serviceable_height.into(),
                         ))
                         .await
                         .map_err(|e| {
                             ChainIndexError::database_hole(
-                                nonfinalized_snapshot.validator_finalized_height,
+                                nonfinalized_snapshot.max_serviceable_height,
                                 Some(Box::new(e)),
                             )
                         })?
                         .ok_or(ChainIndexError::database_hole(
-                            nonfinalized_snapshot.validator_finalized_height,
+                            nonfinalized_snapshot.max_serviceable_height,
                             None,
                         ))?
                         .hash()
@@ -1585,6 +1604,8 @@ pub trait NonFinalizedSnapshot {
     fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock>;
     /// Height -> block
     fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock>;
+    /// The maximum height that this snapshot can serve data for.
+    fn max_serviceable_height(&self) -> &types::Height;
 }
 
 impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
@@ -1605,5 +1626,30 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
                 None
             }
         })
+    }
+
+    fn max_serviceable_height(&self) -> &types::Height {
+        &self.best_tip.height
+    }
+}
+
+impl NonFinalizedSnapshot for ChainIndexSnapshot {
+    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
+        None
+    }
+
+    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
+        None
+    }
+
+    fn max_serviceable_height(&self) -> &types::Height {
+        match self {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => non_finalized_snapshot.max_serviceable_height(),
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => validator_finalized_height,
+        }
     }
 }
