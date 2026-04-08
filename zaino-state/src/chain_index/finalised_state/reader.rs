@@ -458,13 +458,25 @@ impl DbReader {
     /// Returns the IndexedBlock for the given Height.
     ///
     /// TODO: Add separate range fetch method!
-    pub(crate) async fn get_chain_block(
+    pub(crate) async fn get_chain_block_by_height(
         &self,
         height: Height,
     ) -> Result<Option<IndexedBlock>, FinalisedStateError> {
         self.db(CapabilityRequest::IndexedBlockExt)?
             .get_chain_block(height)
             .await
+    }
+
+    /// Returns the IndexedBlock for the given Hash.
+    ///
+    pub(crate) async fn get_chain_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<IndexedBlock>, FinalisedStateError> {
+        let Some(height) = self.inner.get_block_height(hash).await? else {
+            return Ok(None);
+        };
+        self.get_chain_block_by_height(height).await
     }
 
     // ***** CompactBlock Ext *****
