@@ -43,7 +43,6 @@ zebra-rpc = "6.0.1"
 zip32 = "0.2.1"
 
 core2 = "0.4"
-prost = "0.14"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 futures = "0.3.30"
 tempfile = "3.2"
@@ -55,7 +54,6 @@ tokio = { version = "1.38", features = ["full"] }
 
 # Zingo-infra
 zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
 
 [profile.test]
 opt-level = 3
