@@ -2,13 +2,15 @@
 [workspace]
 members = [
     "zaino-common",
-    "integration-tests",
     "zaino-testutils",
     "zainod",
     "zaino-serve",
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
+]
+exclude = [
+    "integration-tests",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates

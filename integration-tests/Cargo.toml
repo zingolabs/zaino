@@ -1,14 +1,16 @@
+[workspace]
+
 [package]
 name = "integration-tests"
 description = "Crate containing Zaino's integration-tests."
 publish = false
 
-authors = { workspace = true }
-repository = { workspace = true }
-homepage = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+authors = ["Zingo Lab Cyan"]
+repository = "https://github.com/zingolabs"
+homepage = "https://www.zingolabs.org/"
+edition = "2021"
+license = "Apache-2.0"
+version = "0.2.0"
 
 [features]
 # **Experimental and alpha features**
@@ -25,32 +27,36 @@ transparent_address_history_experimental = [
 ]
 
 [dev-dependencies]
-anyhow = { workspace = true }
+anyhow = "1.0"
 
 # Test utility
-zainod = { workspace = true }
-zaino-testutils = { workspace = true }
-zaino-fetch = { workspace = true }
-zaino-proto.workspace = true
-zaino-common.workspace = true
-wire_serialized_transaction_test_data.workspace = true
-zaino-state = { workspace = true, features = ["test_dependencies"] }
-zebra-chain.workspace = true
-zebra-state.workspace = true
-zebra-rpc.workspace = true
-zip32 = {workspace = true}
+zainod = { path = "../zainod" }
+zaino-testutils = { path = "../zaino-testutils" }
+zaino-fetch = { path = "../zaino-fetch" }
+zaino-proto = { path = "../zaino-proto" }
+zaino-common = { path = "../zaino-common" }
+wire_serialized_transaction_test_data = "1.0.0"
+zaino-state = { path = "../zaino-state", features = ["test_dependencies"] }
+zebra-chain = "6.0.1"
+zebra-state = "5.0.0"
+zebra-rpc = "6.0.1"
+zip32 = "0.2.1"
 
-core2 = { workspace = true }
-prost = { workspace = true }
-serde_json = { workspace = true, features = ["preserve_order"] }
-futures.workspace = true
-tempfile.workspace = true
-tower = { workspace = true, features = ["buffer", "util"] }
-hex = { workspace = true }
+core2 = "0.4"
+prost = "0.14"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+futures = "0.3.30"
+tempfile = "3.2"
+tower = { version = "0.4", features = ["buffer", "util"] }
+hex = "0.4"
 
 # Runtime
-tokio = { workspace = true }
+tokio = { version = "1.38", features = ["full"] }
 
 # Zingo-infra
-zcash_local_net = { workspace = true }
-zingo_test_vectors = { workspace = true }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+
+[profile.test]
+opt-level = 3
+debug = true
