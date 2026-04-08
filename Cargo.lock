@@ -3069,6 +3069,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower 0.4.13",
+ "wire_serialized_transaction_test_data",
  "zaino-common",
  "zaino-fetch",
  "zaino-proto",
@@ -8943,7 +8944,6 @@ dependencies = [
  "zaino-proto",
  "zaino-serve",
  "zaino-state",
- "zaino-testvectors",
  "zainod",
  "zcash_client_backend",
  "zcash_local_net 0.4.0 (git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe)",
@@ -8956,13 +8956,6 @@ dependencies = [
  "zingolib",
  "zingolib_testutils",
  "zip32",
-]
-
-[[package]]
-name = "zaino-testvectors"
-version = "0.2.0"
-dependencies = [
- "lazy_static",
 ]
 
 [[package]]
