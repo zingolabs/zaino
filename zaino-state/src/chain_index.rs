@@ -537,6 +537,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
     #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
+        const SYNC_LOOP_INTERVAL: Duration = Duration::from_millis(500);
+
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
@@ -544,15 +546,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let source = self.non_finalized_state.source.clone();
 
         tokio::task::spawn(async move {
-            let result: Result<(), SyncError> = async {
-                loop {
-                    if status.load() == StatusType::Closing {
-                        break;
-                    }
+            loop {
+                if status.load() == StatusType::Closing {
+                    return Ok(());
+                }
 
-                    status.store(StatusType::Syncing);
+                status.store(StatusType::Syncing);
 
-                    // Sync fs to chain tip - 100.
+                let sync_result: Result<(), SyncError> = async {
                     let chain_height = source
                         .clone()
                         .get_best_block_height()
@@ -571,7 +572,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         })?;
                     let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
 
-                    // TODO / FIX: Improve error handling here, fix and rebuild db on error.
                     fs.sync_to_height(finalised_height, &source)
                         .await
                         .map_err(|error| {
@@ -580,28 +580,24 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             )
                         })?;
 
-                    // Sync nfs to chain tip, trimming blocks to finalized tip.
                     nfs.sync(fs.clone()).await?;
 
-                    status.store(StatusType::Ready);
-                    // TODO: configure sleep duration?
-                    tokio::time::sleep(Duration::from_millis(500)).await
-                    // TODO: Check for shutdown signal.
+                    Ok(())
                 }
-                Ok(())
+                .await;
+
+                match sync_result {
+                    Ok(()) => {
+                        status.store(StatusType::Ready);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Sync loop iteration failed, retrying: {e:?}");
+                        status.store(StatusType::RecoverableError);
+                    }
+                }
+
+                tokio::time::sleep(SYNC_LOOP_INTERVAL).await;
             }
-            .await;
-
-            // If the sync loop exited unexpectedly with an error, set CriticalError
-            // so that liveness checks can detect the failure.
-            if let Err(e) = result {
-                tracing::error!("Sync loop exited with error: {e:?}");
-                status.store(StatusType::CriticalError);
-
-                return Err(e);
-            }
-
-            result
         })
     }
 }
