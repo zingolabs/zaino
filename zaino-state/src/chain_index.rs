@@ -1492,6 +1492,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 }
 
 /// The available shielded pools
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ShieldedPool {
     /// Sapling
@@ -1501,7 +1502,11 @@ pub enum ShieldedPool {
 }
 
 impl ShieldedPool {
-    fn pool_string(&self) -> String {
+    /// Returns the string representative of the given pool.
+    ///
+    /// Used for display purposes and in converting the strongly types `PoolType`
+    /// struct into the string that the Zcash RPCs require as input.
+    pub fn pool_string(&self) -> String {
         match self {
             ShieldedPool::Sapling => "sapling".to_string(),
             ShieldedPool::Orchard => "orchard".to_string(),
