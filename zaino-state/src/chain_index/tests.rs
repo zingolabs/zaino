@@ -97,6 +97,36 @@ mod mockchain_tests {
         (blocks, indexer, index_reader, source)
     }
 
+    /// Regression test: a transient source failure should not kill the sync loop.
+    ///
+    /// Currently the sync loop (chain_index.rs) propagates errors via `?`,
+    /// which exits the loop and sets CriticalError (line 599). The indexer
+    /// serve loop (indexer.rs) checks status every 100ms — so within 100ms
+    /// of the sync loop failing it calls close(), dropping the TonicServer.
+    /// Integration test clients then get ConnectionRefused because the gRPC
+    /// port was never reachable.
+    ///
+    /// The correct behavior: the sync loop should retry on transient failure
+    /// and remain live. This test will pass once retry logic is added.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sync_loop_survives_transient_source_failure() {
+        use zaino_common::status::{Status as _, StatusType};
+
+        let (_blocks, _indexer, index_reader, mockchain) =
+            load_test_vectors_and_sync_chain_index(true).await;
+
+        // Trigger a transient failure.
+        mockchain.set_failing(true);
+        sleep(Duration::from_secs(2)).await;
+
+        // The sync loop should still be alive, not CriticalError.
+        assert_ne!(
+            index_reader.status(),
+            StatusType::CriticalError,
+            "sync loop should survive transient source failure, not set CriticalError"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range() {
         let (blocks, _indexer, index_reader, _mockchain) =
