@@ -112,7 +112,18 @@ pub enum ErrorsTimestamp {
     /// Returned from zcashd, the timestamp is an integer unix timstamp
     Num(usize),
     /// Returned from zebrad, the timestamp is a string representing a timestamp
-    Str(String),
+    Int(i64),
+}
+
+/// This infallible version is unsafe. Use only when sure that the
+/// timestamp will never exceed i64
+impl From<ErrorsTimestamp> for i64 {
+    fn from(value: ErrorsTimestamp) -> Self {
+        match value {
+            ErrorsTimestamp::Num(n) => n as i64,
+            ErrorsTimestamp::Int(i) => i,
+        }
+    }
 }
 
 impl ResponseToError for ErrorsTimestamp {
@@ -121,15 +132,15 @@ impl ResponseToError for ErrorsTimestamp {
 impl std::fmt::Display for ErrorsTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorsTimestamp::Num(n) => f.write_str(&n.to_string()),
-            ErrorsTimestamp::Str(s) => f.write_str(s),
+            ErrorsTimestamp::Num(n) => write!(f, "{}", n),
+            ErrorsTimestamp::Int(i) => write!(f, "{}", i),
         }
     }
 }
 
 impl Default for ErrorsTimestamp {
     fn default() -> Self {
-        ErrorsTimestamp::Str("Default".to_string())
+        ErrorsTimestamp::Int(0)
     }
 }
 
@@ -148,7 +159,7 @@ impl From<GetInfoResponse> for zebra_rpc::methods::GetInfo {
             response.pay_tx_fee,
             response.relay_fee,
             response.errors,
-            response.errors_timestamp.to_string(),
+            i64::from(response.errors_timestamp),
         )
     }
 }

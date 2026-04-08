@@ -77,7 +77,7 @@ pub use error::{FetchServiceError, StateServiceError};
 
 pub(crate) mod status;
 
-pub use status::{AtomicStatus, Status, StatusType};
+pub use status::{AtomicStatus, NamedAtomicStatus, Status, StatusType};
 
 pub(crate) mod stream;
 

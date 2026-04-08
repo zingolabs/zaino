@@ -5,7 +5,7 @@ use hex::FromHex;
 use std::{io::Cursor, time};
 use tokio::{sync::mpsc, time::timeout};
 use tonic::async_trait;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{
@@ -53,10 +53,6 @@ use zaino_proto::proto::{
     },
 };
 
-use crate::{
-    chain_index::NonFinalizedSnapshot as _, ChainIndex, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber,
-};
 #[allow(deprecated)]
 use crate::{
     chain_index::{source::ValidatorConnector, types},
@@ -73,6 +69,7 @@ use crate::{
     utils::{get_build_info, ServiceMetadata},
     BackendType,
 };
+use crate::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
 ///
@@ -113,8 +110,13 @@ impl ZcashService for FetchService {
     type Config = FetchServiceConfig;
 
     /// Initializes a new FetchService instance and starts sync process.
+    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.network))]
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
-        info!("Launching Chain Fetch Service..");
+        info!(
+            rpc_address = %config.validator_rpc_address,
+            network = %config.network,
+            "Launching Fetch Service"
+        );
 
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
             &config.validator_rpc_address,
@@ -131,7 +133,7 @@ impl ZcashService for FetchService {
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
-        info!("Using Zcash build: {}", data);
+        info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
         let source = ValidatorConnector::Fetch(fetcher.clone());
         let indexer = NodeBackedChainIndex::new(source, config.clone().into())
@@ -145,8 +147,19 @@ impl ZcashService for FetchService {
             config,
         };
 
-        while fetch_service.status() != StatusType::Ready {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // wait for sync to complete, return error on sync fail.
+        loop {
+            match fetch_service.status() {
+                StatusType::Ready | StatusType::Closing => break,
+                StatusType::CriticalError => {
+                    return Err(FetchServiceError::Critical(
+                        "ChainIndex initial sync failed, check full log for details.".to_string(),
+                    ));
+                }
+                _ => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
         }
 
         Ok(fetch_service)
@@ -507,7 +520,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .get_mempool_txids()
             .await?
             .iter()
-            .map(|txid| txid.to_string())
+            .map(|txid| txid.to_rpc_hex())
             .collect())
     }
 
@@ -894,7 +907,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_chaintip().height.0;
+                // Use the snapshot tip directly, as this function doesn't support passthrough
+                let chain_height = snapshot.best_tip.height.0;
 
                 match fetch_service_clone
                     .indexer
@@ -1003,7 +1017,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_chaintip().height.0;
+
+                // Use the snapshot tip directly, as this function doesn't support passthrough
+                let chain_height = snapshot.best_tip.height.0;
 
                 match fetch_service_clone
                     .indexer

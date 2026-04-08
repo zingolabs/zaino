@@ -9,7 +9,7 @@ use futures::lock::Mutex;
 use primitive_types::U256;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
 
@@ -223,12 +223,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// TODO: Currently, we can't initate without an snapshot, we need to create a cache
     /// of at least one block. Should this be tied to the instantiation of the data structure
     /// itself?
+    #[instrument(name = "NonFinalizedState::initialize", skip(source, start_block), fields(network = %network))]
     pub async fn initialize(
         source: Source,
         network: Network,
         start_block: Option<IndexedBlock>,
     ) -> Result<Self, InitError> {
-        info!("Initialising non-finalised state.");
+        info!(network = %network, "Initializing non-finalized state");
 
         let validator_tip = source
             .get_best_block_height()
@@ -333,6 +334,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// sync to the top of the chain, trimming to the finalised tip.
+    #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
     pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
@@ -394,9 +396,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     })?;
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
                 info!(
-                    "syncing block {} at height {}",
-                    &chainblock.index().hash(),
-                    working_snapshot.best_tip.height + 1
+                    height = (working_snapshot.best_tip.height + 1).0,
+                    hash = %chainblock.index().hash(),
+                    "Syncing block"
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
             } else {
@@ -556,26 +558,28 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             if new_best_tip != stale_best_tip {
                 if new_best_tip.height > stale_best_tip.height {
                     info!(
-                        "non-finalized tip advanced: Height: {} -> {}, Hash: {} -> {}",
-                        stale_best_tip.height,
-                        new_best_tip.height,
-                        stale_best_tip.blockhash,
-                        new_best_tip.blockhash,
+                        old_height = stale_best_tip.height.0,
+                        new_height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip advanced"
                     );
                 } else if new_best_tip.height == stale_best_tip.height
                     && new_best_tip.blockhash != stale_best_tip.blockhash
                 {
                     info!(
-                        "non-finalized tip reorg at height {}: Hash: {} -> {}",
-                        new_best_tip.height, stale_best_tip.blockhash, new_best_tip.blockhash,
+                        height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip reorg"
                     );
                 } else if new_best_tip.height < stale_best_tip.height {
                     info!(
-                        "non-finalized tip rollback from height {} to {}, Hash: {} -> {}",
-                        stale_best_tip.height,
-                        new_best_tip.height,
-                        stale_best_tip.blockhash,
-                        new_best_tip.blockhash,
+                        old_height = stale_best_tip.height.0,
+                        new_height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip rollback"
                     );
                 }
             }
