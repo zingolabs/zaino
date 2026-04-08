@@ -204,6 +204,8 @@ pub enum FetchServiceError {
     /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(#[from] zebra_chain::serialization::SerializationError),
+    #[error("Zaino has not synced high enough to serve this data")]
+    UnavailableNotSyncedEnough,
 }
 
 impl From<FetchServiceError> for tonic::Status {
@@ -225,6 +227,9 @@ impl From<FetchServiceError> for tonic::Status {
             FetchServiceError::TonicStatusError(err) => err,
             FetchServiceError::SerializationError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
+            }
+            FetchServiceError::UnavailableNotSyncedEnough => {
+                tonic::Status::failed_precondition("zaino not yet synced".to_string())
             }
         }
     }

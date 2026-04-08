@@ -64,7 +64,9 @@ pub enum ChainIndexSnapshot {
 }
 
 impl ChainIndexSnapshot {
-    pub(super) fn get_nfs_snapshot(&self) -> Option<&NonfinalizedBlockCacheSnapshot> {
+    /// Convenience fn to go from ChainIndexSnapshot to Option<NonFinalizedBlockCacheSnapshot>,
+    /// throwing away the validator_finalized_height in the None case. For ease of mapping, etc.
+    pub(crate) fn get_nfs_snapshot(&self) -> Option<&NonfinalizedBlockCacheSnapshot> {
         match self {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,

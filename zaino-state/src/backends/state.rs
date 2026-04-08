@@ -1,5 +1,6 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
+use crate::chain_index::NonFinalizedSnapshot;
 #[allow(deprecated)]
 use crate::{
     chain_index::{
@@ -586,7 +587,9 @@ impl StateServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = state_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_tip.height.0;
+                // This method does not support passthrough. Just return.
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return ()};
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
 
                 match state_service_clone
                     .indexer
@@ -694,11 +697,11 @@ impl StateServiceSubscriber {
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let chain_height = snapshot.best_tip.height.0;
+        let chain_height = snapshot.max_serviceable_height().0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
+                                is greater than Zaino's best chain tip [{chain_height}].",
             )))
         } else {
             // TODO: Hide server error from clients before release.

@@ -1375,94 +1375,113 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<(Option<BestChainLocation>, HashSet<NonBestChainLocation>), ChainIndexError> {
-        let blocks_containing_transaction = self
-            .blocks_containing_transaction(snapshot, txid.0)
-            .await?
-            .collect::<Vec<_>>();
-        let Some(start_of_nonfinalized) = snapshot.heights_to_hashes.keys().min() else {
-            return Err(ChainIndexError::database_hole("no blocks", None));
-        };
-        let mut best_chain_block = blocks_containing_transaction
-            .iter()
-            .find(|block| {
-                snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash())
-                    || block.height() < *start_of_nonfinalized
-                // this block is either in the best chain ``heights_to_hashes`` or finalized.
-            })
-            .map(|block| BestChainLocation::Block(*block.hash(), block.height()));
-        let mut non_best_chain_blocks: HashSet<NonBestChainLocation> =
-            blocks_containing_transaction
-                .iter()
-                .filter(|block| {
-                    snapshot.heights_to_hashes.get(&block.height()) != Some(block.hash())
-                        && block.height() >= *start_of_nonfinalized
-                })
-                .map(|block| NonBestChainLocation::Block(*block.hash(), block.height()))
-                .collect();
-        let in_mempool = self
-            .mempool
-            .contains_txid(&mempool::MempoolKey {
-                txid: txid.to_rpc_hex(),
-            })
-            .await;
-        if in_mempool {
-            let mempool_tip_hash = self.mempool.mempool_chain_tip();
-            if mempool_tip_hash == snapshot.best_tip.blockhash {
-                if best_chain_block.is_some() {
-                    return Err(ChainIndexError {
+        match snapshot {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                let blocks_containing_transaction = self
+                    .blocks_containing_transaction(non_finalized_snapshot, txid.0)
+                    .await?
+                    .collect::<Vec<_>>();
+                let Some(start_of_nonfinalized) =
+                    non_finalized_snapshot.heights_to_hashes.keys().min()
+                else {
+                    return Err(ChainIndexError::database_hole("no blocks", None));
+                };
+                let mut best_chain_block = blocks_containing_transaction
+                    .iter()
+                    .find(|block| {
+                        non_finalized_snapshot
+                            .heights_to_hashes
+                            .get(&block.height())
+                            == Some(block.hash())
+                            || block.height() < *start_of_nonfinalized
+                        // this block is either in the best chain ``heights_to_hashes`` or finalized.
+                    })
+                    .map(|block| BestChainLocation::Block(*block.hash(), block.height()));
+                let mut non_best_chain_blocks: HashSet<NonBestChainLocation> =
+                    blocks_containing_transaction
+                        .iter()
+                        .filter(|block| {
+                            non_finalized_snapshot
+                                .heights_to_hashes
+                                .get(&block.height())
+                                != Some(block.hash())
+                                && block.height() >= *start_of_nonfinalized
+                        })
+                        .map(|block| NonBestChainLocation::Block(*block.hash(), block.height()))
+                        .collect();
+                let in_mempool = self
+                    .mempool
+                    .contains_txid(&mempool::MempoolKey {
+                        txid: txid.to_rpc_hex(),
+                    })
+                    .await;
+                if in_mempool {
+                    let mempool_tip_hash = self.mempool.mempool_chain_tip();
+                    if mempool_tip_hash == non_finalized_snapshot.best_tip.blockhash {
+                        if best_chain_block.is_some() {
+                            return Err(ChainIndexError {
                         kind: ChainIndexErrorKind::InvalidSnapshot,
                         message:
                             "Best chain and up-to-date mempool both contain the same transaction"
                                 .to_string(),
                         source: None,
                     });
-                } else {
-                    best_chain_block =
-                        Some(BestChainLocation::Mempool(snapshot.best_tip.height + 1));
-                }
-            } else {
-                // the best chain and the mempool have divergent tip hashes
-                // get a new snapshot and use it to find the height of the mempool
-                let target_height =
-                    self.snapshot_nonfinalized_state()
-                        .blocks
-                        .iter()
-                        .find_map(|(hash, block)| {
-                            if *hash == mempool_tip_hash {
-                                Some(block.height() + 1)
-                                // found the block that is the tip that the mempool is hanging on to
-                            } else {
-                                None
-                            }
-                        });
-                non_best_chain_blocks.insert(NonBestChainLocation::Mempool(target_height));
-            }
-        }
-
-        // If we haven't found a block on the best chain,
-        // try passthrough
-        if best_chain_block.is_none() {
-            if let Some((_transaction, GetTransactionLocation::BestChain(height))) = self
-                .source()
-                .get_transaction(*txid)
-                .await
-                .map_err(ChainIndexError::backing_validator)?
-            {
-                if height <= snapshot.max_serviceable_height {
-                    if let Some(block) = self
-                        .source()
-                        .get_block(HashOrHeight::Height(height))
-                        .await
-                        .map_err(ChainIndexError::backing_validator)?
-                    {
-                        best_chain_block =
-                            Some(BestChainLocation::Block(block.hash().into(), height.into()));
+                        } else {
+                            best_chain_block = Some(BestChainLocation::Mempool(
+                                non_finalized_snapshot.best_tip.height + 1,
+                            ));
+                        }
+                    } else {
+                        // the best chain and the mempool have divergent tip hashes
+                        // get a new snapshot and use it to find the height of the mempool
+                        if let ChainIndexSnapshot::NonFinalizedStateExists {
+                            non_finalized_snapshot: new_snapshot,
+                        } = self.snapshot_nonfinalized_state()
+                        {
+                            let target_height =
+                                new_snapshot.blocks.iter().find_map(|(hash, block)| {
+                                    if *hash == mempool_tip_hash {
+                                        Some(block.height() + 1)
+                                        // found the block that is the tip that the mempool is hanging on to
+                                    } else {
+                                        None
+                                    }
+                                });
+                            non_best_chain_blocks
+                                .insert(NonBestChainLocation::Mempool(target_height));
+                        }
                     }
                 }
+                Ok((best_chain_block, non_best_chain_blocks))
+            }
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => {
+                if let Some((_transaction, GetTransactionLocation::BestChain(height))) = self
+                    .source()
+                    .get_transaction(*txid)
+                    .await
+                    .map_err(ChainIndexError::backing_validator)?
+                {
+                    if height <= *validator_finalized_height {
+                        if let Some(block) = self
+                            .source()
+                            .get_block(HashOrHeight::Height(height))
+                            .await
+                            .map_err(ChainIndexError::backing_validator)?
+                        {
+                            return Ok((
+                                Some(BestChainLocation::Block(block.hash().into(), height.into())),
+                                HashSet::new(),
+                            ));
+                        }
+                    }
+                }
+                Ok((None, HashSet::new()))
             }
         }
-
-        Ok((best_chain_block, non_best_chain_blocks))
     }
 
     /// Returns all txids currently in the mempool.
@@ -1510,7 +1529,18 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         &self,
         snapshot: Option<&Self::Snapshot>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>> {
-        let expected_chain_tip = snapshot.map(|snapshot| snapshot.best_tip.blockhash);
+        let non_finalized_snapshot = match snapshot {
+            Some(s) => match s {
+                ChainIndexSnapshot::NonFinalizedStateExists {
+                    non_finalized_snapshot,
+                } => Some(non_finalized_snapshot),
+                // If we're still syncing the finalized state, the chain tip
+                // is newer than the snapshot's tip. Return None.
+                ChainIndexSnapshot::StillSyncingFinalizedState { .. } => return None,
+            },
+            None => None,
+        };
+        let expected_chain_tip = non_finalized_snapshot.map(|snapshot| snapshot.best_tip.blockhash);
         let mut subscriber = self.mempool.clone();
 
         match subscriber
