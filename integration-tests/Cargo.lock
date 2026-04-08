@@ -3035,7 +3035,6 @@ dependencies = [
  "core2 0.4.0",
  "futures",
  "hex",
- "prost",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3051,7 +3050,6 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
- "zingo_test_vectors 0.0.1 (git+https://github.com/zingolabs/infrastructure.git?rev=1a75152f4744b9e130a7d7f249a5b7691a6bf2fe)",
  "zip32",
 ]
 
