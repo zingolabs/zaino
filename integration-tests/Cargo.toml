@@ -15,6 +15,7 @@ version = "0.2.0"
 
 [workspace.dependencies]
 # Zaino path deps
+zaino-proto = { path = "../zaino-proto" }
 zaino-state = { path = "../zaino-state" }
 zaino-serve = { path = "../zaino-serve" }
 zaino-common = { path = "../zaino-common" }
@@ -94,6 +95,7 @@ anyhow = { workspace = true }
 zainod = { workspace = true }
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
+zaino-proto = { workspace = true }
 zaino-common = { workspace = true }
 wire_serialized_transaction_test_data = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
