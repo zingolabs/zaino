@@ -15,7 +15,6 @@ version = "0.2.0"
 
 [workspace.dependencies]
 # Zaino path deps
-zaino-proto = { path = "../zaino-proto" }
 zaino-state = { path = "../zaino-state" }
 zaino-serve = { path = "../zaino-serve" }
 zaino-common = { path = "../zaino-common" }
@@ -24,7 +23,6 @@ zaino-testutils = { path = "zaino-testutils" }
 zainod = { path = "../zainod" }
 
 # Zingo
-zingo_common_components = "0.3.0"
 zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
     "testutils",
@@ -55,19 +53,11 @@ anyhow = "1.0"
 core2 = "0.4"
 futures = "0.3.30"
 hex = "0.4"
-lazy_static = "1.5.0"
 once_cell = "1.20"
 portpicker = "0.1"
-proptest = "~1.6"
 serde_json = "1.0"
 tempfile = "3.2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3.20", features = [
-    "fmt",
-    "env-filter",
-    "time",
-    "json",
-] }
 wire_serialized_transaction_test_data = "1.0.0"
 zip32 = "0.2.1"
 
@@ -104,7 +94,6 @@ anyhow = { workspace = true }
 zainod = { workspace = true }
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
-zaino-proto = { workspace = true }
 zaino-common = { workspace = true }
 wire_serialized_transaction_test_data = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
