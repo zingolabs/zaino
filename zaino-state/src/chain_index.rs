@@ -544,7 +544,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
         /// Returns `Ok(backoff_duration)` if the caller should retry, or
         /// `Err(())` if the failure limit has been reached.
-        fn doubling_interval_retries(
+        fn exponential_backoff(
             consecutive_failures: u32,
             current_backoff: Duration,
             error: &SyncError,
@@ -620,7 +620,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     }
                     Err(e) => {
                         consecutive_failures += 1;
-                        match doubling_interval_retries(consecutive_failures, current_backoff, &e) {
+                        match exponential_backoff(consecutive_failures, current_backoff, &e) {
                             Ok(next_backoff) => {
                                 status.store(StatusType::RecoverableError);
                                 tokio::time::sleep(current_backoff).await;
