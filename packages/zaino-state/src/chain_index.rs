@@ -268,6 +268,14 @@ pub trait ChainIndex {
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
 
+    /// Returns the subtree roots
+    fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> impl std::future::Future<Output = Result<Vec<([u8; 32], u32)>, Self::Error>>;
+
     /// given a transaction id, returns the transaction, along with
     /// its consensus branch ID if available
     #[allow(clippy::type_complexity)]
@@ -1534,6 +1542,43 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 nonfinalized_snapshot.best_tip
             },
         )
+    }
+
+    /// Gets the subtree roots of a given pool and the end heights of each root,
+    /// starting at the provided index, up to an optional maximum number of roots.
+    async fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> Result<Vec<([u8; 32], u32)>, Self::Error> {
+        self.source()
+            .get_subtree_roots(pool, start_index, max_entries)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+}
+
+/// The available shielded pools
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ShieldedPool {
+    /// Sapling
+    Sapling,
+    /// Orchard
+    Orchard,
+}
+
+impl ShieldedPool {
+    /// Returns the string representative of the given pool.
+    ///
+    /// Used for display purposes and in converting the strongly types `PoolType`
+    /// struct into the string that the Zcash RPCs require as input.
+    pub fn pool_string(&self) -> String {
+        match self {
+            ShieldedPool::Sapling => "sapling".to_string(),
+            ShieldedPool::Orchard => "orchard".to_string(),
+        }
     }
 }
 

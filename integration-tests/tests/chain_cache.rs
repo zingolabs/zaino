@@ -61,13 +61,13 @@ mod chain_query_interface {
         chain_index::{
             source::ValidatorConnector,
             types::{BestChainLocation, TransactionHash},
-            NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+            NodeBackedChainIndex, NodeBackedChainIndexSubscriber, ShieldedPool,
         },
         test_dependencies::{
             chain_index::{self, ChainIndex},
             BlockCacheConfig,
         },
-        Height, StateService, StateServiceConfig, ZcashService,
+        FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
     use zebra_chain::{
@@ -530,5 +530,111 @@ mod chain_query_interface {
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_subtree_roots_zebrad() {
+        get_subtree_roots::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+    }
+
+    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_subtree_roots_zcashd() {
+        get_subtree_roots::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
+    }
+
+    async fn get_subtree_roots<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+
+        test_manager
+            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .await;
+        let snapshot = indexer.snapshot_nonfinalized_state();
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
+
+        let test_pools = [ShieldedPool::Sapling, ShieldedPool::Orchard];
+        let valid_start_index = 0;
+        let max_entries = Some(0);
+
+        // *** Test valid requests ***
+
+        for pool in test_pools.clone() {
+            let valid_chain_index_subtree_roots_response = indexer
+                .get_subtree_roots(pool.clone(), valid_start_index, max_entries)
+                .await
+                .unwrap();
+
+            let valid_validator_subtree_roots_response = json_service
+                .get_subtrees_by_index(pool.pool_string(), valid_start_index, max_entries)
+                .await
+                .unwrap();
+            let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
+                valid_validator_subtree_roots_response
+                    .subtrees
+                    .into_iter()
+                    .map(|subtree| {
+                        // subtree.root is a hex string; decode to bytes and convert to array
+                        let bytes = hex::decode(&subtree.root)
+                            .expect("subtree root from validator is not valid hex");
+                        let array: [u8; 32] = bytes
+                            .as_slice()
+                            .try_into()
+                            .expect("received subtree root that is not 32 bytes");
+                        (array, subtree.end_height.0)
+                    })
+                    .collect();
+
+            assert_eq!(
+                valid_chain_index_subtree_roots_response,
+                formatted_valid_validator_subtree_roots
+            );
+        }
+
+        // *** Test invalid requests ***
+
+        let invalid_start_index = 10000;
+
+        let valid_chain_index_subtree_roots_response = indexer
+            .get_subtree_roots(test_pools[1].clone(), invalid_start_index, max_entries)
+            .await
+            .unwrap();
+
+        let valid_validator_subtree_roots_response = json_service
+            .get_subtrees_by_index(
+                test_pools[1].pool_string(),
+                invalid_start_index,
+                max_entries,
+            )
+            .await
+            .unwrap();
+        let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
+            valid_validator_subtree_roots_response
+                .subtrees
+                .into_iter()
+                .map(|subtree| {
+                    // subtree.root is a hex string; decode to bytes and convert to array
+                    let bytes = hex::decode(&subtree.root)
+                        .expect("subtree root from validator is not valid hex");
+                    let array: [u8; 32] = bytes
+                        .as_slice()
+                        .try_into()
+                        .expect("received subtree root that is not 32 bytes");
+                    (array, subtree.end_height.0)
+                })
+                .collect();
+
+        assert_eq!(
+            valid_chain_index_subtree_roots_response,
+            formatted_valid_validator_subtree_roots
+        );
     }
 }
