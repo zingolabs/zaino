@@ -1,12 +1,12 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
-    "zaino-common",
-    "zainod",
-    "zaino-serve",
-    "zaino-state",
-    "zaino-fetch",
-    "zaino-proto",
+    "packages/zaino-common",
+    "packages/zainod",
+    "packages/zaino-serve",
+    "packages/zaino-state",
+    "packages/zaino-fetch",
+    "packages/zaino-proto",
 ]
 exclude = [
     "integration-tests",
@@ -127,13 +127,13 @@ bitflags = "2.9"
 # Test
 portpicker = "0.1"
 tempfile = "3.2"
-zaino-fetch = { path = "zaino-fetch" }
-zaino-proto = { path = "zaino-proto" }
-zaino-serve = { path = "zaino-serve" }
-zaino-state = { path = "zaino-state" }
-zaino-common.path = "zaino-common"
+zaino-fetch = { path = "packages/zaino-fetch" }
+zaino-proto = { path = "packages/zaino-proto" }
+zaino-serve = { path = "packages/zaino-serve" }
+zaino-state = { path = "packages/zaino-state" }
+zaino-common = { path = "packages/zaino-common" }
 wire_serialized_transaction_test_data = "1.0.0"
-zainod = { path = "zainod" }
+zainod = { path = "packages/zainod" }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
 proptest = "~1.6"
