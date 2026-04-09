@@ -1056,70 +1056,52 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
         tokio::spawn(async move {
             let timeout_result = timeout(
-            time::Duration::from_secs((service_timeout * 4) as u64),
-            async {
-                let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
+                time::Duration::from_secs((service_timeout * 4) as u64),
+                async {
+                    let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
 
-                // Use the snapshot tip directly, as this function doesn't support passthrough
-                let chain_height = snapshot.best_tip.height.0;
+                    // Use the snapshot tip directly, as this function doesn't support passthrough
+                    let chain_height = snapshot.best_tip.height.0;
 
-                match fetch_service_clone
-                    .indexer
-                    .get_compact_block_stream(
-                        &snapshot,
-                        types::Height(start),
-                        types::Height(end),
-                        pool_type_filter.clone(),
-                    )
-                    .await
-                {
-                    Ok(Some(mut compact_block_stream)) => {
-                        while let Some(stream_item) = compact_block_stream.next().await {
-                             match stream_item {
-                                Ok(block) => {
-                                    if channel_tx
-                                        .send(Ok(compact_block_to_nullifiers(block)))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
+                    match fetch_service_clone
+                        .indexer
+                        .get_compact_block_stream(
+                            &snapshot,
+                            types::Height(start),
+                            types::Height(end),
+                            pool_type_filter.clone(),
+                        )
+                        .await
+                    {
+                        Ok(Some(mut compact_block_stream)) => {
+                            while let Some(stream_item) = compact_block_stream.next().await {
+                                match stream_item {
+                                    Ok(block) => {
+                                        if channel_tx
+                                            .send(Ok(compact_block_to_nullifiers(block)))
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
                                     }
-                                }
-                                Err(status) => {
-                                    if channel_tx.send(Err(status)).await.is_err() {
-                                        break;
+                                    Err(status) => {
+                                        if channel_tx.send(Err(status)).await.is_err() {
+                                            break;
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    Ok(None) => {
-                        // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
-                        let offending_height = if start > chain_height { start } else { end };
-
-                        match channel_tx
-                            .send(Err(tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{offending_height}]. \
-                                Height requested is greater than the best chain tip [{chain_height}].",
-                            ))))
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(e) => {
-                                warn!("GetBlockRange channel closed unexpectedly: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // Preserve previous behaviour: if the request is above tip, surface OutOfRange;
-                        // otherwise return the error (currently exposed for dev).
-                        if start > chain_height || end > chain_height {
+                        Ok(None) => {
+                            // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
                             let offending_height = if start > chain_height { start } else { end };
 
                             match channel_tx
                                 .send(Err(tonic::Status::out_of_range(format!(
                                     "Error: Height out of range [{offending_height}]. \
-                                    Height requested is greater than the best chain tip [{chain_height}].",
+                                Height requested is greater than the best \
+                                chain tip [{chain_height}].",
                                 ))))
                                 .await
                             {
@@ -1128,21 +1110,44 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     warn!("GetBlockRange channel closed unexpectedly: {}", e);
                                 }
                             }
-                        } else {
-                            // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                            if channel_tx
-                                .send(Err(tonic::Status::unknown(e.to_string())))
-                                .await
-                                .is_err()
-                            {
-                                warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                        }
+                        Err(e) => {
+                            // Preserve previous behaviour: if the request
+                            // is above tip, surface OutOfRange;
+                            // otherwise return the error (currently exposed for dev).
+                            if start > chain_height || end > chain_height {
+                                let offending_height =
+                                    if start > chain_height { start } else { end };
+
+                                match channel_tx
+                                    .send(Err(tonic::Status::out_of_range(format!(
+                                        "Error: Height out of range [{offending_height}]. \
+                                    Height requested is greater than the best chain tip \
+                                    [{chain_height}].",
+                                    ))))
+                                    .await
+                                {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                    }
+                                }
+                            } else {
+                                // TODO: Hide server error from clients before release.
+                                // Currently useful for dev purposes.
+                                if channel_tx
+                                    .send(Err(tonic::Status::unknown(e.to_string())))
+                                    .await
+                                    .is_err()
+                                {
+                                    warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                                }
                             }
                         }
                     }
-                }
-            },
-        )
-        .await;
+                },
+            )
+            .await;
 
             if timeout_result.is_err() {
                 channel_tx
@@ -1311,18 +1316,22 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 )),
             }
         });
-        // NOTE: This timeout is so slow due to the blockcache not being implemented. This should be reduced to 30s once functionality is in place.
-        // TODO: Make [rpc_timout] a configurable system variable with [default = 30s] and [mempool_rpc_timout = 4*rpc_timeout]
+        // NOTE: This timeout is so slow due to the blockcache not
+        // being implemented. This should be reduced to 30s once functionality is in place.
+        // TODO: Make [rpc_timout] a configurable system variable
+        // with [default = 30s] and [mempool_rpc_timout = 4*rpc_timeout]
         let addr_recv_timeout = timeout(
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 while let Some(address_result) = request.next().await {
-                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                    // TODO: Hide server error from clients before release.
+                    // Currently useful for dev purposes.
                     let address = address_result.map_err(|e| {
                         tonic::Status::unknown(format!("Failed to read from stream: {e}"))
                     })?;
                     if channel_tx.send(address.address).await.is_err() {
-                        // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                        // TODO: Hide server error from clients before release.
+                        // Currently useful for dev purposes.
                         return Err(tonic::Status::unknown(
                             "Error: Failed to send address to balance task.",
                         ));
@@ -1353,7 +1362,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 let checked_balance: i64 = match i64::try_from(total_balance) {
                     Ok(balance) => balance,
                     Err(_) => {
-                        // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                        // TODO: Hide server error from clients before release.
+                        // Currently useful for dev purposes.
                         return Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
                             "Error: Error converting balance from u64 to i64.",
                         )));
@@ -1364,7 +1374,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 })
             }
             Ok(Err(e)) => Err(FetchServiceError::TonicStatusError(e)),
-            // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+            // TODO: Hide server error from clients before release.
+            // Currently useful for dev purposes.
             Err(e) => Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
                 format!("Fetcher Task failed: {e}"),
             ))),
@@ -1400,7 +1411,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 ));
             }
 
-            // NOTE: the TransactionHash methods cannot be used for this hex encoding as exclusions could be truncated to less than 32 bytes
+            // NOTE: the TransactionHash methods cannot be used for
+            // this hex encoding as exclusions could be truncated to less than 32 bytes
             let reversed_txid_bytes: Vec<u8> = excluded_id.iter().cloned().rev().collect();
             let hex_string_txid: String = hex::encode(&reversed_txid_bytes);
             exclude_txids.push(hex_string_txid);
