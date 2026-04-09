@@ -47,20 +47,23 @@
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::{
-    chain_index::{
-        finalised_state::capability::CapabilityRequest,
-        types::{AddrEventBytes, TransactionHash},
-    },
+    chain_index::{finalised_state::capability::CapabilityRequest, types::TransactionHash},
     error::FinalisedStateError,
-    AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height,
-    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
+    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+};
+
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::{
+    chain_index::{finalised_state::capability::TransparentHistExt, types::AddrEventBytes},
+    AddrScript, Outpoint,
 };
 
 use super::{
     capability::{
         BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbMetadata,
-        IndexedBlockExt, TransparentHistExt,
+        IndexedBlockExt,
     },
     db::DbBackend,
     ZainoDB,
@@ -331,6 +334,7 @@ impl DbReader {
     /// - `Ok(Some(records))` if one or more valid records exist,
     /// - `Ok(None)` if no records exist (not an error),
     /// - `Err(...)` if any decoding or DB error occurs.
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn addr_records(
         &self,
         addr_script: AddrScript,
@@ -346,6 +350,7 @@ impl DbReader {
     /// - `Ok(Some(records))` if one or more matching records are found at that index,
     /// - `Ok(None)` if no matching records exist (not an error),
     /// - `Err(...)` on decode or DB failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn addr_and_index_records(
         &self,
         addr_script: AddrScript,
@@ -363,6 +368,7 @@ impl DbReader {
     /// - `Ok(Some(vec))` if one or more matching records are found,
     /// - `Ok(None)` if no matches found (not an error),
     /// - `Err(...)` on decode or DB failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn addr_tx_locations_by_range(
         &self,
         addr_script: AddrScript,
@@ -383,6 +389,7 @@ impl DbReader {
     /// - `Ok(Some(vec))` if one or more UTXOs are found,
     /// - `Ok(None)` if none found (not an error),
     /// - `Err(...)` on decode or DB failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
@@ -402,6 +409,7 @@ impl DbReader {
     /// - `−value` for spent inputs
     ///
     /// Returns the signed net value as `i64`, or error on failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,
@@ -419,6 +427,7 @@ impl DbReader {
     /// - `Ok(Some(TxLocation))` if the outpoint is spent.
     /// - `Ok(None)` if no entry exists (not spent or not known).
     /// - `Err(...)` on deserialization or DB error.
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
@@ -434,6 +443,7 @@ impl DbReader {
     /// - Returns `Some(TxLocation)` if spent,
     /// - `None` if not found,
     /// - or returns `Err` immediately if any DB or decode error occurs.
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,

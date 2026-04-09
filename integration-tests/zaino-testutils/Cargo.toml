@@ -1,0 +1,59 @@
+[package]
+name = "zaino-testutils"
+description = "Crate containing Zaino test specific functionality."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = { workspace = true }
+publish = false
+
+[features]
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = [
+    "zaino-state/transparent_address_history_experimental",
+    "zaino-serve/transparent_address_history_experimental",
+    "zainod/transparent_address_history_experimental"
+]
+
+[dependencies]
+# Zaino
+zaino-state = { workspace = true }
+zaino-serve.workspace = true
+zaino-common.workspace = true
+zainod = { workspace = true }
+
+# Librustzcash
+zcash_protocol = { workspace = true }
+zcash_client_backend = { workspace = true }
+
+# Zebra
+zebra-chain = { workspace = true }
+
+# Zingo-infra
+zcash_local_net = { workspace = true }
+zingo_test_vectors = { workspace = true }
+
+# Zingo-common
+zingo-netutils.workspace = true
+
+# ZingoLib
+zingolib = { workspace = true }
+zingolib_testutils.workspace = true
+
+# Miscellaneous
+http = { workspace = true }
+once_cell = { workspace = true }
+portpicker = { workspace = true }
+tokio = { workspace = true }
+tonic.workspace = true
+tempfile = { workspace = true }
+tracing.workspace = true
+zip32 = { workspace = true }

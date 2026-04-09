@@ -9,7 +9,7 @@ use futures::lock::Mutex;
 use primitive_types::U256;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
 
@@ -90,23 +90,28 @@ impl std::fmt::Display for MissingBlockError {
 
 impl std::error::Error for MissingBlockError {}
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 /// An error occurred during sync of the NonFinalized State.
 pub enum SyncError {
     /// The backing validator node returned corrupt, invalid, or incomplete data
     /// TODO: This may not be correctly disambibuated from temporary network issues
     /// in the fetchservice case.
+    #[error("failed to connect to validator: {0:?}")]
     ValidatorConnectionError(NodeConnectionError),
     /// The channel used to store new blocks has been closed. This should only happen
     /// during shutdown.
+    #[error("staging channel closed. Shutdown in progress")]
     StagingChannelClosed,
     /// Sync has been called multiple times in parallel, or another process has
     /// written to the block snapshot.
+    #[error("multiple sync processes running")]
     CompetingSyncProcess,
     /// Sync attempted a reorg, and something went wrong.
+    #[error("reorg failed: {0}")]
     ReorgFailure(String),
     /// UnrecoverableFinalizedStateError
-    CannotReadFinalizedState,
+    #[error("error reading nonfinalized state")]
+    CannotReadFinalizedState(#[from] FinalisedStateError),
 }
 
 impl From<UpdateError> for SyncError {
@@ -114,7 +119,9 @@ impl From<UpdateError> for SyncError {
         match value {
             UpdateError::ReceiverDisconnected => SyncError::StagingChannelClosed,
             UpdateError::StaleSnapshot => SyncError::CompetingSyncProcess,
-            UpdateError::FinalizedStateCorruption => SyncError::CannotReadFinalizedState,
+            UpdateError::FinalizedStateCorruption => SyncError::CannotReadFinalizedState(
+                FinalisedStateError::Custom("mystery update failure".to_string()),
+            ),
             UpdateError::DatabaseHole => {
                 SyncError::ReorgFailure(String::from("could not determine best chain"))
             }
@@ -153,20 +160,17 @@ pub enum InitError {
 /// This is the core of the concurrent block cache.
 impl BestTip {
     /// Create a BestTip from an IndexedBlock
-    fn from_block(block: &IndexedBlock) -> Result<Self, InitError> {
+    fn from_block(block: &IndexedBlock) -> Self {
         let height = block.height();
         let blockhash = *block.hash();
-        Ok(Self { height, blockhash })
+        Self { height, blockhash }
     }
 }
 
 impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
-    fn from_initial_block(
-        block: IndexedBlock,
-        validator_finalized_height: Height,
-    ) -> Result<Self, InitError> {
-        let best_tip = BestTip::from_block(&block)?;
+    fn from_initial_block(block: IndexedBlock, validator_finalized_height: Height) -> Self {
+        let best_tip = BestTip::from_block(&block);
         let hash = *block.hash();
         let height = best_tip.height;
 
@@ -176,12 +180,12 @@ impl NonfinalizedBlockCacheSnapshot {
         blocks.insert(hash, block);
         heights_to_hashes.insert(height, hash);
 
-        Ok(Self {
+        Self {
             blocks,
             heights_to_hashes,
             best_tip,
             validator_finalized_height,
-        })
+        }
     }
 
     fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
@@ -219,12 +223,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// TODO: Currently, we can't initate without an snapshot, we need to create a cache
     /// of at least one block. Should this be tied to the instantiation of the data structure
     /// itself?
+    #[instrument(name = "NonFinalizedState::initialize", skip(source, start_block), fields(network = %network))]
     pub async fn initialize(
         source: Source,
         network: Network,
         start_block: Option<IndexedBlock>,
     ) -> Result<Self, InitError> {
-        info!("Initialising non-finalised state.");
+        info!(network = %network, "Initializing non-finalized state");
 
         let validator_tip = source
             .get_best_block_height()
@@ -243,7 +248,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(
             initial_block,
             Height(validator_tip.0.saturating_sub(100)),
-        )?;
+        );
 
         // Set up optional listener
         let nfs_change_listener = Self::setup_listener(&source).await;
@@ -329,8 +334,28 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// sync to the top of the chain, trimming to the finalised tip.
+    #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
     pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
+        let local_finalized_tip = finalized_db.to_reader().db_height().await?;
+        if Some(initial_state.best_tip.height) < local_finalized_tip {
+            self.current.swap(Arc::new(
+                NonfinalizedBlockCacheSnapshot::from_initial_block(
+                    finalized_db
+                        .to_reader()
+                        .get_chain_block(
+                            local_finalized_tip.expect("known to be some due to above if"),
+                        )
+                        .await?
+                        .ok_or(FinalisedStateError::DataUnavailable(format!(
+                            "Missing block {}",
+                            local_finalized_tip.unwrap().0
+                        )))?,
+                    local_finalized_tip.unwrap(),
+                ),
+            ));
+            initial_state = self.get_snapshot()
+        }
         let mut working_snapshot = initial_state.as_ref().clone();
 
         // currently this only gets main-chain blocks
@@ -371,9 +396,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     })?;
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
                 info!(
-                    "syncing block {} at height {}",
-                    &chainblock.index().hash(),
-                    working_snapshot.best_tip.height + 1
+                    height = (working_snapshot.best_tip.height + 1).0,
+                    hash = %chainblock.index().hash(),
+                    "Syncing block"
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
             } else {
@@ -533,26 +558,28 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             if new_best_tip != stale_best_tip {
                 if new_best_tip.height > stale_best_tip.height {
                     info!(
-                        "non-finalized tip advanced: Height: {} -> {}, Hash: {} -> {}",
-                        stale_best_tip.height,
-                        new_best_tip.height,
-                        stale_best_tip.blockhash,
-                        new_best_tip.blockhash,
+                        old_height = stale_best_tip.height.0,
+                        new_height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip advanced"
                     );
                 } else if new_best_tip.height == stale_best_tip.height
                     && new_best_tip.blockhash != stale_best_tip.blockhash
                 {
                     info!(
-                        "non-finalized tip reorg at height {}: Hash: {} -> {}",
-                        new_best_tip.height, stale_best_tip.blockhash, new_best_tip.blockhash,
+                        height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip reorg"
                     );
                 } else if new_best_tip.height < stale_best_tip.height {
                     info!(
-                        "non-finalized tip rollback from height {} to {}, Hash: {} -> {}",
-                        stale_best_tip.height,
-                        new_best_tip.height,
-                        stale_best_tip.blockhash,
-                        new_best_tip.blockhash,
+                        old_height = stale_best_tip.height.0,
+                        new_height = new_best_tip.height.0,
+                        old_hash = %stale_best_tip.blockhash,
+                        new_hash = %new_best_tip.blockhash,
+                        "Non-finalized tip rollback"
                     );
                 }
             }

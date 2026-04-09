@@ -14,6 +14,10 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 // #[deprecated]
 #[derive(Debug, thiserror::Error)]
 pub enum StateServiceError {
+    /// Critical Errors, Restart Zaino.
+    #[error("Critical error: {0}")]
+    Critical(String),
+
     /// An rpc-specific error we haven't accounted for
     #[error("unhandled fallible RPC call {0}")]
     UnhandledRpcError(String),
@@ -110,6 +114,7 @@ impl From<GetBlockRangeError> for StateServiceError {
 impl From<StateServiceError> for tonic::Status {
     fn from(error: StateServiceError) -> Self {
         match error {
+            StateServiceError::Critical(message) => tonic::Status::internal(message),
             StateServiceError::Custom(message) => tonic::Status::internal(message),
             StateServiceError::JoinError(err) => {
                 tonic::Status::internal(format!("Join error: {err}"))
@@ -563,7 +568,8 @@ pub struct ChainIndexError {
     pub(crate) source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
+#[non_exhaustive]
 /// The high-level kinds of thing that can fail
 pub enum ChainIndexErrorKind {
     /// Zaino is in some way nonfunctional
@@ -587,6 +593,10 @@ impl Display for ChainIndexErrorKind {
 }
 
 impl ChainIndexError {
+    /// The error kind
+    pub fn kind(&self) -> ChainIndexErrorKind {
+        self.kind
+    }
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
@@ -595,13 +605,16 @@ impl ChainIndexError {
         }
     }
 
-    pub(crate) fn database_hole(missing_block: impl Display) -> Self {
+    pub(crate) fn database_hole(
+        missing_block: impl Display,
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
             message: format!(
                 "InternalServerError: hole in validator database, missing block {missing_block}"
             ),
-            source: None,
+            source,
         }
     }
 

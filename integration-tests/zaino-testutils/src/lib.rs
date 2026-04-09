@@ -3,19 +3,15 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-/// Convenience reexport of zaino_testvectors
-pub mod test_vectors {
-    pub use zaino_testvectors::*;
-}
-
 use once_cell::sync::Lazy;
 use std::{
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    num::{NonZero, NonZeroU32},
     path::PathBuf,
 };
-use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tonic::transport::Channel;
+use tracing::{debug, info, instrument};
 use zaino_common::{
     network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
     probing::{Liveness, Readiness},
@@ -25,8 +21,8 @@ use zaino_common::{
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_state::{
-    chain_index::NonFinalizedSnapshot, BackendType, ChainIndex, LightWalletIndexer,
-    LightWalletService, NodeBackedChainIndexSubscriber, ZcashIndexer, ZcashService,
+    BackendType, ChainIndex, LightWalletIndexer, LightWalletService,
+    NodeBackedChainIndexSubscriber, ZcashIndexer, ZcashService,
 };
 use zainodlib::{config::ZainodConfig, error::IndexerError, indexer::Indexer};
 pub use zcash_local_net as services;
@@ -39,12 +35,13 @@ use zcash_local_net::{
 };
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zcash_protocol::PoolType;
-use zebra_chain::parameters::{testnet::ConfiguredActivationHeights, NetworkKind};
-use zingo_netutils::{GetClientError, GrpcConnector, UnderlyingService};
+use zebra_chain::parameters::NetworkKind;
+use zingo_netutils::{GetClientError, GrpcIndexer};
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
 pub use zingolib::testutils::lightclient::from_inputs;
+use zingolib::{config::WalletConfig, wallet::SyncConfig};
 use zingolib_testutils::scenarios::ClientBuilder;
 
 use zcash_client_backend::proto::service::{
@@ -69,12 +66,14 @@ pub fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
 ///
 /// Returns `true` if the component became ready within the timeout,
 /// `false` if the timeout was reached.
+#[instrument(name = "poll_until_ready", skip(component), fields(timeout_ms = timeout.as_millis() as u64))]
 pub async fn poll_until_ready(
     component: &impl Readiness,
     poll_interval: std::time::Duration,
     timeout: std::time::Duration,
 ) -> bool {
-    tokio::time::timeout(timeout, async {
+    debug!("[POLL] Waiting for component to be ready");
+    let result = tokio::time::timeout(timeout, async {
         let mut interval = tokio::time::interval(poll_interval);
         loop {
             interval.tick().await;
@@ -84,7 +83,13 @@ pub async fn poll_until_ready(
         }
     })
     .await
-    .is_ok()
+    .is_ok();
+    if result {
+        debug!("[POLL] Component is ready");
+    } else {
+        debug!("[POLL] Timeout waiting for component");
+    }
+    result
 }
 
 // temporary until activation heights are unified to zebra-chain type.
@@ -156,7 +161,7 @@ pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     Some(home_path.join(".cache/zebra"))
 });
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 /// Represents the type of validator to launch.
 pub enum ValidatorKind {
     /// Zcashd.
@@ -282,6 +287,19 @@ where
     Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
+    pub(crate) fn grpc_socket_to_uri(&self) -> http::Uri {
+        http::Uri::builder()
+            .scheme("http")
+            .authority(
+                self.zaino_grpc_listen_address
+                    .expect("grpc_listen_address should be set")
+                    .to_string(),
+            )
+            .path_and_query("/")
+            .build()
+            .unwrap()
+    }
+
     /// Launches zcash-local-net<Empty, Validator>.
     ///
     /// Possible validators: Zcashd, Zebrad.
@@ -293,6 +311,11 @@ where
     /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
     ///
     /// TODO: Remove validator argument in favour of adding C::VALIDATOR associated const
+    #[instrument(
+        name = "TestManager::launch",
+        skip(activation_heights, chain_cache),
+        fields(validator = ?validator, network = ?network, enable_zaino, enable_clients)
+    )]
     pub async fn launch(
         validator: &ValidatorKind,
         network: Option<NetworkKind>,
@@ -307,13 +330,7 @@ where
                 "Cannot use state backend with zcashd.",
             ));
         }
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-            )
-            .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-            .with_target(true)
-            .try_init();
+        zaino_common::logging::try_init();
 
         let activation_heights = activation_heights.unwrap_or_else(|| match validator {
             ValidatorKind::Zcashd => ActivationHeights::default(),
@@ -342,10 +359,12 @@ where
             chain_cache.clone(),
         );
 
+        debug!("[TEST] Launching validator");
         let (local_net, validator_settings) = C::launch_validator_and_return_config(config)
             .await
             .expect("to launch a default validator");
         let rpc_listen_port = local_net.get_port();
+        debug!(rpc_port = rpc_listen_port, "[TEST] Validator launched");
         let full_node_rpc_listen_address =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rpc_listen_port);
 
@@ -371,7 +390,11 @@ where
             let zaino_json_listen_port = portpicker::pick_unused_port().expect("No ports free");
             let zaino_json_listen_address =
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_json_listen_port);
-            info!("{:?}", validator_settings.validator_grpc_listen_address);
+            debug!(
+                grpc_address = %zaino_grpc_listen_address,
+                json_address = %zaino_json_listen_address,
+                "[TEST] Launching Zaino indexer"
+            );
             let indexer_config = zainodlib::config::ZainodConfig {
                 // TODO: Make configurable.
                 backend: Service::BACKEND_TYPE,
@@ -387,7 +410,7 @@ where
                     listen_address: zaino_grpc_listen_address,
                     tls: None,
                 },
-                validator_settings: dbg!(validator_settings.clone()),
+                validator_settings: validator_settings.clone(),
                 service: ServiceConfig::default(),
                 storage: StorageConfig {
                     cache: CacheConfig::default(),
@@ -428,25 +451,22 @@ where
                 ),
                 tempfile::tempdir().unwrap(),
             );
-            let configured_activation_heights = ConfiguredActivationHeights {
-                before_overwinter: activation_heights.before_overwinter,
-                overwinter: activation_heights.overwinter,
-                sapling: activation_heights.sapling,
-                blossom: activation_heights.blossom,
-                heartwood: activation_heights.heartwood,
-                canopy: activation_heights.canopy,
-                nu5: activation_heights.nu5,
-                nu6: activation_heights.nu6,
-                nu6_1: activation_heights.nu6_1,
-                nu7: activation_heights.nu7,
+
+            let config = WalletConfig::MnemonicPhrase {
+                mnemonic_phrase: seeds::HOSPITAL_MUSEUM_SEED.to_string(),
+                no_of_accounts: NonZeroU32::new(1).expect("this should not fail"),
+                birthday: 1,
+                wallet_settings: zingolib::wallet::WalletSettings {
+                    sync_config: SyncConfig::default(),
+                    min_confirmations: NonZero::<u32>::new(1).expect("this should not fail"),
+                },
             };
-            let faucet = client_builder.build_faucet(true, configured_activation_heights);
-            let recipient = client_builder.build_client(
-                seeds::HOSPITAL_MUSEUM_SEED.to_string(),
-                1,
-                true,
-                configured_activation_heights,
-            );
+            let faucet = client_builder
+                .build_faucet(true, activation_heights.into())
+                .await;
+            let recipient = client_builder
+                .build_client(config, true, activation_heights.into())
+                .await;
             Some(Clients {
                 client_builder,
                 faucet,
@@ -485,6 +505,7 @@ where
 
         // Wait for zaino to be ready to serve requests
         if let Some(ref subscriber) = test_manager.service_subscriber {
+            debug!("[TEST] Waiting for Zaino to be ready");
             poll_until_ready(
                 subscriber,
                 std::time::Duration::from_millis(100),
@@ -493,18 +514,13 @@ where
             .await;
         }
 
+        debug!("[TEST] Test environment ready");
         Ok(test_manager)
     }
 
     /// Generate `n` blocks for the local network and poll zaino via gRPC until the chain index is synced to the target height.
     pub async fn generate_blocks_and_poll(&self, n: u32) {
-        let mut grpc_client = build_client(services::network::localhost_uri(
-            self.zaino_grpc_listen_address
-                .expect("Zaino listen port is not available but zaino is active.")
-                .port(),
-        ))
-        .await
-        .unwrap();
+        let mut grpc_client = build_client(self.grpc_socket_to_uri()).await.unwrap();
         let chain_height = self.local_net.get_chain_height().await;
         let mut next_block_height = u64::from(chain_height) + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
@@ -622,12 +638,8 @@ where
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
-        while u32::from(
-            chain_index
-                .snapshot_nonfinalized_state()
-                .best_chaintip()
-                .height,
-        ) < chain_height + n
+        while u32::from(chain_index.snapshot_nonfinalized_state().best_tip.height)
+            < chain_height + n
         {
             // Check liveness - fail fast if the chain index is dead
             if !chain_index.is_live() {
@@ -642,12 +654,8 @@ where
                 interval.tick().await;
             } else {
                 self.local_net.generate_blocks(1).await.unwrap();
-                while u32::from(
-                    chain_index
-                        .snapshot_nonfinalized_state()
-                        .best_chaintip()
-                        .height,
-                ) != next_block_height
+                while u32::from(chain_index.snapshot_nonfinalized_state().best_tip.height)
+                    != next_block_height
                 {
                     if !chain_index.is_live() {
                         let status = chain_index.combined_status();
@@ -692,17 +700,18 @@ impl<C: Validator, Service: LightWalletService + Send + Sync + 'static> Drop
     for TestManager<C, Service>
 {
     fn drop(&mut self) {
+        debug!("[TEST] Shutting down test environment");
         if let Some(handle) = &self.zaino_handle {
+            debug!("[TEST] Aborting Zaino handle");
             handle.abort();
         };
+        debug!("[TEST] Test environment shutdown complete");
     }
 }
 
 /// Builds a client for creating RPC requests to the indexer/light-node
-async fn build_client(
-    uri: http::Uri,
-) -> Result<CompactTxStreamerClient<UnderlyingService>, GetClientError> {
-    GrpcConnector::new(uri).get_client().await
+async fn build_client(uri: http::Uri) -> Result<CompactTxStreamerClient<Channel>, GetClientError> {
+    GrpcIndexer::new(uri)?.get_zcb_client().await
 }
 
 #[cfg(test)]
@@ -712,7 +721,6 @@ mod launch_testmanager {
     use zaino_state::FetchService;
 
     mod zcashd {
-
         use zcash_local_net::validator::zcashd::Zcashd;
 
         use super::*;
@@ -788,14 +796,10 @@ mod launch_testmanager {
             )
             .await
             .unwrap();
-            let _grpc_client = build_client(services::network::localhost_uri(
-                test_manager
-                    .zaino_grpc_listen_address
-                    .expect("Zaino listen port is not available but zaino is active.")
-                    .port(),
-            ))
-            .await
-            .unwrap();
+
+            let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
+                .await
+                .unwrap();
             test_manager.close().await;
         }
 
@@ -944,14 +948,9 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let _grpc_client = build_client(services::network::localhost_uri(
-                    test_manager
-                        .zaino_grpc_listen_address
-                        .expect("Zaino listen port not available but zaino is active.")
-                        .port(),
-                ))
-                .await
-                .unwrap();
+                let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
+                    .await
+                    .unwrap();
                 test_manager.close().await;
             }
 
@@ -1225,14 +1224,9 @@ mod launch_testmanager {
                 )
                 .await
                 .unwrap();
-                let _grpc_client = build_client(services::network::localhost_uri(
-                    test_manager
-                        .zaino_grpc_listen_address
-                        .expect("Zaino listen port not available but zaino is active.")
-                        .port(),
-                ))
-                .await
-                .unwrap();
+                let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
+                    .await
+                    .unwrap();
                 test_manager.close().await;
             }
 

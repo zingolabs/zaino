@@ -4,8 +4,8 @@
 //! - [`StatusType`]: An enum representing service operational states
 //! - [`Status`]: A trait for types that can report their status
 //!
-//! Types implementing [`Status`] automatically gain [`Liveness`](crate::probing::Liveness)
-//! and [`Readiness`](crate::probing::Readiness) implementations via blanket impls.
+//! Types implementing [`Status`] automatically gain [`Liveness`]
+//! and [`Readiness`] implementations via blanket impls.
 
 use std::fmt;
 

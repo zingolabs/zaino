@@ -69,11 +69,28 @@ impl BlockHash {
 
         BlockHash(internal_byte_order)
     }
+
+    /// Full hex string (big-endian / display order) for use in RPC interfaces.
+    ///
+    /// Unlike `Display`, which is truncated for log readability, this always
+    /// returns the complete 64-character hex string required by RPC consumers.
+    ///
+    /// HACK: ad-hoc method to decouple serialisation from `Display` so PR #888
+    /// can land cleanly. The proper destination-specific API is tracked in #640.
+    pub fn to_rpc_hex(&self) -> String {
+        self.encode_hex()
+    }
 }
 
 impl fmt::Display for BlockHash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.encode_hex::<String>())
+        // Show truncated hash for cleaner logs (first 8 hex chars = 4 bytes)
+        let full_hex: String = self.encode_hex();
+        if full_hex.len() > 8 {
+            write!(f, "{}..", &full_hex[..8])
+        } else {
+            f.write_str(&full_hex)
+        }
     }
 }
 
@@ -204,11 +221,28 @@ impl TransactionHash {
 
         TransactionHash(internal_byte_order)
     }
+
+    /// Full hex string (big-endian / display order) for use in RPC interfaces.
+    ///
+    /// Unlike `Display`, which is truncated for log readability, this always
+    /// returns the complete 64-character hex string required by RPC consumers.
+    ///
+    /// HACK: ad-hoc method to decouple serialisation from `Display` so PR #888
+    /// can land cleanly. The proper destination-specific API is tracked in #640.
+    pub fn to_rpc_hex(&self) -> String {
+        self.encode_hex()
+    }
 }
 
 impl fmt::Display for TransactionHash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.encode_hex::<String>())
+        // Show truncated hash for cleaner logs (first 8 hex chars = 4 bytes)
+        let full_hex: String = self.encode_hex();
+        if full_hex.len() > 8 {
+            write!(f, "{}..", &full_hex[..8])
+        } else {
+            f.write_str(&full_hex)
+        }
     }
 }
 
@@ -2452,8 +2486,8 @@ impl FixedEncodedLen for TxLocation {
 pub struct AddrHistRecord {
     tx_location: TxLocation,
     out_index: u16,
-    value: u64,
     flags: u8,
+    value: u64,
 }
 
 /* ----- flag helpers ----- */
@@ -2472,8 +2506,8 @@ impl AddrHistRecord {
         Self {
             tx_location,
             out_index,
-            value,
             flags,
+            value,
         }
     }
 
@@ -2519,8 +2553,8 @@ impl ZainoVersionedSerde for AddrHistRecord {
     fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.tx_location.serialize(&mut *w)?;
         write_u16_be(&mut *w, self.out_index)?;
-        write_u64_le(&mut *w, self.value)?;
-        w.write_all(&[self.flags])
+        w.write_all(&[self.flags])?;
+        write_u64_le(&mut *w, self.value)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -2530,9 +2564,9 @@ impl ZainoVersionedSerde for AddrHistRecord {
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let tx_location = TxLocation::deserialize(&mut *r)?;
         let out_index = read_u16_be(&mut *r)?;
-        let value = read_u64_le(&mut *r)?;
         let mut flag = [0u8; 1];
         r.read_exact(&mut flag)?;
+        let value = read_u64_le(&mut *r)?;
 
         Ok(AddrHistRecord::new(tx_location, out_index, value, flag[0]))
     }
@@ -2565,6 +2599,7 @@ impl FixedEncodedLen for AddrHistRecord {
 #[allow(dead_code)]
 pub(crate) struct AddrEventBytes([u8; 17]);
 
+#[allow(dead_code)]
 impl AddrEventBytes {
     const LEN: usize = 17;
 

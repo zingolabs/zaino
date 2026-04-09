@@ -215,11 +215,7 @@ impl Default for ZainodConfig {
 
 /// Returns the default path for Zaino's ephemeral authentication cookie.
 pub fn default_ephemeral_cookie_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime_dir).join("zaino").join(".cookie")
-    } else {
-        PathBuf::from("/tmp").join("zaino").join(".cookie")
-    }
+    zaino_common::xdg::resolve_path_with_xdg_runtime_defaults("zaino/.cookie")
 }
 
 /// Loads the default file path for zebra's local db.
@@ -358,6 +354,7 @@ impl TryFrom<ZainodConfig> for StateServiceConfig {
                 debug_stop_at_height: None,
                 debug_validity_check_interval: None,
                 should_backup_non_finalized_state: true,
+                debug_skip_non_finalized_state_backup_task: false,
             },
             validator_rpc_address: cfg
                 .validator_settings
@@ -977,7 +974,11 @@ listen_address = "127.0.0.1:8137"
 
         let toml_part = content.strip_prefix(GENERATED_CONFIG_HEADER).unwrap();
         let parsed: Result<toml::Value, _> = toml::from_str(toml_part);
-        assert!(parsed.is_ok(), "Generated config is not valid TOML: {:?}", parsed.err());
+        assert!(
+            parsed.is_ok(),
+            "Generated config is not valid TOML: {:?}",
+            parsed.err()
+        );
     }
 
     /// Verifies config survives serialize → deserialize → serialize roundtrip.
@@ -990,11 +991,12 @@ listen_address = "127.0.0.1:8137"
         let original = ZainodConfig::default();
 
         let toml_str = toml::to_string_pretty(&original).expect("should serialize");
-        let roundtripped: ZainodConfig =
-            toml::from_str(&toml_str).expect("should deserialize");
-        let toml_str_again =
-            toml::to_string_pretty(&roundtripped).expect("should serialize again");
+        let roundtripped: ZainodConfig = toml::from_str(&toml_str).expect("should deserialize");
+        let toml_str_again = toml::to_string_pretty(&roundtripped).expect("should serialize again");
 
-        assert_eq!(toml_str, toml_str_again, "config roundtrip should be stable");
+        assert_eq!(
+            toml_str, toml_str_again,
+            "config roundtrip should be stable"
+        );
     }
 }

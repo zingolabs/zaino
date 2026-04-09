@@ -147,7 +147,26 @@ impl BlockchainSource for ValidatorConnector {
                 .call(zebra_state::ReadRequest::Block(id))
                 .await
             {
-                Ok(zebra_state::ReadResponse::Block(block)) => Ok(block),
+                Ok(zebra_state::ReadResponse::Block(Some(block))) => Ok(Some(block)),
+                // Zebra's ReadStateService does not currently serve non-best chain blocks
+                // so we must fetch using the JsonRpcConnector.
+                Ok(zebra_state::ReadResponse::Block(None)) => {
+                    match state.mempool_fetcher.get_block(id.to_string(), Some(0)).await
+                    {
+                        Ok(GetBlockResponse::Raw(raw_block)) => Ok(Some(Arc::new(
+                            zebra_chain::block::Block::zcash_deserialize(raw_block.as_ref())
+                                .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
+                            ))),
+                        Ok(_) => unreachable!(),
+                        Err(e) => match e {
+                            RpcRequestError::Method(GetBlockError::MissingBlock(_)) => Ok(None),
+                            // TODO/FIX: zcashd returns this transport error when a block is requested higher than current chain. is this correct?
+                            RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) => Ok(None),
+                            RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
+                            _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
+                        },
+                    }
+                }
                 Ok(otherwise) => panic!(
                     "Read Request of Block returned Read Response of {otherwise:#?} \n\
                     This should be deterministically unreachable"
@@ -220,7 +239,7 @@ impl BlockchainSource for ValidatorConnector {
             }
             ValidatorConnector::Fetch(fetch) => {
                 let tree_responses = fetch
-                    .get_treestate(id.to_string())
+                    .get_treestate(id.to_rpc_hex())
                     .await
                     // As MethodError contains a GetTreestateError, which is an enum with no variants,
                     // we don't need to account for it at all here
@@ -513,7 +532,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(fetch) => {
                 let transaction_object = if let GetTransactionResponse::Object(transaction_object) =
                     fetch
-                        .get_raw_transaction(txid.to_string(), Some(1))
+                        .get_raw_transaction(txid.to_rpc_hex(), Some(1))
                         .await
                         .map_err(|e| {
                             BlockchainSourceError::Unrecoverable(format!(

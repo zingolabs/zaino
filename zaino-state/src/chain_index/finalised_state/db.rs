@@ -64,16 +64,19 @@ use crate::{
     chain_index::{
         finalised_state::capability::{
             BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
-            DbMetadata, DbRead, DbWrite, IndexedBlockExt, TransparentHistExt,
+            DbMetadata, DbRead, DbWrite, IndexedBlockExt,
         },
         types::TransactionHash,
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    AddrScript, BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height,
-    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
+    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
 };
+
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::{chain_index::finalised_state::capability::TransparentHistExt, AddrScript, Outpoint};
 
 use async_trait::async_trait;
 use std::time::Duration;
@@ -529,6 +532,7 @@ impl IndexedBlockExt for DbBackend {
     }
 }
 
+#[cfg(feature = "transparent_address_history_experimental")]
 #[async_trait]
 impl TransparentHistExt for DbBackend {
     async fn addr_records(

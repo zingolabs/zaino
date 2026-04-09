@@ -16,3 +16,7 @@ target/
 
 # Misc
 **/*.log
+
+docker_cargo/
+container-target/
+

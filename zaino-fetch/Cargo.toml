@@ -21,7 +21,7 @@ tracing = { workspace = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls-native-roots"] }
 http = { workspace = true }
 thiserror = { workspace = true }
 
@@ -40,4 +40,4 @@ jsonrpsee-types = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }
 
 [dev-dependencies]
-zaino-testvectors = { workspace = true }
+wire_serialized_transaction_test_data = { workspace = true }

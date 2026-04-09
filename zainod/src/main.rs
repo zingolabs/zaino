@@ -6,6 +6,8 @@ use zainodlib::cli::{default_config_path, Cli, Command};
 
 #[tokio::main]
 async fn main() {
+    zaino_common::logging::init();
+
     let cli = Cli::parse();
 
     match cli.command {

@@ -17,7 +17,7 @@ use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{AtomicStatus, CompactBlockStream, StatusType, SyncError};
+use crate::{CompactBlockStream, NamedAtomicStatus, NodeConnectionError, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -27,7 +27,7 @@ use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
-use tracing::info;
+use tracing::{info, instrument};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
@@ -319,6 +319,12 @@ pub trait ChainIndex {
     /// - bytes: Sum of all tx sizes
     /// - usage: Total memory usage for the mempool
     fn get_mempool_info(&self) -> impl std::future::Future<Output = MempoolInfo>;
+
+    /// Get the tip of the best chain, according to the snapshot
+    fn best_chaintip(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+    ) -> impl std::future::Future<Output = Result<BestTip, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -451,7 +457,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
     finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
@@ -488,7 +494,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             non_finalized_state: std::sync::Arc::new(non_finalized_state),
             finalized_db,
             sync_loop_handle: None,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
@@ -510,9 +516,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// an error indicates a failure to cleanly shutdown. Dropping the
     /// chain index should still stop everything
     pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+        self.status.store(StatusType::Closing);
         self.finalized_db.shutdown().await?;
         self.mempool.close();
-        self.status.store(StatusType::Closing);
         Ok(())
     }
 
@@ -529,11 +535,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         combined_status
     }
 
+    #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
-        info!("Starting ChainIndex sync.");
+        info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
+        let source = self.non_finalized_state.source.clone();
+
         tokio::task::spawn(async move {
             let result: Result<(), SyncError> = async {
                 loop {
@@ -542,44 +551,38 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     }
 
                     status.store(StatusType::Syncing);
+
+                    // Sync fs to chain tip - 100.
+                    let chain_height = source
+                        .clone()
+                        .get_best_block_height()
+                        .await
+                        .map_err(|error| {
+                            SyncError::ValidatorConnectionError(
+                                NodeConnectionError::UnrecoverableError(Box::new(error)),
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            SyncError::ValidatorConnectionError(
+                                NodeConnectionError::UnrecoverableError(Box::new(
+                                    std::io::Error::other("node returned no best block height"),
+                                )),
+                            )
+                        })?;
+                    let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
+
+                    // TODO / FIX: Improve error handling here, fix and rebuild db on error.
+                    fs.sync_to_height(finalised_height, &source)
+                        .await
+                        .map_err(|error| {
+                            SyncError::ValidatorConnectionError(
+                                NodeConnectionError::UnrecoverableError(Box::new(error)),
+                            )
+                        })?;
+
                     // Sync nfs to chain tip, trimming blocks to finalized tip.
                     nfs.sync(fs.clone()).await?;
 
-                    // Sync fs to chain tip - 100.
-                    {
-                        let snapshot = nfs.get_snapshot();
-                        while snapshot.best_tip.height.0
-                            > (fs
-                                .to_reader()
-                                .db_height()
-                                .await
-                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                                .unwrap_or(types::Height(0))
-                                .0
-                                + 100)
-                        {
-                            let next_finalized_height = fs
-                                .to_reader()
-                                .db_height()
-                                .await
-                                .map_err(|_e| SyncError::CannotReadFinalizedState)?
-                                .map(|height| height + 1)
-                                .unwrap_or(types::Height(0));
-                            let next_finalized_block = snapshot
-                                .blocks
-                                .get(
-                                    snapshot
-                                        .heights_to_hashes
-                                        .get(&(next_finalized_height))
-                                        .ok_or(SyncError::CompetingSyncProcess)?,
-                                )
-                                .ok_or(SyncError::CompetingSyncProcess)?;
-                            // TODO: Handle write errors better (fix db and continue)
-                            fs.write_block(next_finalized_block.clone())
-                                .await
-                                .map_err(|_e| SyncError::CompetingSyncProcess)?;
-                        }
-                    }
                     status.store(StatusType::Ready);
                     // TODO: configure sleep duration?
                     tokio::time::sleep(Duration::from_millis(500)).await
@@ -591,9 +594,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
             // If the sync loop exited unexpectedly with an error, set CriticalError
             // so that liveness checks can detect the failure.
-            if let Err(ref e) = result {
+            if let Err(e) = result {
                 tracing::error!("Sync loop exited with error: {e:?}");
                 status.store(StatusType::CriticalError);
+
+                return Err(e);
             }
 
             result
@@ -611,7 +616,7 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: std::sync::Arc<crate::NonFinalizedState<Source>>,
     finalized_state: finalised_state::reader::DbReader,
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
@@ -666,7 +671,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 .finalized_state
                 .get_block_height(hash)
                 .await
-                .map_err(|_e| ChainIndexError::database_hole(hash)),
+                .map_err(|e| ChainIndexError::database_hole(hash, Some(Box::new(e)))),
         }
     }
 
@@ -850,7 +855,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             return self
                                 .get_fullblock_bytes_from_node(HashOrHeight::Hash(hash.into()))
                                 .await?
-                                .ok_or(ChainIndexError::database_hole(hash))
+                                .ok_or(ChainIndexError::database_hole(hash, None))
                         }
                         Err(e) => Err(ChainIndexError {
                             kind: ChainIndexErrorKind::InternalServerError,
@@ -865,7 +870,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                                             (*block.hash()).into(),
                                         ))
                                         .await?
-                                        .ok_or(ChainIndexError::database_hole(block.hash()))
+                                        .ok_or(ChainIndexError::database_hole(block.hash(), None))
                                 }
                                 None => self
                                     // usually getting by height is not reorg-safe, but here, height is known to be below or equal to validator_finalized_height.
@@ -873,7 +878,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                                         zebra_chain::block::Height(height),
                                     ))
                                     .await?
-                                    .ok_or(ChainIndexError::database_hole(height)),
+                                    .ok_or(ChainIndexError::database_hole(height, None)),
                             }
                         }
                     }
@@ -917,7 +922,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         .await
                     {
                         Ok(block) => block,
-                        Err(_e) => return Err(ChainIndexError::database_hole(height)),
+                        Err(e) => {
+                            return Err(ChainIndexError::database_hole(height, Some(Box::new(e))))
+                        }
                     },
                 },
             ))
@@ -928,7 +935,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
     /// Streams *compact* blocks for an inclusive height range.
     ///
-    /// Returns `None` if either requested height is greater than the snapshot's tip.
+    /// Returns `Ok(None)` if the request is descending and `start_height` exceeds the chain tip.
+    /// For ascending requests that exceed the tip, returns a stream that ends with an
+    /// `out_of_range` error after all available blocks have been sent.
     ///
     /// - The stream covers `[start_height, end_height]` (inclusive).
     /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
@@ -948,11 +957,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         end_height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<Option<CompactBlockStream>, Self::Error> {
-        let chain_tip_height = nonfinalized_snapshot.best_chaintip().height;
-
-        if start_height > chain_tip_height || end_height > chain_tip_height {
-            return Ok(None);
-        }
+        let chain_tip_height = self.best_chaintip(nonfinalized_snapshot).await?.height;
 
         // The nonfinalized cache holds the tip block plus the previous 99 blocks (100 total),
         // so the lowest possible cached height is `tip - 99` (saturating at 0).
@@ -960,14 +965,28 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
         let is_ascending = start_height <= end_height;
 
+        // Descending: the first block we'd try to return is already above the tip → error immediately.
+        if !is_ascending && start_height > chain_tip_height {
+            return Ok(None);
+        }
+
         let pool_types_vector = pool_types.to_pool_types_vector();
+
+        // For ascending requests that extend past the tip: cap the streaming range at the tip,
+        // then append a trailing out_of_range error after all valid blocks have been sent.
+        let needs_out_of_range = is_ascending && end_height > chain_tip_height;
+        let capped_end_height = if needs_out_of_range {
+            chain_tip_height
+        } else {
+            end_height
+        };
 
         // Pre-create any finalized-state stream(s) we will need so that errors are returned
         // from this method (not deferred into the spawned task).
         let finalized_stream: Option<CompactBlockStream> = if is_ascending {
             if start_height < lowest_nonfinalized_height {
                 let finalized_end_height = types::Height(std::cmp::min(
-                    end_height.0,
+                    capped_end_height.0,
                     lowest_nonfinalized_height.0.saturating_sub(1),
                 ));
 
@@ -1011,7 +1030,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         };
 
         let nonfinalized_snapshot = nonfinalized_snapshot.clone();
-        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically base on resources.
+        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically based on resources.
         let (channel_sender, channel_receiver) = tokio::sync::mpsc::channel(128);
 
         tokio::spawn(async move {
@@ -1029,7 +1048,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 let nonfinalized_start_height =
                     types::Height(std::cmp::max(start_height.0, lowest_nonfinalized_height.0));
 
-                for height_value in nonfinalized_start_height.0..=end_height.0 {
+                for height_value in nonfinalized_start_height.0..=capped_end_height.0 {
                     let Some(indexed_block) = nonfinalized_snapshot
                         .get_chainblock_by_height(&types::Height(height_value))
                     else {
@@ -1047,6 +1066,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     if channel_sender.send(Ok(compact_block)).await.is_err() {
                         return;
                     }
+                }
+                // If the original end_height was above the tip, signal out_of_range after all valid blocks.
+                if needs_out_of_range {
+                    let _ = channel_sender
+                          .send(Err(tonic::Status::out_of_range(format!(
+                              "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
+                              end_height.0, chain_tip_height.0,
+                          ))))
+                          .await;
                 }
             } else {
                 // 1) Nonfinalized segment, descending.
@@ -1128,7 +1156,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         // the block is FINALIZED in the INDEXER
                         Ok(Some((*hash, height)))
                     }
-                    Err(_e) => Err(ChainIndexError::database_hole(hash)),
+                    Err(e) => Err(ChainIndexError::database_hole(hash, Some(Box::new(e)))),
                     Ok(None) => {
                         // At this point, we know that
                         // the block is NOT FINALIZED in the INDEXER
@@ -1211,7 +1239,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         if let Some(mempool_tx) = self
             .mempool
             .get_transaction(&mempool::MempoolKey {
-                txid: txid.to_string(),
+                txid: txid.to_rpc_hex(),
             })
             .await
         {
@@ -1277,7 +1305,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .await?
             .collect::<Vec<_>>();
         let Some(start_of_nonfinalized) = snapshot.heights_to_hashes.keys().min() else {
-            return Err(ChainIndexError::database_hole("no blocks"));
+            return Err(ChainIndexError::database_hole("no blocks", None));
         };
         let mut best_chain_block = blocks_containing_transaction
             .iter()
@@ -1299,7 +1327,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let in_mempool = self
             .mempool
             .contains_txid(&mempool::MempoolKey {
-                txid: txid.to_string(),
+                txid: txid.to_rpc_hex(),
             })
             .await;
         if in_mempool {
@@ -1471,6 +1499,42 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_mempool_info(&self) -> MempoolInfo {
         self.mempool.get_mempool_info().await
     }
+
+    async fn best_chaintip(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+    ) -> Result<BestTip, Self::Error> {
+        Ok(
+            if nonfinalized_snapshot.validator_finalized_height
+                > nonfinalized_snapshot.best_tip.height
+            {
+                BestTip {
+                    height: nonfinalized_snapshot.validator_finalized_height,
+                    blockhash: self
+                        .source()
+                        // TODO: do something more efficient than getting the whole block
+                        .get_block(HashOrHeight::Height(
+                            nonfinalized_snapshot.validator_finalized_height.into(),
+                        ))
+                        .await
+                        .map_err(|e| {
+                            ChainIndexError::database_hole(
+                                nonfinalized_snapshot.validator_finalized_height,
+                                Some(Box::new(e)),
+                            )
+                        })?
+                        .ok_or(ChainIndexError::database_hole(
+                            nonfinalized_snapshot.validator_finalized_height,
+                            None,
+                        ))?
+                        .hash()
+                        .into(),
+                }
+            } else {
+                nonfinalized_snapshot.best_tip
+            },
+        )
+    }
 }
 
 impl<T> NonFinalizedSnapshot for Arc<T>
@@ -1484,10 +1548,6 @@ where
     fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
         self.as_ref().get_chainblock_by_height(target_height)
     }
-
-    fn best_chaintip(&self) -> BestTip {
-        self.as_ref().best_chaintip()
-    }
 }
 
 /// A snapshot of the non-finalized state, for consistent queries
@@ -1496,8 +1556,6 @@ pub trait NonFinalizedSnapshot {
     fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock>;
     /// Height -> block
     fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock>;
-    /// Get the tip of the best chain, according to the snapshot
-    fn best_chaintip(&self) -> BestTip;
 }
 
 impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
@@ -1518,9 +1576,5 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
                 None
             }
         })
-    }
-
-    fn best_chaintip(&self) -> BestTip {
-        self.best_tip
     }
 }
