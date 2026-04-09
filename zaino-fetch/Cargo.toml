@@ -40,4 +40,4 @@ jsonrpsee-types = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }
 
 [dev-dependencies]
-zaino-testvectors = { workspace = true }
+wire_serialized_transaction_test_data = { workspace = true }

@@ -149,6 +149,7 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
+        #[allow(clippy::unused_enumerate_index)]
         for (_tx_index, tx) in block.transactions().iter().enumerate() {
             let hash = tx.txid();
 
@@ -589,7 +590,18 @@ impl DbV1 {
                 let _ = self.delete_block(&block).await;
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+
+                // NOTE: this does not need to be critical if we implement self healing,
+                // which we have the tools to do.
                 self.status.store(StatusType::CriticalError);
+
+                if e.to_string().contains("MDB_MAP_FULL") {
+                    warn!("Configured max database size exceeded, update `storage.database.size` in zaino's config.");
+                    return Err(FinalisedStateError::Custom(format!(
+                        "Database configuration error: {e}"
+                    )));
+                }
+
                 Err(FinalisedStateError::InvalidBlock {
                     height: block_height.0,
                     hash: block_hash,
@@ -716,6 +728,7 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
+        #[allow(clippy::unused_enumerate_index)]
         for (_tx_index, tx) in block.transactions().iter().enumerate() {
             let hash = tx.txid();
 

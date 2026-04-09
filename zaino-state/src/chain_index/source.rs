@@ -239,7 +239,7 @@ impl BlockchainSource for ValidatorConnector {
             }
             ValidatorConnector::Fetch(fetch) => {
                 let tree_responses = fetch
-                    .get_treestate(id.to_string())
+                    .get_treestate(id.to_rpc_hex())
                     .await
                     // As MethodError contains a GetTreestateError, which is an enum with no variants,
                     // we don't need to account for it at all here
@@ -532,7 +532,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(fetch) => {
                 let transaction_object = if let GetTransactionResponse::Object(transaction_object) =
                     fetch
-                        .get_raw_transaction(txid.to_string(), Some(1))
+                        .get_raw_transaction(txid.to_rpc_hex(), Some(1))
                         .await
                         .map_err(|e| {
                             BlockchainSourceError::Unrecoverable(format!(

@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use tonic_prost_build::{configure, compile_protos};
+use tonic_prost_build::{compile_protos, configure};
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
 const PROPOSAL_PROTO: &str = "proto/proposal.proto";

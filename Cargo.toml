@@ -2,14 +2,15 @@
 [workspace]
 members = [
     "zaino-common",
-    "integration-tests",
-    "zaino-testutils",
     "zainod",
     "zaino-serve",
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
-    "zaino-testvectors",
+]
+exclude = [
+    "integration-tests",
+    "zaino-testutils",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -28,14 +29,15 @@ version = "0.2.0"
 
 # Zingo 
 
-zingo_common_components = { version = "0.2", features = [ "for_test" ]}
-zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", tag = "zingo_common_components_v0.2.0" }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "e57492df94d319a49256d1a7f023a417557f1f7c", features = [
+zingo_common_components =  "0.3.0"
+zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "e57492df94d319a49256d1a7f023a417557f1f7c" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "a303cad" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "a303cad" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+
 
 # Librustzcash
 zcash_address = "0.10"
@@ -46,9 +48,9 @@ zcash_transparent = "0.6.3"
 zcash_client_backend = "0.21.0"
 
 # Zebra
-zebra-chain = "5.0.0"
-zebra-state = "4.0.0"
-zebra-rpc = "5.0.0"
+zebra-chain = "6.0.1"
+zebra-state = "5.0.0"
+zebra-rpc = "6.0.1"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -63,8 +65,13 @@ tracing-subscriber = { version = "0.3.20", features = [
     "fmt",
     "env-filter",
     "time",
+    "json",
 ] }
 tracing-futures = "0.2"
+tracing-tree = "0.4"
+nu-ansi-term = "0.50"
+atty = "0.2"
+time = { version = "0.3", features = ["macros", "formatting"] }
 
 # Network / RPC
 http = "1.1"
@@ -125,8 +132,7 @@ zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
 zaino-common.path = "zaino-common"
-zaino-testutils = { path = "zaino-testutils" }
-zaino-testvectors = { path = "zaino-testvectors" }
+wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "zainod" }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
@@ -148,7 +154,6 @@ lazy_static = "1.5.0"
 #zcash_primitives = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-
 
 [profile.test]
 opt-level = 3

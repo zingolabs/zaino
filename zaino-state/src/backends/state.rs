@@ -5,7 +5,7 @@ use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
-        types as chain_types, ChainIndex, NonFinalizedSnapshot,
+        types as chain_types, ChainIndex,
     },
     config::StateServiceConfig,
     error::ChainIndexError,
@@ -13,7 +13,7 @@ use crate::{
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    status::{AtomicStatus, Status, StatusType},
+    status::{NamedAtomicStatus, Status, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
@@ -91,7 +91,7 @@ use tokio::{
 };
 use tonic::async_trait;
 use tower::{Service, ServiceExt};
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
 macro_rules! expected_read_response {
     ($response:ident, $expected_variant:ident) => {
@@ -141,7 +141,7 @@ pub struct StateService {
     data: ServiceMetadata,
 
     /// Thread-safe status indicator.
-    status: AtomicStatus,
+    status: NamedAtomicStatus,
 }
 
 impl StateService {
@@ -172,8 +172,13 @@ impl ZcashService for StateService {
     type Config = StateServiceConfig;
 
     /// Initializes a new StateService instance and starts sync process.
+    #[instrument(name = "StateService::spawn", skip(config), fields(network = %config.network))]
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
-        info!("Spawning State Service..");
+        info!(
+            rpc_address = %config.validator_rpc_address,
+            network = %config.network,
+            "Spawning State Service"
+        );
 
         let rpc_client = JsonRpSeeConnector::new_from_config_parts(
             &config.validator_rpc_address,
@@ -218,10 +223,12 @@ impl ZcashService for StateService {
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
-        info!("Using Zcash build: {}", data);
+        info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
-        info!("Launching Chain Syncer..");
-        info!("{}", config.validator_rpc_address);
+        info!(
+            grpc_address = %config.validator_grpc_address,
+            "Launching Chain Syncer"
+        );
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_state_config.clone(),
@@ -230,40 +237,37 @@ impl ZcashService for StateService {
             )
             .await??;
 
-        info!("chain syncer launched!");
+        info!("Chain syncer launched");
 
         // Wait for ReadStateService to catch up to primary database:
         loop {
             let server_height = rpc_client.get_blockchain_info().await?.blocks;
-            info!("got blockchain info!");
 
             let syncer_response = read_state_service
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await?;
-            info!("got tip!");
             let (syncer_height, _) = expected_read_response!(syncer_response, Tip).ok_or(
                 RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
             )?;
 
             if server_height.0 == syncer_height.0 {
+                info!(
+                    height = syncer_height.0,
+                    "ReadStateService synced with Zebra"
+                );
                 break;
             } else {
-                info!(" - ReadStateService syncing with Zebra. Syncer chain height: {}, Validator chain height: {}",
-                            &syncer_height.0,
-                            &server_height.0
-                        );
+                info!(
+                    syncer_height = syncer_height.0,
+                    validator_height = server_height.0,
+                    "ReadStateService syncing with Zebra"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                 continue;
             }
         }
 
-        // let block_cache = BlockCache::spawn(
-        //     &rpc_client,
-        //     Some(&read_state_service),
-        //     config.clone().into(),
-        // )
-        // .await?;
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
             read_state_service: read_state_service.clone(),
             mempool_fetcher: rpc_client.clone(),
@@ -292,10 +296,27 @@ impl ZcashService for StateService {
             indexer: chain_index,
             data,
             config,
-            status: AtomicStatus::new(StatusType::Spawning),
+            status: NamedAtomicStatus::new("StateService", StatusType::Spawning),
         };
 
-        state_service.status.store(StatusType::Ready);
+        // wait for sync to complete, return error on sync fail.
+        loop {
+            match state_service.status() {
+                StatusType::Ready => {
+                    state_service.status.store(StatusType::Ready);
+                    break;
+                }
+                StatusType::CriticalError => {
+                    return Err(StateServiceError::Critical(
+                        "Chain index sync failed".to_string(),
+                    ));
+                }
+                StatusType::Closing => break,
+                _ => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
 
         Ok(state_service)
     }
@@ -565,7 +586,7 @@ impl StateServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 let snapshot = state_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_chaintip().height.0;
+                let chain_height = snapshot.best_tip.height.0;
 
                 match state_service_clone
                     .indexer
@@ -673,7 +694,7 @@ impl StateServiceSubscriber {
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let chain_height = snapshot.best_chaintip().height.0;
+        let chain_height = snapshot.best_tip.height.0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
@@ -1449,7 +1470,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             .get_mempool_txids()
             .await?
             .into_iter()
-            .map(|txid| txid.to_string())
+            .map(|txid| txid.to_rpc_hex())
             .collect())
     }
 
@@ -1743,7 +1764,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                                     PoolTypeFilter::includes_all(),
                                 )
                                 .await?
-                                .ok_or_else(|| ChainIndexError::database_hole(tx.height.0))?;
+                                .ok_or_else(|| ChainIndexError::database_hole(tx.height.0, None))?;
                             let tx_object = TransactionObject::from_transaction(
                                 tx.tx.clone(),
                                 best_chain_height,
@@ -2381,7 +2402,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let mempool_height = snapshot.best_chaintip().height.0;
+        let mempool_height = snapshot.best_tip.height.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),

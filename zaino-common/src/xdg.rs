@@ -117,7 +117,7 @@ fn resolve_path_with_xdg_defaults(dir: XdgDir, subpath: &str) -> PathBuf {
 
 /// Resolves a path using `XDG_CONFIG_HOME` defaults.
 ///
-/// Convenience wrapper for [`resolve_path_with_xdg_defaults`] with [`XdgDir::Config`].
+/// Convenience wrapper for `resolve_path_with_xdg_defaults` with [`XdgDir::Config`].
 ///
 /// # Example
 ///
@@ -135,7 +135,7 @@ pub fn resolve_path_with_xdg_config_defaults(subpath: &str) -> PathBuf {
 
 /// Resolves a path using `XDG_CACHE_HOME` defaults.
 ///
-/// Convenience wrapper for [`resolve_path_with_xdg_defaults`] with [`XdgDir::Cache`].
+/// Convenience wrapper for `resolve_path_with_xdg_defaults` with [`XdgDir::Cache`].
 ///
 /// # Example
 ///
@@ -153,7 +153,7 @@ pub fn resolve_path_with_xdg_cache_defaults(subpath: &str) -> PathBuf {
 
 /// Resolves a path using `XDG_RUNTIME_DIR` defaults.
 ///
-/// Convenience wrapper for [`resolve_path_with_xdg_defaults`] with [`XdgDir::Runtime`].
+/// Convenience wrapper for `resolve_path_with_xdg_defaults` with [`XdgDir::Runtime`].
 ///
 /// Note: Per XDG spec, `XDG_RUNTIME_DIR` has no `$HOME` fallback. If unset,
 /// this falls back directly to `/tmp/{subpath}`.
