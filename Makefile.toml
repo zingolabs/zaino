@@ -1,6 +1,6 @@
 extend = [
-    { path = "makefiles/lints.toml" },
-    { path = "makefiles/notify.toml" },
+    { path = ".utils/makefiles/lints.toml" },
+    { path = ".utils/makefiles/notify.toml" },
 ]
 env_files = [".env.testing-artifacts"]
 
