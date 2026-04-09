@@ -2,13 +2,15 @@
 [workspace]
 members = [
     "zaino-common",
-    "integration-tests",
-    "zaino-testutils",
     "zainod",
     "zaino-serve",
     "zaino-state",
     "zaino-fetch",
     "zaino-proto",
+]
+exclude = [
+    "integration-tests",
+    "zaino-testutils",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -28,7 +30,7 @@ version = "0.2.0"
 # Zingo 
 
 zingo_common_components =  "0.3.0"
-zingo-netutils = { git = "https://github.com/zingolabs/zingo-common", tag = "zingo-netutils-v4.0.0", features = ["back_compatible"] }
+zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
     "testutils",
 ] }
@@ -130,7 +132,6 @@ zaino-proto = { path = "zaino-proto" }
 zaino-serve = { path = "zaino-serve" }
 zaino-state = { path = "zaino-state" }
 zaino-common.path = "zaino-common"
-zaino-testutils = { path = "zaino-testutils" }
 wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "zainod" }
 config = { version = "0.15", default-features = false, features = ["toml"] }
