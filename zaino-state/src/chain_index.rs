@@ -481,13 +481,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             .map_err(crate::InitError::MempoolInitialzationError)
             .await?;
 
-        let reader = finalized_db.to_reader();
-        let top_of_finalized = if let Some(height) = reader.db_height().await? {
-            reader.get_chain_block_by_height(height).await?
-        } else {
-            None
-        };
-
         let mut chain_index = Self {
             mempool: std::sync::Arc::new(mempool_state),
             non_finalized_state: Arc::new(ArcSwapOption::empty()),
@@ -829,9 +822,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot {
-        match self.non_finalized_state.load() {
+        match self.non_finalized_state.load().as_ref() {
             Some(non_finalised_state) => ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot: non_finalised_state,
+                non_finalized_snapshot: non_finalised_state.get_snapshot(),
             },
             None => todo!("get validator finalized height"),
         }
@@ -862,7 +855,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             ChainIndexSnapshot::StillSyncingFinalizedState {
                 validator_finalized_height,
             } => {
-                self.get_block_height_passthrough(snapshot.max_serviceable_height(), hash)
+                self.get_block_height_passthrough(validator_finalized_height, hash)
                     .await
             } // ChainIndex step 5
         }
@@ -1691,11 +1684,11 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
 }
 
 impl NonFinalizedSnapshot for ChainIndexSnapshot {
-    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_hash(&self, _target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
         None
     }
 
-    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_height(&self, _target_height: &types::Height) -> Option<&IndexedBlock> {
         None
     }
 

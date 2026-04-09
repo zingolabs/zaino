@@ -57,10 +57,14 @@ pub struct BestTip {
 pub enum ChainIndexSnapshot {
     /// Zaino is ready to serve non-finalized data.
     NonFinalizedStateExists {
-        non_finalized_snapshot: NonfinalizedBlockCacheSnapshot,
+        /// The snapshot of the non_finalized state.
+        non_finalized_snapshot: Arc<NonfinalizedBlockCacheSnapshot>,
     },
     /// Zaino is not ready to serve non-finalized data.
-    StillSyncingFinalizedState { validator_finalized_height: Height },
+    StillSyncingFinalizedState {
+        /// The height the validater had last finalized as of snapshot creation.
+        validator_finalized_height: Height,
+    },
 }
 
 impl ChainIndexSnapshot {
@@ -197,7 +201,7 @@ impl BestTip {
 
 impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
-    fn from_initial_block(block: IndexedBlock, validator_finalized_height: Height) -> Self {
+    fn from_initial_block(block: IndexedBlock) -> Self {
         let best_tip = BestTip::from_block(&block);
         let hash = *block.hash();
         let height = best_tip.height;
@@ -258,24 +262,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<Self, InitError> {
         info!(network = %network, "Initializing non-finalized state");
 
-        let validator_tip = source
-            .get_best_block_height()
-            .await
-            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
-            .ok_or_else(|| {
-                InitError::InvalidNodeData(Box::new(MissingBlockError(
-                    "Validator has no best block".to_string(),
-                )))
-            })?;
-
         // Resolve the initial block (provided or genesis)
         let initial_block = Self::resolve_initial_block(&source, &network, start_block).await?;
 
         // Create initial snapshot from the block
-        let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(
-            initial_block,
-            Height(validator_tip.0.saturating_sub(100)),
-        );
+        let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(initial_block);
 
         // Set up optional listener
         let nfs_change_listener = Self::setup_listener(&source).await;
@@ -378,7 +369,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             "Missing block {}",
                             local_finalized_tip.unwrap().0
                         )))?,
-                    local_finalized_tip.unwrap(),
                 ),
             ));
             initial_state = self.get_snapshot()

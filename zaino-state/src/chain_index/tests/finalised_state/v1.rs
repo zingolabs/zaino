@@ -387,7 +387,10 @@ async fn get_chain_blocks() {
 
         parent_chain_work = *chain_block.index().chainwork();
 
-        let reader_chain_block = db_reader.get_chain_block(Height(*height)).await.unwrap();
+        let reader_chain_block = db_reader
+            .get_chain_block_by_height(Height(*height))
+            .await
+            .unwrap();
         assert_eq!(Some(chain_block), reader_chain_block);
         println!("IndexedBlock at height {height} OK");
     }

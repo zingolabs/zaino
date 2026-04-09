@@ -934,66 +934,52 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
         tokio::spawn(async move {
             let timeout_result = timeout(
-            time::Duration::from_secs((service_timeout * 4) as u64),
-            async {
-                let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            // TODO: This probably shouldn't be an error.
-            // this is an improvement over previous behaviour of
-            // acting as if we are only synced to the genesis block
-            channel_tx.send(
-            Err(
-                tonic::Status::failed_precondition("zaino not yet synced".to_string())
-            ));
-        return ()
-        };
-                // Use the snapshot tip directly, as this function doesn't support passthrough
-                let chain_height = non_finalized_snapshot.best_tip.height.0;
-
-                match fetch_service_clone
-                    .indexer
-                    .get_compact_block_stream(
-                        &snapshot,
-                        types::Height(start),
-                        types::Height(end),
-                        pool_type_filter.clone(),
-                    )
-                    .await
-                {
-                    Ok(Some(mut compact_block_stream)) => {
-                        while let Some(stream_item) = compact_block_stream.next().await {
-                            if channel_tx.send(stream_item).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
-                        let offending_height = if start > chain_height { start } else { end };
-
-                        match channel_tx
-                            .send(Err(tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{offending_height}]. \
-                                Height requested is greater than the best chain tip [{chain_height}].",
-                            ))))
+                time::Duration::from_secs((service_timeout * 4) as u64),
+                async {
+                    let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
+                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                        // TODO: This probably shouldn't be an error.
+                        // this is an improvement over previous behaviour of
+                        // acting as if we are only synced to the genesis block
+                        if let Err(e) = channel_tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "zaino not yet synced".to_string(),
+                            )))
                             .await
                         {
-                            Ok(_) => {}
-                            Err(e) => {
-                                warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                            warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                        };
+                        return ();
+                    };
+                    // Use the snapshot tip directly, as this function doesn't support passthrough
+                    let chain_height = non_finalized_snapshot.best_tip.height.0;
+
+                    match fetch_service_clone
+                        .indexer
+                        .get_compact_block_stream(
+                            &snapshot,
+                            types::Height(start),
+                            types::Height(end),
+                            pool_type_filter.clone(),
+                        )
+                        .await
+                    {
+                        Ok(Some(mut compact_block_stream)) => {
+                            while let Some(stream_item) = compact_block_stream.next().await {
+                                if channel_tx.send(stream_item).await.is_err() {
+                                    break;
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        // Preserve previous behaviour: if the request is above tip, surface OutOfRange;
-                        // otherwise return the error (currently exposed for dev).
-                        if start > chain_height || end > chain_height {
+                        Ok(None) => {
+                            // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
                             let offending_height = if start > chain_height { start } else { end };
 
                             match channel_tx
                                 .send(Err(tonic::Status::out_of_range(format!(
                                     "Error: Height out of range [{offending_height}]. \
-                                    Height requested is greater than the best chain tip [{chain_height}].",
+                                Height requested is greater than the best \
+                                chain tip [{chain_height}].",
                                 ))))
                                 .await
                             {
@@ -1002,21 +988,42 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     warn!("GetBlockRange channel closed unexpectedly: {}", e);
                                 }
                             }
-                        } else {
-                            // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                            if channel_tx
-                                .send(Err(tonic::Status::unknown(e.to_string())))
-                                .await
-                                .is_err()
-                            {
-                                warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                        }
+                        Err(e) => {
+                            // Preserve previous behaviour: if the request is above tip, surface OutOfRange;
+                            // otherwise return the error (currently exposed for dev).
+                            if start > chain_height || end > chain_height {
+                                let offending_height =
+                                    if start > chain_height { start } else { end };
+
+                                match channel_tx
+                                    .send(Err(tonic::Status::out_of_range(format!(
+                                        "Error: Height out of range [{offending_height}]. \
+                                    Height requested is greater than the best \
+                                    chain tip [{chain_height}].",
+                                    ))))
+                                    .await
+                                {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                    }
+                                }
+                            } else {
+                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                                if channel_tx
+                                    .send(Err(tonic::Status::unknown(e.to_string())))
+                                    .await
+                                    .is_err()
+                                {
+                                    warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                                }
                             }
                         }
                     }
-                }
-            },
-        )
-        .await;
+                },
+            )
+            .await;
 
             if timeout_result.is_err() {
                 channel_tx
@@ -1059,9 +1066,23 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
+                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                        // TODO: This probably shouldn't be an error.
+                        // this is an improvement over previous behaviour of
+                        // acting as if we are only synced to the genesis block
+                        if let Err(e) = channel_tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "zaino not yet synced".to_string(),
+                            )))
+                            .await
+                        {
+                            warn!("GetBlockRangeNullifiers channel closed unexpectedly: {}", e);
+                        };
+                        return ();
+                    };
 
                     // Use the snapshot tip directly, as this function doesn't support passthrough
-                    let chain_height = snapshot.best_tip.height.0;
+                    let chain_height = non_finalized_snapshot.best_tip.height.0;
 
                     match fetch_service_clone
                         .indexer
@@ -1180,7 +1201,16 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let height: u64 = match height {
                 Some(h) => h as u64,
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
-                None => self.indexer.snapshot_nonfinalized_state().best_tip.height.0 as u64,
+                None => {
+                    let snapshot = self.indexer.snapshot_nonfinalized_state();
+                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                        // TODO: This probably shouldn't be an error.
+                        // this is an improvement over previous behaviour of
+                        // acting as if we are only synced to the genesis block
+                        return Err(FetchServiceError::UnavailableNotSyncedEnough);
+                    };
+                    non_finalized_snapshot.best_tip.height.0 as u64
+                }
             };
 
             Ok(RawTransaction {
@@ -1525,7 +1555,22 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let mempool_height = indexer.snapshot_nonfinalized_state().best_tip.height.0;
+                    let snapshot = indexer.snapshot_nonfinalized_state();
+                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                        // TODO: This probably shouldn't be an error.
+                        // this is an improvement over previous behaviour of
+                        // acting as if we are only synced to the genesis block
+                        if let Err(e) = channel_tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "zaino not yet synced".to_string(),
+                            )))
+                            .await
+                        {
+                            warn!("GetMempoolStream channel closed unexpectedly: {}", e);
+                        };
+                        return ();
+                    };
+                    let mempool_height = non_finalized_snapshot.best_tip.height.0;
                     match indexer.get_mempool_stream(None) {
                         Some(mut mempool_stream) => {
                             while let Some(result) = mempool_stream.next().await {
