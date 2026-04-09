@@ -72,7 +72,7 @@ impl BlockHash {
 
     /// Full hex string (big-endian / display order) for use in RPC interfaces.
     ///
-    /// Unlike [`Display`], which is truncated for log readability, this always
+    /// Unlike `Display`, which is truncated for log readability, this always
     /// returns the complete 64-character hex string required by RPC consumers.
     ///
     /// HACK: ad-hoc method to decouple serialisation from `Display` so PR #888
@@ -224,7 +224,7 @@ impl TransactionHash {
 
     /// Full hex string (big-endian / display order) for use in RPC interfaces.
     ///
-    /// Unlike [`Display`], which is truncated for log readability, this always
+    /// Unlike `Display`, which is truncated for log readability, this always
     /// returns the complete 64-character hex string required by RPC consumers.
     ///
     /// HACK: ad-hoc method to decouple serialisation from `Display` so PR #888

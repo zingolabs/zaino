@@ -6,7 +6,9 @@ use tokio::time::interval;
 use tonic::transport::Server;
 use tracing::warn;
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zaino_state::{IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer};
+use zaino_state::{
+    IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer,
+};
 
 use crate::{
     rpc::GrpcClient,

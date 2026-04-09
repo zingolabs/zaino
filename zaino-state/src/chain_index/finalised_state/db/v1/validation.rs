@@ -6,7 +6,7 @@
 //! Validation is tracked using two structures:
 //!
 //! - `validated_tip` (atomic u32): every height `<= validated_tip` is known-good (contiguous prefix).
-//! - `validated_set` (DashSet<u32>): a sparse set of individually validated heights `> validated_tip`
+//! - `validated_set` (`DashSet<u32>`): a sparse set of individually validated heights `> validated_tip`
 //!   (i.e., “holes” validated out-of-order).
 //!
 //! This scheme provides:

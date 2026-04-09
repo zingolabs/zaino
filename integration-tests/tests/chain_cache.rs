@@ -71,7 +71,10 @@ mod chain_query_interface {
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
     use zebra_chain::{
-        parameters::{NetworkKind, testnet::{ConfiguredActivationHeights, RegtestParameters}},
+        parameters::{
+            testnet::{ConfiguredActivationHeights, RegtestParameters},
+            NetworkKind,
+        },
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
     };
 
@@ -115,7 +118,8 @@ mod chain_query_interface {
                 };
                 let network = match test_manager.network {
                     NetworkKind::Regtest => {
-                        let local_net_activation_heights = test_manager.local_net.get_activation_heights().await;
+                        let local_net_activation_heights =
+                            test_manager.local_net.get_activation_heights().await;
 
                         zebra_chain::parameters::Network::new_regtest(RegtestParameters::from(
                             ConfiguredActivationHeights {
@@ -129,7 +133,7 @@ mod chain_query_interface {
                                 nu6: local_net_activation_heights.nu6(),
                                 nu6_1: local_net_activation_heights.nu6_1(),
                                 nu7: local_net_activation_heights.nu7(),
-                            }    
+                            },
                         ))
                     }
 

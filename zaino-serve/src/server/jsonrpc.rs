@@ -5,7 +5,9 @@ use crate::{
     server::{config::JsonRpcServerConfig, error::ServerError},
 };
 
-use zaino_state::{IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer};
+use zaino_state::{
+    IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer,
+};
 
 use zebra_rpc::server::{
     cookie::{remove_from_disk, write_to_disk, Cookie},
