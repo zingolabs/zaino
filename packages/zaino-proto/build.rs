@@ -8,14 +8,20 @@ const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
 const PROPOSAL_PROTO: &str = "proto/proposal.proto";
 const SERVICE_PROTO: &str = "proto/service.proto";
 
+fn protoc_available() -> bool {
+    if env::var_os("PROTOC").is_some() {
+        return true;
+    }
+    #[cfg(feature = "heavy")]
+    if which::which("protoc").is_ok() {
+        return true;
+    }
+    false
+}
+
 fn main() -> io::Result<()> {
     // Check and compile proto files if needed
-    if Path::new(COMPACT_FORMATS_PROTO).exists()
-        && env::var_os("PROTOC")
-            .map(PathBuf::from)
-            .or_else(|| which::which("protoc").ok())
-            .is_some()
-    {
+    if Path::new(COMPACT_FORMATS_PROTO).exists() && protoc_available() {
         build()?;
     }
 
