@@ -682,6 +682,15 @@ impl BlockchainSource for ProptestMockchain {
         .unwrap();
         Ok(Some(receiver))
     }
+
+    async fn get_subtree_roots(
+        &self,
+        _pool: crate::chain_index::ShieldedPool,
+        _start_index: u16,
+        _max_entries: Option<u16>,
+    ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
+        todo!()
+    }
 }
 
 type ChainSegment = SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>;
