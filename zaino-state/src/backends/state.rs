@@ -581,12 +581,15 @@ impl StateServiceSubscriber {
         let state_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = state_service_clone
+            .indexer
+            .snapshot_nonfinalized_state()
+            .await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
-                let snapshot = state_service_clone.indexer.snapshot_nonfinalized_state();
                 // This method does not support passthrough. Just return.
                 let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return ()};
                 let chain_height = non_finalized_snapshot.best_tip.height.0;
@@ -696,7 +699,7 @@ impl StateServiceSubscriber {
         e: BlockCacheError,
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let chain_height = snapshot.max_serviceable_height().0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -1570,7 +1573,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
             // TODO: This probably shouldn't be an error.
             // this is an improvement over previous behaviour of
@@ -1764,7 +1767,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                             // This should be None for sidechain transactions,
                             // which currently aren't returned by ReadResponse::Transaction
                             let best_chain_height = Some(tx.height);
-                            let snapshot = self.indexer.snapshot_nonfinalized_state();
+                            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
                             let compact_block = self
                                 .indexer
                                 .get_compact_block(
@@ -1942,7 +1945,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
             // TODO: This probably shouldn't be an error.
             // this is an improvement over previous behaviour of
@@ -1964,7 +1967,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             )),
         )?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
         // Convert HashOrHeight to chain_types::Height
         let block_height = match hash_or_height {
@@ -2043,7 +2046,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             ))
         })?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let block_height = chain_types::Height(height);
 
         match self
@@ -2429,7 +2432,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
             // TODO: This probably shouldn't be an error.
             // this is an improvement over previous behaviour of

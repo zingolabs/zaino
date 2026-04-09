@@ -620,6 +620,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(Height(
             self.indexer
                 .snapshot_nonfinalized_state()
+                .await?
                 .max_serviceable_height()
                 .0,
         ))
@@ -720,7 +721,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
 impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        match self.indexer.snapshot_nonfinalized_state() {
+        match self.indexer.snapshot_nonfinalized_state().await? {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
             } => {
@@ -748,7 +749,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             )),
         )?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let height = match hash_or_height {
             HashOrHeight::Height(height) => height.0,
             HashOrHeight::Hash(hash) => {
@@ -825,7 +826,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let height = match hash_or_height {
             HashOrHeight::Height(height) => height.0,
             HashOrHeight::Hash(hash) => {
@@ -931,12 +932,15 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = fetch_service_clone
+            .indexer
+            .snapshot_nonfinalized_state()
+            .await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
                     let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
@@ -1060,12 +1064,15 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let fetch_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = fetch_service_clone
+            .indexer
+            .snapshot_nonfinalized_state()
+            .await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let snapshot = fetch_service_clone.indexer.snapshot_nonfinalized_state();
                     let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
@@ -1202,7 +1209,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 Some(h) => h as u64,
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
                 None => {
-                    let snapshot = self.indexer.snapshot_nonfinalized_state();
+                    let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
                     let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
@@ -1551,11 +1558,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let indexer = self.indexer.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = indexer.snapshot_nonfinalized_state().await?;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let snapshot = indexer.snapshot_nonfinalized_state();
                     let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of

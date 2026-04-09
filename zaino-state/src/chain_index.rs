@@ -185,7 +185,9 @@ pub trait ChainIndex {
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
-    fn snapshot_nonfinalized_state(&self) -> Self::Snapshot;
+    fn snapshot_nonfinalized_state(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Self::Snapshot, Self::Error>>;
 
     /// Returns Some(Height) for the given block hash *if* it is currently in the best chain.
     ///
@@ -821,12 +823,26 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
-    fn snapshot_nonfinalized_state(&self) -> Self::Snapshot {
+    async fn snapshot_nonfinalized_state(&self) -> Result<Self::Snapshot, Self::Error> {
         match self.non_finalized_state.load().as_ref() {
-            Some(non_finalised_state) => ChainIndexSnapshot::NonFinalizedStateExists {
+            Some(non_finalised_state) => Ok(ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot: non_finalised_state.get_snapshot(),
-            },
-            None => todo!("get validator finalized height"),
+            }),
+            None => {
+                let height = self
+                    .source
+                    .get_best_block_height()
+                    .await
+                    .map_err(ChainIndexError::backing_validator)?
+                    .ok_or(ChainIndexError::database_hole(
+                        "validator has no best block",
+                        None,
+                    ))?;
+                let validator_finalized_height = types::Height(height.0.saturating_sub(100));
+                Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
+                    validator_finalized_height,
+                })
+            }
         }
     }
 
@@ -1431,7 +1447,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         // get a new snapshot and use it to find the height of the mempool
                         if let ChainIndexSnapshot::NonFinalizedStateExists {
                             non_finalized_snapshot: new_snapshot,
-                        } = self.snapshot_nonfinalized_state()
+                        } = self.snapshot_nonfinalized_state().await?
                         {
                             let target_height =
                                 new_snapshot.blocks.iter().find_map(|(hash, block)| {

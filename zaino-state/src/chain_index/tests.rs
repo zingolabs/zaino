@@ -101,7 +101,7 @@ mod mockchain_tests {
     async fn get_block_range() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
         let start = crate::Height(0);
 
@@ -126,7 +126,7 @@ mod mockchain_tests {
     async fn get_raw_transaction() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
         for (expected_transaction, height) in blocks.into_iter().flat_map(|block| {
             block
                 .zebra_block
@@ -167,7 +167,7 @@ mod mockchain_tests {
     async fn get_transaction_status() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
         for (expected_transaction, block_hash, block_height) in
             blocks.into_iter().flat_map(|block| {
@@ -215,6 +215,8 @@ mod mockchain_tests {
         let indexer_tip = dbg!(
             &index_reader
                 .snapshot_nonfinalized_state()
+                .await
+                .unwrap()
                 .get_nfs_snapshot()
                 .expect("not synced")
                 .best_tip
@@ -233,6 +235,8 @@ mod mockchain_tests {
         let indexer_tip = dbg!(
             &index_reader
                 .snapshot_nonfinalized_state()
+                .await
+                .unwrap()
                 .get_nfs_snapshot()
                 .expect("not synced")
                 .best_tip
@@ -267,7 +271,7 @@ mod mockchain_tests {
             })
             .unwrap_or_default();
 
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
         for expected_transaction in mempool_transactions.into_iter() {
             let (transaction, branch_id) = index_reader
                 .get_raw_transaction(
@@ -314,7 +318,7 @@ mod mockchain_tests {
             })
             .unwrap_or_default();
 
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
         for expected_transaction in mempool_transactions.into_iter() {
             let expected_txid = expected_transaction.hash();
 
@@ -456,7 +460,7 @@ mod mockchain_tests {
         mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
         let mempool_stream_task = tokio::spawn(async move {
-            let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+            let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             let mut mempool_stream = index_reader
                 .get_mempool_stream(Some(&nonfinalized_snapshot))
                 .expect("failed to create mempool stream");
@@ -497,7 +501,7 @@ mod mockchain_tests {
             load_test_vectors_and_sync_chain_index(true).await;
         sleep(Duration::from_millis(2000)).await;
 
-        let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
         mockchain.mine_blocks(1);
         sleep(Duration::from_millis(2000)).await;
@@ -511,7 +515,7 @@ mod mockchain_tests {
     async fn get_block_height() {
         let (blocks, _indexer, index_reader, _mockchain) =
             load_test_vectors_and_sync_chain_index(false).await;
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
         // Positive cases: every known best-chain block returns its height
         for TestVectorBlockData {

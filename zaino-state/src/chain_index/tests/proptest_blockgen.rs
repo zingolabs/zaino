@@ -84,7 +84,7 @@ fn passthrough_test(
                 .unwrap();
             tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
-            let snapshot = index_reader.snapshot_nonfinalized_state();
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             // 101 instead of 100 as heights are 0-indexed
             assert_eq!(snapshot.max_serviceable_height().0 as usize, (2 * segment_length) - 101);
             assert!(matches!(snapshot, ChainIndexSnapshot::StillSyncingFinalizedState { .. }));
@@ -380,7 +380,7 @@ fn make_chain() {
                 .unwrap();
             tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
-            let snapshot = index_reader.snapshot_nonfinalized_state();
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             let non_finalized_snapshot = snapshot.get_nfs_snapshot().expect("not synced");
             let best_tip_hash = non_finalized_snapshot.best_tip.blockhash;
             let best_tip_block = non_finalized_snapshot
