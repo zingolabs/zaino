@@ -34,9 +34,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     if [ "${NO_TLS}" = "true" ]; then \
-      cargo install --locked --path zainod --bin zainod --root /out --features no_tls_use_unencrypted_traffic; \
+      cargo install --locked --path packages/zainod --bin zainod --root /out --features no_tls_use_unencrypted_traffic; \
     else \
-      cargo install --locked --path zainod --bin zainod --root /out; \
+      cargo install --locked --path packages/zainod --bin zainod --root /out; \
     fi
 
 ############################
