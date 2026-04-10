@@ -1,0 +1,46 @@
+[package]
+name = "zaino-serve"
+description = "Crate containing Zingo's gRPC server implementation."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = { workspace = true }
+
+[features]
+# Removes network restrictions.
+no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
+
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = ["zaino-state/transparent_address_history_experimental"]
+
+[dependencies]
+zaino-proto = { workspace = true }
+zaino-fetch = { workspace = true }
+zaino-state = { workspace = true }
+
+# Zebra
+zebra-chain = { workspace = true }
+zebra-rpc = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+# Miscellaneous Workspace
+tokio = { workspace = true, features = ["full"] }
+tonic = { workspace = true, features = ["tls-native-roots"] }
+thiserror = { workspace = true }
+futures = { workspace = true }
+jsonrpsee = { workspace = true, features = ["server", "macros"] }
+serde = { workspace = true, features = ["derive"] }
+tower = { workspace = true }
+
+[build-dependencies]
+whoami = { workspace = true }

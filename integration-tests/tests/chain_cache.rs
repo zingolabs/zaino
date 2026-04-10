@@ -15,7 +15,10 @@ async fn create_test_manager_and_connector<T, Service>(
 ) -> (TestManager<T, Service>, JsonRpSeeConnector)
 where
     T: ValidatorExt,
-    Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+    Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+        + Send
+        + Sync
+        + 'static,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
 {
     let test_manager = TestManager::<T, Service>::launch(
@@ -32,7 +35,7 @@ where
 
     let json_service = JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
-            test_manager.full_node_rpc_listen_address,
+            &test_manager.full_node_rpc_listen_address.to_string(),
             None,
             Some("xxxxxx".to_string()),
             Some("xxxxxx".to_string()),
@@ -58,17 +61,20 @@ mod chain_query_interface {
         chain_index::{
             source::ValidatorConnector,
             types::{BestChainLocation, TransactionHash},
-            NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+            NodeBackedChainIndex, NodeBackedChainIndexSubscriber, ShieldedPool,
         },
         test_dependencies::{
             chain_index::{self, ChainIndex},
             BlockCacheConfig,
         },
-        Height, StateService, StateServiceConfig, ZcashService,
+        FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
     use zebra_chain::{
-        parameters::{testnet::RegtestParameters, NetworkKind},
+        parameters::{
+            testnet::{ConfiguredActivationHeights, RegtestParameters},
+            NetworkKind,
+        },
         serialization::{ZcashDeserialize, ZcashDeserializeInto},
     };
 
@@ -89,7 +95,10 @@ mod chain_query_interface {
     )
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, json_service) = create_test_manager_and_connector::<C, Service>(
@@ -109,14 +118,29 @@ mod chain_query_interface {
                 };
                 let network = match test_manager.network {
                     NetworkKind::Regtest => {
+                        let local_net_activation_heights =
+                            test_manager.local_net.get_activation_heights().await;
+
                         zebra_chain::parameters::Network::new_regtest(RegtestParameters::from(
-                            test_manager.local_net.get_activation_heights().await,
+                            ConfiguredActivationHeights {
+                                before_overwinter: local_net_activation_heights.overwinter(),
+                                overwinter: local_net_activation_heights.overwinter(),
+                                sapling: local_net_activation_heights.sapling(),
+                                blossom: local_net_activation_heights.blossom(),
+                                heartwood: local_net_activation_heights.heartwood(),
+                                canopy: local_net_activation_heights.canopy(),
+                                nu5: local_net_activation_heights.nu5(),
+                                nu6: local_net_activation_heights.nu6(),
+                                nu6_1: local_net_activation_heights.nu6_1(),
+                                nu7: local_net_activation_heights.nu7(),
+                            },
                         ))
                     }
 
                     NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
                     NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
                 };
+                // FIXME: when state service is integrated into chain index this initialization must change
                 let state_service = StateService::spawn(StateServiceConfig::new(
                     zebra_state::Config {
                         cache_dir: state_chain_cache_dir,
@@ -126,8 +150,9 @@ mod chain_query_interface {
                         debug_validity_check_interval: None,
                         // todo: does this matter?
                         should_backup_non_finalized_state: true,
+                        debug_skip_non_finalized_state_backup_task: false,
                     },
-                    test_manager.full_node_rpc_listen_address,
+                    test_manager.full_node_rpc_listen_address.to_string(),
                     test_manager.full_node_grpc_listen_address,
                     false,
                     None,
@@ -170,7 +195,7 @@ mod chain_query_interface {
                 )
                 .await
                 .unwrap();
-                let index_reader = chain_index.subscriber().await;
+                let index_reader = chain_index.subscriber();
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
                 (
@@ -203,7 +228,7 @@ mod chain_query_interface {
                 )
                 .await
                 .unwrap();
-                let index_reader = chain_index.subscriber().await;
+                let index_reader = chain_index.subscriber();
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
                 (test_manager, json_service, None, chain_index, index_reader)
@@ -226,7 +251,10 @@ mod chain_query_interface {
     async fn get_block_range<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -276,7 +304,10 @@ mod chain_query_interface {
     async fn find_fork_point<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -294,6 +325,7 @@ mod chain_query_interface {
                 block_hash,
                 &indexer
                     .find_fork_point(&snapshot, block_hash)
+                    .await
                     .unwrap()
                     .unwrap()
                     .0
@@ -316,7 +348,10 @@ mod chain_query_interface {
     async fn get_raw_transaction<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -378,7 +413,10 @@ mod chain_query_interface {
     async fn get_transaction_status<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
@@ -424,7 +462,10 @@ mod chain_query_interface {
     async fn sync_large_chain<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: From<ZainodConfig>> + Send + Sync + 'static,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     {
         let (test_manager, json_service, option_state_service, _chain_index, indexer) =
@@ -489,5 +530,111 @@ mod chain_query_interface {
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_subtree_roots_zebrad() {
+        get_subtree_roots::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+    }
+
+    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_subtree_roots_zcashd() {
+        get_subtree_roots::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
+    }
+
+    async fn get_subtree_roots<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
+            + Send
+            + Sync
+            + 'static,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    {
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+
+        test_manager
+            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .await;
+        let snapshot = indexer.snapshot_nonfinalized_state();
+        assert_eq!(snapshot.as_ref().blocks.len(), 8);
+
+        let test_pools = [ShieldedPool::Sapling, ShieldedPool::Orchard];
+        let valid_start_index = 0;
+        let max_entries = Some(0);
+
+        // *** Test valid requests ***
+
+        for pool in test_pools.clone() {
+            let valid_chain_index_subtree_roots_response = indexer
+                .get_subtree_roots(pool.clone(), valid_start_index, max_entries)
+                .await
+                .unwrap();
+
+            let valid_validator_subtree_roots_response = json_service
+                .get_subtrees_by_index(pool.pool_string(), valid_start_index, max_entries)
+                .await
+                .unwrap();
+            let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
+                valid_validator_subtree_roots_response
+                    .subtrees
+                    .into_iter()
+                    .map(|subtree| {
+                        // subtree.root is a hex string; decode to bytes and convert to array
+                        let bytes = hex::decode(&subtree.root)
+                            .expect("subtree root from validator is not valid hex");
+                        let array: [u8; 32] = bytes
+                            .as_slice()
+                            .try_into()
+                            .expect("received subtree root that is not 32 bytes");
+                        (array, subtree.end_height.0)
+                    })
+                    .collect();
+
+            assert_eq!(
+                valid_chain_index_subtree_roots_response,
+                formatted_valid_validator_subtree_roots
+            );
+        }
+
+        // *** Test invalid requests ***
+
+        let invalid_start_index = 10000;
+
+        let valid_chain_index_subtree_roots_response = indexer
+            .get_subtree_roots(test_pools[1].clone(), invalid_start_index, max_entries)
+            .await
+            .unwrap();
+
+        let valid_validator_subtree_roots_response = json_service
+            .get_subtrees_by_index(
+                test_pools[1].pool_string(),
+                invalid_start_index,
+                max_entries,
+            )
+            .await
+            .unwrap();
+        let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
+            valid_validator_subtree_roots_response
+                .subtrees
+                .into_iter()
+                .map(|subtree| {
+                    // subtree.root is a hex string; decode to bytes and convert to array
+                    let bytes = hex::decode(&subtree.root)
+                        .expect("subtree root from validator is not valid hex");
+                    let array: [u8; 32] = bytes
+                        .as_slice()
+                        .try_into()
+                        .expect("received subtree root that is not 32 bytes");
+                    (array, subtree.end_height.0)
+                })
+                .collect();
+
+        assert_eq!(
+            valid_chain_index_subtree_roots_response,
+            formatted_valid_validator_subtree_roots
+        );
     }
 }

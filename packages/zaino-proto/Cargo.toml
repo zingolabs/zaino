@@ -1,0 +1,31 @@
+[package]
+name = "zaino-proto"
+description = "Holds tonic files and build logic for the lightwallet and darkside RPCs."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = { workspace = true }
+
+[features]
+default = ["heavy"]
+heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
+grpc_proxy_server = []
+
+[dependencies]
+zebra-state = { workspace = true, optional = true }
+zebra-chain = { workspace = true, optional = true }
+
+# Miscellaneous Workspace
+tonic = { workspace = true }
+
+# Miscellaneous Crate
+prost = { workspace = true }
+tonic-prost = "0.14"
+
+[build-dependencies]
+which = { workspace = true, optional = true }
+tonic-build = { workspace = true }
+tonic-prost-build = "0.14"
+prost-build = "0.14"

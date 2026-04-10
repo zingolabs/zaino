@@ -5,7 +5,8 @@ use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 
 #[allow(deprecated)]
 use zaino_state::{
-    FetchService, FetchServiceConfig, FetchServiceSubscriber, ZcashIndexer, ZcashService as _,
+    ChainIndex, FetchService, FetchServiceConfig, FetchServiceSubscriber, ZcashIndexer,
+    ZcashService as _,
 };
 use zaino_testutils::from_inputs;
 use zaino_testutils::{TestManager, ValidatorKind};
@@ -43,7 +44,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
 
     println!("Launching zcashd fetch service..");
     let zcashd_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.full_node_rpc_listen_address,
+        test_manager.full_node_rpc_listen_address.to_string(),
         None,
         None,
         None,
@@ -70,7 +71,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
 
     println!("Launching zaino fetch service..");
     let zaino_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.full_node_rpc_listen_address,
+        test_manager.full_node_rpc_listen_address.to_string(),
         test_manager.json_server_cookie_dir.clone(),
         None,
         None,
@@ -158,7 +159,7 @@ async fn launch_json_server_check_info() {
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     let (
@@ -189,7 +190,7 @@ async fn launch_json_server_check_info() {
         pay_tx_fee,
         relay_fee,
         errors,
-        String::new(),
+        0,
     );
 
     assert_eq!(cleaned_zcashd_info, cleaned_zaino_info);
@@ -627,11 +628,11 @@ async fn get_address_tx_ids_inner() {
     .await;
 
     let chain_height = zcashd_subscriber
-        .block_cache
-        .get_chain_height()
-        .await
-        .unwrap()
-        .0;
+        .indexer
+        .snapshot_nonfinalized_state()
+        .best_tip
+        .height
+        .into();
     dbg!(&chain_height);
 
     let zcashd_txids = zcashd_subscriber
@@ -836,7 +837,13 @@ mod zcashd {
 
                 assert_eq!(zcashd_mining_info, zaino_mining_info);
 
-                test_manager.local_net.generate_blocks(1).await.unwrap();
+                generate_blocks_and_poll_all_chain_indexes(
+                    1,
+                    &test_manager,
+                    zaino_subscriber.clone(),
+                    zcashd_subscriber.clone(),
+                )
+                .await;
             }
 
             test_manager.close().await;
@@ -933,8 +940,13 @@ mod zcashd {
             const BLOCK_LIMIT: u32 = 10;
 
             for i in 0..BLOCK_LIMIT {
-                test_manager.local_net.generate_blocks(1).await.unwrap();
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                generate_blocks_and_poll_all_chain_indexes(
+                    1,
+                    &test_manager,
+                    zaino_subscriber.clone(),
+                    zcashd_subscriber.clone(),
+                )
+                .await;
 
                 let block = zcashd_subscriber
                     .z_get_block(i.to_string(), Some(1))
