@@ -147,16 +147,13 @@ fn passthrough_get_transaction_status() {
         // This allows the artificial delays to happen in parallel
         let mut parallel = FuturesUnordered::new();
         // As we only have one branch, arbitrary branch order is fine
-        for (height, txid) in mockchain
-            .all_blocks_arb_branch_order()
-            .flat_map(|block| {
-                block
-                    .transactions
-                    .iter()
-                    .map(|transaction| (block.coinbase_height().unwrap(), transaction.hash()))
-                    .collect::<Vec<_>>()
-            })
-        {
+        for (height, txid) in mockchain.all_blocks_arb_branch_order().flat_map(|block| {
+            block
+                .transactions
+                .iter()
+                .map(|transaction| (block.coinbase_height().unwrap(), transaction.hash()))
+                .collect::<Vec<_>>()
+        }) {
             let index_reader = index_reader.clone();
             let snapshot = snapshot.clone();
             parallel.push(async move {
@@ -194,9 +191,8 @@ fn passthrough_get_raw_transaction() {
         // This allows the artificial delays to happen in parallel
         let mut parallel = FuturesUnordered::new();
         // As we only have one branch, arbitrary branch order is fine
-        for (expected_transaction, height) in mockchain
-            .all_blocks_arb_branch_order()
-            .flat_map(|block| {
+        for (expected_transaction, height) in
+            mockchain.all_blocks_arb_branch_order().flat_map(|block| {
                 block
                     .transactions
                     .iter()
