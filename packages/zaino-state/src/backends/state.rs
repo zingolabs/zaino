@@ -21,7 +21,6 @@ use crate::{
     utils::{get_build_info, ServiceMetadata},
     BackendType, MempoolKey, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State,
 };
-use zcash_keys::{address::Address, encoding::AddressCodec};
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
@@ -53,6 +52,7 @@ use zaino_proto::proto::{
         SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
+use zcash_keys::{address::Address, encoding::AddressCodec};
 
 use zcash_primitives::legacy::TransparentAddress;
 use zcash_protocol::consensus::NetworkType;

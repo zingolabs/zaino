@@ -570,7 +570,7 @@ pub enum ZValidateAddressType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     /// Verifies that a type can be serialized and deserialized with the same shape.
     ///
