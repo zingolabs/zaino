@@ -270,8 +270,8 @@ podman run --rm \
   --name "$CONTAINER_NAME" \
   -v "$PWD":/home/container_user/zaino \
   -v "$PWD/container-target":/home/container_user/zaino/target \
-  -v "$PWD/podman_cargo/git":/home/container_user/.cargo/git \
-  -v "$PWD/podman_cargo/registry":/home/container_user/.cargo/registry \
+  -v "$PWD/podman_cargo/git":/usr/local/cargo/git \
+  -v "$PWD/podman_cargo/registry":/usr/local/cargo/registry \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "CARGO_TARGET_DIR=/home/container_user/zaino/target" \
@@ -299,29 +299,36 @@ script_runner = "bash"
 script.main = '''
 set -euo pipefail
 
-# source .env.testing-artifacts
+# Verify ZEBRA_VERSION from .env.testing-artifacts is consistent with Cargo.toml.
+# Zebra deps may be crates.io versions ("6.0.1") or git revs (rev="abc123").
+# The .env ZEBRA_VERSION is the Docker image tag (e.g. "4.3.0").
 
-# Normalize Cargo.toml (stripping comments, whitespace)
+# Check for git rev-based deps first
 cargo_toml=$(sed 's/#.*//' Cargo.toml | tr -d '[:space:]')
+zebra_revs=$(echo "$cargo_toml" | grep -o 'zebra-[a-z]*={[^}]*rev="[^"]*"' | grep -o 'rev="[^"]*"' | cut -d'"' -f2 | sort -u || true)
 
-# Check Zebra rev
-zebra_revs=$(echo "$cargo_toml" | grep -o 'zebra-[a-z]*={[^}]*rev="[^"]*"' | grep -o 'rev="[^"]*"' | cut -d'"' -f2 | sort -u)
-
-if [[ $(echo "$zebra_revs" | wc -l) -ne 1 ]]; then
-  err "❌ Multiple Zebra revs detected in Cargo.toml:"
-  echo "$zebra_revs"
-  exit 1
+if [[ -n "$zebra_revs" ]]; then
+  rev_count=$(echo "$zebra_revs" | wc -l)
+  if [[ "$rev_count" -ne 1 ]]; then
+    err "❌ Multiple Zebra revs detected in Cargo.toml:"
+    echo "$zebra_revs"
+    exit 1
+  fi
+  # Accept short SHA match
+  if [[ "$zebra_revs" != "$ZEBRA_VERSION" && "${zebra_revs:0:${#ZEBRA_VERSION}}" != "$ZEBRA_VERSION" ]]; then
+    err "❌ Mismatch: Cargo.toml has rev $zebra_revs, but .env has $ZEBRA_VERSION"
+    exit 1
+  fi
+else
+  # Crates.io version deps — just verify the Docker image tag is set
+  if [[ -z "$ZEBRA_VERSION" ]]; then
+    err "❌ ZEBRA_VERSION is not set in .env.testing-artifacts"
+    exit 1
+  fi
+  info "Zebra deps are crates.io versions; Docker image tag is ${ZEBRA_VERSION}"
 fi
 
-actual_rev="$zebra_revs"
-
-# Accept short SHA from env if it matches prefix of actual
-if [[ "$actual_rev" != "$ZEBRA_VERSION" && "${actual_rev:0:${#ZEBRA_VERSION}}" != "$ZEBRA_VERSION" ]]; then
-  err "❌ Mismatch for Zebra git rev: Cargo.toml has $actual_rev, but .env.testing-artifacts has $ZEBRA_VERSION"
-  exit 1
-fi
-
-info "✅ All versions match between Cargo.toml and .env.testing-artifacts"
+info "✅ Zebra version check passed (.env ZEBRA_VERSION=${ZEBRA_VERSION})"
 '''
 
 # -------------------------------------------------------------------
@@ -366,8 +373,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--name", "zaino-validation-test",
             "-v", &format!("{}:/home/container_user/zaino", working_dir),
             "-v", &format!("{}/container-target:/home/container_user/zaino/target", working_dir),
-            "-v", &format!("{}/podman_cargo/git:/home/container_user/.cargo/git", working_dir),
-            "-v", &format!("{}/podman_cargo/registry:/home/container_user/.cargo/registry", working_dir),
+            "-v", &format!("{}/podman_cargo/git:/usr/local/cargo/git", working_dir),
+            "-v", &format!("{}/podman_cargo/registry:/usr/local/cargo/registry", working_dir),
             "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/test_binaries/bins",
             "-e", "CARGO_TARGET_DIR=/home/container_user/zaino/target",
             "-w", "/home/container_user/zaino",
@@ -622,7 +629,7 @@ script.post = "makers notify"
 description = "Exercise every Makefile.toml task for correctness (idempotent)"
 script_runner = "bash"
 script = '''
-set -euo pipefail
+set -uo pipefail
 
 source "./.utils/helpers.sh"
 
@@ -676,10 +683,10 @@ run_task() {
     echo ""
     info "--- ${name} ---"
     if "$@" 2>&1; then
-        ((PASS++))
+        PASS=$((PASS + 1))
         info "PASS: ${name}"
     else
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
         err "FAIL: ${name}"
     fi
 }
@@ -689,7 +696,7 @@ skip_task() {
     local reason="$2"
     echo ""
     warn "--- SKIP: ${name} (${reason}) ---"
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED + 1))
 }
 
 # === Save state for idempotency ===
@@ -742,18 +749,20 @@ podman tag "${IMAGE_NAME}:${TAG}" "${IMAGE_NAME}:verify-${TAG}" 2>/dev/null || t
 
 # === Tier 3: Container execution ===
 # One test per component: zcashd, zebrad, lightwallet gRPC, wallet-to-validator
+# Tests live in the integration-tests sub-workspace.
+ITESTS="--manifest-path integration-tests/Cargo.toml"
 
 run_task "container-test (zcashd)" makers container-test \
-    -E "test(=wallet_to_validator::zcashd::connect_to_node_get_info)"
+    $ITESTS -E "binary(wallet_to_validator) & test(=zcashd::connect_to_node_get_info)"
 
 run_task "container-test (zebrad)" makers container-test \
-    -E "test(=wallet_to_validator::zebrad::state_service::connect_to_node_get_info)"
+    $ITESTS -E "binary(wallet_to_validator) & test(=zebrad::state_service::connect_to_node_get_info)"
 
 run_task "container-test (lightwallet)" makers container-test \
-    -E "test(=state_service::zebra::lightwallet_indexer::get_block)"
+    $ITESTS -E "binary(state_service) & test(=zebra::lightwallet_indexer::get_block)"
 
 run_task "container-test (wallet-to-validator)" makers container-test \
-    -E "test(=wallet_to_validator::zcashd::sent_to::transparent)"
+    $ITESTS -E "binary(wallet_to_validator) & test(=zcashd::sent_to::transparent)"
 
 if command -v jq &>/dev/null && command -v yq &>/dev/null; then
     run_task "validate-test-targets" makers validate-test-targets
