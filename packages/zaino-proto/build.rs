@@ -101,7 +101,10 @@ fn build() -> io::Result<()> {
     // Copy the generated types into the source tree so changes can be committed. The
     // file has the same name as for the compact format types because they have the
     // same package, but we've set things up so this only contains the service types.
-    copy_generated(&out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/service.rs")?;
+    copy_generated(
+        &out.join("cash.z.wallet.sdk.rpc.rs"),
+        "src/proto/service.rs",
+    )?;
 
     Ok(())
 }
