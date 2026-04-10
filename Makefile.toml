@@ -741,10 +741,19 @@ run_task "ensure-image-exists" makers ensure-image-exists
 podman tag "${IMAGE_NAME}:${TAG}" "${IMAGE_NAME}:verify-${TAG}" 2>/dev/null || true
 
 # === Tier 3: Container execution ===
+# One test per component: zcashd, zebrad, lightwallet gRPC, wallet-to-validator
 
-# Run a single fast test to verify container works
-run_task "container-test (smoke)" makers container-test \
-    -E "test(=zaino_state::chain_index::tests::)" --no-fail-fast
+run_task "container-test (zcashd)" makers container-test \
+    -E "test(=wallet_to_validator::zcashd::connect_to_node_get_info)"
+
+run_task "container-test (zebrad)" makers container-test \
+    -E "test(=wallet_to_validator::zebrad::state_service::connect_to_node_get_info)"
+
+run_task "container-test (lightwallet)" makers container-test \
+    -E "test(=state_service::zebra::lightwallet_indexer::get_block)"
+
+run_task "container-test (wallet-to-validator)" makers container-test \
+    -E "test(=wallet_to_validator::zcashd::sent_to::transparent)"
 
 if command -v jq &>/dev/null && command -v yq &>/dev/null; then
     run_task "validate-test-targets" makers validate-test-targets
