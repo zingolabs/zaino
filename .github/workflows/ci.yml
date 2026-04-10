@@ -32,7 +32,8 @@ jobs:
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     runs-on: arc-sh-runners
-    if: github.event.pull_request.draft == false
+    # Skip on PRs until self-hosted runner is available
+    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

@@ -19,6 +19,20 @@ fn protoc_available() -> bool {
     false
 }
 
+/// Copy a generated file into the source tree and force non-executable
+/// permissions so the working tree doesn't drift on build.
+fn copy_generated(src: &Path, dst: &str) -> io::Result<()> {
+    fs::copy(src, dst)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(dst)?.permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(dst, perms)?;
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     // Check and compile proto files if needed
     if Path::new(COMPACT_FORMATS_PROTO).exists() && protoc_available() {
@@ -37,8 +51,8 @@ fn build() -> io::Result<()> {
     compile_protos(COMPACT_FORMATS_PROTO)?;
 
     // Copy the generated types into the source tree so changes can be committed.
-    fs::copy(
-        out.join("cash.z.wallet.sdk.rpc.rs"),
+    copy_generated(
+        &out.join("cash.z.wallet.sdk.rpc.rs"),
         "src/proto/compact_formats.rs",
     )?;
 
@@ -79,15 +93,18 @@ fn build() -> io::Result<()> {
     compile_protos(PROPOSAL_PROTO)?;
 
     // Copy the generated types into the source tree so changes can be committed.
-    fs::copy(
-        out.join("cash.z.wallet.sdk.ffi.rs"),
+    copy_generated(
+        &out.join("cash.z.wallet.sdk.ffi.rs"),
         "src/proto/proposal.rs",
     )?;
 
     // Copy the generated types into the source tree so changes can be committed. The
     // file has the same name as for the compact format types because they have the
     // same package, but we've set things up so this only contains the service types.
-    fs::copy(out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/service.rs")?;
+    copy_generated(
+        &out.join("cash.z.wallet.sdk.rpc.rs"),
+        "src/proto/service.rs",
+    )?;
 
     Ok(())
 }

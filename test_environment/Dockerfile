@@ -19,7 +19,7 @@ ARG CARGO_TARGET_DIR="${HOME}/target"
 ########################
 
 FROM zfnd/zebra:${ZEBRA_VERSION} AS zebra-downloader
-FROM electriccoinco/zcashd:v${ZCASH_VERSION} AS zcashd-downloader
+FROM zodlinc/zcash:v${ZCASH_VERSION} AS zcashd-downloader
 
 ########################
 # === BUILDERS ===
@@ -117,8 +117,8 @@ ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
 USER root
-COPY --from=zcashd-downloader /usr/bin/zcashd ${HOME}/artifacts/
-COPY --from=zcashd-downloader /usr/bin/zcash-cli ${HOME}/artifacts/
+COPY --from=zcashd-downloader /usr/local/bin/zcashd ${HOME}/artifacts/
+COPY --from=zcashd-downloader /usr/local/bin/zcash-cli ${HOME}/artifacts/
 COPY --from=zebra-downloader /usr/local/bin/zebrad ${HOME}/artifacts/
 RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifacts/zebrad
 RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
@@ -149,8 +149,8 @@ ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
 USER root
-COPY --from=zcashd-downloader /usr/bin/zcashd ${HOME}/artifacts/
-COPY --from=zcashd-downloader /usr/bin/zcash-cli ${HOME}/artifacts/
+COPY --from=zcashd-downloader /usr/local/bin/zcashd ${HOME}/artifacts/
+COPY --from=zcashd-downloader /usr/local/bin/zcash-cli ${HOME}/artifacts/
 COPY --from=zebra-builder /tmp/zebrad ${HOME}/artifacts/
 RUN chmod +x ${HOME}/artifacts/zcashd ${HOME}/artifacts/zcash-cli ${HOME}/artifacts/zebrad
 RUN cargo install cargo-nextest --locked --verbose --root /usr/local && \
