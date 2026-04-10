@@ -54,6 +54,8 @@ pub struct StateServiceConfig {
     pub storage: StorageConfig,
     /// Network type.
     pub network: Network,
+    /// Zcash donation UA address
+    pub donation_address: Option<String>,
 }
 
 #[allow(deprecated)]
@@ -72,6 +74,7 @@ impl StateServiceConfig {
         service: ServiceConfig,
         storage: StorageConfig,
         network: Network,
+        donation_address: Option<String>,
     ) -> Self {
         tracing::trace!(
             "State service expecting NU activations:\n{:?}",
@@ -88,6 +91,7 @@ impl StateServiceConfig {
             service,
             storage,
             network,
+            donation_address,
         }
     }
 }
@@ -110,6 +114,8 @@ pub struct FetchServiceConfig {
     pub storage: StorageConfig,
     /// Network type.
     pub network: Network,
+    /// Zcash donation UA address
+    pub donation_address: Option<String>,
 }
 
 #[allow(deprecated)]
@@ -124,6 +130,7 @@ impl FetchServiceConfig {
         service: ServiceConfig,
         storage: StorageConfig,
         network: Network,
+        donation_address: Option<String>,
     ) -> Self {
         FetchServiceConfig {
             validator_rpc_address,
@@ -133,6 +140,7 @@ impl FetchServiceConfig {
             service,
             storage,
             network,
+            donation_address,
         }
     }
 }

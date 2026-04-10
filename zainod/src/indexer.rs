@@ -41,6 +41,11 @@ pub async fn spawn_indexer(
     config: ZainodConfig,
 ) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.check_config()?;
+    if let Some(donation_address) = &config.donation_address {
+        if !donation_address.is_empty() {
+            info!("Instance donation address: {}", donation_address);
+        }
+    }
     info!("Checking connection with node..");
     let zebrad_uri = test_node_and_return_url(
         &config.validator_settings.validator_jsonrpc_listen_address,

@@ -83,6 +83,8 @@ pub struct ZainodConfig {
     pub service: ServiceConfig,
     /// Storage settings (cache and database).
     pub storage: StorageConfig,
+    /// Zcash donation UA address
+    pub donation_address: Option<String>,
 }
 
 impl ZainodConfig {
@@ -209,6 +211,7 @@ impl Default for ZainodConfig {
             storage: StorageConfig::default(),
             zebra_db_path: default_zebra_db_path(),
             network: Network::Testnet,
+            donation_address: None,
         }
     }
 }
@@ -374,6 +377,7 @@ impl TryFrom<ZainodConfig> for StateServiceConfig {
             service: cfg.service,
             storage: cfg.storage,
             network: cfg.network,
+            donation_address: cfg.donation_address,
         })
     }
 }
@@ -397,6 +401,7 @@ impl TryFrom<ZainodConfig> for FetchServiceConfig {
             service: cfg.service,
             storage: cfg.storage,
             network: cfg.network,
+            donation_address: cfg.donation_address,
         })
     }
 }
