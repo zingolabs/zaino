@@ -232,6 +232,31 @@ echo "To revert: makers use-bundled-rocksdb"
 
 # ---------------------------------------------------------------------------
 
+[tasks.set-worktree-parent-tools]
+description = "Copy .cargo/config.toml to the common parent of all git worktrees so all worktrees inherit it"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+
+if [[ ! -f .cargo/config.toml ]]; then
+    echo "ERROR: No .cargo/config.toml in this worktree."
+    echo "Run 'makers use-system-rocksdb' first."
+    exit 1
+fi
+
+# Find the lowest common parent of all worktree paths
+PATHS=$(git worktree list --porcelain | grep '^worktree ' | sed 's/^worktree //')
+PARENT=$(echo "$PATHS" | python3 -c "import sys, os; print(os.path.commonpath([l.strip() for l in sys.stdin]))")
+
+mkdir -p "$PARENT/.cargo"
+cp .cargo/config.toml "$PARENT/.cargo/config.toml"
+
+echo "Copied .cargo/config.toml to $PARENT/.cargo/config.toml"
+echo "All worktrees under $PARENT/ will now inherit this config."
+'''
+
+# ---------------------------------------------------------------------------
+
 [tasks.use-bundled-rocksdb]
 description = "Revert to building RocksDB from source (undo use-system-rocksdb)"
 script_runner = "bash"
