@@ -24,7 +24,7 @@ NOTE: Unless the `no_db` option is set to true in the config file zaino will syn
 - To launch Zingo-Cli running through Zaino [from #PATH_TO/zingolib]:
 5) Run `$ cargo run --release --package zingo-cli -- --chain "CHAIN_TYPE" --server "ZAINO_LISTEN_ADDR" --data-dir #PATH_TO_WALLET_DATA_DIR`
 
-- Example Config files for running Zebra on testnet are given in `zaino/zainod/`
+- Example Config files for running Zebra on testnet are given in `packages/zainod/`
 
 A system architecture diagram for this service can be seen at [Live Service System Architecture](./zaino_live_system_architecture.pdf).
 

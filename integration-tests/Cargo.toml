@@ -1,14 +1,94 @@
+[workspace]
+members = [
+    ".",
+    "zaino-testutils",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["Zingo Lab Cyan"]
+repository = "https://github.com/zingolabs"
+homepage = "https://www.zingolabs.org/"
+edition = "2021"
+license = "Apache-2.0"
+version = "0.2.0"
+
+[workspace.dependencies]
+# Workspace members
+zaino-testutils = { path = "zaino-testutils" }
+
+# Non-member path deps (from parent workspace)
+zaino-proto = { path = "../packages/zaino-proto" }
+zaino-state = { path = "../packages/zaino-state" }
+zaino-serve = { path = "../packages/zaino-serve" }
+zaino-common = { path = "../packages/zaino-common" }
+zaino-fetch = { path = "../packages/zaino-fetch" }
+zainod = { path = "../packages/zainod" }
+
+# Zingo
+zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
+    "testutils",
+] }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+
+# Librustzcash
+zcash_protocol = "0.7.2"
+zcash_client_backend = "0.21.0"
+
+# Zebra
+zebra-chain = "6.0.1"
+zebra-state = "5.0.0"
+zebra-rpc = "6.0.1"
+
+# Runtime
+tokio = { version = "1.38", features = ["full"] }
+
+# Network
+http = "1.1"
+tonic = "0.14"
+tower = { version = "0.4", features = ["buffer", "util"] }
+
+# Misc
+anyhow = "1.0"
+core2 = "0.4"
+futures = "0.3.30"
+hex = "0.4"
+once_cell = "1.20"
+portpicker = "0.1"
+serde_json = "1.0"
+tempfile = "3.2"
+tracing = "0.1"
+wire_serialized_transaction_test_data = "1.0.0"
+zip32 = "0.2.1"
+
 [package]
 name = "integration-tests"
 description = "Crate containing Zaino's integration-tests."
 publish = false
 
-authors = { workspace = true }
-repository = { workspace = true }
-homepage = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = [
+    "zaino-state/transparent_address_history_experimental",
+    "zainod/transparent_address_history_experimental",
+    "zaino-testutils/transparent_address_history_experimental"
+]
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -17,25 +97,28 @@ anyhow = { workspace = true }
 zainod = { workspace = true }
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
-zaino-proto.workspace = true
-zaino-common.workspace = true
+zaino-proto = { workspace = true }
+zaino-common = { workspace = true }
+wire_serialized_transaction_test_data = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
-zebra-chain.workspace = true
-zebra-state.workspace = true
-zebra-rpc.workspace = true
-zip32 = {workspace = true}
+zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
+zebra-rpc = { workspace = true }
+zip32 = { workspace = true }
 
 core2 = { workspace = true }
-prost = { workspace = true }
-serde_json = { workspace = true, features = ["preserve_order"] }
-futures.workspace = true
-tempfile.workspace = true
-tower = { workspace = true, features = ["buffer", "util"] }
+serde_json = { workspace = true }
+futures = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }
 hex = { workspace = true }
 
 # Runtime
 tokio = { workspace = true }
 
 # Zingo-infra
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "20f3c206321825952fdf2d9d84947f5c9d2a1cf4" }
+zcash_local_net = { workspace = true }
+
+[profile.test]
+opt-level = 3
+debug = true
