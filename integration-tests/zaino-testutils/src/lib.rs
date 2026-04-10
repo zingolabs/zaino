@@ -421,6 +421,7 @@ where
                 },
                 zebra_db_path,
                 network: zaino_network_kind,
+                donation_address: None,
             };
 
             let (handle, service_subscriber) = Indexer::<Service>::launch_inner(
