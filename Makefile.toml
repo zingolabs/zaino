@@ -1,6 +1,7 @@
 extend = [
-    { path = "makefiles/lints.toml" },
-    { path = "makefiles/notify.toml" },
+    { path = ".utils/makefiles/lints.toml" },
+    { path = ".utils/makefiles/notify.toml" },
+    { path = ".utils/makefiles/rocksdb.toml" },
 ]
 env_files = [".env.testing-artifacts"]
 
@@ -52,6 +53,12 @@ echo "  clippy                     Run Clippy with -D warnings (--all-targets --
 echo "  doc                        Build docs (no deps, all features, document private items) with RUSTDOCFLAGS='-D warnings'"
 echo "  toggle-hooks               Toggle the git config for core.hooksPath to use .githooks/"
 echo ""
+echo "Build speed:"
+echo "  use-system-rocksdb         Link against system RocksDB (skips slow C++ build)"
+echo "  use-bundled-rocksdb        Revert to building RocksDB from source"
+echo "  check-system-rocksdb       Check system RocksDB compatibility"
+echo "  audit-system-rocksdb       Re-audit if Cargo.lock or system version changed"
+echo ""
 echo "Environment:"
 echo "  Defined by: .env.testing-artifacts"
 echo "  Affects:    RUST_VERSION, ZCASH_VERSION, ZEBRA_VERSION"
@@ -62,15 +69,15 @@ echo "    ├── Dockerfile          Dockerfile for CI/test container"
 echo "    └── entrypoint.sh       Entrypoint script that sets up test binaries"
 echo ""
 echo "Helpers:"
-echo "  - utils/get-ci-image-tag.sh: computes the version-based image tag"
-echo "  - utils/helpers.sh: logging and helper functions"
+echo "  - .utils/get-ci-image-tag.sh: computes the version-based image tag"
+echo "  - .utils/helpers.sh: logging and helper functions"
 echo ""
 '''
 
 [tasks.base-script]
 script.pre = '''
-source "./utils/helpers.sh"
-TAG=$(./utils/get-ci-image-tag.sh)
+source "./.utils/helpers.sh"
+TAG=$(./.utils/get-ci-image-tag.sh)
 
 # Generic cleanup function for docker containers
 docker_cleanup() {
@@ -141,7 +148,7 @@ chmod -R 755 container-target docker_cargo 2>/dev/null || true
 [tasks.compute-image-tag]
 description = "Compute image tag from version vars"
 script = '''
-TAG=$(./utils/get-ci-image-tag.sh)
+TAG=$(./.utils/get-ci-image-tag.sh)
 echo "CARGO_MAKE_IMAGE_TAG=$TAG"
 export CARGO_MAKE_IMAGE_TAG=$TAG
 '''
@@ -151,7 +158,7 @@ export CARGO_MAKE_IMAGE_TAG=$TAG
 description = "Get the current DOCKER_DIR_HASH"
 script_runner = "bash"
 script = '''
-HASH=$(./utils/get-docker-hash.sh)
+HASH=$(./.utils/get-docker-hash.sh)
 echo "DOCKER_DIR_HASH=$HASH"
 '''
 
@@ -199,7 +206,7 @@ info "Building image"
 info "Tag: ${TAG}"
 info "Target: $TARGET"
 info "Current directory: $(pwd)"
-info "Files in utils/: $(ls -la utils/ | head -5)"
+info "Files in .utils/: $(ls -la .utils/ | head -5)"
 
 cd test_environment && \
 docker build -f Dockerfile \
@@ -408,7 +415,7 @@ fn get_image_tag() -> Result<String, Box<dyn std::error::Error>> {
 
     println!("DEBUG: Computing tag with script...");
     // Otherwise compute it
-    let output = Command::new("./utils/get-ci-image-tag.sh")
+    let output = Command::new("./.utils/get-ci-image-tag.sh")
         .output()?;
 
     if !output.status.success() {

@@ -8,9 +8,14 @@ edition = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
 
+[features]
+default = ["heavy"]
+heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
+grpc_proxy_server = []
+
 [dependencies]
-zebra-state = { workspace = true }
-zebra-chain = { workspace = true }
+zebra-state = { workspace = true, optional = true }
+zebra-chain = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tonic = { workspace = true }
@@ -20,7 +25,7 @@ prost = { workspace = true }
 tonic-prost = "0.14"
 
 [build-dependencies]
+which = { workspace = true, optional = true }
 tonic-build = { workspace = true }
-which = { workspace = true }
 tonic-prost-build = "0.14"
 prost-build = "0.14"

@@ -51,7 +51,7 @@ fn main() -> io::Result<()> {
     // Set the version from Cargo.toml
     let version = env::var("CARGO_PKG_VERSION").expect("Failed to get version from Cargo.toml");
     println!("cargo:rustc-env=VERSION={version}");
-    let lockfile = Lockfile::load("../Cargo.lock").expect("build script cannot load lockfile");
+    let lockfile = Lockfile::load("../../Cargo.lock").expect("build script cannot load lockfile");
     let maybe_zebra_rev = lockfile.packages.iter().find_map(|package| {
         if package.name == cargo_lock::Name::from_str("zebra-chain").unwrap() {
             package
