@@ -830,13 +830,30 @@ impl JsonRpSeeConnector {
     }
 }
 
+#[derive(Debug)] //
+#[derive(thiserror::Error)] //
+pub(crate) enum TestNodeConnectionError {
+    #[error("Building Reqwest Client: {{0}}")]
+    ClientBuild(reqwest::Error),
+    #[error("Reqwest Response: {{0}}")]
+    ReqwestResponse(reqwest::Error),
+    #[error("Response Body: {{0}}")]
+    ResponseBody(reqwest::Error),
+    #[error("Json body: {{0}}")]
+    BodyJson(serde_json::Error),
+}
+
 /// Tests connection with zebrad / zebrad.
-async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), TransportError> {
+async fn test_node_connection(
+    url: Url,
+    auth_method: AuthMethod,
+) -> Result<(), TestNodeConnectionError> {
     let client = Client::builder()
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+        .build()
+        .map_err(TestNodeConnectionError::ClientBuild)?;
 
     let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
     let mut request_builder = client
@@ -862,13 +879,13 @@ async fn test_node_connection(url: Url, auth_method: AuthMethod) -> Result<(), T
     let response = request_builder
         .send()
         .await
-        .map_err(TransportError::ReqwestError)?;
+        .map_err(TestNodeConnectionError::ReqwestResponse)?;
     let body_bytes = response
         .bytes()
         .await
-        .map_err(TransportError::ReqwestError)?;
-    let _response: RpcResponse<serde_json::Value> = serde_json::from_slice(&body_bytes)
-        .map_err(|e| TransportError::BadNodeData(Box::new(e), ""))?;
+        .map_err(TestNodeConnectionError::ResponseBody)?;
+    let _response: RpcResponse<serde_json::Value> =
+        serde_json::from_slice(&body_bytes).map_err(TestNodeConnectionError::BodyJson)?;
     Ok(())
 }
 
@@ -910,18 +927,20 @@ pub async fn test_node_and_return_url(
     let url: Url = format!("http://{}:{}", host, addr.port()).parse()?;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-    for _ in 0..3 {
+    for _ in 0..6 {
         match test_node_connection(url.clone(), auth_method.clone()).await {
             Ok(_) => {
                 return Ok(url);
             }
-            Err(_) => {
+            Err(e) => {
+                dbg!(e);
+                // TOdo actually show this error.
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
         interval.tick().await;
     }
-    error!("Error: Could not establish connection with node. Please check config and confirm node is listening at {url} and the correct authorisation details have been entered. Exiting..");
+    error!("Error: Zainod needs to connect to a zcash Validator node. (either zcashd or zebrad). Failed to connect to a Validator at {url}. Perhaps the Validator is not running or perhaps there was an authentication error.");
     std::process::exit(1);
 }
 

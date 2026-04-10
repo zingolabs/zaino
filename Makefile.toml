@@ -28,22 +28,23 @@ echo "  makers container-test"
 echo ""
 echo "If you modify '.env.testing-artifacts', the test command will automatically:"
 echo "  - Recompute the image tag"
-echo "  - Build a new local Docker image if needed"
+echo "  - Build a new local container image if needed"
 echo ""
 echo "Available commands:"
 echo ""
 echo "  container-test             Run integration tests using the local image"
 echo "  container-test-save-failures    Run tests, save failures to .failed-tests"
 echo "  container-test-retry-failures   Rerun only the previously failed tests"
-echo "  build-image                Build the Docker image with current artifact versions"
+echo "  build-image                Build the container image with current artifact versions"
 echo "  push-image                 Push the image (used in CI, can be used manually)"
-echo "  compute-image-tag          Compute the tag for the Docker image based on versions"
-echo "  get-docker-hash            Get DOCKER_DIR_HASH value (hash for the image defining files)"
+echo "  compute-image-tag          Compute the tag for the container image based on versions"
+echo "  get-podman-hash            Get CONTAINER_DIR_HASH value (hash for the image defining files)"
 echo "  ensure-image-exists        Check if the required image exists locally, build if not"
 echo "  check-matching-zebras      Verify Zebra versions match between Cargo.toml and .env"
 echo "  validate-test-targets      Check if nextest targets match CI workflow matrix"
 echo "  update-test-targets        Update CI workflow matrix to match nextest targets"
 echo "  validate-makefile-tasks    Run minimal validation of all maker tasks"
+echo "  verify-all                 Exercise every task for correctness (idempotent)"
 echo "  hello-rust                 Test rust-script functionality"
 echo ""
 echo "Lint commands:"
@@ -79,8 +80,8 @@ script.pre = '''
 source "./.utils/helpers.sh"
 TAG=$(./.utils/get-ci-image-tag.sh)
 
-# Generic cleanup function for docker containers
-docker_cleanup() {
+# Generic cleanup function for containers
+podman_cleanup() {
     # Prevent running cleanup twice
     if [ "${CLEANUP_RAN:-0}" -eq 1 ]; then
         return
@@ -99,29 +100,29 @@ docker_cleanup() {
         kill $pids 2>/dev/null || true
     fi
 
-    # Stop any docker containers started by this script
+    # Stop any containers started by this script
     if [ -n "${CONTAINER_ID:-}" ]; then
-        info "Stopping Docker container..."
-        docker stop "$CONTAINER_ID" >/dev/null 2>&1 || true
+        info "Stopping container..."
+        podman stop "$CONTAINER_ID" >/dev/null 2>&1 || true
     fi
 
     # Also stop by name if CONTAINER_NAME is set
     if [ -n "${CONTAINER_NAME:-}" ] && [ -z "${CONTAINER_ID:-}" ]; then
-        info "Stopping Docker container ${CONTAINER_NAME}..."
-        docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        info "Stopping container ${CONTAINER_NAME}..."
+        podman stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
 }
 
 # Set up cleanup trap
-trap docker_cleanup EXIT INT TERM
+trap podman_cleanup EXIT INT TERM
 '''
 script.main = "err 'default main script. define a proper script to skip this one'"
 script.post = ""
 
 # -------------------------------------------------------------------
 
-[tasks.init-docker-volumes]
-description = "Initialize Docker volume directories with proper permissions"
+[tasks.init-podman-volumes]
+description = "Initialize podman volume directories with proper permissions"
 script = '''
 # Check if directories exist with wrong permissions
 if [ -d "container-target" ] && [ ! -w "container-target" ]; then
@@ -131,8 +132,8 @@ if [ -d "container-target" ] && [ ! -w "container-target" ]; then
 fi
 
 # Create directories if they don't exist
-# Docker will respect the ownership if directories already exist
-for dir in container-target docker_cargo/git docker_cargo/registry; do
+# Podman will respect the ownership if directories already exist
+for dir in container-target podman_cargo/git podman_cargo/registry; do
     if [ ! -d "$dir" ]; then
         mkdir -p "$dir"
         echo "Created directory: $dir"
@@ -140,7 +141,7 @@ for dir in container-target docker_cargo/git docker_cargo/registry; do
 done
 
 # Set permissions to ensure they're accessible
-chmod -R 755 container-target docker_cargo 2>/dev/null || true
+chmod -R 755 container-target podman_cargo 2>/dev/null || true
 '''
 
 # -------------------------------------------------------------------
@@ -154,27 +155,27 @@ export CARGO_MAKE_IMAGE_TAG=$TAG
 '''
 # -------------------------------------------------------------------
 
-[tasks.get-docker-hash]
-description = "Get the current DOCKER_DIR_HASH"
+[tasks.get-podman-hash]
+description = "Get the current CONTAINER_DIR_HASH"
 script_runner = "bash"
 script = '''
-HASH=$(./.utils/get-docker-hash.sh)
-echo "DOCKER_DIR_HASH=$HASH"
+HASH=$(./.utils/get-container-hash.sh)
+echo "CONTAINER_DIR_HASH=$HASH"
 '''
 
 [tasks.ensure-image-exists]
-description = "Ensure the image exists locally or on Docker Hub before building"
-# This task checks if the required Docker image exists locally or on Docker Hub.
+description = "Ensure the image exists locally or on a registry before building"
+# This task checks if the required image exists locally or on a registry.
 # If not found, it triggers the build-image task to build from test_environment.
-dependencies = ["init-docker-volumes"]
+dependencies = ["init-podman-volumes"]
 extend = "base-script"
 script.main = '''
-if ! docker image inspect ${IMAGE_NAME}:${TAG} > /dev/null 2>&1; then
-  warn "Image not found locally. Attempting to pull from Docker Hub..."
-  if docker pull ${IMAGE_NAME}:${TAG}; then
+if ! podman image inspect ${IMAGE_NAME}:${TAG} > /dev/null 2>&1; then
+  warn "Image not found locally. Attempting to pull..."
+  if podman pull ${IMAGE_NAME}:${TAG}; then
     info "Image ${IMAGE_NAME}:${TAG} pulled successfully."
   else
-    warn "Image not found on Docker Hub. Building image..."
+    warn "Image not found on registry. Building image..."
     makers build-image
   fi
 else
@@ -185,8 +186,8 @@ fi
 # -------------------------------------------------------------------
 
 [tasks.build-image]
-description = "Build the Docker image for testing artifacts"
-# Note: This task builds the Docker image from the test_environment directory,
+description = "Build the container image for testing artifacts"
+# Note: This task builds the container image from the test_environment directory,
 # which contains the Dockerfile and entrypoint.sh for the CI/test environment.
 # The build context is set to test_environment to keep paths simple.
 script_runner = "bash"
@@ -194,7 +195,7 @@ extend = "base-script"
 script.main = '''
 set -euo pipefail
 
-# Create target directory with correct ownership before Docker creates it as root
+# Create target directory with correct ownership before podman creates it as root
 mkdir -p target
 
 TARGET=$(resolve_build_target "$ZCASH_VERSION" "$ZEBRA_VERSION")
@@ -209,7 +210,7 @@ info "Current directory: $(pwd)"
 info "Files in .utils/: $(ls -la .utils/ | head -5)"
 
 cd test_environment && \
-docker build -f Dockerfile \
+podman build -f Dockerfile \
   --target "$TARGET" \
   --build-arg ZCASH_VERSION=$ZCASH_VERSION \
   --build-arg ZEBRA_VERSION=$ZEBRA_VERSION \
@@ -234,7 +235,7 @@ set -euo pipefail
 
 info "Pushing image: ${IMAGE_NAME}:$TAG"
 
-docker push ${IMAGE_NAME}:$TAG
+podman push ${IMAGE_NAME}:$TAG
 '''
 
 # -------------------------------------------------------------------
@@ -242,10 +243,10 @@ docker push ${IMAGE_NAME}:$TAG
 [tasks.container-test]
 clear = true
 description = "Run integration tests using the local image"
-# This task runs tests inside the Docker container built from test_environment.
+# This task runs tests inside the container built from test_environment.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
 # by creating symlinks from /home/container_user/artifacts to the expected test_binaries/bins location.
-dependencies = ["init-docker-volumes", "ensure-image-exists"]
+dependencies = ["init-podman-volumes", "ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
 script.main = '''
@@ -256,20 +257,21 @@ info "-- IMAGE             = ${IMAGE_NAME}"
 info "-- TAG               = $TAG"
 # info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
-# Create directories with correct ownership before Docker creates them as root
-mkdir -p container-target docker_cargo/git docker_cargo/registry
+# Create directories with correct ownership before podman creates them as root
+mkdir -p container-target podman_cargo/git podman_cargo/registry
 
 # Set container name for cleanup
 CONTAINER_NAME="zaino-testing"
 
-# Run docker in foreground with proper signal handling
-docker run --rm \
+# Run podman in foreground with proper signal handling
+podman run --rm \
+  --userns=keep-id \
   --init \
   --name "$CONTAINER_NAME" \
   -v "$PWD":/home/container_user/zaino \
   -v "$PWD/container-target":/home/container_user/zaino/target \
-  -v "$PWD/docker_cargo/git":/home/container_user/.cargo/git \
-  -v "$PWD/docker_cargo/registry":/home/container_user/.cargo/registry \
+  -v "$PWD/podman_cargo/git":/usr/local/cargo/git \
+  -v "$PWD/podman_cargo/registry":/usr/local/cargo/registry \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "CARGO_TARGET_DIR=/home/container_user/zaino/target" \
@@ -281,10 +283,10 @@ docker run --rm \
   cargo nextest run "${@}" &
 
 # Capture the background job PID
-DOCKER_PID=$!
+PODMAN_PID=$!
 
-# Wait for the docker process
-wait $DOCKER_PID
+# Wait for the podman process
+wait $PODMAN_PID
 '''
 script.post = "makers notify"
 
@@ -297,36 +299,43 @@ script_runner = "bash"
 script.main = '''
 set -euo pipefail
 
-# source .env.testing-artifacts
+# Verify ZEBRA_VERSION from .env.testing-artifacts is consistent with Cargo.toml.
+# Zebra deps may be crates.io versions ("6.0.1") or git revs (rev="abc123").
+# The .env ZEBRA_VERSION is the Docker image tag (e.g. "4.3.0").
 
-# Normalize Cargo.toml (stripping comments, whitespace)
+# Check for git rev-based deps first
 cargo_toml=$(sed 's/#.*//' Cargo.toml | tr -d '[:space:]')
+zebra_revs=$(echo "$cargo_toml" | grep -o 'zebra-[a-z]*={[^}]*rev="[^"]*"' | grep -o 'rev="[^"]*"' | cut -d'"' -f2 | sort -u || true)
 
-# Check Zebra rev
-zebra_revs=$(echo "$cargo_toml" | grep -o 'zebra-[a-z]*={[^}]*rev="[^"]*"' | grep -o 'rev="[^"]*"' | cut -d'"' -f2 | sort -u)
-
-if [[ $(echo "$zebra_revs" | wc -l) -ne 1 ]]; then
-  err "❌ Multiple Zebra revs detected in Cargo.toml:"
-  echo "$zebra_revs"
-  exit 1
+if [[ -n "$zebra_revs" ]]; then
+  rev_count=$(echo "$zebra_revs" | wc -l)
+  if [[ "$rev_count" -ne 1 ]]; then
+    err "❌ Multiple Zebra revs detected in Cargo.toml:"
+    echo "$zebra_revs"
+    exit 1
+  fi
+  # Accept short SHA match
+  if [[ "$zebra_revs" != "$ZEBRA_VERSION" && "${zebra_revs:0:${#ZEBRA_VERSION}}" != "$ZEBRA_VERSION" ]]; then
+    err "❌ Mismatch: Cargo.toml has rev $zebra_revs, but .env has $ZEBRA_VERSION"
+    exit 1
+  fi
+else
+  # Crates.io version deps — just verify the Docker image tag is set
+  if [[ -z "$ZEBRA_VERSION" ]]; then
+    err "❌ ZEBRA_VERSION is not set in .env.testing-artifacts"
+    exit 1
+  fi
+  info "Zebra deps are crates.io versions; Docker image tag is ${ZEBRA_VERSION}"
 fi
 
-actual_rev="$zebra_revs"
-
-# Accept short SHA from env if it matches prefix of actual
-if [[ "$actual_rev" != "$ZEBRA_VERSION" && "${actual_rev:0:${#ZEBRA_VERSION}}" != "$ZEBRA_VERSION" ]]; then
-  err "❌ Mismatch for Zebra git rev: Cargo.toml has $actual_rev, but .env.testing-artifacts has $ZEBRA_VERSION"
-  exit 1
-fi
-
-info "✅ All versions match between Cargo.toml and .env.testing-artifacts"
+info "✅ Zebra version check passed (.env ZEBRA_VERSION=${ZEBRA_VERSION})"
 '''
 
 # -------------------------------------------------------------------
 
 [tasks.validate-makefile-tasks]
 description = "Validate all tasks work correctly with minimal execution"
-dependencies = ["init-docker-volumes"]
+dependencies = ["init-podman-volumes"]
 script_runner = "@rust"
 script = '''
 use std::process::{Command, Stdio};
@@ -344,7 +353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_makers_task("compute-image-tag")?;
 
     // 3. Ensure image exists (will build if necessary)
-    println!("\nStep 3: Ensuring Docker image exists...");
+    println!("\nStep 3: Ensuring container image exists...");
     run_makers_task("ensure-image-exists")?;
 
     // 4. Get the computed tag
@@ -356,15 +365,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nStep 4: Running minimal test to validate setup...");
     println!("Using image: {}:{}", image_name, tag);
 
-    let status = Command::new("docker")
+    let status = Command::new("podman")
         .args(&[
             "run", "--rm",
+            "--userns=keep-id",
             "--init",
             "--name", "zaino-validation-test",
             "-v", &format!("{}:/home/container_user/zaino", working_dir),
             "-v", &format!("{}/container-target:/home/container_user/zaino/target", working_dir),
-            "-v", &format!("{}/docker_cargo/git:/home/container_user/.cargo/git", working_dir),
-            "-v", &format!("{}/docker_cargo/registry:/home/container_user/.cargo/registry", working_dir),
+            "-v", &format!("{}/podman_cargo/git:/usr/local/cargo/git", working_dir),
+            "-v", &format!("{}/podman_cargo/registry:/usr/local/cargo/registry", working_dir),
             "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/test_binaries/bins",
             "-e", "CARGO_TARGET_DIR=/home/container_user/zaino/target",
             "-w", "/home/container_user/zaino",
@@ -439,15 +449,16 @@ set -euo pipefail
 
 info "🔍 Validating test targets between nextest and CI workflow..."
 
-# Extract nextest targets with non-empty testcases
+# Extract nextest targets with non-empty testcases.
+# The `ci` profile lives in integration-tests/.config/nextest.toml, so use --manifest-path.
 info "Extracting targets from nextest..."
 NEXTEST_TARGETS=$(mktemp)
-cargo nextest list --profile ci -T json-pretty | jq -r '.["rust-suites"] | to_entries[] | select(.value.testcases | length > 0) | .key' | sort > "$NEXTEST_TARGETS"
+cargo nextest list --manifest-path integration-tests/Cargo.toml --profile ci -T json-pretty | jq -r '.["rust-suites"] | to_entries[] | select(.value.testcases | length > 0) | .key' | sort > "$NEXTEST_TARGETS"
 
 # Extract CI matrix partition values
 info "Extracting targets from CI workflow..."
 CI_TARGETS=$(mktemp)
-yq '.jobs.test.strategy.matrix.partition[]' .github/workflows/ci.yml | sed 's/"//g' | sort > "$CI_TARGETS"
+lq -r '.jobs.test.strategy.matrix.partition[]' < .github/workflows/ci.yml | sort > "$CI_TARGETS"
 
 # Compare the lists
 info "Comparing target lists..."
@@ -501,10 +512,11 @@ set -euo pipefail
 
 info "🔧 Updating CI workflow matrix to match nextest targets..."
 
-# Extract nextest targets with non-empty testcases
+# Extract nextest targets with non-empty testcases.
+# The `ci` profile lives in integration-tests/.config/nextest.toml, so use --manifest-path.
 info "Extracting current nextest targets..."
 NEXTEST_TARGETS=$(mktemp)
-cargo nextest list --profile ci -T json-pretty | jq -r '.["rust-suites"] | to_entries[] | select(.value.testcases | length > 0) | .key' | sort > "$NEXTEST_TARGETS"
+cargo nextest list --manifest-path integration-tests/Cargo.toml --profile ci -T json-pretty | jq -r '.["rust-suites"] | to_entries[] | select(.value.testcases | length > 0) | .key' | sort > "$NEXTEST_TARGETS"
 
 echo "Found $(wc -l < "$NEXTEST_TARGETS") targets with tests:"
 cat "$NEXTEST_TARGETS" | sed 's/^/  - /'
@@ -612,3 +624,159 @@ info "Filter: $FILTER"
 makers container-test -E "$FILTER" "${@}"
 '''
 script.post = "makers notify"
+
+# -------------------------------------------------------------------
+
+[tasks.verify-all]
+description = "Exercise every Makefile.toml task for correctness (idempotent)"
+script_runner = "bash"
+script = '''
+set -uo pipefail
+
+source "./.utils/helpers.sh"
+
+VERIFY_TMPDIR=$(mktemp -d)
+PASS=0
+FAIL=0
+SKIPPED=0
+
+cleanup() {
+    info "Cleaning up verification artifacts..."
+
+    # Restore .cargo/config.toml if we saved one
+    if [[ -f "$VERIFY_TMPDIR/cargo-config.toml.bak" ]]; then
+        mkdir -p .cargo
+        cp "$VERIFY_TMPDIR/cargo-config.toml.bak" .cargo/config.toml
+    elif [[ -f "$VERIFY_TMPDIR/cargo-config-absent" ]]; then
+        rm -f .cargo/config.toml
+    fi
+
+    # Restore .cargo/.rocksdb-audit if we saved one
+    if [[ -f "$VERIFY_TMPDIR/rocksdb-audit.bak" ]]; then
+        cp "$VERIFY_TMPDIR/rocksdb-audit.bak" .cargo/.rocksdb-audit
+    elif [[ -f "$VERIFY_TMPDIR/rocksdb-audit-absent" ]]; then
+        rm -f .cargo/.rocksdb-audit
+    fi
+
+    # Remove test image if we built one
+    if [[ -f "$VERIFY_TMPDIR/image-tag" ]]; then
+        local tag
+        tag=$(cat "$VERIFY_TMPDIR/image-tag")
+        info "Removing verification image ${IMAGE_NAME}:verify-${tag}..."
+        podman rmi "${IMAGE_NAME}:verify-${tag}" 2>/dev/null || true
+    fi
+
+    # Remove temp dir
+    rm -rf "$VERIFY_TMPDIR"
+
+    echo ""
+    echo "========================================="
+    echo "verify-all: ${PASS} passed, ${FAIL} failed, ${SKIPPED} skipped"
+    echo "========================================="
+    if [[ $FAIL -gt 0 ]]; then
+        exit 1
+    fi
+}
+trap cleanup EXIT
+
+run_task() {
+    local name="$1"
+    shift
+    echo ""
+    info "--- ${name} ---"
+    if "$@" 2>&1; then
+        PASS=$((PASS + 1))
+        info "PASS: ${name}"
+    else
+        FAIL=$((FAIL + 1))
+        err "FAIL: ${name}"
+    fi
+}
+
+skip_task() {
+    local name="$1"
+    local reason="$2"
+    echo ""
+    warn "--- SKIP: ${name} (${reason}) ---"
+    SKIPPED=$((SKIPPED + 1))
+}
+
+# === Save state for idempotency ===
+if [[ -f .cargo/config.toml ]]; then
+    cp .cargo/config.toml "$VERIFY_TMPDIR/cargo-config.toml.bak"
+else
+    touch "$VERIFY_TMPDIR/cargo-config-absent"
+fi
+if [[ -f .cargo/.rocksdb-audit ]]; then
+    cp .cargo/.rocksdb-audit "$VERIFY_TMPDIR/rocksdb-audit.bak"
+else
+    touch "$VERIFY_TMPDIR/rocksdb-audit-absent"
+fi
+
+# === Tier 1: No container needed ===
+
+run_task "help" makers help
+run_task "compute-image-tag" makers compute-image-tag
+run_task "get-podman-hash" makers get-podman-hash
+run_task "init-podman-volumes" makers init-podman-volumes
+run_task "check-matching-zebras" makers check-matching-zebras
+run_task "fmt" makers fmt
+run_task "clippy" makers clippy
+run_task "doc" makers doc
+
+# Rocksdb tasks (save/restore state around them)
+if pkg-config --exists rocksdb 2>/dev/null; then
+    run_task "check-system-rocksdb" makers check-system-rocksdb
+    run_task "use-system-rocksdb" makers use-system-rocksdb
+    run_task "audit-system-rocksdb" makers audit-system-rocksdb
+    run_task "use-bundled-rocksdb" makers use-bundled-rocksdb
+else
+    skip_task "rocksdb tasks" "system rocksdb not installed"
+fi
+
+# toggle-hooks: run twice to restore original state
+run_task "toggle-hooks (on)" makers toggle-hooks
+run_task "toggle-hooks (off)" makers toggle-hooks
+
+# === Tier 2: Container build ===
+
+TAG=$(./.utils/get-ci-image-tag.sh)
+echo "$TAG" > "$VERIFY_TMPDIR/image-tag"
+
+run_task "build-image" makers build-image
+run_task "ensure-image-exists" makers ensure-image-exists
+
+# Tag a verification copy so we can clean up without affecting cached images
+podman tag "${IMAGE_NAME}:${TAG}" "${IMAGE_NAME}:verify-${TAG}" 2>/dev/null || true
+
+# === Tier 3: Container execution ===
+# One test per component: zcashd, zebrad, lightwallet gRPC, wallet-to-validator
+# Tests live in the integration-tests sub-workspace.
+ITESTS="--manifest-path integration-tests/Cargo.toml"
+
+run_task "container-test (zcashd)" makers container-test \
+    $ITESTS -E "binary(wallet_to_validator) & test(=zcashd::connect_to_node_get_info)"
+
+run_task "container-test (zebrad)" makers container-test \
+    $ITESTS -E "binary(wallet_to_validator) & test(=zebrad::state_service::connect_to_node_get_info)"
+
+run_task "container-test (lightwallet)" makers container-test \
+    $ITESTS -E "binary(state_service) & test(=zebra::lightwallet_indexer::get_block)"
+
+run_task "container-test (wallet-to-validator)" makers container-test \
+    $ITESTS -E "binary(wallet_to_validator) & test(=zcashd::sent_to::transparent)"
+
+if command -v jq &>/dev/null && command -v yq &>/dev/null; then
+    run_task "validate-test-targets" makers validate-test-targets
+else
+    skip_task "validate-test-targets" "jq or yq not installed"
+fi
+
+# === Tier 4: Destructive/CI-only (skip) ===
+
+skip_task "push-image" "pushes to registry"
+skip_task "update-test-targets" "modifies CI workflow files"
+skip_task "validate-makefile-tasks" "redundant with this task"
+skip_task "container-test-save-failures" "requires full test run"
+skip_task "container-test-retry-failures" "requires prior save-failures"
+'''

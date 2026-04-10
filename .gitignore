@@ -11,8 +11,8 @@
 !/integration-tests/chain_cache/testnet_get_subtree_roots_orchard
 .cargo
 test_binaries/
-docker_cargo/**/*
-!docker_cargo/**/.gitkeep
+podman_cargo/**/*
+!podman_cargo/**/.gitkeep
 container-target/
 .local/
 .failed-tests
