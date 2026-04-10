@@ -149,14 +149,13 @@ fn passthrough_get_transaction_status() {
         // As we only have one branch, arbitrary branch order is fine
         for (height, txid) in mockchain
             .all_blocks_arb_branch_order()
-            .map(|block| {
+            .flat_map(|block| {
                 block
                     .transactions
                     .iter()
                     .map(|transaction| (block.coinbase_height().unwrap(), transaction.hash()))
                     .collect::<Vec<_>>()
             })
-            .flatten()
         {
             let index_reader = index_reader.clone();
             let snapshot = snapshot.clone();
@@ -197,14 +196,13 @@ fn passthrough_get_raw_transaction() {
         // As we only have one branch, arbitrary branch order is fine
         for (expected_transaction, height) in mockchain
             .all_blocks_arb_branch_order()
-            .map(|block| {
+            .flat_map(|block| {
                 block
                     .transactions
                     .iter()
                     .map(|transaction| (transaction, block.coinbase_height().unwrap()))
                     .collect::<Vec<_>>()
             })
-            .flatten()
         {
             let index_reader = index_reader.clone();
             let snapshot = snapshot.clone();
