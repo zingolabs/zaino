@@ -1211,13 +1211,15 @@ async fn state_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKin
     )
     .await;
 
+    let chain_height = dbg!(state_service_subscriber.chain_height().await.unwrap()).0;
+
     let fetch_service_treestate = dbg!(fetch_service_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 
     let state_service_treestate = dbg!(state_service_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 
@@ -2611,8 +2613,10 @@ mod zebra {
             )
             .await;
 
+            let chain_height = dbg!(state_service_subscriber.chain_height().await.unwrap()).0;
+
             let second_treestate_by_height = BlockId {
-                height: 2,
+                height: chain_height as u64,
                 hash: vec![],
             };
             let fetch_service_treestate_by_height = dbg!(fetch_service_subscriber

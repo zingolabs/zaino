@@ -395,8 +395,10 @@ async fn fetch_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKin
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
+    let chain_height = dbg!(fetch_service_subscriber.chain_height().await.unwrap()).0;
+
     dbg!(fetch_service_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 
@@ -1865,8 +1867,10 @@ async fn fetch_service_get_tree_state<V: ValidatorExt>(validator: &ValidatorKind
 
     let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
+    let chain_height = dbg!(fetch_service_subscriber.chain_height().await.unwrap()).0;
+
     let block_id = BlockId {
-        height: 1,
+        height: chain_height as u64,
         hash: Vec::new(),
     };
 

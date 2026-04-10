@@ -1474,62 +1474,69 @@ impl ZcashIndexer for StateServiceSubscriber {
             .collect())
     }
 
+    /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
+    ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
+    ///       required, this second call could be removed, improving the performance of this method.
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
-        let mut state = self.read_state_service.clone();
+        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
 
-        let hash_or_height = HashOrHeight::from_str(&hash_or_height)?;
-        let block_header_response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::BlockHeader(hash_or_height)))
-            .await?;
-        let (header, hash, height) = match block_header_response {
-            ReadResponse::BlockHeader {
-                header,
-                hash,
-                height,
-                ..
-            } => (header, hash, height),
-            unexpected => {
-                unreachable!("Unexpected response from state service: {unexpected:?}")
-            }
+        let block_data = match hash_or_height_struct {
+            HashOrHeight::Hash(hash) => self
+                .indexer
+                .get_indexed_block_by_hash(&snapshot, &hash.into())
+                .await
+                .map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
+            HashOrHeight::Height(height) => self
+                .indexer
+                .get_indexed_block_by_height(&snapshot, &height.into())
+                .await
+                .map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
         };
 
-        let sapling =
-            match NetworkUpgrade::Sapling.activation_height(&self.config.network.into()) {
-                Some(activation_height) if height >= activation_height => Some(
-                    state
-                        .ready()
-                        .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
-                        .await?,
-                ),
-                _ => None,
-            }
-            .and_then(|sap_response| {
-                expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
-            });
-
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network.into()) {
-            Some(activation_height) if height >= activation_height => Some(
-                state
-                    .ready()
-                    .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
-                    .await?,
-            ),
-            _ => None,
-        }
-        .and_then(|orch_response| {
-            expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
-        });
+        let (sapling, orchard) = self
+            .indexer
+            .get_treestate(block_data.hash())
+            .await
+            .map_err(|_error| {
+                StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch treestate.",
+                ))
+            })?;
+        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+            StateServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                "Block time is out of range for u32.",
+            ))
+        })?;
 
         #[allow(deprecated)]
         Ok(GetTreestateResponse::from_parts(
-            hash,
-            height,
-            // If the timestamp is pre-unix epoch, something has gone terribly wrong
-            u32::try_from(header.time.timestamp()).unwrap(),
+            (*block_data.hash()).into(),
+            block_data.height().into(),
+            time,
             sapling,
             orchard,
         ))
