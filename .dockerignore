@@ -17,6 +17,6 @@ target/
 # Misc
 **/*.log
 
-docker_cargo/
+podman_cargo/
 container-target/
 
