@@ -150,7 +150,26 @@ where
     /// Checks indexers status and servers internal statuses for either offline of critical error signals.
     fn check_for_critical_errors(&self) -> bool {
         let status = self.status_int();
-        status == 5 || status >= 7
+        if status == 5 || status >= 7 {
+            let service_status = self
+                .service
+                .as_ref()
+                .map(|s| s.inner_ref().status())
+                .unwrap_or(StatusType::Offline);
+            let server_status = self
+                .server
+                .as_ref()
+                .map(|s| s.status())
+                .unwrap_or(StatusType::Offline);
+            tracing::error!(
+                status_int = status,
+                ?service_status,
+                ?server_status,
+                "check_for_critical_errors triggered"
+            );
+            return true;
+        }
+        false
     }
 
     /// Checks indexers status and servers internal status for closure signal.
