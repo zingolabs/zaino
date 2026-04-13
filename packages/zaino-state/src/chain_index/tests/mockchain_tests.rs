@@ -81,24 +81,22 @@ async fn get_transaction_status() {
         load_test_vectors_and_sync_chain_index(false).await;
     let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
 
-    for (expected_transaction, block_hash, block_height) in
-        blocks.into_iter().flat_map(|block| {
-            block
-                .zebra_block
-                .transactions
-                .iter()
-                .cloned()
-                .map(|transaction| {
-                    (
-                        transaction,
-                        block.zebra_block.hash(),
-                        block.zebra_block.coinbase_height(),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-        })
-    {
+    for (expected_transaction, block_hash, block_height) in blocks.into_iter().flat_map(|block| {
+        block
+            .zebra_block
+            .transactions
+            .iter()
+            .cloned()
+            .map(|transaction| {
+                (
+                    transaction,
+                    block.zebra_block.hash(),
+                    block.zebra_block.coinbase_height(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+    }) {
         let expected_txid = expected_transaction.hash();
 
         let (transaction_status_best_chain, transaction_status_nonbest_chain) = index_reader
@@ -259,18 +257,17 @@ async fn get_mempool_transactions() {
         .unwrap_or_default();
     mempool_transactions.sort_by_key(|a| a.hash());
 
-    let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
-        index_reader
-            .get_mempool_transactions(Vec::new())
-            .await
-            .unwrap()
-            .iter()
-            .map(|txn_bytes| {
-                txn_bytes
-                    .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
-                    .unwrap()
-            })
-            .collect();
+    let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> = index_reader
+        .get_mempool_transactions(Vec::new())
+        .await
+        .unwrap()
+        .iter()
+        .map(|txn_bytes| {
+            txn_bytes
+                .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
+                .unwrap()
+        })
+        .collect();
     found_mempool_transactions.sort_by_key(|a| a.hash());
     assert_eq!(
         mempool_transactions
@@ -307,18 +304,17 @@ async fn get_filtered_mempool_transactions() {
     let exclude_txid = exclude_tx.hash().to_string();
     mempool_transactions.sort_by_key(|a| a.hash());
 
-    let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
-        index_reader
-            .get_mempool_transactions(vec![exclude_txid])
-            .await
-            .unwrap()
-            .iter()
-            .map(|txn_bytes| {
-                txn_bytes
-                    .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
-                    .unwrap()
-            })
-            .collect();
+    let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> = index_reader
+        .get_mempool_transactions(vec![exclude_txid])
+        .await
+        .unwrap()
+        .iter()
+        .map(|txn_bytes| {
+            txn_bytes
+                .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
+                .unwrap()
+        })
+        .collect();
     found_mempool_transactions.sort_by_key(|a| a.hash());
     assert_eq!(mempool_transactions.len(), found_mempool_transactions.len());
     assert_eq!(
