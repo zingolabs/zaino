@@ -591,9 +591,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 status.store(StatusType::Syncing);
 
                 let sync_result: Result<(), SyncError> = async {
-                    fn source_error(
-                        error: impl std::error::Error + Send + 'static,
-                    ) -> SyncError {
+                    fn source_error(error: impl std::error::Error + Send + 'static) -> SyncError {
                         SyncError::ErrorFromSource(Box::new(error))
                     }
 

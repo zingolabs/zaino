@@ -162,7 +162,7 @@ where
                 .map(|s| s.status())
                 .unwrap_or(StatusType::Offline);
             tracing::error!(
-                status_int = status,
+                combined_status = status,
                 ?service_status,
                 ?server_status,
                 "check_for_critical_errors triggered"
