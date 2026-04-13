@@ -17,7 +17,7 @@ use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{CompactBlockStream, NamedAtomicStatus, NodeConnectionError, StatusType, SyncError};
+use crate::{CompactBlockStream, NamedAtomicStatus, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -545,6 +545,34 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
     #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
+        const SYNC_LOOP_INTERVAL: Duration = Duration::from_millis(500);
+        const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+        const MAX_BACKOFF: Duration = Duration::from_secs(8);
+        const MAX_CONSECUTIVE_FAILURES: u32 = 10;
+
+        /// Returns `Ok(backoff_duration)` if the caller should retry, or
+        /// `Err(())` if the failure limit has been reached.
+        fn exponential_backoff(
+            consecutive_failures: u32,
+            current_backoff: Duration,
+            error: &SyncError,
+        ) -> Result<Duration, ()> {
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                tracing::error!(
+                    "Sync loop failed {consecutive_failures} consecutive times, \
+                     giving up: {error:?}"
+                );
+                return Err(());
+            }
+
+            let next_backoff = (current_backoff * 2).min(MAX_BACKOFF);
+            tracing::warn!(
+                "Sync loop iteration failed ({consecutive_failures}/\
+                 {MAX_CONSECUTIVE_FAILURES}), retrying in {current_backoff:?}: {error:?}"
+            );
+            Ok(next_backoff)
+        }
+
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
@@ -552,64 +580,68 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let source = self.non_finalized_state.source.clone();
 
         tokio::task::spawn(async move {
-            let result: Result<(), SyncError> = async {
-                loop {
-                    if status.load() == StatusType::Closing {
-                        break;
+            let mut consecutive_failures: u32 = 0;
+            let mut current_backoff = INITIAL_BACKOFF;
+
+            loop {
+                if status.load() == StatusType::Closing {
+                    return Ok(());
+                }
+
+                status.store(StatusType::Syncing);
+
+                let sync_result: Result<(), SyncError> = async {
+                    fn source_error(
+                        error: impl std::error::Error + Send + 'static,
+                    ) -> SyncError {
+                        SyncError::ErrorFromSource(Box::new(error))
                     }
 
-                    status.store(StatusType::Syncing);
-
-                    // Sync fs to chain tip - 100.
                     let chain_height = source
                         .clone()
                         .get_best_block_height()
                         .await
-                        .map_err(|error| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(error)),
-                            )
-                        })?
+                        .map_err(source_error)?
                         .ok_or_else(|| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(
-                                    std::io::Error::other("node returned no best block height"),
-                                )),
-                            )
+                            source_error(std::io::Error::other(
+                                "node returned no best block height",
+                            ))
                         })?;
                     let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
 
-                    // TODO / FIX: Improve error handling here, fix and rebuild db on error.
                     fs.sync_to_height(finalised_height, &source)
                         .await
-                        .map_err(|error| {
-                            SyncError::ValidatorConnectionError(
-                                NodeConnectionError::UnrecoverableError(Box::new(error)),
-                            )
-                        })?;
+                        .map_err(source_error)?;
 
-                    // Sync nfs to chain tip, trimming blocks to finalized tip.
                     nfs.sync(fs.clone()).await?;
 
-                    status.store(StatusType::Ready);
-                    // TODO: configure sleep duration?
-                    tokio::time::sleep(Duration::from_millis(500)).await
-                    // TODO: Check for shutdown signal.
+                    Ok(())
                 }
-                Ok(())
+                .await;
+
+                match sync_result {
+                    Ok(()) => {
+                        consecutive_failures = 0;
+                        current_backoff = INITIAL_BACKOFF;
+                        status.store(StatusType::Ready);
+                        tokio::time::sleep(SYNC_LOOP_INTERVAL).await;
+                    }
+                    Err(e) => {
+                        consecutive_failures += 1;
+                        match exponential_backoff(consecutive_failures, current_backoff, &e) {
+                            Ok(next_backoff) => {
+                                status.store(StatusType::RecoverableError);
+                                tokio::time::sleep(current_backoff).await;
+                                current_backoff = next_backoff;
+                            }
+                            Err(()) => {
+                                status.store(StatusType::CriticalError);
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
             }
-            .await;
-
-            // If the sync loop exited unexpectedly with an error, set CriticalError
-            // so that liveness checks can detect the failure.
-            if let Err(e) = result {
-                tracing::error!("Sync loop exited with error: {e:?}");
-                status.store(StatusType::CriticalError);
-
-                return Err(e);
-            }
-
-            result
         })
     }
 }
