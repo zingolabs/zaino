@@ -906,6 +906,7 @@ mod zcashd {
             validate_address_inner().await;
         }
 
+        #[allow(deprecated)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_validate_address() {
             let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, _zaino_sub) =

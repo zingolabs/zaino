@@ -1,6 +1,17 @@
 //! Types associated with the `z_validateaddress` RPC request.
+//!
+//! # Deprecation
+//!
+//! Delegating address validation to a non-client actor encourages information
+//! leakage. This service is only offered for bugwards compatibility, and
+//! **WILL BE REMOVED**.
 
 use std::collections::BTreeMap;
+
+/// Deprecation notice for the `z_validateaddress` endpoint. Emitted at
+/// runtime via `tracing::warn!` and referenced in doc comments. The
+/// `#[deprecated]` attributes point to the tracking issue instead.
+pub const DEPRECATION_NOTICE: &str = "z_validateaddress is deprecated: delegating address validation to a non-client actor encourages information leakage. This service is only offered for bugwards compatibility with zcashd, and WILL BE REMOVED.";
 
 use serde::{
     de,

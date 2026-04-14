@@ -5,7 +5,9 @@ use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
-use zaino_fetch::jsonrpsee::response::z_validate_address::ZValidateAddressResponse;
+use zaino_fetch::jsonrpsee::response::z_validate_address::{
+    ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
+};
 use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -150,6 +152,10 @@ pub trait ZcashIndexerRpc {
     ) -> Result<ValidateAddressResponse, ErrorObjectOwned>;
 
     /// Return information about the given address.
+    ///
+    /// # Deprecation
+    ///
+    /// See [`DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
     ///
     /// # Parameters
     /// - `address`: (string, required) The address to validate.
@@ -566,11 +572,12 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             })
     }
 
+    #[allow(deprecated)]
     async fn z_validate_address(
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, ErrorObjectOwned> {
-        tracing::debug!("Sending ZValidateAddress to jsonRPC inner Indexer.");
+        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
         self.service_subscriber
             .inner_ref()
             .z_validate_address(address)

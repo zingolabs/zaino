@@ -34,7 +34,9 @@ use zaino_fetch::{
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            z_validate_address::ZValidateAddressResponse,
+            z_validate_address::{
+                ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
+            },
             GetMempoolInfoResponse, GetNetworkSolPsResponse,
         },
     },
@@ -509,11 +511,12 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.validate_address(address).await?)
     }
 
+    #[allow(deprecated)]
     async fn z_validate_address(
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
-        tracing::debug!("Triggering fetch service fetcher z_validate_address.");
+        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
         Ok(self.fetcher.z_validate_address(address).await?)
     }
 

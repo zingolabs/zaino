@@ -2222,6 +2222,7 @@ mod zebra {
         mod z {
             use super::*;
 
+            #[allow(deprecated)]
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn z_validate_address() {
                 let (

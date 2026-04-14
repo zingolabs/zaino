@@ -35,6 +35,7 @@ use zaino_fetch::{
             peer_info::GetPeerInfo,
             z_validate_address::{
                 InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
+                DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
@@ -1027,8 +1028,11 @@ impl StateServiceSubscriber {
 /// Extracts the diversifier and pk_d bytes from a validated Sapling
 /// [`PaymentAddress`], returning pk_d in zcashd's big-endian byte order.
 ///
-/// This function exists to support the `z_validateaddress` RPC endpoint,
-/// which itself exists solely for zcashd compatibility. The pk_d bytes are
+/// # Deprecation
+///
+/// See [`DEPRECATION_NOTICE`]. This function exists to support the
+/// `z_validateaddress` RPC endpoint, which itself exists solely for zcashd
+/// compatibility. The pk_d bytes are
 /// reversed from `sapling-crypto`'s native little-endian representation to
 /// match zcashd's big-endian hex output.
 ///
@@ -1639,11 +1643,12 @@ impl ZcashIndexer for StateServiceSubscriber {
         })
     }
 
+    #[allow(deprecated)]
     async fn z_validate_address(
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
-        tracing::debug!("State service backend z_validate_address.");
+        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
 
         let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
             return Ok(ZValidateAddressResponse::Known(
@@ -2847,7 +2852,11 @@ mod tests {
         }
 
         let chunk_swap = |size: usize| -> Vec<u8> {
-            actual.chunks(size).flat_map(|c| c.iter().rev()).copied().collect()
+            actual
+                .chunks(size)
+                .flat_map(|c| c.iter().rev())
+                .copied()
+                .collect()
         };
 
         let mut reversed = actual.to_vec();
@@ -2967,7 +2976,11 @@ mod tests {
             ByteRelation::PerByteBitReversal,
         );
 
-        let swapped_16: Vec<u8> = original.chunks(2).flat_map(|c| c.iter().rev()).copied().collect();
+        let swapped_16: Vec<u8> = original
+            .chunks(2)
+            .flat_map(|c| c.iter().rev())
+            .copied()
+            .collect();
         assert_eq!(
             classify_byte_relation(&original, &swapped_16),
             ByteRelation::ChunkSwap16,

@@ -359,12 +359,17 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Return information about the given address.
     ///
+    /// # Deprecation
+    ///
+    /// See [`z_validate_address::DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
+    ///
     /// # Parameters
     /// - `address`: (string, required) The address to validate.
     ///
     /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
+    #[deprecated(note = "https://github.com/zingolabs/zaino/issues/992#issuecomment-4245596178")]
     async fn z_validate_address(
         &self,
         address: String,
