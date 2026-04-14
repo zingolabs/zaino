@@ -422,8 +422,6 @@ impl Serialize for AddressData {
                 diversified_transmission_key,
                 ..
             } => {
-                dbg!(&diversifier);
-                dbg!(&diversified_transmission_key);
                 if let Some(d) = diversifier {
                     map.serialize_entry("diversifier", d)?;
                 }
@@ -534,8 +532,6 @@ impl<'de> Deserialize<'de> for AddressData {
                     .and_then(|s| s.as_str())
                     .map(str::to_owned);
 
-                dbg!(&diversifier);
-                dbg!(&diversified_transmission_key);
                 AddressData::Sapling {
                     common,
                     diversifier,
