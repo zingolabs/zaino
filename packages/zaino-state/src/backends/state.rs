@@ -1024,6 +1024,30 @@ impl StateServiceSubscriber {
     }
 }
 
+/// Extracts the diversifier and pk_d bytes from a validated Sapling
+/// [`PaymentAddress`].
+///
+/// # Precondition
+///
+/// The caller must have obtained `s` through [`PaymentAddress::from_bytes`] or
+/// equivalent (e.g. `ZcashAddress::convert_if_network`), which guarantees the
+/// diversifier has a valid `g_d()` and pk_d is a non-identity Jubjub subgroup
+/// point. No additional validation is performed here.
+///
+/// # Layout
+///
+/// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
+/// `DiversifiedTransmissionKey::to_bytes()` is `pub(crate)` in `sapling-crypto`,
+/// so we extract pk_d from the serialized form. The pk_d bytes are reversed to
+/// match zcashd's big-endian hex representation.
+fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
+    let bytes = s.to_bytes();
+    let diversifier: [u8; 11] = bytes[..11].try_into().unwrap();
+    let mut pk_d: [u8; 32] = bytes[11..].try_into().unwrap();
+    pk_d.reverse();
+    (diversifier, pk_d)
+}
+
 #[async_trait]
 // #[allow(deprecated)]
 impl ZcashIndexer for StateServiceSubscriber {
@@ -1651,17 +1675,10 @@ impl ZcashIndexer for StateServiceSubscriber {
                 u.encode(&self.network().to_zebra_network()),
             )),
             Address::Sapling(s) => {
-                // PaymentAddress is 43 bytes: 11-byte diversifier || 32-byte pk_d.
-                // DiversifiedTransmissionKey::to_bytes() is pub(crate), so we
-                // extract pk_d from the serialized form. The bytes are reversed
-                // to match zcashd's big-endian hex representation.
-                let bytes = s.to_bytes();
-                let mut pk_d = bytes[11..].to_vec();
-                pk_d.reverse();
-
+                let (diversifier, pk_d) = sapling_key_bytes(&s);
                 Ok(ZValidateAddressResponse::sapling(
                     s.encode(&self.network().to_zebra_network()),
-                    Some(hex::encode(s.diversifier().0)),
+                    Some(hex::encode(diversifier)),
                     Some(hex::encode(pk_d)),
                 ))
             }
@@ -2859,13 +2876,10 @@ mod tests {
     ///
     /// # Guarantees
     ///
-    /// - The 11-byte diversifier extracted via `PaymentAddress::diversifier()`
-    ///   matches the zcashd-derived test vector when hex-encoded.
-    /// - The 32-byte pk_d extracted from `PaymentAddress::to_bytes()[11..]`
-    ///   and byte-reversed matches the zcashd-derived test vector. This
-    ///   confirms the big-endian reversal is necessary and correct.
-    /// - The hardcoded byte offset (11) agrees with the Sapling spec:
-    ///   a `PaymentAddress` is `diversifier (11 bytes) || pk_d (32 bytes)`.
+    /// - Exercises the production `sapling_key_bytes` function directly.
+    /// - The 11-byte diversifier matches the zcashd-derived test vector.
+    /// - The 32-byte pk_d (after the endian reversal inside `sapling_key_bytes`)
+    ///   matches the zcashd-derived test vector.
     /// - If the upstream serialization changes, the failure message
     ///   classifies the mismatch (endian swap, bit-reversal, chunk swap,
     ///   or unrecognized) to aid diagnosis.
@@ -2875,13 +2889,12 @@ mod tests {
     /// - Does not prove the test vector constants themselves are correct;
     ///   they were captured from zcashd and are trusted as ground truth.
     /// - Does not exercise the full `z_validate_address` RPC path through
-    ///   `StateService` — only the byte extraction logic.
+    ///   `StateService` — only the `sapling_key_bytes` extraction function.
     /// - Does not verify behavior for malformed Sapling addresses or
     ///   addresses on other networks (mainnet, testnet).
-    /// - Does not test the `DiversifiedTransmissionKey` internal
-    ///   representation — only its serialized form via `to_bytes()`.
     #[test]
     fn sapling_pk_d_byte_order_matches_test_vector() {
+        use super::sapling_key_bytes;
         use zcash_keys::address::Address;
         use zcash_protocol::consensus::NetworkType;
 
@@ -2901,35 +2914,29 @@ mod tests {
             panic!("expected Sapling address");
         };
 
-        // Diversifier: first 11 bytes of the 43-byte serialization
-        let diversifier_hex = hex::encode(s.diversifier().0);
-        assert_eq!(diversifier_hex, EXPECTED_DIVERSIFIER);
+        let (diversifier, pk_d) = sapling_key_bytes(&s);
 
-        // pk_d raw bytes from the serialized PaymentAddress
-        let bytes = s.to_bytes();
-        let raw_pk_d = &bytes[11..];
+        let expected_diversifier = hex::decode(EXPECTED_DIVERSIFIER).unwrap();
         let expected_pk_d = hex::decode(EXPECTED_PK_D).unwrap();
 
-        // The raw bytes should NOT match the expected output directly —
-        // if they do, the reversal in production code is unnecessary and wrong.
-        match classify_byte_relation(raw_pk_d, &expected_pk_d) {
-            ByteRelation::Equal => panic!(
-                "raw pk_d bytes match expected WITHOUT reversal — \
-                 the .reverse() in z_validate_address is no longer needed"
+        // Diversifier
+        match classify_byte_relation(&diversifier, &expected_diversifier) {
+            ByteRelation::Equal => {}
+            relation => panic!(
+                "diversifier mismatch.\n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(diversifier),
+                hex::encode(expected_diversifier),
             ),
-            _ => {} // expected: raw != expected (reversal is still needed)
         }
 
-        // After reversal they must match. On failure, diagnose the mismatch.
-        let mut reversed_pk_d = raw_pk_d.to_vec();
-        reversed_pk_d.reverse();
-        match classify_byte_relation(&reversed_pk_d, &expected_pk_d) {
-            ByteRelation::Equal => {} // pass
+        // pk_d (sapling_key_bytes already applies the endian reversal)
+        match classify_byte_relation(&pk_d, &expected_pk_d) {
+            ByteRelation::Equal => {}
             relation => panic!(
-                "pk_d mismatch after byte-reversal — upstream serialization \
-                 may have changed.\n  relation: {relation}\n  actual:   {}\n  expected: {}",
-                hex::encode(&reversed_pk_d),
-                hex::encode(&expected_pk_d),
+                "pk_d mismatch — upstream serialization may have changed.\
+                \n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(pk_d),
+                hex::encode(expected_pk_d),
             ),
         }
     }
