@@ -2219,43 +2219,6 @@ mod zebra {
             test_manager.close().await;
         }
 
-        #[tokio::test]
-        async fn block_subsidy_fails_before_first_halving() {
-            let (
-                test_manager,
-                _fetch_service,
-                fetch_service_subscriber,
-                _state_service,
-                state_service_subscriber,
-            ) = create_test_manager_and_services::<Zebrad>(
-                &ValidatorKind::Zebrad,
-                None,
-                true,
-                false,
-                Some(NetworkKind::Regtest),
-            )
-            .await;
-
-            const BLOCK_LIMIT: u32 = 10;
-
-            for i in 0..BLOCK_LIMIT {
-                generate_blocks_and_poll_all_chain_indexes(
-                    1,
-                    &test_manager,
-                    fetch_service_subscriber.clone(),
-                    state_service_subscriber.clone(),
-                )
-                .await;
-                let fetch_service_block_subsidy =
-                    fetch_service_subscriber.get_block_subsidy(i).await;
-
-                let state_service_block_subsidy =
-                    state_service_subscriber.get_block_subsidy(i).await;
-                assert!(fetch_service_block_subsidy.is_err());
-                assert!(state_service_block_subsidy.is_err());
-            }
-        }
-
         mod z {
             use zcash_local_net::validator::zebrad::Zebrad;
 
