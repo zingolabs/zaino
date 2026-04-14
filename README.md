@@ -50,7 +50,9 @@ docs/                              Architecture diagrams, specs, and usage guide
 Dockerfile                         Production container image
 entrypoint.sh                      Production container entrypoint
 .config/containers.conf            Rootless podman defaults (userns, security)
-.utils/                            Shell helpers, makefiles (lints, rocksdb, notify)
+tools/                             Development tools, shell helpers, makefiles
+  scripts/                           Shell scripts (CI tag computation, helpers, lints)
+  makefiles/                         cargo-make task definitions (lints, rocksdb, notify)
 .github/                           CI workflows and issue templates
 .githooks/                         Git hooks (pre-push)
 Makefile.toml                      cargo-make task definitions

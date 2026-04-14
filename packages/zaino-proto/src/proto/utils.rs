@@ -52,9 +52,9 @@ pub fn pool_types_into_i32_vec(pool_types: Vec<PoolType>) -> Vec<i32> {
 
 /// Errors that can be present in the request of the GetBlockRange RPC
 pub enum GetBlockRangeError {
-    /// Error: No start height given.    
+    /// Error: No start height given.
     NoStartHeightProvided,
-    /// Error: No end height given.    
+    /// Error: No end height given.
     NoEndHeightProvided,
     /// Start height out of range. Failed to convert to u32.
     StartHeightOutOfRange,

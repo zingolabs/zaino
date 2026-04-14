@@ -12,7 +12,7 @@ zaino-proto
 ├── build.rs.bak
 ├── Cargo.toml
 ├── CHANGELOG.md
-├── lightwallet-protocol <=== this is the git subtree 
+├── lightwallet-protocol <=== this is the git subtree
 │   ├── CHANGELOG.md
 │   ├── LICENSE
 │   └── walletrpc

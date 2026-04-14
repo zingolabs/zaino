@@ -1,7 +1,7 @@
 extend = [
-    { path = ".utils/makefiles/lints.toml" },
-    { path = ".utils/makefiles/notify.toml" },
-    { path = ".utils/makefiles/rocksdb.toml" },
+    { path = "tools/makefiles/lints.toml" },
+    { path = "tools/makefiles/notify.toml" },
+    { path = "tools/makefiles/rocksdb.toml" },
 ]
 env_files = [".env.testing-artifacts"]
 
@@ -73,15 +73,15 @@ echo "    ├── Containerfile                 Containerfile for CI/test cont
 echo "    └── entrypoint.sh                Entrypoint script that sets up test binaries"
 echo ""
 echo "Helpers:"
-echo "  - .utils/get-ci-image-tag.sh: computes the version-based image tag"
-echo "  - .utils/helpers.sh: logging and helper functions"
+echo "  - tools/scripts/get-ci-image-tag.sh: computes the version-based image tag"
+echo "  - tools/scripts/helpers.sh: logging and helper functions"
 echo ""
 '''
 
 [tasks.base-script]
 script.pre = '''
-source "./.utils/helpers.sh"
-TAG=$(./.utils/get-ci-image-tag.sh)
+source "./tools/scripts/helpers.sh"
+TAG=$(./tools/scripts/get-ci-image-tag.sh)
 
 # Generic cleanup function for containers
 podman_cleanup() {
@@ -140,7 +140,7 @@ done
 [tasks.compute-image-tag]
 description = "Compute image tag from version vars"
 script = '''
-TAG=$(./.utils/get-ci-image-tag.sh)
+TAG=$(./tools/scripts/get-ci-image-tag.sh)
 echo "CARGO_MAKE_IMAGE_TAG=$TAG"
 export CARGO_MAKE_IMAGE_TAG=$TAG
 '''
@@ -150,7 +150,7 @@ export CARGO_MAKE_IMAGE_TAG=$TAG
 description = "Get the current CONTAINER_DIR_HASH"
 script_runner = "bash"
 script = '''
-HASH=$(./.utils/get-container-hash.sh)
+HASH=$(./tools/scripts/get-container-hash.sh)
 echo "CONTAINER_DIR_HASH=$HASH"
 '''
 
@@ -205,7 +205,7 @@ info "Building image"
 info "Tag: ${TAG}"
 info "Target: $TARGET"
 info "Current directory: $(pwd)"
-info "Files in .utils/: $(ls -la .utils/ | head -5)"
+info "Files in tools/scripts/: $(ls -la tools/scripts/ | head -5)"
 
 cd integration-tests/test_environment && \
 podman build -f Containerfile \
@@ -416,7 +416,7 @@ fn get_image_tag() -> Result<String, Box<dyn std::error::Error>> {
 
     println!("DEBUG: Computing tag with script...");
     // Otherwise compute it
-    let output = Command::new("./.utils/get-ci-image-tag.sh")
+    let output = Command::new("./tools/scripts/get-ci-image-tag.sh")
         .output()?;
 
     if !output.status.success() {
@@ -624,7 +624,7 @@ script_runner = "bash"
 script = '''
 set -uo pipefail
 
-source "./.utils/helpers.sh"
+source "./tools/scripts/helpers.sh"
 
 VERIFY_TMPDIR=$(mktemp -d)
 PASS=0
@@ -731,7 +731,7 @@ run_task "toggle-hooks (off)" makers toggle-hooks
 
 # === Tier 2: Container build ===
 
-TAG=$(./.utils/get-ci-image-tag.sh)
+TAG=$(./tools/scripts/get-ci-image-tag.sh)
 echo "$TAG" > "$VERIFY_TMPDIR/image-tag"
 
 run_task "build-image" makers build-image

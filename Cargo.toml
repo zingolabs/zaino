@@ -27,7 +27,7 @@ version = "0.2.0"
 
 [workspace.dependencies]
 
-# Zingo 
+# Zingo
 
 zingo_common_components =  "0.3.0"
 zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
