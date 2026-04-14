@@ -1025,7 +1025,12 @@ impl StateServiceSubscriber {
 }
 
 /// Extracts the diversifier and pk_d bytes from a validated Sapling
-/// [`PaymentAddress`].
+/// [`PaymentAddress`], returning pk_d in zcashd's big-endian byte order.
+///
+/// This function exists to support the `z_validateaddress` RPC endpoint,
+/// which itself exists solely for zcashd compatibility. The pk_d bytes are
+/// reversed from `sapling-crypto`'s native little-endian representation to
+/// match zcashd's big-endian hex output.
 ///
 /// # Precondition
 ///
@@ -1038,8 +1043,7 @@ impl StateServiceSubscriber {
 ///
 /// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
 /// `DiversifiedTransmissionKey::to_bytes()` is `pub(crate)` in `sapling-crypto`,
-/// so we extract pk_d from the serialized form. The pk_d bytes are reversed to
-/// match zcashd's big-endian hex representation.
+/// so we extract pk_d from the serialized form.
 fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
     let bytes = s.to_bytes();
     let diversifier: [u8; 11] = bytes[..11].try_into().unwrap();
