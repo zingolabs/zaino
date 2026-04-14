@@ -146,7 +146,9 @@ fn run_exists(conn: &Connection, test_name: &str, commit: &str, versions: &Versi
     .is_ok()
 }
 
-fn list_tests() -> Vec<String> {
+/// Returns (test_name, binary_name) pairs from `cargo nextest list`.
+/// Binary names are the `--test` argument for scoped builds.
+fn list_tests() -> Vec<(String, String)> {
     let output = Command::new("cargo")
         .args([
             "nextest",
@@ -160,20 +162,46 @@ fn list_tests() -> Vec<String> {
         .output()
         .expect("failed to run cargo nextest list");
 
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.starts_with("    ") && line.contains("::"))
-        .map(|line| line.trim().trim_end_matches(':').to_string())
-        .collect()
+    let mut results = Vec::new();
+    let mut current_binary = String::new();
+
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if !line.starts_with(' ') && line.contains("::") && line.ends_with(':') {
+            // Binary header like "integration-tests::test_vectors:"
+            // Extract the part after the last "::" before the trailing ":"
+            let trimmed = line.trim_end_matches(':');
+            current_binary = trimmed
+                .rsplit("::")
+                .next()
+                .unwrap_or(trimmed)
+                .to_string();
+        } else if line.starts_with("    ") && !current_binary.is_empty() {
+            let test_name = line.trim().trim_end_matches(':').to_string();
+            if !test_name.is_empty() {
+                results.push((test_name, current_binary.clone()));
+            }
+        }
+    }
+
+    results
 }
 
-fn collect_coverage(test_name: &str) -> Option<serde_json::Value> {
+fn resolve_test_binary(test_name: &str) -> Option<String> {
+    list_tests()
+        .into_iter()
+        .find(|(name, _)| name == test_name)
+        .map(|(_, binary)| binary)
+}
+
+fn collect_coverage(test_name: &str, binary: &str) -> Option<serde_json::Value> {
     let output = Command::new("cargo")
         .args([
             "llvm-cov",
             "nextest",
             "--manifest-path",
             "integration-tests/Cargo.toml",
+            "--test",
+            binary,
             "-E",
             &format!("test(={test_name})"),
             "--json",
@@ -288,19 +316,24 @@ fn main() {
                 return;
             }
 
+            let binary = resolve_test_binary(&test).unwrap_or_else(|| {
+                eprintln!("Could not find binary for test: {test}");
+                std::process::exit(1);
+            });
+
             eprintln!(
-                "Collecting coverage for: {test} (zainod={}, zcashd={}, zebrad={})",
+                "Collecting coverage for: {test} (binary={binary}, zainod={}, zcashd={}, zebrad={})",
                 versions.zainod, versions.zcashd, versions.zebrad,
             );
-            if let Some(json) = collect_coverage(&test) {
+            if let Some(json) = collect_coverage(&test, &binary) {
                 store_coverage(&conn, &test, &commit, &versions, &json)
                     .expect("failed to store coverage");
                 eprintln!("Done. Database: {db_path}");
             }
         }
         Cmd::ListTests => {
-            for test in list_tests() {
-                println!("{test}");
+            for (test, binary) in list_tests() {
+                println!("{binary}\t{test}");
             }
         }
         Cmd::Show { test, file } => {
