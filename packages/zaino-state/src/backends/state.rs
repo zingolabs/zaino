@@ -87,7 +87,13 @@ use chrono::{DateTime, Utc};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::{HashMap, HashSet}, error::Error, fmt, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt,
+    str::FromStr,
+    sync::Arc,
+};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
