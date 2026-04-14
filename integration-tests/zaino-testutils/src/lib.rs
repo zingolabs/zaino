@@ -493,18 +493,16 @@ where
             clients,
         };
 
-        // Generate an extra block to turn on NU5 and NU6,
-        // as they currently must be turned on at block height = 2.
-        // NOTE: if this is removed when zebra fixes this issue we must replace with a generate_block_and_poll(0) when
-        // zaino is enabled to ensure its ready and not still syncing
-        if enable_zaino {
-            test_manager.generate_blocks_and_poll(1).await;
-        } else {
-            test_manager.local_net.generate_blocks(1).await.unwrap();
-        }
+        test_manager.activate_nu5_nu6(enable_zaino).await;
+        Ok(test_manager)
+    }
 
-        // Wait for zaino to be ready to serve requests
-        if let Some(ref subscriber) = test_manager.service_subscriber {
+    /// Waits for zaino to be ready, then generates a block to activate NU5/NU6.
+    ///
+    /// Must be called after construction because `generate_blocks_and_poll`
+    /// connects to the gRPC server, which must be listening first.
+    async fn activate_nu5_nu6(&self, enable_zaino: bool) {
+        if let Some(ref subscriber) = self.service_subscriber {
             debug!("[TEST] Waiting for Zaino to be ready");
             poll_until_ready(
                 subscriber,
@@ -514,8 +512,15 @@ where
             .await;
         }
 
+        // Generate an extra block to turn on NU5 and NU6,
+        // as they currently must be turned on at block height = 2.
+        if enable_zaino {
+            self.generate_blocks_and_poll(1).await;
+        } else {
+            self.local_net.generate_blocks(1).await.unwrap();
+        }
+
         debug!("[TEST] Test environment ready");
-        Ok(test_manager)
     }
 
     /// Generate `n` blocks for the local network and poll zaino via gRPC until the chain index is synced to the target height.

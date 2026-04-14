@@ -93,11 +93,13 @@ impl std::error::Error for MissingBlockError {}
 #[derive(Debug, thiserror::Error)]
 /// An error occurred during sync of the NonFinalized State.
 pub enum SyncError {
-    /// The backing validator node returned corrupt, invalid, or incomplete data
-    /// TODO: This may not be correctly disambibuated from temporary network issues
-    /// in the fetchservice case.
+    /// The backing validator node returned corrupt, invalid, or incomplete data.
     #[error("failed to connect to validator: {0:?}")]
     ValidatorConnectionError(NodeConnectionError),
+    /// The blockchain source returned a transient error (e.g. node temporarily
+    /// unreachable). The sync loop should retry.
+    #[error("transient source error: {0}")]
+    ErrorFromSource(Box<dyn std::error::Error + Send>),
     /// The channel used to store new blocks has been closed. This should only happen
     /// during shutdown.
     #[error("staging channel closed. Shutdown in progress")]
