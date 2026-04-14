@@ -99,14 +99,14 @@ pub(crate) mod transparent_address_history;
 /// compile-time. The path is relative to this source file.
 ///
 /// 1. Bring the *exact* ASCII description of the on-disk layout into the binary at compile-time.
-pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1_0.txt");
+pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
 
 /*
 2. Compute the checksum once, outside the code:
 
-       $ cd zaino-state/src/chain_index/finalised_state/db
-       $ b2sum -l 256 db_schema_v1_0.txt
-       bc135247b46bb46a4a971e4c2707826f8095e662b6919d28872c71b6bd676593  db_schema_v1_0.txt
+       $ cd packages/zaino-state/src/chain_index/finalised_state/db
+       $ b2sum -l 256 db_schema_v1.txt
+       => [HASH]  db_schema_v1.txt
 
    Optional helper if you don’t have `b2sum`:
 
@@ -118,8 +118,7 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1_0.txt");
 
 3. Turn those 64 hex digits into a Rust `[u8; 32]` literal:
 
-       echo bc135247b46bb46a4a971e4c2707826f8095e662b6919d28872c71b6bd676593 \
-       | sed 's/../0x&, /g' | fold -s -w48
+       $ echo [HASH] | sed 's/../0x&, /g' | fold -s -w48
 
 */
 
@@ -128,14 +127,14 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1_0.txt");
 /// This value is compared against the schema hash stored in the metadata record to detect schema
 /// drift without a corresponding version bump.
 pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0xbc, 0x13, 0x52, 0x47, 0xb4, 0x6b, 0xb4, 0x6a, 0x4a, 0x97, 0x1e, 0x4c, 0x27, 0x07, 0x82, 0x6f,
-    0x80, 0x95, 0xe6, 0x62, 0xb6, 0x91, 0x9d, 0x28, 0x87, 0x2c, 0x71, 0xb6, 0xbd, 0x67, 0x65, 0x93,
+    0xa8, 0x19, 0x61, 0x50, 0xff, 0xb6, 0x9e, 0xf8, 0xb2, 0xb5, 0x31, 0x80, 0xdd, 0x90, 0xd0, 0x67,
+    0x41, 0x57, 0xfc, 0x51, 0x39, 0xa1, 0x3a, 0xbe, 0xce, 0x70, 0x4e, 0x51, 0x55, 0xc3, 0x3a, 0x0a,
 ];
 
 /// *Current* database V1 version.
 pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
     major: 1,
-    minor: 0,
+    minor: 1,
     patch: 0,
 };
 
