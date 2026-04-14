@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
 use clap::{Parser, Subcommand};
@@ -34,28 +35,41 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
-fn init_db(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS runs (
-            id INTEGER PRIMARY KEY,
-            test_name TEXT NOT NULL,
-            commit_hash TEXT NOT NULL,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            raw_json BLOB,
-            UNIQUE(test_name, commit_hash)
-        );
+fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    match version {
+        0 => {
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    id INTEGER PRIMARY KEY,
+                    test_name TEXT NOT NULL,
+                    commit_hash TEXT NOT NULL,
+                    zainod_version TEXT NOT NULL,
+                    zcashd_version TEXT NOT NULL,
+                    zebrad_version TEXT NOT NULL,
+                    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                    raw_json BLOB,
+                    UNIQUE(test_name, commit_hash, zainod_version, zcashd_version, zebrad_version)
+                );
 
-        CREATE TABLE IF NOT EXISTS covered_lines (
-            run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-            file_path TEXT NOT NULL,
-            line_number INTEGER NOT NULL,
-            hit_count INTEGER NOT NULL,
-            PRIMARY KEY (run_id, file_path, line_number)
-        );
+                CREATE TABLE covered_lines (
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    file_path TEXT NOT NULL,
+                    line_number INTEGER NOT NULL,
+                    hit_count INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, file_path, line_number)
+                );
 
-        CREATE INDEX IF NOT EXISTS idx_covered_lines_file
-            ON covered_lines(file_path, line_number);",
-    )
+                CREATE INDEX idx_covered_lines_file
+                    ON covered_lines(file_path, line_number);
+
+                PRAGMA user_version = 1;",
+            )?;
+        }
+        1 => {}
+        v => panic!("unknown schema version {v} — is this DB from a newer testmapper?"),
+    }
+    Ok(())
 }
 
 fn get_commit_hash() -> String {
@@ -66,6 +80,62 @@ fn get_commit_hash() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn parse_env_file(path: &str) -> HashMap<String, String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (k, v) = line.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
+fn get_zainod_version() -> String {
+    std::fs::read_to_string("Cargo.toml")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            if line.starts_with("version") && line.contains('=') {
+                let (_, v) = line.split_once('=')?;
+                Some(v.trim().trim_matches('"').to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+struct Versions {
+    zainod: String,
+    zcashd: String,
+    zebrad: String,
+}
+
+fn get_versions() -> Versions {
+    let env = parse_env_file(".env.testing-artifacts");
+    Versions {
+        zainod: get_zainod_version(),
+        zcashd: env.get("ZCASH_VERSION").cloned().unwrap_or_else(|| "unknown".to_string()),
+        zebrad: env.get("ZEBRA_VERSION").cloned().unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+fn run_exists(conn: &Connection, test_name: &str, commit: &str, versions: &Versions) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM runs WHERE test_name = ?1 AND commit_hash = ?2 \
+         AND zainod_version = ?3 AND zcashd_version = ?4 AND zebrad_version = ?5",
+        rusqlite::params![test_name, commit, versions.zainod, versions.zcashd, versions.zebrad],
+        |_| Ok(()),
+    )
+    .is_ok()
 }
 
 fn list_tests() -> Vec<String> {
@@ -116,18 +186,29 @@ fn store_coverage(
     conn: &Connection,
     test_name: &str,
     commit: &str,
+    versions: &Versions,
     json: &serde_json::Value,
 ) -> rusqlite::Result<()> {
     let raw = serde_json::to_vec(json).unwrap_or_default();
 
     conn.execute(
-        "INSERT OR REPLACE INTO runs (test_name, commit_hash, raw_json) VALUES (?1, ?2, ?3)",
-        rusqlite::params![test_name, commit, raw],
+        "INSERT OR REPLACE INTO runs \
+         (test_name, commit_hash, zainod_version, zcashd_version, zebrad_version, raw_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            test_name,
+            commit,
+            versions.zainod,
+            versions.zcashd,
+            versions.zebrad,
+            raw,
+        ],
     )?;
 
     let run_id: i64 = conn.query_row(
-        "SELECT id FROM runs WHERE test_name = ?1 AND commit_hash = ?2",
-        rusqlite::params![test_name, commit],
+        "SELECT id FROM runs WHERE test_name = ?1 AND commit_hash = ?2 \
+         AND zainod_version = ?3 AND zcashd_version = ?4 AND zebrad_version = ?5",
+        rusqlite::params![test_name, commit, versions.zainod, versions.zcashd, versions.zebrad],
         |row| row.get(0),
     )?;
 
@@ -183,14 +264,28 @@ fn main() {
     let conn = Connection::open(&db_path).expect("failed to open database");
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .expect("failed to set pragmas");
-    init_db(&conn).expect("failed to initialize database");
+    migrate_db(&conn).expect("failed to initialize database");
 
     match cli.command {
         Cmd::Collect { test } => {
             let commit = get_commit_hash();
-            eprintln!("Collecting coverage for: {test}");
+            let versions = get_versions();
+
+            if run_exists(&conn, &test, &commit, &versions) {
+                eprintln!(
+                    "Skipping {test}: already collected at {commit} \
+                     (zainod={}, zcashd={}, zebrad={})",
+                    versions.zainod, versions.zcashd, versions.zebrad,
+                );
+                return;
+            }
+
+            eprintln!(
+                "Collecting coverage for: {test} (zainod={}, zcashd={}, zebrad={})",
+                versions.zainod, versions.zcashd, versions.zebrad,
+            );
             if let Some(json) = collect_coverage(&test) {
-                store_coverage(&conn, &test, &commit, &json)
+                store_coverage(&conn, &test, &commit, &versions, &json)
                     .expect("failed to store coverage");
                 eprintln!("Done. Database: {db_path}");
             }
