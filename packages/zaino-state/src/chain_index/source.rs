@@ -864,7 +864,9 @@ pub(crate) mod test {
                 treestates,
                 hashes,
                 active_chain_height: Arc::new(AtomicU32::new(tip_height)),
-                force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                force_requests_against_source_to_fail: Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                ),
             }
         }
 
@@ -904,14 +906,17 @@ pub(crate) mod test {
                 treestates,
                 hashes,
                 active_chain_height: Arc::new(AtomicU32::new(active_chain_height)),
-                force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                force_requests_against_source_to_fail: Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                ),
             }
         }
 
         /// When set to true, `get_best_block_height` and `get_best_block_hash`
         /// return `BlockchainSourceError::Unrecoverable`.
         pub(crate) fn set_failing(&self, fail: bool) {
-            self.force_requests_against_source_to_fail.store(fail, Ordering::SeqCst);
+            self.force_requests_against_source_to_fail
+                .store(fail, Ordering::SeqCst);
         }
 
         pub(crate) fn mine_blocks(&self, blocks: u32) {
@@ -1093,8 +1098,13 @@ pub(crate) mod test {
         async fn get_best_block_hash(
             &self,
         ) -> BlockchainSourceResult<Option<zebra_chain::block::Hash>> {
-            if self.force_requests_against_source_to_fail.load(Ordering::SeqCst) {
-                return Err(BlockchainSourceError::Unrecoverable("forced source failure".into()));
+            if self
+                .force_requests_against_source_to_fail
+                .load(Ordering::SeqCst)
+            {
+                return Err(BlockchainSourceError::Unrecoverable(
+                    "forced source failure".into(),
+                ));
             }
             let active_chain_height = self.active_height() as usize;
 
@@ -1108,8 +1118,13 @@ pub(crate) mod test {
         async fn get_best_block_height(
             &self,
         ) -> BlockchainSourceResult<Option<zebra_chain::block::Height>> {
-            if self.force_requests_against_source_to_fail.load(Ordering::SeqCst) {
-                return Err(BlockchainSourceError::Unrecoverable("forced source failure".into()));
+            if self
+                .force_requests_against_source_to_fail
+                .load(Ordering::SeqCst)
+            {
+                return Err(BlockchainSourceError::Unrecoverable(
+                    "forced source failure".into(),
+                ));
             }
             let active_chain_height = self.active_height() as usize;
 
@@ -1145,5 +1160,4 @@ pub(crate) mod test {
             todo!()
         }
     }
-
 }
