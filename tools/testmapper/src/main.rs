@@ -24,6 +24,14 @@ enum Cmd {
     },
     /// List all integration tests
     ListTests,
+    /// Show which lines a test exercised
+    Show {
+        /// Exact test name
+        test: String,
+        /// Filter to a specific file path (substring match)
+        #[arg(long)]
+        file: Option<String>,
+    },
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -294,6 +302,71 @@ fn main() {
             for test in list_tests() {
                 println!("{test}");
             }
+        }
+        Cmd::Show { test, file } => {
+            let commit = get_commit_hash();
+            let versions = get_versions();
+
+            let run_id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM runs WHERE test_name = ?1 AND commit_hash = ?2 \
+                     AND zainod_version = ?3 AND zcashd_version = ?4 AND zebrad_version = ?5",
+                    rusqlite::params![
+                        test, commit, versions.zainod, versions.zcashd, versions.zebrad,
+                    ],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            let Some(run_id) = run_id else {
+                eprintln!("No coverage data for {test} at {commit}");
+                eprintln!(
+                    "Run: makers collect-test-coverage {test}",
+                );
+                std::process::exit(1);
+            };
+
+            let pattern = file.as_deref().map(|f| format!("%{f}%"));
+            let pattern_ref = pattern.as_deref().unwrap_or("%");
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT file_path, line_number, hit_count FROM covered_lines \
+                     WHERE run_id = ?1 AND file_path LIKE ?2 \
+                     ORDER BY file_path, line_number",
+                )
+                .expect("failed to prepare query");
+
+            let rows: Vec<(String, i64, i64)> = stmt
+                .query_map(rusqlite::params![run_id, pattern_ref], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .expect("query failed")
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if rows.is_empty() {
+                eprintln!("No covered lines found.");
+                return;
+            }
+
+            let mut current_file = String::new();
+            for (path, line, count) in &rows {
+                if *path != current_file {
+                    if !current_file.is_empty() {
+                        println!();
+                    }
+                    println!("{path}:");
+                    current_file.clone_from(path);
+                }
+                println!("  {line:>6}  (x{count})");
+            }
+
+            eprintln!("\n{} lines across {} files", rows.len(), {
+                let mut files: Vec<&str> = rows.iter().map(|(f, _, _)| f.as_str()).collect();
+                files.dedup();
+                files.len()
+            });
         }
     }
 }

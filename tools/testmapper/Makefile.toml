@@ -1,0 +1,15 @@
+extend = [
+    { path = "../makefiles/coverage.toml" },
+]
+
+[tasks.show-test-coverage]
+description = "Show which lines a test exercised: makers show-test-coverage <test_name> [--file <path>]"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+if [[ -z "${1:-}" ]]; then
+    echo "Usage: makers show-test-coverage <test_name> [--file <path>]"
+    exit 1
+fi
+cargo run --manifest-path tools/Cargo.toml -p testmapper -- show "${@}"
+'''

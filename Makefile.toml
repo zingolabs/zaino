@@ -2,7 +2,7 @@ extend = [
     { path = "tools/makefiles/lints.toml" },
     { path = "tools/makefiles/notify.toml" },
     { path = "tools/makefiles/rocksdb.toml" },
-    { path = "tools/makefiles/coverage.toml" },
+    { path = "tools/testmapper/Makefile.toml" },
 ]
 env_files = [".env.testing-artifacts"]
 
