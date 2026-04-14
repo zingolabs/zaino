@@ -9,6 +9,8 @@
 !/integration-tests/chain_cache/testnet_get_subtree_roots_sapling
 !/integration-tests/chain_cache/testnet_get_subtree_roots_orchard
 .cargo
+/tools/Cargo.lock
+/tools/target/*
 .local/
 .failed-tests
 **/proptest-regressions/**

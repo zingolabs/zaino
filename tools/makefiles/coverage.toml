@@ -1,0 +1,27 @@
+[tasks.collect-test-coverage]
+description = "Collect coverage for a single integration test: makers collect-test-coverage <test_name>"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+if [[ -z "${1:-}" ]]; then
+    echo "Usage: makers collect-test-coverage <test_name>"
+    exit 1
+fi
+cargo run --manifest-path tools/Cargo.toml -p testmapper -- collect "$1"
+'''
+
+[tasks.collect-all-coverage]
+description = "Collect coverage for every integration test, one at a time"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+TESTS=$(cargo run --manifest-path tools/Cargo.toml -p testmapper -- list-tests)
+TOTAL=$(echo "$TESTS" | wc -l)
+I=0
+for test in $TESTS; do
+    I=$((I + 1))
+    echo "[$I/$TOTAL] $test"
+    makers collect-test-coverage "$test"
+done
+echo "Done. $TOTAL tests collected."
+'''
