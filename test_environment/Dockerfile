@@ -12,7 +12,6 @@ ARG GID=${UID}
 ARG USER=container_user
 ARG HOME="/home/container_user"
 ARG CARGO_HOME="${HOME}/.cargo"
-ARG CARGO_TARGET_DIR="${HOME}/target"
 
 ########################
 # === DOWNLOADERS ===
@@ -63,10 +62,8 @@ ARG GID
 ARG USER
 ARG HOME
 ARG CARGO_HOME
-ARG CARGO_TARGET_DIR
 
 ENV CARGO_HOME=${CARGO_HOME}
-ENV CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
 ENV CARGO_TERM_COLOR=always
 ENV PROTOC=/usr/bin/protoc
 
