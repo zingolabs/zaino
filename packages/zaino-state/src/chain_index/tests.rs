@@ -3,6 +3,7 @@
 pub(crate) mod finalised_state;
 pub(crate) mod mempool;
 mod proptest_blockgen;
+pub(crate) mod types;
 pub(crate) mod vectors;
 
 pub(crate) fn init_tracing() {
