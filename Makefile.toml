@@ -125,24 +125,14 @@ script.post = ""
 # -------------------------------------------------------------------
 
 [tasks.init-podman-volumes]
-description = "Initialize podman volume directories with proper permissions"
+description = "Initialize named podman volumes for container builds"
 script = '''
-# Create directories if they don't exist
-# Podman will respect the ownership if directories already exist
-for dir in podman_cargo/git podman_cargo/registry; do
-    if [ ! -d "$dir" ]; then
-        mkdir -p "$dir"
-        echo "Created directory: $dir"
+for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry; do
+    if ! podman volume inspect "$vol" >/dev/null 2>&1; then
+        podman volume create "$vol"
+        echo "Created podman volume: $vol"
     fi
 done
-
-chmod -R 755 podman_cargo 2>/dev/null || true
-
-# Named volume for container-internal target (separate from host target/)
-if ! podman volume inspect zaino-container-target >/dev/null 2>&1; then
-    podman volume create zaino-container-target
-    echo "Created podman volume: zaino-container-target"
-fi
 '''
 
 # -------------------------------------------------------------------
@@ -265,8 +255,6 @@ info "-- IMAGE             = ${IMAGE_NAME}"
 info "-- TAG               = $TAG"
 # info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
-mkdir -p podman_cargo/git podman_cargo/registry
-
 # Set container name for cleanup
 CONTAINER_NAME="zaino-testing"
 
@@ -275,9 +263,9 @@ podman run --rm \
   --init \
   --name "$CONTAINER_NAME" \
   -v "$PWD":/home/container_user/zaino \
-  -v zaino-container-target:/home/container_user/zaino/target \
-  -v "$PWD/podman_cargo/git":/usr/local/cargo/git \
-  -v "$PWD/podman_cargo/registry":/usr/local/cargo/registry \
+  -v zaino-container-target:/home/container_user/zaino/target:U \
+  -v zaino-cargo-git:/usr/local/cargo/git:U \
+  -v zaino-cargo-registry:/usr/local/cargo/registry:U \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "ZAINOLOG_FORMAT=${ZAINOLOG_FORMAT:-stream}" \
@@ -376,9 +364,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--init",
             "--name", "zaino-validation-test",
             "-v", &format!("{}:/home/container_user/zaino", working_dir),
-            "-v", "zaino-container-target:/home/container_user/zaino/target",
-            "-v", &format!("{}/podman_cargo/git:/usr/local/cargo/git", working_dir),
-            "-v", &format!("{}/podman_cargo/registry:/usr/local/cargo/registry", working_dir),
+            "-v", "zaino-container-target:/home/container_user/zaino/target:U",
+            "-v", "zaino-cargo-git:/usr/local/cargo/git:U",
+            "-v", "zaino-cargo-registry:/usr/local/cargo/registry:U",
             "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/integration-tests/test_binaries/bins",
             "-w", "/home/container_user/zaino",
             "-u", "container_user",

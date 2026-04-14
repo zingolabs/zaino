@@ -9,8 +9,6 @@
 !/integration-tests/chain_cache/testnet_get_subtree_roots_sapling
 !/integration-tests/chain_cache/testnet_get_subtree_roots_orchard
 .cargo
-podman_cargo/**/*
-!podman_cargo/**/.gitkeep
 .local/
 .failed-tests
 **/proptest-regressions/**
