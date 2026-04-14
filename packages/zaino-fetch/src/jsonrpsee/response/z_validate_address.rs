@@ -30,6 +30,20 @@ pub enum ZValidateAddressError {
     InvalidEncoding(String),
 }
 
+/// Error returned by [`ValidZValidateAddress::validate`] when cross-field
+/// invariants are violated. A valid Sapling address always has both a
+/// diversifier and a pk_d; a partial response indicates a malformed upstream.
+#[derive(Debug, thiserror::Error)]
+enum SaplingKeysError {
+    /// Diversifier is present but pk_d is missing.
+    #[error("partial sapling keys: diversifier present ({diversifier:?}) but pk_d missing")]
+    DiversifierOnly { diversifier: String },
+
+    /// pk_d is present but diversifier is missing.
+    #[error("partial sapling keys: pk_d present ({pkd:?}) but diversifier missing")]
+    PkdOnly { pkd: String },
+}
+
 /// Response type for the `z_validateaddress` RPC.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
@@ -170,7 +184,9 @@ impl<'de> Deserialize<'de> for ValidZValidateAddress {
             return Err(de::Error::custom("valid branch must have isvalid=true"));
         }
 
-        Ok(ValidZValidateAddress(inner))
+        let result = ValidZValidateAddress(inner);
+        result.validate().map_err(de::Error::custom)?;
+        Ok(result)
     }
 }
 
@@ -265,6 +281,10 @@ impl ValidZValidateAddress {
     }
 
     /// Returns the `diversifier` and `diversifiedtransmissionkey` fields.
+    ///
+    /// Returns `Some` only if both fields are present, `None` if both are
+    /// absent (e.g. zebrad passthrough). Partial keys (one present, one
+    /// absent) are rejected at deserialization time.
     pub fn sapling_keys(&self) -> Option<(&str, &str)> {
         if let AddressData::Sapling {
             diversifier: Some(diversifier),
@@ -276,6 +296,36 @@ impl ValidZValidateAddress {
         } else {
             None
         }
+    }
+
+    /// Validates cross-field invariants that cannot be enforced by the type
+    /// system alone. Call this after deserialization and before trusting the
+    /// data.
+    ///
+    /// Currently checks:
+    /// - Sapling: diversifier and pk_d must be both present or both absent.
+    ///   A valid Sapling address always has both components; a partial
+    ///   response indicates a malformed upstream.
+    fn validate(&self) -> Result<(), SaplingKeysError> {
+        if let AddressData::Sapling {
+            diversifier,
+            diversified_transmission_key,
+            ..
+        } = &self.0
+        {
+            match (diversifier, diversified_transmission_key) {
+                (Some(d), None) => {
+                    return Err(SaplingKeysError::DiversifierOnly {
+                        diversifier: d.clone(),
+                    });
+                }
+                (None, Some(pk_d)) => {
+                    return Err(SaplingKeysError::PkdOnly { pkd: pk_d.clone() });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn common(&self) -> &CommonFields {
