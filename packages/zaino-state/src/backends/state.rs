@@ -2785,6 +2785,74 @@ impl Error for MedianTimePast {}
 
 #[cfg(test)]
 mod tests {
+    /// Classifies the byte-level relationship between two slices.
+    #[derive(Debug, PartialEq)]
+    enum ByteRelation {
+        /// The slices are identical.
+        Equal,
+        /// `actual` fully byte-reversed equals `expected` (endian swap).
+        FullByteReversal,
+        /// Each byte's bits reversed maps `actual` to `expected`.
+        PerByteBitReversal,
+        /// Reversing bytes within 16-bit chunks maps `actual` to `expected`.
+        ChunkSwap16,
+        /// Reversing bytes within 32-bit chunks maps `actual` to `expected`.
+        ChunkSwap32,
+        /// Reversing bytes within 64-bit chunks maps `actual` to `expected`.
+        ChunkSwap64,
+        /// No recognized transformation.
+        Unrecognized,
+    }
+
+    impl std::fmt::Display for ByteRelation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Equal => write!(f, "equal"),
+                Self::FullByteReversal => write!(f, "full byte-reversal (endian swap)"),
+                Self::PerByteBitReversal => write!(f, "per-byte bit-reversal"),
+                Self::ChunkSwap16 => write!(f, "16-bit pairwise byte-swap"),
+                Self::ChunkSwap32 => write!(f, "32-bit chunk byte-reversal"),
+                Self::ChunkSwap64 => write!(f, "64-bit chunk byte-reversal"),
+                Self::Unrecognized => write!(f, "unrecognized mismatch"),
+            }
+        }
+    }
+
+    /// Applies each candidate byte transformation to `actual` and returns
+    /// the first that produces `expected`, or [`ByteRelation::Unrecognized`].
+    fn classify_byte_relation(actual: &[u8], expected: &[u8]) -> ByteRelation {
+        if actual == expected {
+            return ByteRelation::Equal;
+        }
+
+        let chunk_swap = |size: usize| -> Vec<u8> {
+            actual.chunks(size).flat_map(|c| c.iter().rev()).copied().collect()
+        };
+
+        let mut reversed = actual.to_vec();
+        reversed.reverse();
+        if reversed == expected {
+            return ByteRelation::FullByteReversal;
+        }
+
+        let bit_reversed: Vec<u8> = actual.iter().map(|b| b.reverse_bits()).collect();
+        if bit_reversed == expected {
+            return ByteRelation::PerByteBitReversal;
+        }
+
+        if actual.len() % 2 == 0 && chunk_swap(2) == expected {
+            return ByteRelation::ChunkSwap16;
+        }
+        if actual.len() % 4 == 0 && chunk_swap(4) == expected {
+            return ByteRelation::ChunkSwap32;
+        }
+        if actual.len() % 8 == 0 && chunk_swap(8) == expected {
+            return ByteRelation::ChunkSwap64;
+        }
+
+        ByteRelation::Unrecognized
+    }
+
     /// Verifies that our Sapling address parsing logic produces the same
     /// diversifier and diversified transmission key (pk_d) hex strings as
     /// zcashd's `z_validateaddress` RPC.
@@ -2798,6 +2866,9 @@ mod tests {
     ///   confirms the big-endian reversal is necessary and correct.
     /// - The hardcoded byte offset (11) agrees with the Sapling spec:
     ///   a `PaymentAddress` is `diversifier (11 bytes) || pk_d (32 bytes)`.
+    /// - If the upstream serialization changes, the failure message
+    ///   classifies the mismatch (endian swap, bit-reversal, chunk swap,
+    ///   or unrecognized) to aid diagnosis.
     ///
     /// # Non-guarantees
     ///
@@ -2834,11 +2905,67 @@ mod tests {
         let diversifier_hex = hex::encode(s.diversifier().0);
         assert_eq!(diversifier_hex, EXPECTED_DIVERSIFIER);
 
-        // pk_d: bytes [11..43], reversed to match zcashd's big-endian hex output
+        // pk_d raw bytes from the serialized PaymentAddress
         let bytes = s.to_bytes();
-        let mut pk_d = bytes[11..].to_vec();
-        pk_d.reverse();
-        let pk_d_hex = hex::encode(&pk_d);
-        assert_eq!(pk_d_hex, EXPECTED_PK_D);
+        let raw_pk_d = &bytes[11..];
+        let expected_pk_d = hex::decode(EXPECTED_PK_D).unwrap();
+
+        // The raw bytes should NOT match the expected output directly —
+        // if they do, the reversal in production code is unnecessary and wrong.
+        match classify_byte_relation(raw_pk_d, &expected_pk_d) {
+            ByteRelation::Equal => panic!(
+                "raw pk_d bytes match expected WITHOUT reversal — \
+                 the .reverse() in z_validate_address is no longer needed"
+            ),
+            _ => {} // expected: raw != expected (reversal is still needed)
+        }
+
+        // After reversal they must match. On failure, diagnose the mismatch.
+        let mut reversed_pk_d = raw_pk_d.to_vec();
+        reversed_pk_d.reverse();
+        match classify_byte_relation(&reversed_pk_d, &expected_pk_d) {
+            ByteRelation::Equal => {} // pass
+            relation => panic!(
+                "pk_d mismatch after byte-reversal — upstream serialization \
+                 may have changed.\n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(&reversed_pk_d),
+                hex::encode(&expected_pk_d),
+            ),
+        }
+    }
+
+    #[test]
+    fn classify_byte_relation_detects_known_transforms() {
+        let original = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        assert_eq!(
+            classify_byte_relation(&original, &original),
+            ByteRelation::Equal,
+        );
+
+        let mut reversed = original.to_vec();
+        reversed.reverse();
+        assert_eq!(
+            classify_byte_relation(&original, &reversed),
+            ByteRelation::FullByteReversal,
+        );
+
+        let bit_rev: Vec<u8> = original.iter().map(|b| b.reverse_bits()).collect();
+        assert_eq!(
+            classify_byte_relation(&original, &bit_rev),
+            ByteRelation::PerByteBitReversal,
+        );
+
+        let swapped_16: Vec<u8> = original.chunks(2).flat_map(|c| c.iter().rev()).copied().collect();
+        assert_eq!(
+            classify_byte_relation(&original, &swapped_16),
+            ByteRelation::ChunkSwap16,
+        );
+
+        let garbage = [0xFF; 8];
+        assert_eq!(
+            classify_byte_relation(&original, &garbage),
+            ByteRelation::Unrecognized,
+        );
     }
 }
