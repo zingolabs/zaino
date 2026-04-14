@@ -34,8 +34,8 @@ if [ -n "${GITHUB_WORKSPACE}" ] && [ -d "${GITHUB_WORKSPACE}" ]; then
     mkdir -p "${GITHUB_WORKSPACE}/target" 2>/dev/null || true
 fi
 
-# Check if test_binaries/bins directory exists and create symlinks if binaries are missing
-BINS_DIR="${REPO_ROOT}/test_binaries/bins"
+# Check if integration-tests/test_binaries/bins directory exists and create symlinks if binaries are missing
+BINS_DIR="${REPO_ROOT}/integration-tests/test_binaries/bins"
 
 # Create the bins directory if it doesn't exist
 if [ ! -d "$BINS_DIR" ]; then

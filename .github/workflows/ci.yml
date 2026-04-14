@@ -130,7 +130,7 @@ jobs:
 
       - name: Run Tests (Nextest)
         env:
-          TEST_BINARIES_DIR: ${{ github.workspace }}/test_binaries/bins
+          TEST_BINARIES_DIR: ${{ github.workspace }}/integration-tests/test_binaries/bins
         run: |
           cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'quick' }} --retries 2 --no-tests fail --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}
