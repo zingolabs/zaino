@@ -144,6 +144,31 @@ Bug Fixes / Optimisations
 - Added safety check for idempotent DB writes
 - Updated 'fix_addr_hist_records_by_addr_and_index_blocking' to take and reuse an lmdb ro transaction, improving initial sync performance.
 
+--------------------------------------------------------------------------------
+DB VERSION v1.0.0 (from v1.1.0)
+Date: 2026-01-27
+--------------------------------------------------------------------------------
+
+Summary
+- BlockHeaderData v2 introduced (internally using new BlockIndex::V2 format); because relevant tables (notably `headers` / `BlockHeaderData`) use
+   variable-length encodings existing tables are updated in-place: DB values may contain either v1 or v2 `BlockHeaderData` entries.
+- Recorded on-disk schema text was clarified; migration refreshes persisted `DbMetadata.schema_hash`
+   so the metadata matches the repository's schema contract.
+
+On-disk schema
+- Layout:
+  - Updated [`BlockHeaderData`] table by introducing [`BlockHeaderData::V2`] (and internally [`BlockIndex::V2`]), this table may now hold either V1 or V2
+     [`BlockHeaderData`] structs, with serde handled internally.
+- Tables:
+  - Added: None.
+  - Removed: None.
+  - Renamed: None.
+- Encoding:
+  - Keys: No changes.
+  - Values: Introduced `[BlockHeaderData::V2]`.
+  - Checksums / validation: No changes.
+- Invariants:
+  - No changes.
 
 --------------------------------------------------------------------------------
 (append new entries below)
