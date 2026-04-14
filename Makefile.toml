@@ -41,6 +41,7 @@ echo "  push-image                 Push the image (used in CI, can be used manua
 echo "  compute-image-tag          Compute the tag for the container image based on versions"
 echo "  get-podman-hash            Get CONTAINER_DIR_HASH value (hash for the image defining files)"
 echo "  ensure-image-exists        Check if the required image exists locally, build if not"
+echo "  pull-ci-image              Pull the CI image from the registry"
 echo "  check-matching-zebras      Verify Zebra versions match between Cargo.toml and .env"
 echo "  validate-test-targets      Check if nextest targets match CI workflow matrix"
 echo "  update-test-targets        Update CI workflow matrix to match nextest targets"
@@ -136,6 +137,12 @@ for dir in podman_cargo/git podman_cargo/registry; do
 done
 
 chmod -R 755 podman_cargo 2>/dev/null || true
+
+# Named volume for container-internal target (separate from host target/)
+if ! podman volume inspect zaino-container-target >/dev/null 2>&1; then
+    podman volume create zaino-container-target
+    echo "Created podman volume: zaino-container-target"
+fi
 '''
 
 # -------------------------------------------------------------------
@@ -158,22 +165,30 @@ echo "CONTAINER_DIR_HASH=$HASH"
 '''
 
 [tasks.ensure-image-exists]
-description = "Ensure the image exists locally or on a registry before building"
-# This task checks if the required image exists locally or on a registry.
-# If not found, it triggers the build-image task to build from integration-tests/test_environment.
+description = "Ensure the image exists locally, building if needed"
 dependencies = ["init-podman-volumes"]
 extend = "base-script"
 script.main = '''
 if ! podman image inspect ${IMAGE_NAME}:${TAG} > /dev/null 2>&1; then
-  warn "Image not found locally. Attempting to pull..."
-  if podman pull ${IMAGE_NAME}:${TAG}; then
-    info "Image ${IMAGE_NAME}:${TAG} pulled successfully."
-  else
-    warn "Image not found on registry. Building image..."
-    makers build-image
-  fi
+  info "Image not found locally. Building..."
+  makers build-image
 else
   info "Image ${IMAGE_NAME}:${TAG} already exists locally."
+fi
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.pull-ci-image]
+description = "Pull the CI image from the registry"
+extend = "base-script"
+script.main = '''
+info "Pulling ${IMAGE_NAME}:${TAG} from registry..."
+if podman pull ${IMAGE_NAME}:${TAG}; then
+  info "Image ${IMAGE_NAME}:${TAG} pulled successfully."
+else
+  err "Image ${IMAGE_NAME}:${TAG} not found on registry."
+  exit 1
 fi
 '''
 
@@ -260,6 +275,7 @@ podman run --rm \
   --init \
   --name "$CONTAINER_NAME" \
   -v "$PWD":/home/container_user/zaino \
+  -v zaino-container-target:/home/container_user/zaino/target \
   -v "$PWD/podman_cargo/git":/usr/local/cargo/git \
   -v "$PWD/podman_cargo/registry":/usr/local/cargo/registry \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
@@ -360,6 +376,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--init",
             "--name", "zaino-validation-test",
             "-v", &format!("{}:/home/container_user/zaino", working_dir),
+            "-v", "zaino-container-target:/home/container_user/zaino/target",
             "-v", &format!("{}/podman_cargo/git:/usr/local/cargo/git", working_dir),
             "-v", &format!("{}/podman_cargo/registry:/usr/local/cargo/registry", working_dir),
             "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/integration-tests/test_binaries/bins",

@@ -23,9 +23,6 @@ ZEBRAD_PATH="${3:-/home/container_user/artifacts/zebrad}"
 ZCASH_CLI_PATH="${4:-/home/container_user/artifacts/zcash-cli}"
 
 
-# Try to create necessary directories for cargo if they don't exist
-mkdir -p "${HOME}/.cargo" 2>/dev/null || true
-
 # Check if integration-tests/test_binaries/bins directory exists and create symlinks if binaries are missing
 BINS_DIR="${REPO_ROOT}/integration-tests/test_binaries/bins"
 
