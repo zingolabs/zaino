@@ -116,7 +116,13 @@ pub mod rpc {
             );
         }
 
-        pub async fn run_z_validate_sapling_legacy<F, Fut>(rpc_call: &F)
+        /// zebrad's JSON-RPC passthrough (via FetchService) omits `diversifier`
+        /// and `diversifiedtransmissionkey` from the Sapling response. This is
+        /// the safer behavior: address component extraction should happen
+        /// client-side, not by delegating to a remote actor.
+        ///
+        /// See [`DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
+        pub async fn run_z_validate_sapling_zebrad_passthrough_fetchservice<F, Fut>(rpc_call: &F)
         where
             F: Fn(String) -> Fut,
             Fut: Future<Output = ZValidateAddressResponse>,
@@ -129,7 +135,7 @@ pub mod rpc {
             assert_known_valid_eq(
                 rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
                 expected_sapling,
-                "Sapling (legacy)",
+                "Sapling (zebrad passthrough via FetchService — keys omitted)",
             );
         }
     }

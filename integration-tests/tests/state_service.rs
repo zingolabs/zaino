@@ -2231,7 +2231,7 @@ mod zebra {
                     _fetch_service_subscriber,
                     _state_service,
                     state_service_subscriber,
-                ) = create_test_manager_and_services(
+                ) = create_test_manager_and_services::<Zebrad>(
                     &ValidatorKind::Zebrad,
                     None,
                     true,

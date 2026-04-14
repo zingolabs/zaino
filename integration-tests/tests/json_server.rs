@@ -910,10 +910,10 @@ mod zcashd {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_validate_address() {
             let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, _zaino_sub) =
-                create_test_manager_and_fetch_services(false).await;
+                create_zcashd_test_manager_and_fetch_services(false).await;
 
             let rpc_call = |addr: String| {
-                let subscriber = &zcashd_subscriber;
+                let subscriber: &FetchServiceSubscriber = &zcashd_subscriber;
                 async move { subscriber.z_validate_address(addr).await.unwrap() }
             };
 

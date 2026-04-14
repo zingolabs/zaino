@@ -1000,44 +1000,6 @@ async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKi
     test_manager.close().await;
 }
 
-/// This test only runs validation for regtest addresses.
-/// The following addresses were generated with `zcashd` on regtest:
-///
-/// - P2PKH: `tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx`
-/// - P2SH: `t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u`
-/// - Sprout: `ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ`
-/// - Sapling: `zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca`
-/// - unified: `uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36`
-/// - invalid (length shorter than expected by 1 char): `t1123456789ABCDEFGHJKLMNPQRSTUVWXY`
-/// - invalid (all zeroes): `t1000000000000000000000000000000000`
-#[allow(deprecated)]
-async fn fetch_service_z_validate_address(validator: &ValidatorKind) {
-    let mut test_manager = TestManager::<FetchService>::launch(
-        validator,
-        &BackendType::Fetch,
-        None,
-        None,
-        None,
-        true,
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-
-    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
-
-    let rpc_call = |addr: String| {
-        let subscriber = &fetch_service_subscriber;
-        async move { subscriber.z_validate_address(addr).await.unwrap() }
-    };
-
-    integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
-    integration_tests::rpc::z_validate_address::run_z_validate_sapling_legacy(&rpc_call).await;
-
-    test_manager.close().await;
-}
-
 #[allow(deprecated)]
 async fn fetch_service_get_block_nullifiers<V: ValidatorExt>(validator: &ValidatorKind) {
     let mut test_manager =
@@ -2163,9 +2125,26 @@ mod zcashd {
             fetch_service_validate_address::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
 
+        #[allow(deprecated)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn z_validate_address() {
-            fetch_service_z_validate_address(&ValidatorKind::Zcashd).await;
+            let (mut test_manager, fetch_service_subscriber) =
+                create_test_manager_and_fetch_service::<Zcashd>(
+                    &ValidatorKind::Zcashd,
+                    None,
+                    false,
+                )
+                .await;
+
+            let rpc_call = |addr: String| {
+                let subscriber = &fetch_service_subscriber;
+                async move { subscriber.z_validate_address(addr).await.unwrap() }
+            };
+
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_sapling(&rpc_call).await;
+
+            test_manager.close().await;
         }
     }
 
@@ -2454,9 +2433,26 @@ mod zebrad {
             fetch_service_validate_address::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
+        #[allow(deprecated)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn z_validate_address() {
-            fetch_service_z_validate_address(&ValidatorKind::Zebrad).await;
+            let (mut test_manager, fetch_service_subscriber) =
+                create_test_manager_and_fetch_service::<Zebrad>(
+                    &ValidatorKind::Zebrad,
+                    None,
+                    false,
+                )
+                .await;
+
+            let rpc_call = |addr: String| {
+                let subscriber = &fetch_service_subscriber;
+                async move { subscriber.z_validate_address(addr).await.unwrap() }
+            };
+
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_sapling_zebrad_passthrough_fetchservice(&rpc_call).await;
+
+            test_manager.close().await;
         }
     }
 
