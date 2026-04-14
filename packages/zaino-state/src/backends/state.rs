@@ -1651,8 +1651,12 @@ impl ZcashIndexer for StateServiceSubscriber {
                 u.encode(&self.network().to_zebra_network()),
             )),
             Address::Sapling(s) => {
+                // PaymentAddress is 43 bytes: 11-byte diversifier || 32-byte pk_d.
+                // DiversifiedTransmissionKey::to_bytes() is pub(crate), so we
+                // extract pk_d from the serialized form. The bytes are reversed
+                // to match zcashd's big-endian hex representation.
                 let bytes = s.to_bytes();
-                let mut pk_d = bytes[11..].to_vec(); // TODO: See if in a newer version this is no longer needed
+                let mut pk_d = bytes[11..].to_vec();
                 pk_d.reverse();
 
                 Ok(ZValidateAddressResponse::sapling(
@@ -2778,3 +2782,63 @@ impl fmt::Display for MedianTimePast {
 }
 
 impl Error for MedianTimePast {}
+
+#[cfg(test)]
+mod tests {
+    /// Verifies that our Sapling address parsing logic produces the same
+    /// diversifier and diversified transmission key (pk_d) hex strings as
+    /// zcashd's `z_validateaddress` RPC.
+    ///
+    /// # Guarantees
+    ///
+    /// - The 11-byte diversifier extracted via `PaymentAddress::diversifier()`
+    ///   matches the zcashd-derived test vector when hex-encoded.
+    /// - The 32-byte pk_d extracted from `PaymentAddress::to_bytes()[11..]`
+    ///   and byte-reversed matches the zcashd-derived test vector. This
+    ///   confirms the big-endian reversal is necessary and correct.
+    /// - The hardcoded byte offset (11) agrees with the Sapling spec:
+    ///   a `PaymentAddress` is `diversifier (11 bytes) || pk_d (32 bytes)`.
+    ///
+    /// # Non-guarantees
+    ///
+    /// - Does not prove the test vector constants themselves are correct;
+    ///   they were captured from zcashd and are trusted as ground truth.
+    /// - Does not exercise the full `z_validate_address` RPC path through
+    ///   `StateService` — only the byte extraction logic.
+    /// - Does not verify behavior for malformed Sapling addresses or
+    ///   addresses on other networks (mainnet, testnet).
+    /// - Does not test the `DiversifiedTransmissionKey` internal
+    ///   representation — only its serialized form via `to_bytes()`.
+    #[test]
+    fn sapling_pk_d_byte_order_matches_test_vector() {
+        use zcash_keys::address::Address;
+        use zcash_protocol::consensus::NetworkType;
+
+        // Canonical source: integration-tests/src/lib.rs::rpc::json_rpc
+        // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
+        const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
+        const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
+        const EXPECTED_PK_D: &str =
+            "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88";
+
+        let parsed: zcash_address::ZcashAddress = SAPLING_ADDRESS.parse().unwrap();
+        let converted = parsed
+            .convert_if_network::<Address>(NetworkType::Regtest)
+            .unwrap();
+
+        let Address::Sapling(s) = converted else {
+            panic!("expected Sapling address");
+        };
+
+        // Diversifier: first 11 bytes of the 43-byte serialization
+        let diversifier_hex = hex::encode(s.diversifier().0);
+        assert_eq!(diversifier_hex, EXPECTED_DIVERSIFIER);
+
+        // pk_d: bytes [11..43], reversed to match zcashd's big-endian hex output
+        let bytes = s.to_bytes();
+        let mut pk_d = bytes[11..].to_vec();
+        pk_d.reverse();
+        let pk_d_hex = hex::encode(&pk_d);
+        assert_eq!(pk_d_hex, EXPECTED_PK_D);
+    }
+}
