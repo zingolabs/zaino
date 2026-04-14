@@ -59,6 +59,7 @@ echo "  use-system-rocksdb         Link against system RocksDB (skips slow C++ b
 echo "  use-bundled-rocksdb        Revert to building RocksDB from source"
 echo "  check-system-rocksdb       Check system RocksDB compatibility"
 echo "  audit-system-rocksdb       Re-audit if Cargo.lock or system version changed"
+echo "  set-worktree-parent-tools  Copy .cargo/config.toml to common worktree parent"
 echo ""
 echo "Environment:"
 echo "  Defined by: .env.testing-artifacts"
