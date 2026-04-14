@@ -18,15 +18,19 @@ pub struct MempoolInfo {
 impl ZainoVersionedSerde for MempoolInfo {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_u64_le(&mut w, self.size)?;
-        write_u64_le(&mut w, self.bytes)?;
-        write_u64_le(&mut w, self.usage)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_u64_le(&mut w, self.size)?;
+        write_u64_le(&mut w, self.bytes)?;
+        write_u64_le(&mut w, self.usage)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
