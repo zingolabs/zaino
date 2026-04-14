@@ -67,9 +67,9 @@ echo "  Defined by: .env.testing-artifacts"
 echo "  Affects:    RUST_VERSION, ZCASH_VERSION, ZEBRA_VERSION"
 echo ""
 echo "Build Context:"
-echo "  test_environment/          Directory containing the Docker build environment"
-echo "    ├── Dockerfile          Dockerfile for CI/test container"
-echo "    └── entrypoint.sh       Entrypoint script that sets up test binaries"
+echo "  integration-tests/test_environment/   Directory containing the container build environment"
+echo "    ├── Containerfile                 Containerfile for CI/test container"
+echo "    └── entrypoint.sh                Entrypoint script that sets up test binaries"
 echo ""
 echo "Helpers:"
 echo "  - .utils/get-ci-image-tag.sh: computes the version-based image tag"
@@ -160,7 +160,7 @@ echo "CONTAINER_DIR_HASH=$HASH"
 [tasks.ensure-image-exists]
 description = "Ensure the image exists locally or on a registry before building"
 # This task checks if the required image exists locally or on a registry.
-# If not found, it triggers the build-image task to build from test_environment.
+# If not found, it triggers the build-image task to build from integration-tests/test_environment.
 dependencies = ["init-podman-volumes"]
 extend = "base-script"
 script.main = '''
@@ -181,9 +181,8 @@ fi
 
 [tasks.build-image]
 description = "Build the container image for testing artifacts"
-# Note: This task builds the container image from the test_environment directory,
-# which contains the Dockerfile and entrypoint.sh for the CI/test environment.
-# The build context is set to test_environment to keep paths simple.
+# Note: This task builds the container image from the integration-tests/test_environment
+# directory, which contains the Containerfile and entrypoint.sh for the CI/test environment.
 script_runner = "bash"
 extend = "base-script"
 script.main = '''
@@ -195,7 +194,7 @@ mkdir -p target
 TARGET=$(resolve_build_target "$ZCASH_VERSION" "$ZEBRA_VERSION")
 
 # For local builds, use the current user's UID/GID to avoid permission issues
-# CI builds will use the default UID=1001 from the Dockerfile
+# CI builds will use the default UID=1001 from the Containerfile
 
 info "Building image"
 info "Tag: ${TAG}"
@@ -203,8 +202,8 @@ info "Target: $TARGET"
 info "Current directory: $(pwd)"
 info "Files in .utils/: $(ls -la .utils/ | head -5)"
 
-cd test_environment && \
-podman build -f Dockerfile \
+cd integration-tests/test_environment && \
+podman build -f Containerfile \
   --target "$TARGET" \
   --build-arg ZCASH_VERSION=$ZCASH_VERSION \
   --build-arg ZEBRA_VERSION=$ZEBRA_VERSION \
@@ -237,7 +236,7 @@ podman push ${IMAGE_NAME}:$TAG
 [tasks.container-test]
 clear = true
 description = "Run integration tests using the local image"
-# This task runs tests inside the container built from test_environment.
+# This task runs tests inside the container built from integration-tests/test_environment.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
 # by creating symlinks from /home/container_user/artifacts to the expected integration-tests/test_binaries/bins location.
 dependencies = ["init-podman-volumes", "ensure-image-exists"]

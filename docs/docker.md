@@ -138,5 +138,5 @@ docker inspect --format='{{.State.Health.Status}}' <container>
 Permission handling can be tested locally:
 
 ```bash
-./test_environment/test-container-permissions.sh zaino:latest
+./integration-tests/test_environment/test-container-permissions.sh zaino:latest
 ```

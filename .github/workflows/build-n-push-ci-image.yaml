@@ -7,7 +7,7 @@ on:
       - '**'
     paths:
       - '.env.testing-artifacts'
-      - 'test_environment/*'
+      - 'integration-tests/test_environment/*'
 
 jobs:
   build-and-push:
@@ -56,8 +56,8 @@ jobs:
     - name: Build and Push Docker Image
       uses: docker/build-push-action@v5
       with:
-        context: test_environment
-        file: test_environment/Dockerfile
+        context: integration-tests/test_environment
+        file: integration-tests/test_environment/Containerfile
         platforms: linux/amd64
         target: ${{ steps.target.outputs.target }}
         tags: |

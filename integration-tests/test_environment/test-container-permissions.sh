@@ -10,7 +10,7 @@
 set -uo pipefail
 
 # Enforce rootless podman hardening via repo-wide containers.conf
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../" && pwd)"
 export CONTAINERS_CONF_OVERRIDE="${SCRIPT_DIR}/.config/containers.conf"
 
 IMAGE="${1:-zaino:test-entrypoint}"
