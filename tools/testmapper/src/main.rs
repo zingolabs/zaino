@@ -1,8 +1,17 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use clap::{Parser, Subcommand};
 use rusqlite::Connection;
+
+fn repo_root() -> PathBuf {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .expect("failed to run git rev-parse --show-toplevel");
+    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+}
 
 #[derive(Parser)]
 #[command(name = "testmapper", about = "Per-test coverage collection for Zaino")]
@@ -90,7 +99,7 @@ fn get_commit_hash() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn parse_env_file(path: &str) -> HashMap<String, String> {
+fn parse_env_file(path: &Path) -> HashMap<String, String> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -105,8 +114,8 @@ fn parse_env_file(path: &str) -> HashMap<String, String> {
         .collect()
 }
 
-fn get_zainod_version() -> String {
-    std::fs::read_to_string("Cargo.toml")
+fn get_zainod_version(root: &Path) -> String {
+    std::fs::read_to_string(root.join("Cargo.toml"))
         .unwrap_or_default()
         .lines()
         .find_map(|line| {
@@ -127,10 +136,10 @@ struct Versions {
     zebrad: String,
 }
 
-fn get_versions() -> Versions {
-    let env = parse_env_file(".env.testing-artifacts");
+fn get_versions(root: &Path) -> Versions {
+    let env = parse_env_file(&root.join(".env.testing-artifacts"));
     Versions {
-        zainod: get_zainod_version(),
+        zainod: get_zainod_version(root),
         zcashd: env.get("ZCASH_VERSION").cloned().unwrap_or_else(|| "unknown".to_string()),
         zebrad: env.get("ZEBRA_VERSION").cloned().unwrap_or_else(|| "unknown".to_string()),
     }
@@ -148,13 +157,14 @@ fn run_exists(conn: &Connection, test_name: &str, commit: &str, versions: &Versi
 
 /// Returns (test_name, binary_name) pairs from `cargo nextest list`.
 /// Binary names are the `--test` argument for scoped builds.
-fn list_tests() -> Vec<(String, String)> {
+fn list_tests(root: &Path) -> Vec<(String, String)> {
+    let manifest = root.join("integration-tests/Cargo.toml");
     let output = Command::new("cargo")
         .args([
             "nextest",
             "list",
             "--manifest-path",
-            "integration-tests/Cargo.toml",
+            &manifest.to_string_lossy(),
             "--message-format",
             "human",
         ])
@@ -186,20 +196,44 @@ fn list_tests() -> Vec<(String, String)> {
     results
 }
 
-fn resolve_test_binary(test_name: &str) -> Option<String> {
-    list_tests()
+fn resolve_test_binary(test_name: &str, root: &Path) -> Option<String> {
+    // Fast path: grep source files for the test function name
+    let tests_dir = root.join("integration-tests/tests/");
+    let output = Command::new("grep")
+        .args(["-rl", &format!("fn {test_name}"), &tests_dir.to_string_lossy()])
+        .output()
+        .ok();
+
+    if let Some(output) = output {
+        if let Some(binary) = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .and_then(|path| {
+                std::path::Path::new(path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+            })
+        {
+            return Some(binary);
+        }
+    }
+
+    // Slow fallback: ask cargo nextest (triggers a build)
+    eprintln!("grep lookup failed for {test_name}, falling back to cargo nextest list...");
+    list_tests(root)
         .into_iter()
         .find(|(name, _)| name == test_name)
         .map(|(_, binary)| binary)
 }
 
-fn collect_coverage(test_name: &str, binary: &str) -> Option<serde_json::Value> {
+fn collect_coverage(test_name: &str, binary: &str, root: &Path) -> Option<serde_json::Value> {
+    let manifest = root.join("integration-tests/Cargo.toml");
     let output = Command::new("cargo")
         .args([
             "llvm-cov",
             "nextest",
             "--manifest-path",
-            "integration-tests/Cargo.toml",
+            &manifest.to_string_lossy(),
             "--test",
             binary,
             "-E",
@@ -302,10 +336,12 @@ fn main() {
         .expect("failed to set pragmas");
     migrate_db(&conn).expect("failed to initialize database");
 
+    let root = repo_root();
+
     match cli.command {
         Cmd::Collect { test } => {
             let commit = get_commit_hash();
-            let versions = get_versions();
+            let versions = get_versions(&root);
 
             if run_exists(&conn, &test, &commit, &versions) {
                 eprintln!(
@@ -316,7 +352,7 @@ fn main() {
                 return;
             }
 
-            let binary = resolve_test_binary(&test).unwrap_or_else(|| {
+            let binary = resolve_test_binary(&test, &root).unwrap_or_else(|| {
                 eprintln!("Could not find binary for test: {test}");
                 std::process::exit(1);
             });
@@ -325,20 +361,20 @@ fn main() {
                 "Collecting coverage for: {test} (binary={binary}, zainod={}, zcashd={}, zebrad={})",
                 versions.zainod, versions.zcashd, versions.zebrad,
             );
-            if let Some(json) = collect_coverage(&test, &binary) {
+            if let Some(json) = collect_coverage(&test, &binary, &root) {
                 store_coverage(&conn, &test, &commit, &versions, &json)
                     .expect("failed to store coverage");
                 eprintln!("Done. Database: {db_path}");
             }
         }
         Cmd::ListTests => {
-            for (test, binary) in list_tests() {
+            for (test, binary) in list_tests(&root) {
                 println!("{binary}\t{test}");
             }
         }
         Cmd::Show { test, file } => {
             let commit = get_commit_hash();
-            let versions = get_versions();
+            let versions = get_versions(&root);
 
             let run_id: Option<i64> = conn
                 .query_row(
