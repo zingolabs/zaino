@@ -41,14 +41,18 @@ impl CommitmentTreeData {
 impl ZainoVersionedSerde for CommitmentTreeData {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        self.roots.serialize(&mut w)?; // carries its own tag
-        self.sizes.serialize(&mut w)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        self.roots.serialize(&mut w)?; // carries its own tag
+        self.sizes.serialize(&mut w)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -97,14 +101,18 @@ impl CommitmentTreeRoots {
 impl ZainoVersionedSerde for CommitmentTreeRoots {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_fixed_le::<32, _>(&mut w, &self.sapling)?;
-        write_fixed_le::<32, _>(&mut w, &self.orchard)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_fixed_le::<32, _>(&mut w, &self.sapling)?;
+        write_fixed_le::<32, _>(&mut w, &self.orchard)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -151,14 +159,18 @@ impl CommitmentTreeSizes {
 impl ZainoVersionedSerde for CommitmentTreeSizes {
     const VERSION: u8 = version::V1;
 
-    fn encode_body<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_u32_le(&mut w, self.sapling)?;
-        write_u32_le(&mut w, self.orchard)
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_u32_le(&mut w, self.sapling)?;
+        write_u32_le(&mut w, self.orchard)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {

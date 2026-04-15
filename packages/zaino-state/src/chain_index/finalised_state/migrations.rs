@@ -111,6 +111,28 @@
 //! - Mark `migration_status = Complete` in shadow metadata.
 //! - Promote shadow to primary via `router.promote_shadow()`.
 //! - Delete the old v0 directory asynchronously once all strong references are dropped.
+//!
+//! ## v1.0.0 → v1.1.0
+//!
+//! `Migration1_0_0To1_1_0` is a **minor version bump** with **on disk schema changes**, but does
+//! not include changes to the external ZainoDB API.
+//!
+//! Important changes in v1.1.0:
+//! - ZainoVersionedSerde had a bug which stopped varifying the checksum of older serde formats,
+//!   this meant that is was not possible to safely update database formats without a full DB
+//!   rebuild. This bug has been fixed and all serde updated to follow the new contract (Note this
+//!   change is 100% compaitible with the old sschema, only extending functionality as required).
+//! - BlockHeaderData v2 added: the Height field in BlockHeaderData.BlockIndex is no longer
+//!   optional. (Note, as heights are required for the finalised portion of the chain this does not
+//!   change db logic, as height was already gruenteed, with a error returned if a block with no
+//!   height is every written to the db).
+//!
+//! Important note: `BlockHeaderData` now has a V2 on-disk layout which uses the V2
+//! `BlockIndex` wire format. Because the `headers` table stores `BlockHeaderData` as a
+//! `StoredEntryVar` (no fixed-length optimisations), the table may contain both V1 and V2
+//! `BlockHeaderData` records concurrently. This migration is metadata-only: it advances
+//! `DbMetadata::version` and refreshes the recorded schema checksum so persisted metadata
+//! matches the repository's updated schema text.
 
 use super::{
     capability::{
@@ -121,7 +143,9 @@ use super::{
 };
 
 use crate::{
-    chain_index::{source::BlockchainSource, types::GENESIS_HEIGHT},
+    chain_index::{
+        finalised_state::capability::DbMetadata, source::BlockchainSource, types::GENESIS_HEIGHT,
+    },
     config::BlockCacheConfig,
     error::FinalisedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock,
@@ -269,6 +293,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
             self.current_version.patch,
         ) {
             (0, 0, 0) => Ok(MigrationStep::Migration0_0_0To1_0_0(Migration0_0_0To1_0_0)),
+            (1, 0, 0) => Ok(MigrationStep::Migration1_0_0To1_1_0(Migration1_0_0To1_1_0)),
             (_, _, _) => Err(FinalisedStateError::Custom(format!(
                 "Missing migration from version {}",
                 self.current_version
@@ -284,6 +309,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
 /// to select a step and call `migrate(...)`, and to read the step’s `TO_VERSION`.
 enum MigrationStep {
     Migration0_0_0To1_0_0(Migration0_0_0To1_0_0),
+    Migration1_0_0To1_1_0(Migration1_0_0To1_1_0),
 }
 
 impl MigrationStep {
@@ -291,6 +317,9 @@ impl MigrationStep {
         match self {
             MigrationStep::Migration0_0_0To1_0_0(_step) => {
                 <Migration0_0_0To1_0_0 as Migration<T>>::TO_VERSION
+            }
+            MigrationStep::Migration1_0_0To1_1_0(_step) => {
+                <Migration1_0_0To1_1_0 as Migration<T>>::TO_VERSION
             }
         }
     }
@@ -303,6 +332,7 @@ impl MigrationStep {
     ) -> Result<(), FinalisedStateError> {
         match self {
             MigrationStep::Migration0_0_0To1_0_0(step) => step.migrate(router, cfg, source).await,
+            MigrationStep::Migration1_0_0To1_1_0(step) => step.migrate(router, cfg, source).await,
         }
     }
 }
@@ -502,6 +532,63 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
 
         info!("v0.0.0 to v1.0.0 migration complete.");
 
+        Ok(())
+    }
+}
+
+/// Minor migration: v1.0.0 → v1.1.0.
+///
+/// Important note: `BlockHeaderData` now has a V2 on-disk layout which uses the V2
+/// `BlockIndex` wire format. Because the `headers` table stores `BlockHeaderData` as a
+/// `StoredEntryVar` (no fixed-length optimisations), the table may contain both V1 and V2
+/// `BlockHeaderData` records concurrently. This migration is metadata-only: it advances
+/// `DbMetadata::version` and refreshes the recorded schema checksum so persisted metadata
+/// matches the repository's updated schema text.
+///
+/// Safety and resumability:
+/// - Idempotent: if run more than once, it will re-write the same metadata.
+/// - No shadow database and no table rebuild.
+/// - Clears any stale in-progress migration status.
+struct Migration1_0_0To1_1_0;
+
+#[async_trait]
+impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
+    const CURRENT_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 0,
+        patch: 0,
+    };
+
+    const TO_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 1,
+        patch: 0,
+    };
+
+    async fn migrate(
+        &self,
+        router: Arc<Router>,
+        _cfg: BlockCacheConfig,
+        _source: T,
+    ) -> Result<(), FinalisedStateError> {
+        info!("Starting v1.0.0 → v1.1.0 migration (metadata-only).");
+
+        let mut metadata: DbMetadata = router.get_metadata().await?;
+
+        // Advance the version marker to reflect the new API contract (v1.1.0), and refresh the
+        // persisted schema hash to match the repository's recorded schema contract.
+        // There are no on-disk layout changes; BlockIndex V2 is supported in-place because the
+        // headers table stores a variable-length BlockHeaderData which nests a versioned BlockIndex.
+        metadata.version = <Self as Migration<T>>::TO_VERSION;
+        metadata.schema_hash = crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
+
+        // Outside of migrations this should be `Empty`. This step performs no build phases, so we
+        // ensure we do not leave a stale in-progress status behind.
+        metadata.migration_status = MigrationStatus::Empty;
+
+        router.update_metadata(metadata).await?;
+
+        info!("v1.0.0 to v1.1.0 migration complete.");
         Ok(())
     }
 }
