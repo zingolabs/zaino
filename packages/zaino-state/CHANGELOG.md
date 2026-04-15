@@ -7,9 +7,9 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
-### Added 
+### Added
 - `rpc::grpc::service.rs`, `backends::fetch::get_taddress_transactions`:
-    - these functions implement the GetTaddressTransactions GRPC method of 
+    - these functions implement the GetTaddressTransactions GRPC method of
       lightclient-protocol v0.4.0 which replaces `GetTaddressTxids`
 - `chain_index`
   - `::finalised_state::db::v0::get_compact_block_stream`
@@ -19,7 +19,7 @@ and this library adheres to Rust's notion of
     - `compact_vout`
     - `to_compact`: returns a compactTx from TxInCompact
 - `local_cache::compact_block_with_pool_types`
-### Changed 
+### Changed
 - `get_mempool_tx` now takes `GetMempoolTxRequest` as parameter
 - `chain_index::finalised_state`
   - `::db`
@@ -35,6 +35,6 @@ and this library adheres to Rust's notion of
 ### Deprecated
 - `GetTaddressTxids` is replaced by `GetTaddressTransactions`
 
-### Removed 
+### Removed
 - `Ping` for GRPC service
 - `utils::blockid_to_hashorheight` moved to `zaino_proto::utils`

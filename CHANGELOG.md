@@ -20,17 +20,17 @@ and this library adheres to Rust's notion of
 ## [v0.2.0] - 2026-03-25
 - [808] Adopt lightclient-protocol v0.4.0
 
-### Added 
+### Added
 ### Changed
 - zaino-proto now references v0.4.0 files
 - `zaino_fetch::jsonrpsee::response::ErrorsTimestamp` no longer supports a String
-  variant. 
+  variant.
 ### Removed
 
 ### Deprecated
-- `zaino-fetch::chain:to_compact` in favor of `to_compact_tx` which takes an 
+- `zaino-fetch::chain:to_compact` in favor of `to_compact_tx` which takes an
   optional height and a `PoolTypeFilter` (see zaino-proto changes)
-
+-
 ## [v0.4.0] - 2025-12-03
 
 ### Added
