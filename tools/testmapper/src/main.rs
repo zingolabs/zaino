@@ -228,10 +228,29 @@ fn resolve_test_binary(test_name: &str, root: &Path) -> Option<String> {
 
 fn collect_coverage(test_name: &str, binary: &str, root: &Path) -> Option<serde_json::Value> {
     let manifest = root.join("integration-tests/Cargo.toml");
+
+    // Clear stale profraw data to avoid reusing cached results from failed runs
+    let clean_status = Command::new("cargo")
+        .args([
+            "llvm-cov",
+            "clean",
+            "--profraw-only",
+            "--manifest-path",
+            &manifest.to_string_lossy(),
+        ])
+        .stderr(Stdio::inherit())
+        .status();
+    if let Ok(s) = clean_status {
+        if !s.success() {
+            eprintln!("warning: cargo llvm-cov clean failed");
+        }
+    }
+
     let output = Command::new("cargo")
         .args([
             "llvm-cov",
             "nextest",
+            "--no-cfg-coverage",
             "--manifest-path",
             &manifest.to_string_lossy(),
             "--test",
