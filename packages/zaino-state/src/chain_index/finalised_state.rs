@@ -601,7 +601,7 @@ impl ZainoDB {
                     source.get_commitment_tree_roots(block_hash).await?;
                 let is_sapling_active = height_int >= sapling_activation_height.0;
                 let is_orchard_active = nu5_activation_height
-                    .map_or(false, |nu5_activation_height| {
+                    .is_some_and(|nu5_activation_height| {
                         height_int >= nu5_activation_height.0
                     });
                 let (sapling_root, sapling_size) = if is_sapling_active {
