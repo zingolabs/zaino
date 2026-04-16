@@ -128,13 +128,13 @@ bitflags = "2.9"
 # Test
 portpicker = "0.1"
 tempfile = "3.2"
-zaino-fetch = { path = "packages/zaino-fetch" }
-zaino-proto = { path = "packages/zaino-proto" }
-zaino-serve = { path = "packages/zaino-serve" }
-zaino-state = { path = "packages/zaino-state" }
-zaino-common = { path = "packages/zaino-common" }
-wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "packages/zainod" }
+zaino-common = { path = "packages/zaino-common", version = "0.1.0" }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.1.0" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.1.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.1.0" }
+zaino-serve = { path = "packages/zaino-serve", version = "0.1.0" }
+wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
 proptest = "~1.6"

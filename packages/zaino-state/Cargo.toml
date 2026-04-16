@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
 
 [features]
 default = []
@@ -82,7 +82,7 @@ tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
-incrementalmerkletree = "*"
+incrementalmerkletree = "0.8.2"
 rand = "0.8.5"
 
 [build-dependencies]
