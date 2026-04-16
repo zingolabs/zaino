@@ -6,6 +6,18 @@ and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
+- [943] Zallet regtest fixes
+
+### Added 
+### Changed
+- `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`
+  whose `sapling` and `orchard` fields are optional. In regtest mode, these
+  fields may be omitted when the corresponding network upgrade activation
+  height is not configured.
+### Removed
+### Deprecated
+
+## [v0.2.0] - 2026-03-25
 - [808] Adopt lightclient-protocol v0.4.0
 
 ### Added

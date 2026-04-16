@@ -5591,7 +5591,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-common"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "atty",
  "hex",
@@ -5608,7 +5608,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-fetch"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "base64",
  "byteorder",
@@ -5636,7 +5636,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-proto"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -5651,7 +5651,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "futures",
  "jsonrpsee",
@@ -5671,7 +5671,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "arc-swap",
  "async-trait",

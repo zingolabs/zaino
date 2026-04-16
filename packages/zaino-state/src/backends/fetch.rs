@@ -2,7 +2,7 @@
 
 use futures::StreamExt;
 use hex::FromHex;
-use std::{io::Cursor, time};
+use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
 use tonic::async_trait;
 use tracing::{info, instrument, warn};
@@ -83,6 +83,8 @@ use crate::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
 #[deprecated = "Will be eventually replaced by `BlockchainSource`"]
 pub struct FetchService {
     /// JsonRPC Client.
+    ///
+    /// NOTE: DEPRCATED, USE INDEXER OR VALIDATOR_CONNECTOR.
     fetcher: JsonRpSeeConnector,
     /// Core indexer.
     indexer: NodeBackedChainIndex,
@@ -199,7 +201,9 @@ impl Drop for FetchService {
 #[allow(deprecated)]
 pub struct FetchServiceSubscriber {
     /// JsonRPC Client.
-    pub fetcher: JsonRpSeeConnector,
+    ///
+    /// NOTE: DEPRCATED, USE INDEXER OR VALIDATOR_CONNECTOR.
+    fetcher: JsonRpSeeConnector,
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber,
     /// Service metadata.
@@ -540,15 +544,81 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
+    ///
+    /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
+    ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
+    ///       required, this second call could be removed, improving the performance of this method.
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_treestate(hash_or_height)
-            .await?
-            .try_into()?)
+        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+
+        let block_data = match hash_or_height_struct {
+            HashOrHeight::Hash(hash) => self
+                .indexer
+                .get_indexed_block_by_hash(&snapshot, &hash.into())
+                .await
+                .map_err(|_error| {
+                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(FetchServiceError::RpcError(
+                    RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    )
+                ))?,
+            HashOrHeight::Height(height) => self
+                .indexer
+                .get_indexed_block_by_height(&snapshot, &height.into())
+                .await
+                .map_err(|_error| {
+                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(FetchServiceError::RpcError(
+                    RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    )
+                ))?
+        };
+
+        let (sapling, orchard) = self
+        .indexer
+        .get_treestate(block_data.hash())
+        .await
+        .map_err(|_error| {
+            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                "Failed to fetch treestate.",
+            ))
+        })?;
+        let time: u32 = block_data
+            .data()
+            .time()
+            .try_into()
+            .map_err(|_error| {
+                FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Block time is out of range for u32.",
+                ))
+            })?;
+
+        #[allow(deprecated)]
+        Ok(GetTreestateResponse::from_parts(
+            (*block_data.hash()).into(),
+            block_data.height().into(),
+            time,
+            sapling,
+            orchard,
+        ))
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.
@@ -1522,78 +1592,38 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// values also (even though they can be obtained using GetBlock).
     /// The block can be specified by either height or hash.
     async fn get_tree_state(&self, request: BlockId) -> Result<TreeState, Self::Error> {
-        let chain_info = self.get_blockchain_info().await?;
-        let hash_or_height = if request.height != 0 {
-            match u32::try_from(request.height) {
-                Ok(height) => {
-                    if height > chain_info.blocks().0 {
-                        return Err(FetchServiceError::TonicStatusError(tonic::Status::out_of_range(
-                            format!(
-                                "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
-                                height, chain_info.blocks().0,
-                            ))
-                        ));
-                    } else {
-                        height.to_string()
-                    }
-                }
-                Err(_) => {
-                    return Err(FetchServiceError::TonicStatusError(
-                        tonic::Status::invalid_argument(
-                            "Error: Height out of range. Failed to convert to u32.",
-                        ),
-                    ));
-                }
-            }
-        } else {
-            hex::encode(request.hash)
-        };
-        match self.z_get_treestate(hash_or_height).await {
-            Ok(state) => {
-                let (hash, height, time, sapling, orchard) = state.into_parts();
-                Ok(TreeState {
-                    network: chain_info.chain().clone(),
-                    height: height.0 as u64,
-                    hash: hash.to_string(),
-                    time,
-                    sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
-                    orchard_tree: orchard.map(hex::encode).unwrap_or_default(),
-                })
-            }
-            Err(e) => {
-                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                    format!("Error: Failed to retrieve treestate from node. Server Error: {e}",),
-                )))
-            }
-        }
+        let hash_or_height = blockid_to_hashorheight(request).ok_or(
+            crate::error::FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                "Invalid hash or height",
+            )),
+        )?;
+        
+        #[allow(deprecated)]
+        let (hash, height, time, sapling, orchard) =
+            <FetchServiceSubscriber as ZcashIndexer>::z_get_treestate(
+                self,
+                hash_or_height.to_string(),
+            )
+            .await?
+            .into_parts();
+        Ok(TreeState {
+            network: self.config.network.to_zebra_network().bip70_network_name(),
+            height: height.0 as u64,
+            hash: hash.to_string(),
+            time,
+            sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
+            orchard_tree: orchard.map(hex::encode).unwrap_or_default(),
+        })
     }
 
     /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
     async fn get_latest_tree_state(&self) -> Result<TreeState, Self::Error> {
-        let chain_info = self.get_blockchain_info().await?;
-        match self
-            .z_get_treestate(chain_info.blocks().0.to_string())
-            .await
-        {
-            Ok(state) => {
-                let (hash, height, time, sapling, orchard) = state.into_parts();
-                Ok(TreeState {
-                    network: chain_info.chain().clone(),
-                    height: height.0 as u64,
-                    hash: hash.to_string(),
-                    time,
-                    sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
-                    orchard_tree: orchard.map(hex::encode).unwrap_or_default(),
-                })
-            }
-            Err(e) => {
-                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                    format!("Error: Failed to retrieve treestate from node. Server Error: {e}",),
-                )))
-            }
-        }
+        let latest_block = self.chain_height().await?;
+        self.get_tree_state(BlockId {
+            height: latest_block.0 as u64,
+            hash: vec![],
+        })
+        .await
     }
 
     #[allow(deprecated)]
