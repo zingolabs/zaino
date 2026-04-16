@@ -58,6 +58,9 @@ pub enum ChainIndexSnapshot {
     /// Zaino is ready to serve non-finalized data.
     NonFinalizedStateExists {
         /// The snapshot of the non_finalized state.
+        #[allow(private_interfaces)]
+        // Rust doesn't support private fields of enum variants
+        // The type of this field being private gives us something like it, though
         non_finalized_snapshot: Arc<NonfinalizedBlockCacheSnapshot>,
     },
     /// Zaino is not ready to serve non-finalized data.
@@ -82,7 +85,7 @@ impl ChainIndexSnapshot {
 
 #[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
-pub struct NonfinalizedBlockCacheSnapshot {
+pub(crate) struct NonfinalizedBlockCacheSnapshot {
     /// the set of all known blocks < 100 blocks old
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
