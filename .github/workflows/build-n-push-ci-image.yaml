@@ -7,7 +7,7 @@ on:
       - '**'
     paths:
       - '.env.testing-artifacts'
-      - 'test_environment/*'
+      - 'integration-tests/test_environment/*'
 
 jobs:
   build-and-push:
@@ -31,7 +31,7 @@ jobs:
       run: |
         source .env.testing-artifacts
         export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION
-        TAG=$(./utils/get-ci-image-tag.sh)
+        TAG=$(./tools/scripts/get-ci-image-tag.sh)
         echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
     - name: Load version variables into job env
@@ -49,15 +49,15 @@ jobs:
       id: target
       run: |
         set -a
-        source ./utils/helpers.sh
+        source ./tools/scripts/helpers.sh
         TARGET=$(resolve_build_target ${{ env.ZCASH_VERSION }} ${{ env.ZEBRA_VERSION }})
         echo "target=$TARGET" >> "$GITHUB_OUTPUT"
 
     - name: Build and Push Docker Image
       uses: docker/build-push-action@v5
       with:
-        context: test_environment
-        file: test_environment/Dockerfile
+        context: integration-tests/test_environment
+        file: integration-tests/test_environment/Containerfile
         platforms: linux/amd64
         target: ${{ steps.target.outputs.target }}
         tags: |

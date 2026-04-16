@@ -14,14 +14,16 @@ license = "Apache-2.0"
 version = "0.2.0"
 
 [workspace.dependencies]
-# Zaino path deps
-zaino-proto = { path = "../zaino-proto" }
-zaino-state = { path = "../zaino-state" }
-zaino-serve = { path = "../zaino-serve" }
-zaino-common = { path = "../zaino-common" }
-zaino-fetch = { path = "../zaino-fetch" }
+# Workspace members
 zaino-testutils = { path = "zaino-testutils" }
-zainod = { path = "../zainod" }
+
+# Non-member path deps (from parent workspace)
+zaino-proto = { path = "../packages/zaino-proto" }
+zaino-state = { path = "../packages/zaino-state" }
+zaino-serve = { path = "../packages/zaino-serve" }
+zaino-common = { path = "../packages/zaino-common" }
+zaino-fetch = { path = "../packages/zaino-fetch" }
+zainod = { path = "../packages/zainod" }
 
 # Zingo
 zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }

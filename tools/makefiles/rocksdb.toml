@@ -1,0 +1,290 @@
+[tasks.check-system-rocksdb]
+description = "Check system RocksDB compatibility by scanning for calls to missing symbols"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+
+# --- Required tools ---
+for cmd in pkg-config nm; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "ERROR: $cmd is not installed."
+        exit 1
+    fi
+done
+
+# --- System RocksDB present? ---
+if ! pkg-config --exists rocksdb 2>/dev/null; then
+    echo "ERROR: System RocksDB not found via pkg-config."
+    if command -v pacman &>/dev/null; then
+        echo "Install it with: pacman -S rocksdb"
+    elif command -v apt-get &>/dev/null; then
+        echo "Install it with: apt-get install -y librocksdb-dev"
+    else
+        echo "Install the rocksdb development package for your distribution."
+    fi
+    exit 1
+fi
+
+SYSTEM_VERSION=$(pkg-config --modversion rocksdb)
+SYSTEM_LIBDIR=$(pkg-config --variable=libdir rocksdb)
+
+echo "System RocksDB: ${SYSTEM_VERSION} (${SYSTEM_LIBDIR})"
+
+# --- Expected version from Cargo.lock ---
+if [[ ! -f Cargo.lock ]]; then
+    echo "ERROR: No Cargo.lock found — run cargo check first."
+    exit 1
+fi
+
+CRATE_VERSION=$(grep -A1 'name = "librocksdb-sys"' Cargo.lock \
+    | grep 'version' | head -1 \
+    | grep -oP '\+\K[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+if [[ -z "$CRATE_VERSION" ]]; then
+    echo "ERROR: Could not determine expected RocksDB version from Cargo.lock."
+    exit 1
+fi
+
+echo "Cargo.lock expects: librocksdb-sys bundled ${CRATE_VERSION}"
+
+# --- Locate crate sources ---
+CARGO_SRC="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+
+HEADER=$(find "$CARGO_SRC" -path "*/librocksdb-sys-*/rocksdb/include/rocksdb/c.h" 2>/dev/null | head -1)
+ROCKSDB_CRATE=$(find "$CARGO_SRC" -maxdepth 2 -name "rocksdb-*" -type d 2>/dev/null | sort -V | tail -1)
+
+if [[ -z "$HEADER" || -z "$ROCKSDB_CRATE" ]]; then
+    echo "ERROR: Could not find crate sources. Run 'cargo check' once to download them."
+    exit 1
+fi
+
+# --- Find missing symbols: header functions not in system library ---
+LIB_FILE="${SYSTEM_LIBDIR}/librocksdb.so"
+if [[ ! -f "$LIB_FILE" ]]; then
+    LIB_FILE=$(find "$SYSTEM_LIBDIR" -name 'librocksdb.so*' -type f | head -1)
+fi
+if [[ -z "$LIB_FILE" ]]; then
+    echo "ERROR: Could not find librocksdb.so in ${SYSTEM_LIBDIR}"
+    exit 1
+fi
+
+HEADER_FUNCS=$(grep -oP '(?<=\s)rocksdb_\w+(?=\()' "$HEADER" | grep -v '_t$' | sort -u)
+LIB_FUNCS=$(nm -D "$LIB_FILE" | awk '/T rocksdb_/{print $3}' | sort -u)
+MISSING=$(comm -23 <(echo "$HEADER_FUNCS") <(echo "$LIB_FUNCS"))
+MISSING_COUNT=$(echo "$MISSING" | grep -c . || true)
+
+echo ""
+if [[ "$MISSING_COUNT" -eq 0 ]]; then
+    echo "All C API functions are present in the system library."
+    echo "System RocksDB is fully compatible."
+    exit 0
+fi
+
+echo "${MISSING_COUNT} symbols in bundled headers missing from system library."
+echo "Scanning for actual reachability..."
+
+# --- For each missing symbol, check if the rocksdb crate calls it ---
+CALLED_MISSING=()
+SAFE_MISSING=()
+
+for func in $MISSING; do
+    if grep -rq "ffi::${func}\b" "$ROCKSDB_CRATE/src/" 2>/dev/null; then
+        CALLED_MISSING+=("$func")
+    else
+        SAFE_MISSING+=("$func")
+    fi
+done
+
+if [[ ${#SAFE_MISSING[@]} -gt 0 ]]; then
+    echo ""
+    echo "Not referenced in rocksdb crate (safe):"
+    printf '  - %s\n' "${SAFE_MISSING[@]}"
+fi
+
+if [[ ${#CALLED_MISSING[@]} -eq 0 ]]; then
+    echo ""
+    echo "No missing symbols are actually called. System RocksDB is safe to use."
+    exit 0
+fi
+
+# --- For called missing symbols, check if zebra-state/zaino invoke the wrapper ---
+echo ""
+echo "Referenced in rocksdb crate — checking if reachable from this project..."
+
+ZEBRA_STATE=$(find "$CARGO_SRC" -maxdepth 1 -name "zebra-state-*" -type d 2>/dev/null | sort -V | tail -1)
+DANGEROUS=()
+
+for func in "${CALLED_MISSING[@]}"; do
+    # Find the file containing the FFI call
+    WRAPPER_FILE=$(grep -rl "ffi::${func}\b" "$ROCKSDB_CRATE/src/" 2>/dev/null | head -1)
+    if [[ -z "$WRAPPER_FILE" ]]; then
+        continue
+    fi
+
+    # Find the enclosing fn name by reading backwards from the FFI call
+    LINE_NUM=$(grep -n "ffi::${func}\b" "$WRAPPER_FILE" | head -1 | cut -d: -f1)
+    METHOD=$(head -n "$LINE_NUM" "$WRAPPER_FILE" \
+        | grep -oP '(?<=fn\s)\w+' \
+        | tail -1)
+
+    if [[ -z "$METHOD" ]]; then
+        echo "  - ${func}: called in rocksdb crate but could not determine wrapper method"
+        DANGEROUS+=("$func")
+        continue
+    fi
+
+    # Search zebra-state and zaino source for the wrapper method
+    FOUND_IN=""
+    if [[ -n "$ZEBRA_STATE" ]] && grep -rq "\b${METHOD}\b" "$ZEBRA_STATE/src/" 2>/dev/null; then
+        FOUND_IN="zebra-state"
+    fi
+    if grep -rq "\b${METHOD}\b" zaino-*/src/ zainod/src/ 2>/dev/null; then
+        FOUND_IN="${FOUND_IN:+${FOUND_IN}, }zaino"
+    fi
+
+    if [[ -n "$FOUND_IN" ]]; then
+        echo "  - ${func} (via .${METHOD}()) — CALLED from: ${FOUND_IN}"
+        DANGEROUS+=("$func")
+    else
+        echo "  - ${func} (via .${METHOD}()) — not called by zebra-state or zaino (safe)"
+    fi
+done
+
+if [[ ${#DANGEROUS[@]} -gt 0 ]]; then
+    echo ""
+    echo "ERROR: ${#DANGEROUS[@]} missing symbol(s) are reachable at runtime."
+    echo "System RocksDB ${SYSTEM_VERSION} is NOT safe to use with this project."
+    exit 1
+fi
+
+echo ""
+echo "No missing symbols are reachable at runtime. System RocksDB is safe to use."
+'''
+
+# ---------------------------------------------------------------------------
+
+[tasks.rocksdb-audit-fingerprint]
+description = "Compute and save the rocksdb audit fingerprint (internal)"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+mkdir -p .cargo
+CARGO_LOCK_HASH=$(sha256sum Cargo.lock 2>/dev/null | cut -d' ' -f1 || echo "none")
+SYSTEM_VERSION=$(pkg-config --modversion rocksdb 2>/dev/null || echo "none")
+echo "${CARGO_LOCK_HASH}:${SYSTEM_VERSION}" > .cargo/.rocksdb-audit
+'''
+
+# ---------------------------------------------------------------------------
+
+[tasks.audit-system-rocksdb]
+description = "Re-audit system RocksDB if opted in and code has changed since last audit"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+
+# Skip if not opted in
+if [[ ! -f .cargo/config.toml ]] || ! grep -q '# >>> zaino-rocksdb >>>' .cargo/config.toml 2>/dev/null; then
+    exit 0
+fi
+
+# Compute fingerprint and compare with saved
+CARGO_LOCK_HASH=$(sha256sum Cargo.lock 2>/dev/null | cut -d' ' -f1 || echo "none")
+SYSTEM_VERSION=$(pkg-config --modversion rocksdb 2>/dev/null || echo "none")
+FINGERPRINT="${CARGO_LOCK_HASH}:${SYSTEM_VERSION}"
+
+if [[ -f .cargo/.rocksdb-audit ]] && [[ "$(cat .cargo/.rocksdb-audit)" == "$FINGERPRINT" ]]; then
+    exit 0
+fi
+
+echo "System RocksDB audit needed (Cargo.lock or system version changed)..."
+makers check-system-rocksdb
+makers rocksdb-audit-fingerprint
+echo "Audit fingerprint saved."
+'''
+
+# ---------------------------------------------------------------------------
+
+[tasks.use-system-rocksdb]
+description = "Opt in to linking against the system-installed RocksDB (skips slow librocksdb-sys build)"
+dependencies = ["check-system-rocksdb"]
+script_runner = "bash"
+script = '''
+set -euo pipefail
+
+ROCKSDB_LIBDIR=$(pkg-config --variable=libdir rocksdb)
+
+mkdir -p .cargo
+
+# Preserve existing config content — remove any prior managed block
+if [[ -f .cargo/config.toml ]]; then
+    sed -i '/^# >>> zaino-rocksdb >>>/,/^# <<< zaino-rocksdb <<</d' .cargo/config.toml
+fi
+
+# Only set ROCKSDB_LIB_DIR (link against system lib, skip C++ build).
+# Do NOT set ROCKSDB_INCLUDE_DIR — let librocksdb-sys use its bundled
+# headers so bindgen produces bindings matching the rocksdb crate version.
+cat >> .cargo/config.toml <<EOF
+# >>> zaino-rocksdb >>>
+[env]
+ROCKSDB_LIB_DIR = "${ROCKSDB_LIBDIR}"
+# <<< zaino-rocksdb <<<
+EOF
+
+makers rocksdb-audit-fingerprint
+
+echo ""
+echo "Wrote .cargo/config.toml — future builds will link against system RocksDB."
+echo "To revert: makers use-bundled-rocksdb"
+'''
+
+# ---------------------------------------------------------------------------
+
+[tasks.set-worktree-parent-tools]
+description = "Copy .cargo/config.toml to the common parent of all git worktrees so all worktrees inherit it"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+
+if [[ ! -f .cargo/config.toml ]]; then
+    echo "ERROR: No .cargo/config.toml in this worktree."
+    echo "Run 'makers use-system-rocksdb' first."
+    exit 1
+fi
+
+# Find the lowest common parent of all worktree paths
+PATHS=$(git worktree list --porcelain | grep '^worktree ' | sed 's/^worktree //')
+PARENT=$(echo "$PATHS" | python3 -c "import sys, os; print(os.path.commonpath([l.strip() for l in sys.stdin]))")
+
+mkdir -p "$PARENT/.cargo"
+cp .cargo/config.toml "$PARENT/.cargo/config.toml"
+
+echo "Copied .cargo/config.toml to $PARENT/.cargo/config.toml"
+echo "All worktrees under $PARENT/ will now inherit this config."
+'''
+
+# ---------------------------------------------------------------------------
+
+[tasks.use-bundled-rocksdb]
+description = "Revert to building RocksDB from source (undo use-system-rocksdb)"
+script_runner = "bash"
+script = '''
+set -euo pipefail
+
+if [[ ! -f .cargo/config.toml ]] || ! grep -q '# >>> zaino-rocksdb >>>' .cargo/config.toml 2>/dev/null; then
+    echo "Already using bundled RocksDB."
+    exit 0
+fi
+
+# Remove our managed block
+sed -i '/^# >>> zaino-rocksdb >>>/,/^# <<< zaino-rocksdb <<</d' .cargo/config.toml
+
+# Remove audit fingerprint
+rm -f .cargo/.rocksdb-audit
+
+# If the file is now empty (or only whitespace), remove it
+if [[ ! -s .cargo/config.toml ]] || ! grep -q '[^[:space:]]' .cargo/config.toml; then
+    rm -f .cargo/config.toml
+    echo "Removed .cargo/config.toml — builds will compile RocksDB from source."
+else
+    echo "Removed RocksDB config from .cargo/config.toml."
+fi
+'''
