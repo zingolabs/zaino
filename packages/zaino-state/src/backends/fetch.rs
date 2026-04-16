@@ -1015,7 +1015,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         {
                             warn!("GetBlockRange channel closed unexpectedly: {}", e);
                         };
-                        return ();
+                        return;
                     };
                     // Use the snapshot tip directly, as this function doesn't support passthrough
                     let chain_height = non_finalized_snapshot.best_tip.height.0;
@@ -1147,7 +1147,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         {
                             warn!("GetBlockRangeNullifiers channel closed unexpectedly: {}", e);
                         };
-                        return ();
+                        return;
                     };
 
                     // Use the snapshot tip directly, as this function doesn't support passthrough
@@ -1637,7 +1637,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         {
                             warn!("GetMempoolStream channel closed unexpectedly: {}", e);
                         };
-                        return ();
+                        return;
                     };
                     let mempool_height = non_finalized_snapshot.best_tip.height.0;
                     match indexer.get_mempool_stream(None) {

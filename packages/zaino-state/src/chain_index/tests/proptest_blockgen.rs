@@ -226,7 +226,7 @@ fn passthrough_get_raw_transaction() {
 #[test]
 fn passthrough_best_chaintip() {
     passthrough_test(async |mockchain, index_reader, snapshot| {
-        let tip = index_reader.best_chaintip(&snapshot).await.unwrap();
+        let tip = index_reader.best_chaintip(snapshot).await.unwrap();
         assert_eq!(
             tip.height.0,
             mockchain

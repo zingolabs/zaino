@@ -591,7 +591,7 @@ impl StateServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 // This method does not support passthrough. Just return.
-                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return ()};
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return};
                 let chain_height = non_finalized_snapshot.best_tip.height.0;
 
                 match state_service_clone
