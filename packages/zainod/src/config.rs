@@ -16,7 +16,7 @@ use zaino_common::{
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 #[allow(deprecated)]
-use zaino_state::{BackendType, FetchServiceConfig, StateServiceConfig};
+use zaino_state::{BackendType, DonationAddress, FetchServiceConfig, StateServiceConfig};
 
 /// Header for generated configuration files.
 pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
@@ -84,7 +84,7 @@ pub struct ZainodConfig {
     /// Storage settings (cache and database).
     pub storage: StorageConfig,
     /// Zcash donation UA address
-    pub donation_address: Option<String>,
+    pub donation_address: Option<DonationAddress>,
 }
 
 impl ZainodConfig {
@@ -1003,5 +1003,41 @@ listen_address = "127.0.0.1:8137"
             toml_str, toml_str_again,
             "config roundtrip should be stable"
         );
+    }
+
+    // --- donation_address ---
+
+    #[test]
+    fn donation_address_valid_is_accepted() {
+        use zcash_address::{ToAddress as _, ZcashAddress};
+        use zcash_protocol::consensus::NetworkType;
+
+        let _guard = EnvGuard::new();
+        let dir = TempDir::new().unwrap();
+
+        let valid_addr =
+            ZcashAddress::from_transparent_p2pkh(NetworkType::Main, [1u8; 20]).encode();
+
+        let content = format!(
+            "donation_address = {:?}\n\
+             [grpc_settings]\n\
+             listen_address = \"127.0.0.1:8232\"\n",
+            valid_addr,
+        );
+        let path = create_test_config_file(&dir, &content, "valid_donation.toml");
+        let cfg = load_config(&path).unwrap();
+        assert_eq!(cfg.donation_address.unwrap().to_string(), valid_addr);
+    }
+
+    #[test]
+    fn donation_address_invalid_is_rejected() {
+        let _guard = EnvGuard::new();
+        let dir = TempDir::new().unwrap();
+
+        let content = "donation_address = \"not_a_zcash_address\"\n\
+             [grpc_settings]\n\
+             listen_address = \"127.0.0.1:8232\"\n";
+        let path = create_test_config_file(&dir, content, "invalid_donation.toml");
+        assert!(load_config(&path).is_err());
     }
 }

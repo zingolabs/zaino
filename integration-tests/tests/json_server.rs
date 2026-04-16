@@ -62,6 +62,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
             ..Default::default()
         },
         zaino_common::Network::Regtest(ActivationHeights::default()),
+        None,
     ))
     .await
     .unwrap();
@@ -89,6 +90,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
             ..Default::default()
         },
         zaino_common::Network::Regtest(ActivationHeights::default()),
+        None,
     ))
     .await
     .unwrap();

@@ -46,9 +46,7 @@ pub async fn spawn_indexer(
         "Checking connection with node"
     );
     if let Some(donation_address) = &config.donation_address {
-        if !donation_address.is_empty() {
-            info!("Instance donation address: {}", donation_address);
-        }
+        info!("Instance donation address: {}", donation_address);
     }
     let zebrad_uri = test_node_and_return_url(
         &config.validator_settings.validator_jsonrpc_listen_address,

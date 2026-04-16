@@ -99,6 +99,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             ..Default::default()
         },
         network_type,
+        None,
     ))
     .await
     .unwrap();
@@ -140,6 +141,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             ..Default::default()
         },
         network_type,
+        None,
     ))
     .await
     .unwrap();

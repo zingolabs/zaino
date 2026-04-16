@@ -63,3 +63,7 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 config = { workspace = true }
 tempfile = { workspace = true }
+
+[dev-dependencies]
+zcash_address = { workspace = true }
+zcash_protocol = { workspace = true }
