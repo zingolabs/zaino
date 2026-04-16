@@ -45,6 +45,9 @@ pub async fn spawn_indexer(
         address = %config.validator_settings.validator_jsonrpc_listen_address,
         "Checking connection with node"
     );
+    if let Some(donation_address) = &config.donation_address {
+        info!("Instance donation address: {}", donation_address);
+    }
     let zebrad_uri = test_node_and_return_url(
         &config.validator_settings.validator_jsonrpc_listen_address,
         config.validator_settings.validator_cookie_path.clone(),

@@ -64,7 +64,8 @@ pub(crate) mod config;
 
 #[allow(deprecated)]
 pub use config::{
-    BackendConfig, BackendType, BlockCacheConfig, FetchServiceConfig, StateServiceConfig,
+    BackendConfig, BackendType, BlockCacheConfig, DonationAddress, FetchServiceConfig,
+    StateServiceConfig,
 };
 
 pub(crate) mod error;

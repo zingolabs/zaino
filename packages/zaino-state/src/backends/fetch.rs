@@ -60,7 +60,7 @@ use crate::{
 #[allow(deprecated)]
 use crate::{
     chain_index::{source::ValidatorConnector, types},
-    config::FetchServiceConfig,
+    config::{DonationAddress, FetchServiceConfig},
     error::FetchServiceError,
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
@@ -1923,7 +1923,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             estimated_height: blockchain_info.estimated_height().0 as u64,
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
-            donation_address: "".to_string(),
+            donation_address: self.config.donation_address.as_ref().map(DonationAddress::encode).unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
             lightwallet_protocol_version: "v0.4.0".to_string(),
