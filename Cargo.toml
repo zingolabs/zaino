@@ -27,7 +27,7 @@ version = "0.2.0"
 
 [workspace.dependencies]
 
-# Zingo 
+# Zingo
 
 zingo_common_components =  "0.3.0"
 zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
@@ -40,6 +40,7 @@ zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev
 
 
 # Librustzcash
+incrementalmerkletree = "0.8"
 zcash_address = "0.10"
 zcash_keys = "0.12"
 zcash_protocol = "0.7.2"

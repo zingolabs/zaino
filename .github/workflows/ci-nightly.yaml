@@ -135,7 +135,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check trailing whitespace
-        run: ./.utils/trailing-whitespace.sh reject
+        run: ./tools/scripts/trailing-whitespace.sh reject
         working-directory: .
 
   cargo-hack-check:

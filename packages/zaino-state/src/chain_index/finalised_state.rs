@@ -517,9 +517,8 @@ impl ZainoDB {
         let sapling_activation_height = zebra_chain::parameters::NetworkUpgrade::Sapling
             .activation_height(&zebra_network)
             .expect("Sapling activation height must be set");
-        let nu5_activation_height = zebra_chain::parameters::NetworkUpgrade::Nu5
-            .activation_height(&zebra_network)
-            .expect("NU5 activation height must be set");
+        let nu5_activation_height =
+            zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&zebra_network);
 
         let mut parent_chainwork = if db_height_opt.is_none() {
             ChainWork::from_u256(0.into())
@@ -601,7 +600,10 @@ impl ZainoDB {
                 let (sapling_opt, orchard_opt) =
                     source.get_commitment_tree_roots(block_hash).await?;
                 let is_sapling_active = height_int >= sapling_activation_height.0;
-                let is_orchard_active = height_int >= nu5_activation_height.0;
+                let is_orchard_active = nu5_activation_height
+                    .map_or(false, |nu5_activation_height| {
+                        height_int >= nu5_activation_height.0
+                    });
                 let (sapling_root, sapling_size) = if is_sapling_active {
                     sapling_opt.ok_or_else(|| {
                         FinalisedStateError::BlockchainSourceError(

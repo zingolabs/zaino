@@ -27,5 +27,5 @@ atty = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
 
-# Zingo 
+# Zingo
 zingo_common_components = { workspace = true }

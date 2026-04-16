@@ -506,13 +506,15 @@ async fn z_get_treestate_inner() {
     )
     .await;
 
+    let chain_height = dbg!(zaino_subscriber.chain_height().await.unwrap()).0;
+
     let zcashd_treestate = dbg!(zcashd_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 
     let zaino_treestate = dbg!(zaino_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 

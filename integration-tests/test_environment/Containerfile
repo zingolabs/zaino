@@ -11,8 +11,7 @@ ARG UID=1000
 ARG GID=${UID}
 ARG USER=container_user
 ARG HOME="/home/container_user"
-ARG CARGO_HOME="${HOME}/.cargo"
-ARG CARGO_TARGET_DIR="${HOME}/target"
+ARG CARGO_HOME="/usr/local/cargo"
 
 ########################
 # === DOWNLOADERS ===
@@ -63,12 +62,11 @@ ARG GID
 ARG USER
 ARG HOME
 ARG CARGO_HOME
-ARG CARGO_TARGET_DIR
 
 ENV CARGO_HOME=${CARGO_HOME}
-ENV CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
 ENV CARGO_TERM_COLOR=always
 ENV PROTOC=/usr/bin/protoc
+ENV ROCKSDB_LIB_DIR=/usr/lib/x86_64-linux-gnu
 
 
 LABEL maintainer="nachog00"
@@ -80,11 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev \
     build-essential \
     cmake \
-    libsnappy-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    liblz4-dev \
-    libzstd-dev \
+    librocksdb-dev \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
