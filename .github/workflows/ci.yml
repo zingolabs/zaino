@@ -32,7 +32,8 @@ jobs:
     container:
       image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     runs-on: arc-sh-runners
-    if: github.event.pull_request.draft == false
+    # Skip on PRs until self-hosted runner is available
+    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -129,7 +130,7 @@ jobs:
 
       - name: Run Tests (Nextest)
         env:
-          TEST_BINARIES_DIR: ${{ github.workspace }}/test_binaries/bins
+          TEST_BINARIES_DIR: ${{ github.workspace }}/integration-tests/test_binaries/bins
         run: |
           cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'quick' }} --retries 2 --no-tests fail --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}

@@ -1,14 +1,14 @@
-# Docker Usage
+# Container Usage
 
-This document covers running Zaino using the official Docker image.
+This document covers running Zaino using the official container image.
 
 ## Overview
 
-The Docker image runs `zainod` - the Zaino indexer daemon. The image:
+The container image runs `zainod` - the Zaino indexer daemon. The image:
 
 - Uses `zainod` as the entrypoint with `start` as the default subcommand
-- Runs as non-root user (`container_user`, UID 1000) after initial setup
-- Handles volume permissions automatically for default paths
+- Runs as non-root user (`container_user`, UID 1000)
+- Refuses to start if run as root
 
 For CLI usage details, see the CLI documentation or run `docker run --rm zaino --help`.
 
@@ -77,15 +77,21 @@ The container provides simple mount points:
 
 These are symlinked internally to the XDG paths that Zaino expects.
 
-## Volume Permission Handling
+## Volume Permissions
 
-The entrypoint handles permissions automatically:
+The container runs as `container_user` (UID 1000, GID 1000) and never
+starts as root. Mounted volumes must be writable by this user.
 
-1. Container starts as root
-2. Creates directories and sets ownership to UID 1000
-3. Drops privileges and runs `zainod`
+For named volumes (e.g. `zaino-data:/app/data`), the container runtime
+handles ownership automatically.
 
-This means you can mount volumes without pre-configuring ownership.
+For bind mounts to host directories, ensure the host directory is owned
+by UID 1000 before starting the container:
+
+```bash
+mkdir -p ./data
+chown 1000:1000 ./data
+```
 
 ### Read-Only Config Mounts
 
@@ -132,5 +138,5 @@ docker inspect --format='{{.State.Health.Status}}' <container>
 Permission handling can be tested locally:
 
 ```bash
-./test_environment/test-docker-permissions.sh zaino:latest
+./integration-tests/test_environment/test-container-permissions.sh zaino:latest
 ```

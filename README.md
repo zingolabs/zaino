@@ -27,6 +27,38 @@ In addition to the RPC API, Zaino will offer a client library allowing developer
 Currently Zebra's `ReadStateService` only enables direct access to chain data (both Zebra and any process interfacing with the `ReadStateService` must be running on the same hardware). Zaino will extend this functionality, using a Hyper wrapper, to allow Zebra and Zaino (or software built using Zaino's `IndexerStateService` as its backend) to run on different hardware and should enable a much greater range of deployment strategies (eg. running validator, indexer or wallet processes on separate hardware). It should be noted that this will primarily be designed as a remote link between Zebra and Zaino and it is not intended for developers to directly interface with this service, but instead to use functionality exposed by the client library in Zaino (`IndexerStateService`).
 
 
+## Project Structure
+
+```
+packages/                          Cargo workspace member crates
+  zaino-proto/                       Protocol buffer definitions
+  zaino-common/                      Shared utilities and configuration
+  zaino-fetch/                       Blockchain data fetching (JSON-RPC backend)
+  zaino-state/                       Chain state and indexer service library
+  zaino-serve/                       gRPC server (CompactTxStreamer)
+  zainod/                            Daemon binary
+
+integration-tests/                 Separate workspace — runs against zcashd/zebrad
+  tests/                             Integration test files
+  zaino-testutils/                   Test harness and utilities
+  test_binaries/                     Symlinked zcashd/zebrad/zcash-cli binaries
+  test_environment/                  Container build context
+    Containerfile                      CI/test container image definition
+    entrypoint.sh                      Container entrypoint (binary symlink setup)
+
+docs/                              Architecture diagrams, specs, and usage guides
+Dockerfile                         Production container image
+entrypoint.sh                      Production container entrypoint
+.config/containers.conf            Rootless podman defaults (userns, security)
+tools/                             Development tools, shell helpers, makefiles
+  scripts/                           Shell scripts (CI tag computation, helpers, lints)
+  makefiles/                         cargo-make task definitions (lints, rocksdb, notify)
+.github/                           CI workflows and issue templates
+.githooks/                         Git hooks (pre-push)
+Makefile.toml                      cargo-make task definitions
+.env.testing-artifacts             Version pins for test container (Rust, zcashd, zebrad)
+```
+
 ## Documentation
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
 - [Testing](./docs/testing.md): Holds instructions for running tests.
