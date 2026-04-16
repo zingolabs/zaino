@@ -2,7 +2,7 @@ This is a tutorial to launch zaino, connected to a local validator.
 
 Step 0: Git check out zaino.
 
-Step 1: Set up zebra v3.1.0. 
+Step 1: Set up zebra v3.1.0.
 ```
 git clone git@github.com:ZcashFoundation/zebra.git
 git checkout v3.1.0

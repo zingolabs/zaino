@@ -9,8 +9,6 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-include!(concat!(env!("OUT_DIR"), "/zebraversion.rs"));
-
 // Zaino's Indexer library frontend.
 pub(crate) mod indexer;
 
@@ -67,7 +65,8 @@ pub(crate) mod config;
 
 #[allow(deprecated)]
 pub use config::{
-    BackendConfig, BackendType, BlockCacheConfig, FetchServiceConfig, StateServiceConfig,
+    BackendConfig, BackendType, BlockCacheConfig, DonationAddress, FetchServiceConfig,
+    StateServiceConfig,
 };
 
 pub(crate) mod error;

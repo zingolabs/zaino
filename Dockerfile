@@ -50,19 +50,18 @@ ARG GID
 ARG USER
 ARG HOME
 
-# Runtime deps + setpriv for privilege dropping
+# Runtime deps
 RUN apt-get -qq update && \
     apt-get -qq install -y --no-install-recommends \
-      ca-certificates libssl3 libgcc-s1 util-linux \
+      ca-certificates libssl3 libgcc-s1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user (entrypoint will drop privileges to this user)
+# Create non-root user
 RUN addgroup --gid "${GID}" "${USER}" && \
     adduser  --uid "${UID}" --gid "${GID}" --home "${HOME}" \
              --disabled-password --gecos "" "${USER}"
 
-# Make UID/GID available to entrypoint
-ENV UID=${UID} GID=${GID} HOME=${HOME}
+ENV HOME=${HOME}
 
 WORKDIR ${HOME}
 
@@ -87,6 +86,7 @@ EXPOSE ${ZAINO_GRPC_PORT} ${ZAINO_JSON_RPC_PORT}
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
 
-# Start as root; entrypoint drops privileges after setting up directories
+USER ${USER}
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["start"]

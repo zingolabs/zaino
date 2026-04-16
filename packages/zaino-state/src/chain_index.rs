@@ -192,11 +192,43 @@ pub trait ChainIndex {
         hash: types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<types::Height>, Self::Error>>;
 
+    /// Returns Some(BlockHash) for the given block height.in the best chain.
+    ///
+    /// Returns None if the specified block height is above the best chain tip.
+    fn get_block_hash(
+        &self,
+        snapshot: &Self::Snapshot,
+        hash: types::Height,
+    ) -> impl std::future::Future<Output = Result<Option<types::BlockHash>, Self::Error>>;
+
+    /// Returns Some(IndexedBlock) for the given block hash.
+    ///
+    /// Returns None if the specified block is not found.
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", cumulative
+    /// chain work must be made optional to enable this.**
+    fn get_indexed_block_by_hash(
+        &self,
+        snapshot: &Self::Snapshot,
+        target_hash: &types::BlockHash,
+    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
+
+    /// Returns Some(IndexedBlock) for the given block height.in the best chain.
+    ///
+    /// Returns None if the specified block height is above the best chain tip.
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", cumulative
+    /// chain work must be made optional to enable this.**
+    fn get_indexed_block_by_height(
+        &self,
+        snapshot: &Self::Snapshot,
+        target_height: &types::Height,
+    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
+
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights.
     /// Returns None if the specified end height
     /// is greater than the snapshot's tip
-    // TO-TEST
     #[allow(clippy::type_complexity)]
     fn get_block_range(
         &self,
@@ -857,6 +889,76 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
+    /// Returns Some(BlockHash) for the given block height.in the best chain.
+    ///
+    /// Returns None if the specified block height is above the best chain tip.
+    async fn get_block_hash(
+        &self,
+        snapshot: &Self::Snapshot,
+        height: types::Height,
+    ) -> Result<Option<types::BlockHash>, Self::Error> {
+        // First check non-finalised state.
+        match snapshot.heights_to_hashes.get(&height).copied() {
+            Some(block_hash) => Ok(Some(block_hash)),
+            // If not found check finalised state.
+            None => match self.finalized_state.get_block_hash(height).await? {
+                Some(hash) => Ok(Some(hash)),
+                None => {
+                    // If not found try to fetch from backing validator (*passthrough*).
+                    //
+                    // Note this requires fetching the full block from the backing node.
+                    match self
+                        .source()
+                        .get_block(HashOrHeight::Height(height.into()))
+                        .await
+                        .map_err(ChainIndexError::backing_validator)?
+                    {
+                        Some(block) => Ok(Some(block.hash().into())),
+                        None => Ok(None),
+                    }
+                }
+            },
+        }
+    }
+
+    /// Returns Some(IndexedBlock) for the given block hash.
+    ///
+    /// Returns None if the specified block is not found.
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", cumulative
+    /// chain work must be made optional to enable this.**
+    async fn get_indexed_block_by_hash(
+        &self,
+        snapshot: &Self::Snapshot,
+        target_hash: &types::BlockHash,
+    ) -> Result<Option<IndexedBlock>, Self::Error> {
+        match snapshot.get_chainblock_by_hash(target_hash) {
+            Some(block) => Ok(Some(block.clone())),
+            None => match self.get_block_height(snapshot, *target_hash).await {
+                Ok(Some(height)) => Ok(self.finalized_state.get_chain_block(height).await?),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            },
+        }
+    }
+
+    /// Returns Some(IndexedBlock) for the given block height.in the best chain.
+    ///
+    /// Returns None if the specified block height is above the best chain tip.
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", cumulative
+    /// chain work must be made optional to enable this.**
+    async fn get_indexed_block_by_height(
+        &self,
+        snapshot: &Self::Snapshot,
+        target_height: &types::Height,
+    ) -> Result<Option<IndexedBlock>, Self::Error> {
+        match snapshot.get_chainblock_by_height(target_height) {
+            Some(block) => Ok(Some(block.clone())),
+            None => Ok(self.finalized_state.get_chain_block(*target_height).await?),
+        }
+    }
+
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights.
     /// Returns None if the specified start height
@@ -941,6 +1043,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ///
     /// Returns None if the specified height
     /// is greater than the snapshot's tip
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
+    /// fetching block data from the backing validator when not locally available.**
     async fn get_compact_block(
         &self,
         nonfinalized_snapshot: &Self::Snapshot,
@@ -987,6 +1092,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ///   The original transaction index is preserved in `CompactTx.index`.
     /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
     ///   components are populated).
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
+    /// fetching block data from the backing validator when not locally available.**
     #[allow(clippy::type_complexity)]
     async fn get_compact_block_stream(
         &self,
