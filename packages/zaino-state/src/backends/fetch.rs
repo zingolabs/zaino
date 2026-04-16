@@ -566,12 +566,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
                         "Failed to fetch block data.",
                     ))
                 })?
-                .ok_or(FetchServiceError::RpcError(
-                    RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    )
-                ))?,
+                .ok_or(FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
             HashOrHeight::Height(height) => self
                 .indexer
                 .get_indexed_block_by_height(&snapshot, &height.into())
@@ -582,34 +580,28 @@ impl ZcashIndexer for FetchServiceSubscriber {
                         "Failed to fetch block data.",
                     ))
                 })?
-                .ok_or(FetchServiceError::RpcError(
-                    RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    )
-                ))?
+                .ok_or(FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
         };
 
         let (sapling, orchard) = self
-        .indexer
-        .get_treestate(block_data.hash())
-        .await
-        .map_err(|_error| {
-            FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                "Failed to fetch treestate.",
-            ))
-        })?;
-        let time: u32 = block_data
-            .data()
-            .time()
-            .try_into()
+            .indexer
+            .get_treestate(block_data.hash())
+            .await
             .map_err(|_error| {
                 FetchServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Block time is out of range for u32.",
+                    "Failed to fetch treestate.",
                 ))
             })?;
+        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                "Block time is out of range for u32.",
+            ))
+        })?;
 
         #[allow(deprecated)]
         Ok(GetTreestateResponse::from_parts(
@@ -1597,7 +1589,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 "Invalid hash or height",
             )),
         )?;
-        
+
         #[allow(deprecated)]
         let (hash, height, time, sapling, orchard) =
             <FetchServiceSubscriber as ZcashIndexer>::z_get_treestate(
