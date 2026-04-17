@@ -34,7 +34,7 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
     >,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// created for NonfinalizedBlockCacheSnapshot block_id field for naming fields
 pub struct BlockIndex {
     /// from chain_index types

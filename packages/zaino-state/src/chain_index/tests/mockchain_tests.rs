@@ -109,10 +109,10 @@ async fn get_transaction_status() {
         assert!(transaction_status_nonbest_chain.is_empty());
         assert_eq!(
             transaction_status_best_chain.unwrap(),
-            BestChainLocation::Block(
-                crate::BlockHash(block_hash.0),
-                crate::Height(block_height.unwrap().0)
-            )
+            BestChainLocation::Block(crate::chain_index::non_finalised_state::BlockIndex {
+                height: crate::Height(block_height.unwrap().0),
+                blockhash: crate::BlockHash(block_hash.0),
+            })
         );
     }
 }

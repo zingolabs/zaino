@@ -126,8 +126,9 @@ fn passthrough_find_fork_point() {
                 if height <= snapshot.validator_finalized_height {
                     // passthrough fork point can only ever be the requested block
                     // as we don't passthrough to nonfinalized state
-                    assert_eq!(hash, fork_point.unwrap().0);
-                    assert_eq!(height, fork_point.unwrap().1);
+                    let fork_point = fork_point.unwrap();
+                    assert_eq!(hash, fork_point.blockhash);
+                    assert_eq!(height, fork_point.height);
                 } else {
                     assert!(fork_point.is_none());
                 }
@@ -165,12 +166,10 @@ fn passthrough_get_transaction_status() {
                 if height <= snapshot.validator_finalized_height {
                     // passthrough transaction status can only ever be on the best
                     // chain as we don't passthrough to nonfinalized state
-                    let Some(BestChainLocation::Block(_block_hash, transaction_height)) =
-                        transaction_status.0
-                    else {
+                    let Some(BestChainLocation::Block(block_index)) = transaction_status.0 else {
                         panic!("expected best chain location")
                     };
-                    assert_eq!(height, transaction_height);
+                    assert_eq!(height, block_index.height);
                 } else {
                     assert!(transaction_status.0.is_none());
                 }
@@ -383,9 +382,9 @@ fn make_chain() {
                 if hash != &best_tip_hash {
                     assert!(block.chainwork().to_u256() <= best_tip_block.chainwork().to_u256());
                     if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
-                        assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
+                        assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().blockhash, *hash);
                     } else {
-                        assert_ne!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
+                        assert_ne!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().blockhash, *hash);
                     }
                 }
             }

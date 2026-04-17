@@ -14,13 +14,14 @@
 use primitive_types::U256;
 
 use super::db::legacy::*;
+use crate::chain_index::non_finalised_state::BlockIndex;
 use crate::ChainWork;
 
 /// The location of a transaction in the best chain
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum BestChainLocation {
     /// the block containing the transaction
-    Block(BlockHash, Height),
+    Block(BlockIndex),
     /// If the transaction is in the mempool and the mempool
     /// matches the snapshot's chaintip
     /// Return the target height, which is known to be a block above
@@ -32,7 +33,7 @@ pub enum BestChainLocation {
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum NonBestChainLocation {
     /// the block containing the transaction
-    Block(BlockHash, Height),
+    Block(BlockIndex),
     /// if the transaction is in the mempool
     /// but the mempool does not match the
     /// snapshot's chaintip, return the target height if known

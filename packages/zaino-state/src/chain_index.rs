@@ -287,7 +287,7 @@ pub trait ChainIndex {
         &self,
         snapshot: &Self::Snapshot,
         hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<BlockIndex>, Self::Error>>;
 
     /// Returns the block commitment tree data by hash
     #[allow(clippy::type_complexity)]
@@ -1272,7 +1272,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         &self,
         snapshot: &Self::Snapshot,
         hash: &types::BlockHash,
-    ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
+    ) -> Result<Option<BlockIndex>, Self::Error> {
         // ChainIndex step 1: Skip
         // mempool blocks have no canon height, guaranteed to return None
         // todo: possible efficiency boost by checking mempool for a negative?
@@ -1285,7 +1285,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 // ChainIndex step 3:
                 if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
                     // The block is in the best chain.
-                    Ok(Some((*block.hash(), block.height())))
+                    Ok(Some(BlockIndex {
+                        height: block.height(),
+                        blockhash: *block.hash(),
+                    }))
                 } else {
                     // Otherwise, it's non-best chain! Grab its parent, and recurse
                     Box::pin(self.find_fork_point(snapshot, block.chain_block().parent_hash()))
@@ -1301,7 +1304,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 match self.finalized_state.get_block_height(*hash).await {
                     Ok(Some(height)) => {
                         // the block is FINALIZED in the INDEXER
-                        Ok(Some((*hash, height)))
+                        Ok(Some(BlockIndex {
+                            height,
+                            blockhash: *hash,
+                        }))
                     }
                     Err(e) => Err(ChainIndexError::database_hole(hash, Some(Box::new(e)))),
                     Ok(None) => {
@@ -1328,10 +1334,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                                         // The VALIDATOR returned a block with a height.
                                         // However, there is as of yet no guaranteed the Block is FINALIZED
                                         if height <= snapshot.validator_finalized_height {
-                                            Ok(Some((
-                                                types::BlockHash::from(block.hash()),
-                                                types::Height::from(height),
-                                            )))
+                                            Ok(Some(BlockIndex {
+                                                height: types::Height::from(height),
+                                                blockhash: types::BlockHash::from(block.hash()),
+                                            }))
                                         } else {
                                             // non-finalized block
                                             // no passthrough
@@ -1461,7 +1467,12 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     || block.height() < *start_of_nonfinalized
                 // this block is either in the best chain ``heights_to_hashes`` or finalized.
             })
-            .map(|block| BestChainLocation::Block(*block.hash(), block.height()));
+            .map(|block| {
+                BestChainLocation::Block(BlockIndex {
+                    height: block.height(),
+                    blockhash: *block.hash(),
+                })
+            });
         let mut non_best_chain_blocks: HashSet<NonBestChainLocation> =
             blocks_containing_transaction
                 .iter()
@@ -1469,7 +1480,12 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     snapshot.heights_to_hashes.get(&block.height()) != Some(block.hash())
                         && block.height() >= *start_of_nonfinalized
                 })
-                .map(|block| NonBestChainLocation::Block(*block.hash(), block.height()))
+                .map(|block| {
+                    NonBestChainLocation::Block(BlockIndex {
+                        height: block.height(),
+                        blockhash: *block.hash(),
+                    })
+                })
                 .collect();
         let in_mempool = self
             .mempool
@@ -1528,8 +1544,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         .await
                         .map_err(ChainIndexError::backing_validator)?
                     {
-                        best_chain_block =
-                            Some(BestChainLocation::Block(block.hash().into(), height.into()));
+                        best_chain_block = Some(BestChainLocation::Block(BlockIndex {
+                            height: height.into(),
+                            blockhash: block.hash().into(),
+                        }));
                     }
                 }
             }

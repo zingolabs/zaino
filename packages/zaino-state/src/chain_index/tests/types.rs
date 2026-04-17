@@ -16,7 +16,14 @@ async fn blockindex_v1_v2_serde() {
     let height = crate::Height(42);
 
     // Create a ChainBlock value
-    let chain_block = ChainBlock::new(hash, parent_hash, chainwork, height);
+    let chain_block = ChainBlock::new(
+        crate::chain_index::non_finalised_state::BlockIndex {
+            height,
+            blockhash: hash,
+        },
+        parent_hash,
+        chainwork,
+    );
 
     // Produce v1 bytes using the new versioned encode API (tag + body)
     let v1_bytes = chain_block
@@ -48,7 +55,14 @@ async fn blockheaderdata_v1_v2_serde() {
     let solution = EquihashSolution::Standard([6u8; 1344]);
 
     // Create a ChainBlock value
-    let chain_block = ChainBlock::new(hash, parent_hash, chainwork, height);
+    let chain_block = ChainBlock::new(
+        crate::chain_index::non_finalised_state::BlockIndex {
+            height,
+            blockhash: hash,
+        },
+        parent_hash,
+        chainwork,
+    );
 
     // create BlockData value
     let bdata = BlockData::new(1, 2, [3u8; 32], [4u8; 32], 3, [5u8; 32], solution);

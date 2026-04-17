@@ -731,18 +731,16 @@ pub struct ChainBlock {
 }
 
 impl ChainBlock {
-    /// Constructs a new `ChainBlock`.
+    /// Constructs a new `ChainBlock` from an already-paired
+    /// [`crate::chain_index::non_finalised_state::BlockIndex`] plus the block's parent hash and
+    /// cumulative chainwork.
     pub fn new(
-        hash: BlockHash,
+        index: crate::chain_index::non_finalised_state::BlockIndex,
         parent_hash: BlockHash,
         chainwork: ChainWork,
-        height: Height,
     ) -> Self {
         Self {
-            index: crate::chain_index::non_finalised_state::BlockIndex {
-                height,
-                blockhash: hash,
-            },
+            index,
             parent_hash,
             chainwork,
         }
@@ -1549,11 +1547,16 @@ impl
         let chainwork = parent_chainwork.add(&ChainWork::from(block_data.work()));
 
         // --- Final chain_block and block data ---
+        //
+        // The (hash, height) pair is packaged into a `BlockIndex` at this ingest
+        // boundary so that no subsequent code handles the two fields separately.
         let chain_block = ChainBlock::new(
-            BlockHash::from(hash),
+            crate::chain_index::non_finalised_state::BlockIndex {
+                height,
+                blockhash: BlockHash::from(hash),
+            },
             BlockHash::from(parent_hash),
             chainwork,
-            height,
         );
 
         Ok(IndexedBlock::new(
