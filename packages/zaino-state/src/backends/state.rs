@@ -564,7 +564,7 @@ impl StateServiceSubscriber {
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 // This method does not support passthrough. Just return.
-                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return ()};
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return};
                 let chain_height = non_finalized_snapshot.best_tip.height.0;
 
                 match state_service_clone
@@ -2652,7 +2652,12 @@ impl LightWalletIndexer for StateServiceSubscriber {
             estimated_height: blockchain_info.estimated_height().0 as u64,
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
-            donation_address: self.config.donation_address.as_ref().map(DonationAddress::encode).unwrap_or_default(),
+            donation_address: self
+                .config
+                .donation_address
+                .as_ref()
+                .map(DonationAddress::encode)
+                .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
             lightwallet_protocol_version: "v0.4.0".to_string(),

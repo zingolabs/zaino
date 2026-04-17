@@ -1015,7 +1015,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         {
                             warn!("GetBlockRange channel closed unexpectedly: {}", e);
                         };
-                        return ();
+                        return;
                     };
                     // Use the snapshot tip directly, as this function doesn't support passthrough
                     let chain_height = non_finalized_snapshot.best_tip.height.0;
@@ -1147,7 +1147,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         {
                             warn!("GetBlockRangeNullifiers channel closed unexpectedly: {}", e);
                         };
-                        return ();
+                        return;
                     };
 
                     // Use the snapshot tip directly, as this function doesn't support passthrough
@@ -1637,7 +1637,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         {
                             warn!("GetMempoolStream channel closed unexpectedly: {}", e);
                         };
-                        return ();
+                        return;
                     };
                     let mempool_height = non_finalized_snapshot.best_tip.height.0;
                     match indexer.get_mempool_stream(None) {
@@ -1923,7 +1923,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             estimated_height: blockchain_info.estimated_height().0 as u64,
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
-            donation_address: self.config.donation_address.as_ref().map(DonationAddress::encode).unwrap_or_default(),
+            donation_address: self
+                .config
+                .donation_address
+                .as_ref()
+                .map(DonationAddress::encode)
+                .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
             lightwallet_protocol_version: "v0.4.0".to_string(),

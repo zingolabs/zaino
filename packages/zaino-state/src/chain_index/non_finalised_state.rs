@@ -77,7 +77,7 @@ impl ChainIndexSnapshot {
         match self {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
-            } => Some(&non_finalized_snapshot),
+            } => Some(non_finalized_snapshot),
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
         }
     }
