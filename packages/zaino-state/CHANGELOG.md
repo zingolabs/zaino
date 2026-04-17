@@ -39,6 +39,7 @@ and this library adheres to Rust's notion of
   - `NodeBackedChainIndexSubscriber`'s `ChainIndex` implementation:
       - `Snapshot` associated type is now a `ChainIndexSnapshot`
       this effects all associated methods.
+  - `non_finalized_state::BestTip` renamed to `non_finalized_state::BlockIdent`
 
 ### Deprecated
 - `GetTaddressTxids` is replaced by `GetTaddressTransactions`
@@ -46,4 +47,6 @@ and this library adheres to Rust's notion of
 ### Removed
 - `Ping` for GRPC service
 - `utils::blockid_to_hashorheight` moved to `zaino_proto::utils`
-- `chain_index::non_finalized_state::NonfinalizedBlockCacheSnapshot` removed in favor of new `ChainIndexSnapshot` type
+- `non_finalized_state::NonfinalizedBlockCacheSnapshot` visibility narrowed
+  from `pub` to `pub(crate)`; it is no longer part of the public API.
+  External consumers should use `ChainIndexSnapshot` instead.
