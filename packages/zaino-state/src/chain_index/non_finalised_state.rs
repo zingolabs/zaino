@@ -35,8 +35,8 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-/// created for NonfinalizedBlockCacheSnapshot best_tip field for naming fields
-pub struct BestTip {
+/// created for NonfinalizedBlockCacheSnapshot block_id field for naming fields
+pub struct BlockIdent {
     /// from chain_index types
     pub height: Height,
     /// from chain_index types
@@ -98,7 +98,7 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     /// The highest known block
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
-    pub best_tip: BestTip,
+    pub best_tip: BlockIdent,
 }
 
 #[derive(Debug)]
@@ -195,8 +195,8 @@ pub enum InitError {
 }
 
 /// This is the core of the concurrent block cache.
-impl BestTip {
-    /// Create a BestTip from an IndexedBlock
+impl BlockIdent {
+    /// Create a BlockID from an IndexedBlock
     fn from_block(block: &IndexedBlock) -> Self {
         let height = block.height();
         let blockhash = *block.hash();
@@ -207,7 +207,7 @@ impl BestTip {
 impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
     fn from_initial_block(block: IndexedBlock) -> Self {
-        let best_tip = BestTip::from_block(&block);
+        let best_tip = BlockIdent::from_block(&block);
         let hash = *block.hash();
         let height = best_tip.height;
 
@@ -225,7 +225,7 @@ impl NonfinalizedBlockCacheSnapshot {
     }
 
     fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
-        self.best_tip = BestTip {
+        self.best_tip = BlockIdent {
             height: block.height(),
             blockhash: *block.hash(),
         };
