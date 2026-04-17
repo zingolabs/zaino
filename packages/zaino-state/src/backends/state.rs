@@ -1,5 +1,6 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
+use crate::chain_index::NonFinalizedSnapshot;
 #[allow(deprecated)]
 use crate::{
     chain_index::{
@@ -553,13 +554,18 @@ impl StateServiceSubscriber {
         let state_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = state_service_clone
+            .indexer
+            .snapshot_nonfinalized_state()
+            .await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
-                let snapshot = state_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_tip.height.0;
+                // This method does not support passthrough. Just return.
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return ()};
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
 
                 match state_service_clone
                     .indexer
@@ -666,12 +672,12 @@ impl StateServiceSubscriber {
         e: BlockCacheError,
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let chain_height = snapshot.best_tip.height.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let chain_height = snapshot.max_serviceable_height().0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
+                                is greater than Zaino's best chain tip [{chain_height}].",
             )))
         } else {
             // TODO: Hide server error from clients before release.
@@ -1455,7 +1461,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
         let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
         let block_data = match hash_or_height_struct {
             HashOrHeight::Hash(hash) => self
@@ -1547,8 +1553,14 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        let nfs_snapshot = self.indexer.snapshot_nonfinalized_state();
-        let h = nfs_snapshot.best_tip.height;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let h = non_finalized_snapshot.best_tip.height;
         Ok(h.into())
     }
 
@@ -1735,7 +1747,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                             // This should be None for sidechain transactions,
                             // which currently aren't returned by ReadResponse::Transaction
                             let best_chain_height = Some(tx.height);
-                            let snapshot = self.indexer.snapshot_nonfinalized_state();
+                            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
                             let compact_block = self
                                 .indexer
                                 .get_compact_block(
@@ -1913,7 +1925,14 @@ impl ZcashIndexer for StateServiceSubscriber {
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let tip = non_finalized_snapshot.best_tip;
         Ok(BlockId {
             height: tip.height.0 as u64,
             hash: tip.blockhash.0.to_vec(),
@@ -1928,7 +1947,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             )),
         )?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
         // Convert HashOrHeight to chain_types::Height
         let block_height = match hash_or_height {
@@ -1952,7 +1971,13 @@ impl LightWalletIndexer for StateServiceSubscriber {
         {
             Ok(Some(block)) => Ok(block),
             Ok(None) => {
-                let chain_height = snapshot.best_tip.height.0;
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    // TODO: This probably shouldn't be an error.
+                    // this is an improvement over previous behaviour of
+                    // acting as if we are only synced to the genesis block
+                    return Err(StateServiceError::UnavailableNotSyncedEnough);
+                };
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -1966,7 +1991,13 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 }
             }
             Err(e) => {
-                let chain_height = snapshot.best_tip.height.0;
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    // TODO: This probably shouldn't be an error.
+                    // this is an improvement over previous behaviour of
+                    // acting as if we are only synced to the genesis block
+                    return Err(StateServiceError::UnavailableNotSyncedEnough);
+                };
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -1995,7 +2026,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             ))
         })?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let block_height = chain_types::Height(height);
 
         match self
@@ -2381,8 +2412,14 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let mempool_height = snapshot.best_tip.height.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let mempool_height = non_finalized_snapshot.best_tip.height.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
