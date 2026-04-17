@@ -40,7 +40,7 @@ pub struct BlockIndex {
     /// from chain_index types
     pub height: Height,
     /// from chain_index types
-    pub blockhash: BlockHash,
+    pub hash: BlockHash,
 }
 
 #[derive(Debug, Clone)]
@@ -160,10 +160,10 @@ pub enum InitError {
 }
 
 impl From<BlockIndex> for zaino_proto::proto::service::BlockId {
-    fn from(b: BlockIndex) -> Self {
+    fn from(index: BlockIndex) -> Self {
         zaino_proto::proto::service::BlockId {
-            height: u64::from(b.height.0),
-            hash: b.blockhash.0.to_vec(),
+            height: u64::from(index.height.0),
+            hash: index.hash.0.to_vec(),
         }
     }
 }
@@ -172,9 +172,9 @@ impl From<BlockIndex> for zaino_proto::proto::service::BlockId {
 impl BlockIndex {
     /// Create a BlockIdent from an IndexedBlock
     fn from_block(block: &IndexedBlock) -> Self {
-        let height = block.height();
-        let blockhash = *block.hash();
-        Self { height, blockhash }
+        let height = block.chain_block.index.height;
+        let hash = block.chain_block.index.hash;
+        Self { height, hash }
     }
 }
 
@@ -182,7 +182,7 @@ impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
     fn from_initial_block(block: IndexedBlock, validator_finalized_height: Height) -> Self {
         let best_tip = BlockIndex::from_block(&block);
-        let hash = *block.hash();
+        let hash = block.chain_block.index.hash;
         let height = best_tip.height;
 
         let mut blocks = HashMap::new();
@@ -201,8 +201,8 @@ impl NonfinalizedBlockCacheSnapshot {
 
     fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
         self.best_tip = BlockIndex {
-            height: block.height(),
-            blockhash: *block.hash(),
+            height: block.chain_block.index.height,
+            hash: block.chain_block.index.hash,
         };
         self.add_block(block)
     }
@@ -217,14 +217,15 @@ impl NonfinalizedBlockCacheSnapshot {
         // Keep the last finalized block. This means we don't have to check
         // the finalized state when the entire non-finalized state is reorged away.
         self.blocks
-            .retain(|_hash, block| block.height() >= finalized_height);
+            .retain(|_hash, block| block.chain_block.index.height >= finalized_height);
         self.heights_to_hashes
             .retain(|height, _hash| height >= &finalized_height);
     }
 
     fn add_block(&mut self, block: IndexedBlock) {
-        self.heights_to_hashes.insert(block.height(), *block.hash());
-        self.blocks.insert(*block.hash(), block);
+        self.heights_to_hashes
+            .insert(block.chain_block.index.height, block.chain_block.index.hash);
+        self.blocks.insert(block.chain_block.index.hash, block);
     }
 }
 
@@ -389,11 +390,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             })?
         {
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
-            if parent_hash == working_snapshot.best_tip.blockhash {
+            if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
                 let prev_block = working_snapshot
                     .blocks
-                    .get(&working_snapshot.best_tip.blockhash)
+                    .get(&working_snapshot.best_tip.hash)
                     .ok_or_else(|| {
                         SyncError::ReorgFailure(format!(
                             "found blocks {:?}, expected block {:?}",
@@ -401,8 +402,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                                 .blocks
                                 .values()
                                 .map(|block| (
-                                    block.chain_block().hash(),
-                                    block.chain_block().height()
+                                    block.chain_block().index.hash,
+                                    block.chain_block().index.height
                                 ))
                                 .collect::<Vec<_>>(),
                             working_snapshot.best_tip
@@ -411,7 +412,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
                 info!(
                     height = (working_snapshot.best_tip.height + 1).0,
-                    hash = %chainblock.chain_block().hash(),
+                    hash = %chainblock.chain_block().index.hash,
                     "Syncing block"
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
@@ -453,7 +454,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 if !working_snapshot
                     .heights_to_hashes
                     .values()
-                    .any(|hash| hash == prev_block.hash())
+                    .any(|hash| hash == &prev_block.chain_block.index.hash)
                 {
                     Box::pin(self.handle_reorg(working_snapshot, &prev_block)).await?
                 } else {
@@ -574,25 +575,25 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     info!(
                         old_height = stale_best_tip.height.0,
                         new_height = new_best_tip.height.0,
-                        old_hash = %stale_best_tip.blockhash,
-                        new_hash = %new_best_tip.blockhash,
+                        old_hash = %stale_best_tip.hash,
+                        new_hash = %new_best_tip.hash,
                         "Non-finalized tip advanced"
                     );
                 } else if new_best_tip.height == stale_best_tip.height
-                    && new_best_tip.blockhash != stale_best_tip.blockhash
+                    && new_best_tip.hash != stale_best_tip.hash
                 {
                     info!(
                         height = new_best_tip.height.0,
-                        old_hash = %stale_best_tip.blockhash,
-                        new_hash = %new_best_tip.blockhash,
+                        old_hash = %stale_best_tip.hash,
+                        new_hash = %new_best_tip.hash,
                         "Non-finalized tip reorg"
                     );
                 } else if new_best_tip.height < stale_best_tip.height {
                     info!(
                         old_height = stale_best_tip.height.0,
                         new_height = new_best_tip.height.0,
-                        old_hash = %stale_best_tip.blockhash,
-                        new_hash = %new_best_tip.blockhash,
+                        old_hash = %stale_best_tip.hash,
+                        new_hash = %new_best_tip.hash,
                         "Non-finalized tip rollback"
                     );
                 }
@@ -745,7 +746,7 @@ trait Block {
 
 impl Block for IndexedBlock {
     fn hash_bytes_serialized_order(&self) -> [u8; 32] {
-        self.hash().0
+        self.chain_block.index.hash.0
     }
 
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32] {

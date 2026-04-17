@@ -545,11 +545,16 @@ impl DbV1 {
                         let ro = zaino_db.env.begin_ro_txn().ok()?;
                         let bytes = ro.get(zaino_db.headers, &hkey).ok()?;
                         let entry = StoredEntryVar::<BlockHeaderData>::deserialize(bytes).ok()?;
-                        Some(*entry.inner().chain_block().hash())
+                        Some(entry.inner().chain_block().index.hash)
                     })();
 
                     if let Some(hash) = hash_opt {
-                        if let Err(e) = zaino_db.validate_block_blocking(next_height, hash) {
+                        if let Err(e) = zaino_db.validate_block_blocking(
+                            crate::chain_index::non_finalised_state::BlockIndex {
+                                height: next_height,
+                                hash,
+                            },
+                        ) {
                             warn!("{e}");
                         }
                         // Immediately loop – maybe the chain has more blocks ready.
@@ -667,7 +672,9 @@ impl DbV1 {
                     .map_err(|e| FinalisedStateError::Custom(format!("corrupt height entry: {e}")))?
                     .inner();
 
-                zaino_db.validate_block_blocking(height, hash)?
+                zaino_db.validate_block_blocking(
+                    crate::chain_index::non_finalised_state::BlockIndex { height, hash },
+                )?
             }
 
             Ok(())

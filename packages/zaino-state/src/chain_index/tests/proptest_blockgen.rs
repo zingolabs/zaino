@@ -127,7 +127,7 @@ fn passthrough_find_fork_point() {
                     // passthrough fork point can only ever be the requested block
                     // as we don't passthrough to nonfinalized state
                     let fork_point = fork_point.unwrap();
-                    assert_eq!(hash, fork_point.blockhash);
+                    assert_eq!(hash, fork_point.hash);
                     assert_eq!(height, fork_point.height);
                 } else {
                     assert!(fork_point.is_none());
@@ -374,17 +374,17 @@ fn make_chain() {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
             let snapshot = index_reader.snapshot_nonfinalized_state();
-            let best_tip_hash = snapshot.best_tip.blockhash;
+            let best_tip_hash = snapshot.best_tip.hash;
             let best_tip_block = snapshot
                 .get_chainblock_by_hash(&best_tip_hash)
                 .unwrap();
             for (hash, block) in &snapshot.blocks {
                 if hash != &best_tip_hash {
                     assert!(block.chainwork().to_u256() <= best_tip_block.chainwork().to_u256());
-                    if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
-                        assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().blockhash, *hash);
+                    if snapshot.heights_to_hashes.get(&block.chain_block.index.height) == Some(&block.chain_block.index.hash) {
+                        assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().hash, *hash);
                     } else {
-                        assert_ne!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().blockhash, *hash);
+                        assert_ne!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().hash, *hash);
                     }
                 }
             }

@@ -240,7 +240,7 @@ async fn load_db_backend_from_file() {
         if let Some(prev_hash) = prev_hash {
             assert_eq!(prev_hash, block.chain_block.parent_hash);
         }
-        prev_hash = Some(block.chain_block.index.blockhash);
+        prev_hash = Some(block.chain_block.index.hash);
         assert_eq!(block.chain_block.index.height, Height(height));
     }
     assert!(finalized_state_backend
@@ -1000,7 +1000,7 @@ async fn check_faucet_spent_map() {
                             .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
-                                chain_block.chain_block().height() == Height(block_height)
+                                chain_block.chain_block().index.height == Height(block_height)
                                     && tx.index() == tx_idx as u64
                             })
                             .cloned()
@@ -1170,7 +1170,7 @@ async fn check_recipient_spent_map() {
                             .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
-                                chain_block.chain_block().height() == Height(block_height)
+                                chain_block.chain_block().index.height == Height(block_height)
                                     && tx.index() == tx_idx as u64
                             })
                             .cloned()

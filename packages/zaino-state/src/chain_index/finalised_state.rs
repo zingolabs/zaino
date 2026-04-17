@@ -594,7 +594,7 @@ impl ZainoDB {
                     }
                 };
 
-                let block_hash = BlockHash::from(block.hash().0);
+                let block_hash = BlockHash::from(block.hash());
 
                 // Fetch sapling / orchard commitment tree data if above relevant network upgrade.
                 let (sapling_opt, orchard_opt) =

@@ -17,10 +17,7 @@ async fn blockindex_v1_v2_serde() {
 
     // Create a ChainBlock value
     let chain_block = ChainBlock::new(
-        crate::chain_index::non_finalised_state::BlockIndex {
-            height,
-            blockhash: hash,
-        },
+        crate::chain_index::non_finalised_state::BlockIndex { height, hash: hash },
         parent_hash,
         chainwork,
     );
@@ -56,10 +53,7 @@ async fn blockheaderdata_v1_v2_serde() {
 
     // Create a ChainBlock value
     let chain_block = ChainBlock::new(
-        crate::chain_index::non_finalised_state::BlockIndex {
-            height,
-            blockhash: hash,
-        },
+        crate::chain_index::non_finalised_state::BlockIndex { height, hash: hash },
         parent_hash,
         chainwork,
     );

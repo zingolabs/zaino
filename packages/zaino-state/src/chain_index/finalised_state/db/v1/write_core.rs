@@ -34,9 +34,9 @@ impl DbV1 {
     /// NOTE: This method should never leave a block partially written to the database.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
-        let block_hash = *block.chain_block().hash();
+        let block_hash = block.chain_block().index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
-        let block_height = block.chain_block().height();
+        let block_height = block.chain_block().index.height;
         let block_height_bytes = block_height.to_bytes()?;
 
         // Check if this specific block already exists (idempotent write support for shared DB).
@@ -57,14 +57,14 @@ impl DbV1 {
                                 ))
                             })?;
                     let stored_header = stored_entry.inner();
-                    if *stored_header.chain_block().hash() == block_hash {
+                    if stored_header.chain_block().index.hash == block_hash {
                         // Same block already written, this is a no-op success
                         return Ok(true);
                     } else {
                         return Err(FinalisedStateError::Custom(format!(
                             "block at height {block_height:?} already exists with different hash \
                              (stored: {:?}, incoming: {:?})",
-                            stored_header.chain_block().hash(),
+                            stored_header.chain_block().index.hash,
                             block_hash
                         )));
                     }
@@ -116,7 +116,8 @@ impl DbV1 {
         }
 
         // Build DBHeight
-        let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.chain_block().height());
+        let height_entry =
+            StoredEntryFixed::new(&block_hash_bytes, block.chain_block().index.height);
 
         // Build header
         let header_entry = StoredEntryVar::new(
@@ -254,8 +255,7 @@ impl DbV1 {
                         );
                     } else {
                         return Err(FinalisedStateError::InvalidBlock {
-                            height: block.height().0,
-                            hash: *block.hash(),
+                            index: block.chain_block.index,
                             reason: "Invalid block data: invalid transparent input.".to_string(),
                         });
                     }
@@ -432,8 +432,10 @@ impl DbV1 {
                         if !updated {
                             // Log and treat as invalid block — marking the prev-output must succeed.
                             return Err(FinalisedStateError::InvalidBlock {
-                                height: block_height.0,
-                                hash: block_hash,
+                                index: crate::chain_index::non_finalised_state::BlockIndex {
+                                    height: block_height,
+                                    hash: block_hash,
+                                },
                                 reason: format!(
                                     "failed to mark prev-output spent: addr={} tloc={:?} vout={}",
                                     hex::encode(addr_bytes),
@@ -452,7 +454,12 @@ impl DbV1 {
                 FinalisedStateError::Custom(format!("LMDB sync failed before validation: {e}"))
             })?;
 
-            zaino_db.validate_block_blocking(block_height, block_hash)?;
+            zaino_db.validate_block_blocking(
+                crate::chain_index::non_finalised_state::BlockIndex {
+                    height: block_height,
+                    hash: block_hash,
+                },
+            )?;
 
             Ok::<_, FinalisedStateError>(())
         });
@@ -479,17 +486,17 @@ impl DbV1 {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
-                if block.chain_block().height().0.is_multiple_of(100) {
+                if block.chain_block().index.height.0.is_multiple_of(100) {
                     info!(
                         "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.chain_block().hash(),
-                        &block.chain_block().height()
+                        &block.chain_block().index.hash,
+                        &block.chain_block().index.height
                     );
                 } else {
                     tracing::debug!(
                         "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.chain_block().hash(),
-                        &block.chain_block().height()
+                        &block.chain_block().index.hash,
+                        &block.chain_block().index.height
                     );
                 }
 
@@ -520,23 +527,28 @@ impl DbV1 {
                                         ))
                                     })?;
                             let stored_header = stored_entry.inner();
-                            if *stored_header.chain_block().hash() == block_hash {
+                            if stored_header.chain_block().index.hash == block_hash {
                                 // Block hash exists, verify block was fully written.
-                                self.validate_block_blocking(block_height, block_hash)
-                                    .map(|()| true)
-                                    .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
-                                            "Block write fail at height {}, with hash {:?}, \
+                                self.validate_block_blocking(
+                                    crate::chain_index::non_finalised_state::BlockIndex {
+                                        height: block_height,
+                                        hash: block_hash,
+                                    },
+                                )
+                                .map(|()| true)
+                                .map_err(|e| {
+                                    FinalisedStateError::Custom(format!(
+                                        "Block write fail at height {}, with hash {:?}, \
                                             validation error: {}",
-                                            block_height.0, block_hash, e
-                                        ))
-                                    })
+                                        block_height.0, block_hash, e
+                                    ))
+                                })
                             } else {
                                 Err(FinalisedStateError::Custom(format!(
                                     "KeyExist race: different block at height {} \
                                      (stored: {:?}, incoming: {:?})",
                                     block_height.0,
-                                    stored_header.chain_block().hash(),
+                                    stored_header.chain_block().index.hash,
                                     block_hash
                                 )))
                             }
@@ -573,8 +585,10 @@ impl DbV1 {
                         self.status.store(StatusType::CriticalError);
                         self.status.store(StatusType::RecoverableError);
                         Err(FinalisedStateError::InvalidBlock {
-                            height: block_height.0,
-                            hash: block_hash,
+                            index: crate::chain_index::non_finalised_state::BlockIndex {
+                                height: block_height,
+                                hash: block_hash,
+                            },
                             reason: e.to_string(),
                         })
                     }
@@ -603,8 +617,10 @@ impl DbV1 {
                 }
 
                 Err(FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
+                    index: crate::chain_index::non_finalised_state::BlockIndex {
+                        height: block_height,
+                        hash: block_hash,
+                    },
                     reason: e.to_string(),
                 })
             }
@@ -689,23 +705,21 @@ impl DbV1 {
         block: &IndexedBlock,
     ) -> Result<(), FinalisedStateError> {
         // Check block height and hash
-        let block_height = block.chain_block().height();
+        let block_height = block.chain_block().index.height;
         let block_height_bytes =
             block_height
                 .to_bytes()
                 .map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block.height().0,
-                    hash: *block.hash(),
+                    index: block.chain_block.index,
                     reason: "Corrupt block data: failed to serialise hash".to_string(),
                 })?;
 
-        let block_hash = *block.chain_block().hash();
+        let block_hash = block.chain_block().index.hash;
         let block_hash_bytes =
             block_hash
                 .to_bytes()
                 .map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block.height().0,
-                    hash: *block.hash(),
+                    index: block.chain_block.index,
                     reason: "Corrupt block data: failed to serialise hash".to_string(),
                 })?;
 
@@ -799,13 +813,11 @@ impl DbV1 {
                                     *prev_outpoint.prev_txid(),
                                 ))
                                 .map_err(|e| FinalisedStateError::InvalidBlock {
-                                    height: block.height().0,
-                                    hash: *block.hash(),
+                                    index: block.chain_block.index,
                                     reason: e.to_string(),
                                 })?
                                 .ok_or_else(|| FinalisedStateError::InvalidBlock {
-                                    height: block.height().0,
-                                    hash: *block.hash(),
+                                    index: block.chain_block.index,
                                     reason: "Invalid block data: invalid txid data.".to_string(),
                                 })?;
 
@@ -825,8 +837,7 @@ impl DbV1 {
                         );
                     } else {
                         return Err(FinalisedStateError::InvalidBlock {
-                            height: block.height().0,
-                            hash: *block.hash(),
+                            index: block.chain_block.index,
                             reason: "Invalid block data: invalid transparent input.".to_string(),
                         });
                     }
@@ -866,8 +877,10 @@ impl DbV1 {
                         &outpoint
                             .to_bytes()
                             .map_err(|_| FinalisedStateError::InvalidBlock {
-                                height: block_height.0,
-                                hash: block_hash,
+                                index: crate::chain_index::non_finalised_state::BlockIndex {
+                                    height: block_height,
+                                    hash: block_hash,
+                                },
                                 reason: "Corrupt block data: failed to serialise outpoint"
                                     .to_string(),
                             })?;
@@ -918,8 +931,10 @@ impl DbV1 {
                             if !updated {
                                 // Log and treat as invalid block — marking the prev-output must succeed.
                                 return Err(FinalisedStateError::InvalidBlock {
-                                    height: block_height.0,
-                                    hash: block_hash,
+                                    index: crate::chain_index::non_finalised_state::BlockIndex {
+                                        height: block_height,
+                                        hash: block_hash,
+                                    },
                                     reason: format!(
                                     "failed to mark prev-output spent: addr={} tloc={:?} vout={}",
                                     hex::encode(addr_bytes),
@@ -937,8 +952,10 @@ impl DbV1 {
                             &mut txn,
                             &addr_script.to_bytes().map_err(|_| {
                                 FinalisedStateError::InvalidBlock {
-                                    height: block_height.0,
-                                    hash: block_hash,
+                                    index: crate::chain_index::non_finalised_state::BlockIndex {
+                                        height: block_height,
+                                        hash: block_hash,
+                                    },
                                     reason: "Corrupt block data: failed to serialise addr_script"
                                         .to_string(),
                                 }
@@ -950,8 +967,10 @@ impl DbV1 {
                         )
                         // TODO: check internals to propagate important errors.
                         .map_err(|_| FinalisedStateError::InvalidBlock {
-                            height: block_height.0,
-                            hash: block_hash,
+                            index: crate::chain_index::non_finalised_state::BlockIndex {
+                                height: block_height,
+                                hash: block_hash,
+                            },
                             reason: "Corrupt block data: failed to delete inputs".to_string(),
                         })?;
                 }
@@ -963,8 +982,10 @@ impl DbV1 {
                         &addr_script
                             .to_bytes()
                             .map_err(|_| FinalisedStateError::InvalidBlock {
-                                height: block_height.0,
-                                hash: block_hash,
+                                index: crate::chain_index::non_finalised_state::BlockIndex {
+                                    height: block_height,
+                                    hash: block_hash,
+                                },
                                 reason: "Corrupt block data: failed to serialise addr_script"
                                     .to_string(),
                             })?,

@@ -588,7 +588,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
 
         let (sapling, orchard) = self
             .indexer
-            .get_treestate(block_data.hash())
+            .get_treestate(&block_data.chain_block.index.hash)
             .await
             .map_err(|_error| {
                 FetchServiceError::RpcError(RpcError::new_from_legacycode(
@@ -605,8 +605,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
 
         #[allow(deprecated)]
         Ok(GetTreestateResponse::from_parts(
-            (*block_data.hash()).into(),
-            block_data.height().into(),
+            block_data.chain_block.index.hash.into(),
+            block_data.chain_block.index.height.into(),
             time,
             sapling,
             orchard,
@@ -657,7 +657,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// # Notes
     ///
-    /// We don't currently support the `blockhash` parameter since lightwalletd does not
+    /// We don't currently support the `hash` parameter since lightwalletd does not
     /// use it.
     ///
     /// In verbose mode, we only expose the `hex` and `height` fields since

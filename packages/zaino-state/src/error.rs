@@ -3,6 +3,7 @@
 
 // Needs to be module level due to the thiserror::Error macro
 
+use crate::chain_index::non_finalised_state::BlockIndex;
 use crate::BlockHash;
 
 use std::{any::type_name, fmt::Display};
@@ -474,10 +475,11 @@ pub enum FinalisedStateError {
     /// *Typically means: checksum mismatch, corrupt CBOR, Merkle check
     /// failed, etc.*  The caller should fetch the correct data and
     /// overwrite the faulty block.
-    #[error("invalid block @ height {height} (hash {hash}): {reason}")]
+    #[error("invalid block @ height {} (hash {}): {reason}", index.height.0, index.hash)]
     InvalidBlock {
-        height: u32,
-        hash: BlockHash,
+        /// The (height, hash) identity of the block that failed validation.
+        index: BlockIndex,
+        /// Human-readable reason for the failure.
         reason: String,
     },
 
@@ -660,11 +662,9 @@ impl From<FinalisedStateError> for ChainIndexError {
             FinalisedStateError::FeatureUnavailable(err) => {
                 format!("unhandled missing feature: {err}")
             }
-            FinalisedStateError::InvalidBlock {
-                height,
-                hash: _,
-                reason,
-            } => format!("invalid block at height {height}: {reason}"),
+            FinalisedStateError::InvalidBlock { index, reason } => {
+                format!("invalid block at height {}: {reason}", index.height.0)
+            }
             FinalisedStateError::Custom(err) | FinalisedStateError::Critical(err) => err.clone(),
             FinalisedStateError::LmdbError(error) => error.to_string(),
             FinalisedStateError::SerdeJsonError(error) => error.to_string(),

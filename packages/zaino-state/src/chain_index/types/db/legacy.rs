@@ -746,11 +746,6 @@ impl ChainBlock {
         }
     }
 
-    /// Returns the hash of this block.
-    pub fn hash(&self) -> &BlockHash {
-        &self.index.blockhash
-    }
-
     /// Returns the hash of the parent block.
     pub fn parent_hash(&self) -> &BlockHash {
         &self.parent_hash
@@ -759,11 +754,6 @@ impl ChainBlock {
     /// Returns the cumulative chainwork up to this block.
     pub fn chainwork(&self) -> &ChainWork {
         &self.chainwork
-    }
-
-    /// Returns the height of this block if it’s part of the best chain.
-    pub fn height(&self) -> Height {
-        self.index.height
     }
 }
 
@@ -787,7 +777,7 @@ struct ChainBlockPersisted {
 impl From<&ChainBlock> for ChainBlockPersisted {
     fn from(chain_block: &ChainBlock) -> Self {
         Self {
-            hash: chain_block.index.blockhash,
+            hash: chain_block.index.hash,
             parent_hash: chain_block.parent_hash,
             chainwork: chain_block.chainwork,
             height: chain_block.index.height,
@@ -800,7 +790,7 @@ impl From<ChainBlockPersisted> for ChainBlock {
         Self {
             index: crate::chain_index::non_finalised_state::BlockIndex {
                 height: p.height,
-                blockhash: p.hash,
+                hash: p.hash,
             },
             parent_hash: p.parent_hash,
             chainwork: p.chainwork,
@@ -1331,16 +1321,6 @@ impl IndexedBlock {
         &self.commitment_tree_data
     }
 
-    /// Returns the block hash.
-    pub fn hash(&self) -> &BlockHash {
-        self.chain_block.hash()
-    }
-
-    /// Returns the block height if available.
-    pub fn height(&self) -> Height {
-        self.chain_block.height()
-    }
-
     /// Returns the cumulative chainwork.
     pub fn chainwork(&self) -> &ChainWork {
         self.chain_block.chainwork()
@@ -1360,9 +1340,9 @@ impl IndexedBlock {
     ///       with tx data being added selectively here.
     pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
         // NOTE: Returns u64::MAX if the block is not in the best chain.
-        let height: u64 = self.height().0.into();
+        let height: u64 = self.chain_block.index.height.0.into();
 
-        let hash = self.hash().0.to_vec();
+        let hash = self.chain_block.index.hash.0.to_vec();
         let prev_hash = self.chain_block().parent_hash().0.to_vec();
 
         let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = self
@@ -1553,7 +1533,7 @@ impl
         let chain_block = ChainBlock::new(
             crate::chain_index::non_finalised_state::BlockIndex {
                 height,
-                blockhash: BlockHash::from(hash),
+                hash: BlockHash::from(hash),
             },
             BlockHash::from(parent_hash),
             chainwork,

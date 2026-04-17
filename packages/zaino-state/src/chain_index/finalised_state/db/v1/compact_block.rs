@@ -249,8 +249,8 @@ impl DbV1 {
             // ----- Construct CompactBlock -----
             Ok(zaino_proto::proto::compact_formats::CompactBlock {
                 proto_version: 4,
-                height: header.chain_block().height().0 as u64,
-                hash: header.chain_block().hash().0.to_vec(),
+                height: header.chain_block().index.height.0 as u64,
+                hash: header.chain_block().index.hash.0.to_vec(),
                 prev_hash: header.chain_block().parent_hash().0.to_vec(),
                 // Is this safe?
                 time: header.data().time() as u32,
@@ -849,7 +849,7 @@ impl DbV1 {
                     };
 
                     // Contiguous-height check: ensures cursor ordering and storage invariants are intact.
-                    let current_height = header.chain_block().height();
+                    let current_height = header.chain_block().index.height;
                     if current_height != expected_height {
                         send_status(
                             &sender,
@@ -864,10 +864,15 @@ impl DbV1 {
                     // ----- Ensure the block is validated (on-demand) -----
                     // We are in a blocking task; call validate_block_blocking directly but only when needed.
                     if !zaino_db.is_validated(current_height.into()) {
-                        // header.chain_block().hash() is the block hash we just read from DB; call validator.
-                        let block_hash = *header.chain_block().hash();
+                        // header.chain_block().index.hash is the block hash we just read from DB; call validator.
+                        let block_hash = header.chain_block().index.hash;
 
-                        match zaino_db.validate_block_blocking(current_height, block_hash) {
+                        match zaino_db.validate_block_blocking(
+                            crate::chain_index::non_finalised_state::BlockIndex {
+                                height: current_height,
+                                hash: block_hash,
+                            },
+                        ) {
                             Ok(()) => {
                                 // validation succeeded and mark_validated has been called inside the validator.
                             }
@@ -1107,8 +1112,8 @@ impl DbV1 {
 
                     let compact_block = zaino_proto::proto::compact_formats::CompactBlock {
                         proto_version: 4,
-                        height: header.chain_block().height().0 as u64,
-                        hash: header.chain_block().hash().0.to_vec(),
+                        height: header.chain_block().index.height.0 as u64,
+                        hash: header.chain_block().index.hash.0.to_vec(),
                         prev_hash: header.chain_block().parent_hash().0.to_vec(),
                         // NOTE: `time()` is stored in the DB as a wider integer; this cast assumes it is
                         // always representable in `u32` for the protobuf.

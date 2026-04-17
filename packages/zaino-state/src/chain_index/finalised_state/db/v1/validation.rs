@@ -135,9 +135,10 @@ impl DbV1 {
     ///   (`tokio::task::block_in_place` or `spawn_blocking`).
     pub(super) fn validate_block_blocking(
         &self,
-        height: Height,
-        hash: BlockHash,
+        index: crate::chain_index::non_finalised_state::BlockIndex,
     ) -> Result<(), FinalisedStateError> {
+        let height = index.height;
+        let hash = index.hash;
         if self.is_validated(height.into()) {
             return Ok(());
         }
@@ -151,8 +152,7 @@ impl DbV1 {
 
         // Helper to fabricate the error.
         let fail = |reason: &str| FinalisedStateError::InvalidBlock {
-            height: height.into(),
-            hash,
+            index,
             reason: reason.to_owned(),
         };
 
@@ -261,7 +261,7 @@ impl DbV1 {
                 let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
                     .map_err(|e| fail(&format!("parent header corrupt data: {e}")))?;
 
-                *entry.inner().chain_block().hash()
+                entry.inner().chain_block().index.hash
             };
 
             let check_hash = header_entry.inner().chain_block().parent_hash();
@@ -456,17 +456,16 @@ impl DbV1 {
     /// This is the canonical, async-friendly entrypoint you should call from async code.
     pub(crate) async fn validate_height(
         &self,
-        height: Height,
-        hash: BlockHash,
+        index: crate::chain_index::non_finalised_state::BlockIndex,
     ) -> Result<(), FinalisedStateError> {
         // Cheap fast-path first, no blocking.
-        if self.is_validated(height.into()) {
+        if self.is_validated(index.height.into()) {
             return Ok(());
         }
 
         // Run blocking validation in a blocking context.
         // Using block_in_place keeps the per-call semantics similar to other callers.
-        tokio::task::block_in_place(|| self.validate_block_blocking(height, hash))
+        tokio::task::block_in_place(|| self.validate_block_blocking(index))
     }
 
     /// Validate a contiguous inclusive range of block heights `[start, end]`.
@@ -522,12 +521,15 @@ impl DbV1 {
                     }
                 })?;
 
-                let hash = *StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
+                let hash = StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
                     .inner()
                     .chain_block()
-                    .hash();
+                    .index
+                    .hash;
 
-                match self.validate_block_blocking(height, hash) {
+                match self.validate_block_blocking(
+                    crate::chain_index::non_finalised_state::BlockIndex { height, hash },
+                ) {
                     Ok(()) => {}
                     Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
                         return Err(FinalisedStateError::DataUnavailable(
@@ -580,12 +582,15 @@ impl DbV1 {
                         }
                     })?;
 
-                    let hash = *StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
+                    let hash = StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
                         .inner()
                         .chain_block()
-                        .hash();
+                        .index
+                        .hash;
 
-                    match self.validate_block_blocking(height, hash) {
+                    match self.validate_block_blocking(
+                        crate::chain_index::non_finalised_state::BlockIndex { height, hash },
+                    ) {
                         Ok(()) => {}
                         Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
                             return Err(FinalisedStateError::DataUnavailable(
@@ -605,7 +610,9 @@ impl DbV1 {
                 let height = self.resolve_hash_or_height(hash_or_height).await?;
                 let hash = BlockHash::from(z_hash);
                 tokio::task::block_in_place(|| {
-                    match self.validate_block_blocking(height, hash) {
+                    match self.validate_block_blocking(
+                        crate::chain_index::non_finalised_state::BlockIndex { height, hash },
+                    ) {
                         Ok(()) => {}
                         Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
                             return Err(FinalisedStateError::DataUnavailable(

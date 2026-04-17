@@ -287,10 +287,7 @@ impl<'a> BlockWithMetadata<'a> {
             .add(&ChainWork::from(U256::from(block_work.as_u128())));
 
         Ok(ChainBlock {
-            index: crate::chain_index::non_finalised_state::BlockIndex {
-                height,
-                blockhash: hash,
-            },
+            index: crate::chain_index::non_finalised_state::BlockIndex { height, hash },
             parent_hash,
             chainwork,
         })

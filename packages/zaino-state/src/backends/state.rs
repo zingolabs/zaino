@@ -1490,7 +1490,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let (sapling, orchard) = self
             .indexer
-            .get_treestate(block_data.hash())
+            .get_treestate(&block_data.chain_block.index.hash)
             .await
             .map_err(|_error| {
                 StateServiceError::RpcError(RpcError::new_from_legacycode(
@@ -1507,8 +1507,8 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         #[allow(deprecated)]
         Ok(GetTreestateResponse::from_parts(
-            (*block_data.hash()).into(),
-            block_data.height().into(),
+            block_data.chain_block.index.hash.into(),
+            block_data.chain_block.index.height.into(),
             time,
             sapling,
             orchard,

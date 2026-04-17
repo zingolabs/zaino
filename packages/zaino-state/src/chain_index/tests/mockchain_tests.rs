@@ -111,7 +111,7 @@ async fn get_transaction_status() {
             transaction_status_best_chain.unwrap(),
             BestChainLocation::Block(crate::chain_index::non_finalised_state::BlockIndex {
                 height: crate::Height(block_height.unwrap().0),
-                blockhash: crate::BlockHash(block_hash.0),
+                hash: crate::BlockHash(block_hash.0),
             })
         );
     }
