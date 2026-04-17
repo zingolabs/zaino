@@ -766,7 +766,7 @@ impl ChainBlock {
 /// this module, at the exact call to `encode_*` / `decode_*`.
 ///
 /// Kept private to this module so it is not reachable from outside the db layer.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct ChainBlockPersisted {
     hash: BlockHash,
     parent_hash: BlockHash,
@@ -1370,7 +1370,45 @@ impl IndexedBlock {
     }
 }
 
-impl ZainoVersionedSerde for IndexedBlock {
+/// Persisted layout of [`IndexedBlock`].
+///
+/// Exists solely as the serialization boundary: every byte-level read/write of an
+/// `IndexedBlock` goes through this type. In-memory code uses [`IndexedBlock`];
+/// the conversion into the persisted form (and back) happens only inside this
+/// module, at the exact call to `encode_*` / `decode_*`.
+///
+/// Kept private to this module so it is not reachable from outside the db layer.
+#[derive(Debug)]
+struct IndexedBlockPersisted {
+    chain_block: ChainBlockPersisted,
+    data: BlockData,
+    transactions: Vec<CompactTxData>,
+    commitment_tree_data: CommitmentTreeData,
+}
+
+impl From<&IndexedBlock> for IndexedBlockPersisted {
+    fn from(b: &IndexedBlock) -> Self {
+        Self {
+            chain_block: (&b.chain_block).into(),
+            data: b.data,
+            transactions: b.transactions.clone(),
+            commitment_tree_data: b.commitment_tree_data,
+        }
+    }
+}
+
+impl From<IndexedBlockPersisted> for IndexedBlock {
+    fn from(p: IndexedBlockPersisted) -> Self {
+        IndexedBlock::new(
+            p.chain_block.into(),
+            p.data,
+            p.transactions,
+            p.commitment_tree_data,
+        )
+    }
+}
+
+impl ZainoVersionedSerde for IndexedBlockPersisted {
     const VERSION: u8 = version::V1;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -1392,12 +1430,36 @@ impl ZainoVersionedSerde for IndexedBlock {
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
-        let chain_block = ChainBlock::deserialize(&mut r)?;
+        let chain_block = ChainBlockPersisted::deserialize(&mut r)?;
         let data = BlockData::deserialize(&mut r)?;
-        let tx = read_vec(&mut r, |r| CompactTxData::deserialize(r))?;
-        let ctd = CommitmentTreeData::deserialize(&mut r)?;
+        let transactions = read_vec(&mut r, |r| CompactTxData::deserialize(r))?;
+        let commitment_tree_data = CommitmentTreeData::deserialize(&mut r)?;
+        Ok(Self {
+            chain_block,
+            data,
+            transactions,
+            commitment_tree_data,
+        })
+    }
+}
 
-        Ok(IndexedBlock::new(chain_block, data, tx, ctd))
+impl ZainoVersionedSerde for IndexedBlock {
+    const VERSION: u8 = IndexedBlockPersisted::VERSION;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        IndexedBlockPersisted::from(self).encode_latest(w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        IndexedBlockPersisted::decode_latest(r).map(Into::into)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        IndexedBlockPersisted::from(self).encode_v1(w)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        IndexedBlockPersisted::decode_v1(r).map(Into::into)
     }
 }
 /// TryFrom inputs:
@@ -2957,7 +3019,36 @@ impl BlockHeaderData {
     }
 }
 
-impl ZainoVersionedSerde for BlockHeaderData {
+/// Persisted layout of [`BlockHeaderData`].
+///
+/// Exists solely as the serialization boundary: every byte-level read/write of a
+/// `BlockHeaderData` goes through this type. In-memory code uses
+/// [`BlockHeaderData`]; the conversion into the persisted form (and back) happens
+/// only inside this module, at the exact call to `encode_*` / `decode_*`.
+///
+/// Kept private to this module so it is not reachable from outside the db layer.
+#[derive(Clone, Copy, Debug)]
+struct BlockHeaderDataPersisted {
+    chain_block: ChainBlockPersisted,
+    data: BlockData,
+}
+
+impl From<&BlockHeaderData> for BlockHeaderDataPersisted {
+    fn from(b: &BlockHeaderData) -> Self {
+        Self {
+            chain_block: (&b.chain_block).into(),
+            data: b.data,
+        }
+    }
+}
+
+impl From<BlockHeaderDataPersisted> for BlockHeaderData {
+    fn from(p: BlockHeaderDataPersisted) -> Self {
+        BlockHeaderData::new(p.chain_block.into(), p.data)
+    }
+}
+
+impl ZainoVersionedSerde for BlockHeaderDataPersisted {
     const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2979,13 +3070,41 @@ impl ZainoVersionedSerde for BlockHeaderData {
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let chain_block = ChainBlock::deserialize(&mut *r)?;
+        let chain_block = ChainBlockPersisted::deserialize(&mut *r)?;
         let data = BlockData::deserialize(r)?;
-        Ok(BlockHeaderData::new(chain_block, data))
+        Ok(Self { chain_block, data })
     }
 
     fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
+    }
+}
+
+impl ZainoVersionedSerde for BlockHeaderData {
+    const VERSION: u8 = BlockHeaderDataPersisted::VERSION;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        BlockHeaderDataPersisted::from(self).encode_latest(w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        BlockHeaderDataPersisted::decode_latest(r).map(Into::into)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        BlockHeaderDataPersisted::from(self).encode_v1(w)
+    }
+
+    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        BlockHeaderDataPersisted::from(self).encode_v2(w)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        BlockHeaderDataPersisted::decode_v1(r).map(Into::into)
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        BlockHeaderDataPersisted::decode_v2(r).map(Into::into)
     }
 }
 
