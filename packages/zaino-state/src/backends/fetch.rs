@@ -237,8 +237,8 @@ impl FetchServiceSubscriber {
 }
 
 #[async_trait]
-#[allow(deprecated)]
 impl ZcashIndexer for FetchServiceSubscriber {
+    #[allow(deprecated)]
     type Error = FetchServiceError;
 
     /// Returns information about all changes to the given transparent addresses within the given inclusive block-height range.
@@ -299,6 +299,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .await?
             .try_into()
             .map_err(|_e| {
+                #[allow(deprecated)]
                 FetchServiceError::SerializationError(
                     zebra_chain::serialization::SerializationError::Parse(
                         "chainwork not hex-encoded integer",
@@ -369,6 +370,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 address_strings
                     .valid_addresses()
                     .map_err(|error| {
+                        #[allow(deprecated)]
                         FetchServiceError::RpcError(RpcError {
                             code: error.code() as i64,
                             message: "Invalid address provided".to_string(),
@@ -564,29 +566,37 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 .get_indexed_block_by_hash(&snapshot, &hash.into())
                 .await
                 .map_err(|_error| {
+                    #[allow(deprecated)]
                     FetchServiceError::RpcError(RpcError::new_from_legacycode(
                         zebra_rpc::server::error::LegacyCode::InvalidParameter,
                         "Failed to fetch block data.",
                     ))
                 })?
-                .ok_or(FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch block data.",
-                )))?,
+                .ok_or(
+                    #[allow(deprecated)]
+                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    )),
+                )?,
             HashOrHeight::Height(height) => self
                 .indexer
                 .get_indexed_block_by_height(&snapshot, &height.into())
                 .await
                 .map_err(|_error| {
+                    #[allow(deprecated)]
                     FetchServiceError::RpcError(RpcError::new_from_legacycode(
                         zebra_rpc::server::error::LegacyCode::InvalidParameter,
                         "Failed to fetch block data.",
                     ))
                 })?
-                .ok_or(FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch block data.",
-                )))?,
+                .ok_or(
+                    #[allow(deprecated)]
+                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    )),
+                )?,
         };
 
         let (sapling, orchard) = self
@@ -594,12 +604,14 @@ impl ZcashIndexer for FetchServiceSubscriber {
             .get_treestate(block_data.hash())
             .await
             .map_err(|_error| {
+                #[allow(deprecated)]
                 FetchServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
                     "Failed to fetch treestate.",
                 ))
             })?;
         let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+            #[allow(deprecated)]
             FetchServiceError::RpcError(RpcError::new_from_legacycode(
                 zebra_rpc::server::error::LegacyCode::InvalidParameter,
                 "Block time is out of range for u32.",
@@ -740,6 +752,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 addresses
                     .valid_addresses()
                     .map_err(|error| {
+                        #[allow(deprecated)]
                         FetchServiceError::RpcError(RpcError {
                             code: error.code() as i64,
                             message: "Invalid address provided".to_string(),
