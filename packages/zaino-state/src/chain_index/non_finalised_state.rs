@@ -159,42 +159,12 @@ pub enum InitError {
     InitalBlockMissingHeight,
 }
 
-/// Errors returned when decoding a wire [`BlockId`](zaino_proto::proto::service::BlockId)
-/// into an internal [`BlockIdent`].
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum BlockIdentDecodeError {
-    /// The wire `height` (u64) doesn't fit in the internal `Height` (u32).
-    #[error("wire BlockId.height {0} exceeds u32::MAX")]
-    HeightOverflow(u64),
-    /// The wire `hash` is not exactly 32 bytes.
-    #[error("wire BlockId.hash must be 32 bytes, got {0}")]
-    WrongHashLength(usize),
-}
-
 impl From<BlockIdent> for zaino_proto::proto::service::BlockId {
     fn from(b: BlockIdent) -> Self {
         zaino_proto::proto::service::BlockId {
             height: u64::from(b.height.0),
             hash: b.blockhash.0.to_vec(),
         }
-    }
-}
-
-impl TryFrom<zaino_proto::proto::service::BlockId> for BlockIdent {
-    type Error = BlockIdentDecodeError;
-
-    fn try_from(w: zaino_proto::proto::service::BlockId) -> Result<Self, Self::Error> {
-        let height =
-            u32::try_from(w.height).map_err(|_| BlockIdentDecodeError::HeightOverflow(w.height))?;
-        let hash_len = w.hash.len();
-        let hash: [u8; 32] = w
-            .hash
-            .try_into()
-            .map_err(|_| BlockIdentDecodeError::WrongHashLength(hash_len))?;
-        Ok(BlockIdent {
-            height: Height(height),
-            blockhash: BlockHash(hash),
-        })
     }
 }
 
