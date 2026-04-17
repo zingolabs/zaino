@@ -894,7 +894,21 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             Some(non_finalised_state) => Ok(ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot: non_finalised_state.get_snapshot(),
             }),
-            None => todo!("get validator finalized height"),
+            None => {
+                let height = self
+                    .source
+                    .get_best_block_height()
+                    .await
+                    .map_err(ChainIndexError::backing_validator)?
+                    .ok_or(ChainIndexError::database_hole(
+                        "validator has no best block",
+                        None,
+                    ))?;
+                let validator_finalized_height = types::Height(height.0.saturating_sub(100));
+                Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
+                    validator_finalized_height,
+                })
+            }
         }
     }
 
