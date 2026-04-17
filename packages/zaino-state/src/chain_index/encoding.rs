@@ -30,7 +30,7 @@ Developer guidance (how to implement a versioned type)
    - Make `encode_latest` / `decode_latest` delegate to the new vN helpers.
    - Preserve `decode_v(M)` helpers for earlier M so older on-disk values remain readable.
 3. For types that *contain* inner fields that themselves implement `ZainoVersionedSerde`
-   (for example `BlockHeaderData` contains `BlockIndex`), **explicitly** control the inner
+   (for example `BlockHeaderData` contains `ChainBlock`), **explicitly** control the inner
    field’s encoded version when producing historical top-level encodings:
    - Use `serialize_with_version` (or `to_bytes_with_version`) on the inner field to request
      the exact nested version you need.  This guarantees that `to_bytes_with_version(Some(v))`
@@ -111,7 +111,7 @@ pub mod version {
 ///
 /// Important: **nested versioned fields.**
 /// - If your type contains fields that also implement `ZainoVersionedSerde` (for example
-///   `BlockHeaderData` contains `BlockIndex`), you **must** control the concrete nested
+///   `BlockHeaderData` contains `ChainBlock`), you **must** control the concrete nested
 ///   version when producing historical top-level encodings.
 /// - Use `serialize_with_version(..., version)` or `to_bytes_with_version(version)` on the
 ///   nested field inside `encode_vN` to force the inner field to be encoded with a specific

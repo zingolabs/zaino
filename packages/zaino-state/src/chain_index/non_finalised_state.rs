@@ -34,9 +34,9 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
     >,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// created for NonfinalizedBlockCacheSnapshot block_id field for naming fields
-pub struct BlockIdent {
+pub struct BlockIndex {
     /// from chain_index types
     pub height: Height,
     /// from chain_index types
@@ -58,7 +58,7 @@ pub struct NonfinalizedBlockCacheSnapshot {
     /// The highest known block
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
-    pub best_tip: BlockIdent,
+    pub best_tip: BlockIndex,
 
     /// if the validator has finalized above the tip
     /// of the snapshot, we can use it for some queries
@@ -159,8 +159,8 @@ pub enum InitError {
     InitalBlockMissingHeight,
 }
 
-impl From<BlockIdent> for zaino_proto::proto::service::BlockId {
-    fn from(b: BlockIdent) -> Self {
+impl From<BlockIndex> for zaino_proto::proto::service::BlockId {
+    fn from(b: BlockIndex) -> Self {
         zaino_proto::proto::service::BlockId {
             height: u64::from(b.height.0),
             hash: b.blockhash.0.to_vec(),
@@ -169,7 +169,7 @@ impl From<BlockIdent> for zaino_proto::proto::service::BlockId {
 }
 
 /// This is the core of the concurrent block cache.
-impl BlockIdent {
+impl BlockIndex {
     /// Create a BlockIdent from an IndexedBlock
     fn from_block(block: &IndexedBlock) -> Self {
         let height = block.height();
@@ -181,7 +181,7 @@ impl BlockIdent {
 impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
     fn from_initial_block(block: IndexedBlock, validator_finalized_height: Height) -> Self {
-        let best_tip = BlockIdent::from_block(&block);
+        let best_tip = BlockIndex::from_block(&block);
         let hash = *block.hash();
         let height = best_tip.height;
 
@@ -200,7 +200,7 @@ impl NonfinalizedBlockCacheSnapshot {
     }
 
     fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
-        self.best_tip = BlockIdent {
+        self.best_tip = BlockIndex {
             height: block.height(),
             blockhash: *block.hash(),
         };
@@ -400,7 +400,10 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             working_snapshot
                                 .blocks
                                 .values()
-                                .map(|block| (block.index().hash(), block.index().height()))
+                                .map(|block| (
+                                    block.chain_block().hash(),
+                                    block.chain_block().height()
+                                ))
                                 .collect::<Vec<_>>(),
                             working_snapshot.best_tip
                         ))
@@ -408,7 +411,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
                 info!(
                     height = (working_snapshot.best_tip.height + 1).0,
-                    hash = %chainblock.index().hash(),
+                    hash = %chainblock.chain_block().hash(),
                     "Syncing block"
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
@@ -746,7 +749,7 @@ impl Block for IndexedBlock {
     }
 
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32] {
-        self.index.parent_hash.0
+        self.chain_block.parent_hash.0
     }
 
     async fn to_indexed_block<Source: BlockchainSource>(

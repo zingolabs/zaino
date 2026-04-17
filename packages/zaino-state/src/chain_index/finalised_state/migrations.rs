@@ -404,7 +404,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0_0_0To1_0_0 {
                     parent_chain_work = *shadow
                         .get_block_header(shadow_db_height)
                         .await?
-                        .index()
+                        .chain_block()
                         .chainwork();
 
                     shadow_db_height + 1

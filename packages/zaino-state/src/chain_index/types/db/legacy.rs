@@ -721,20 +721,17 @@ impl FixedEncodedLen for Outpoint {
 
 /// Metadata about the block used to identify and navigate the blockchain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct BlockIndex {
-    /// The hash identifying this block uniquely.
-    pub hash: BlockHash,
+pub struct ChainBlock {
+    /// Uniquely identifies this block: its (height, hash) pair.
+    pub index: crate::chain_index::non_finalised_state::BlockIndex,
     /// The hash of this block's parent block (previous block in chain).
     pub parent_hash: BlockHash,
     /// The cumulative proof-of-work of the blockchain up to this block, used for chain selection.
     pub chainwork: ChainWork,
-    /// The height of this block.
-    pub height: Height,
 }
 
-impl BlockIndex {
-    /// Constructs a new `BlockIndex`.
+impl ChainBlock {
+    /// Constructs a new `ChainBlock`.
     pub fn new(
         hash: BlockHash,
         parent_hash: BlockHash,
@@ -742,16 +739,18 @@ impl BlockIndex {
         height: Height,
     ) -> Self {
         Self {
-            hash,
+            index: crate::chain_index::non_finalised_state::BlockIndex {
+                height,
+                blockhash: hash,
+            },
             parent_hash,
             chainwork,
-            height,
         }
     }
 
     /// Returns the hash of this block.
     pub fn hash(&self) -> &BlockHash {
-        &self.hash
+        &self.index.blockhash
     }
 
     /// Returns the hash of the parent block.
@@ -766,11 +765,52 @@ impl BlockIndex {
 
     /// Returns the height of this block if it’s part of the best chain.
     pub fn height(&self) -> Height {
-        self.height
+        self.index.height
     }
 }
 
-impl ZainoVersionedSerde for BlockIndex {
+/// Persisted layout of [`ChainBlock`].
+///
+/// Exists solely as the serialization boundary: every byte-level read/write of a
+/// `ChainBlock` goes through this type. In-memory code uses [`ChainBlock`]
+/// (which carries a [`crate::chain_index::non_finalised_state::BlockIndex`]);
+/// the conversion into the fundamental-only persisted shape happens only inside
+/// this module, at the exact call to `encode_*` / `decode_*`.
+///
+/// Kept private to this module so it is not reachable from outside the db layer.
+#[derive(Debug)]
+struct ChainBlockPersisted {
+    hash: BlockHash,
+    parent_hash: BlockHash,
+    chainwork: ChainWork,
+    height: Height,
+}
+
+impl From<&ChainBlock> for ChainBlockPersisted {
+    fn from(chain_block: &ChainBlock) -> Self {
+        Self {
+            hash: chain_block.index.blockhash,
+            parent_hash: chain_block.parent_hash,
+            chainwork: chain_block.chainwork,
+            height: chain_block.index.height,
+        }
+    }
+}
+
+impl From<ChainBlockPersisted> for ChainBlock {
+    fn from(p: ChainBlockPersisted) -> Self {
+        Self {
+            index: crate::chain_index::non_finalised_state::BlockIndex {
+                height: p.height,
+                blockhash: p.hash,
+            },
+            parent_hash: p.parent_hash,
+            chainwork: p.chainwork,
+        }
+    }
+}
+
+impl ZainoVersionedSerde for ChainBlockPersisted {
     const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -808,8 +848,12 @@ impl ZainoVersionedSerde for BlockIndex {
         let chainwork = ChainWork::deserialize(&mut r)?;
         let height =
             read_option(&mut r, |r| Height::deserialize(r))?.expect("blocks always have height");
-
-        Ok(BlockIndex::new(hash, parent_hash, chainwork, height))
+        Ok(Self {
+            hash,
+            parent_hash,
+            chainwork,
+            height,
+        })
     }
 
     fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -818,7 +862,40 @@ impl ZainoVersionedSerde for BlockIndex {
         let parent_hash = BlockHash::deserialize(&mut r)?;
         let chainwork = ChainWork::deserialize(&mut r)?;
         let height = Height::deserialize(&mut r)?;
-        Ok(BlockIndex::new(hash, parent_hash, chainwork, height))
+        Ok(Self {
+            hash,
+            parent_hash,
+            chainwork,
+            height,
+        })
+    }
+}
+
+impl ZainoVersionedSerde for ChainBlock {
+    const VERSION: u8 = ChainBlockPersisted::VERSION;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        ChainBlockPersisted::from(self).encode_latest(w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        ChainBlockPersisted::decode_latest(r).map(Into::into)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        ChainBlockPersisted::from(self).encode_v1(w)
+    }
+
+    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        ChainBlockPersisted::from(self).encode_v2(w)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        ChainBlockPersisted::decode_v1(r).map(Into::into)
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        ChainBlockPersisted::decode_v2(r).map(Into::into)
     }
 }
 
@@ -1208,10 +1285,9 @@ impl ZainoVersionedSerde for EquihashSolution {
 /// Represents the indexing data of a single compact Zcash block used internally by Zaino.
 /// Provides efficient indexing for blockchain state queries and updates.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct IndexedBlock {
     /// Metadata and indexing information for this block.
-    pub index: BlockIndex,
+    pub chain_block: ChainBlock,
     /// Essential header and metadata information for the block.
     pub data: BlockData,
     /// Compact representations of transactions in this block.
@@ -1224,22 +1300,22 @@ pub struct IndexedBlock {
 impl IndexedBlock {
     /// Creates a new `IndexedBlock`.
     pub fn new(
-        index: BlockIndex,
+        chain_block: ChainBlock,
         data: BlockData,
         tx: Vec<CompactTxData>,
         commitment_tree_data: CommitmentTreeData,
     ) -> Self {
         Self {
-            index,
+            chain_block,
             data,
             transactions: tx,
             commitment_tree_data,
         }
     }
 
-    /// Returns a reference to the block index metadata.
-    pub fn index(&self) -> &BlockIndex {
-        &self.index
+    /// Returns a reference to this block's [`ChainBlock`] record.
+    pub fn chain_block(&self) -> &ChainBlock {
+        &self.chain_block
     }
 
     /// Returns a reference to the header and auxiliary block data.
@@ -1259,17 +1335,17 @@ impl IndexedBlock {
 
     /// Returns the block hash.
     pub fn hash(&self) -> &BlockHash {
-        self.index.hash()
+        self.chain_block.hash()
     }
 
     /// Returns the block height if available.
     pub fn height(&self) -> Height {
-        self.index.height()
+        self.chain_block.height()
     }
 
     /// Returns the cumulative chainwork.
     pub fn chainwork(&self) -> &ChainWork {
-        self.index.chainwork()
+        self.chain_block.chainwork()
     }
 
     /// Returns the raw work value (targeted work contribution).
@@ -1289,7 +1365,7 @@ impl IndexedBlock {
         let height: u64 = self.height().0.into();
 
         let hash = self.hash().0.to_vec();
-        let prev_hash = self.index().parent_hash().0.to_vec();
+        let prev_hash = self.chain_block().parent_hash().0.to_vec();
 
         let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = self
             .transactions()
@@ -1328,7 +1404,7 @@ impl ZainoVersionedSerde for IndexedBlock {
     }
 
     fn encode_v1<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
-        self.index.serialize_with_version(&mut w, 1)?;
+        self.chain_block.serialize_with_version(&mut w, 1)?;
         self.data.serialize_with_version(&mut w, 1)?;
         write_vec(&mut w, &self.transactions, |w, tx| {
             tx.serialize_with_version(w, 1)
@@ -1338,12 +1414,12 @@ impl ZainoVersionedSerde for IndexedBlock {
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
-        let index = BlockIndex::deserialize(&mut r)?;
+        let chain_block = ChainBlock::deserialize(&mut r)?;
         let data = BlockData::deserialize(&mut r)?;
         let tx = read_vec(&mut r, |r| CompactTxData::deserialize(r))?;
         let ctd = CommitmentTreeData::deserialize(&mut r)?;
 
-        Ok(IndexedBlock::new(index, data, tx, ctd))
+        Ok(IndexedBlock::new(chain_block, data, tx, ctd))
     }
 }
 /// TryFrom inputs:
@@ -1472,8 +1548,8 @@ impl
 
         let chainwork = parent_chainwork.add(&ChainWork::from(block_data.work()));
 
-        // --- Final index and block data ---
-        let index = BlockIndex::new(
+        // --- Final chain_block and block data ---
+        let chain_block = ChainBlock::new(
             BlockHash::from(hash),
             BlockHash::from(parent_hash),
             chainwork,
@@ -1481,7 +1557,7 @@ impl
         );
 
         Ok(IndexedBlock::new(
-            index,
+            chain_block,
             block_data,
             tx,
             commitment_tree_data,
@@ -2874,23 +2950,22 @@ impl FixedEncodedLen for ShardRoot {
 /// Holds full block header data,
 /// split into chain indexeing data and additional header data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockHeaderData {
-    /// Chain indexing data
-    index: BlockIndex,
+    /// This block's [`ChainBlock`] record.
+    chain_block: ChainBlock,
     /// Block header data
     data: BlockData,
 }
 
 impl BlockHeaderData {
     /// Constructs a new `BlockHeaderData`.
-    pub fn new(index: BlockIndex, data: BlockData) -> Self {
-        Self { index, data }
+    pub fn new(chain_block: ChainBlock, data: BlockData) -> Self {
+        Self { chain_block, data }
     }
 
-    /// Returns the stored [`BlockIndex`].
-    pub fn index(&self) -> &BlockIndex {
-        &self.index
+    /// Returns the stored [`ChainBlock`].
+    pub fn chain_block(&self) -> &ChainBlock {
+        &self.chain_block
     }
 
     /// Returns the stored [`BlockData`].
@@ -2911,19 +2986,19 @@ impl ZainoVersionedSerde for BlockHeaderData {
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.index.serialize_with_version(&mut *w, 1)?;
+        self.chain_block.serialize_with_version(&mut *w, 1)?;
         self.data.serialize_with_version(w, 1)
     }
 
     fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.index.serialize_with_version(&mut *w, 2)?;
+        self.chain_block.serialize_with_version(&mut *w, 2)?;
         self.data.serialize_with_version(w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let index = BlockIndex::deserialize(&mut *r)?;
+        let chain_block = ChainBlock::deserialize(&mut *r)?;
         let data = BlockData::deserialize(r)?;
-        Ok(BlockHeaderData::new(index, data))
+        Ok(BlockHeaderData::new(chain_block, data))
     }
 
     fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {

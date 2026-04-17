@@ -268,7 +268,7 @@ impl<'a> BlockWithMetadata<'a> {
     }
 
     /// Create block index from block and metadata
-    fn create_block_index(&self) -> Result<BlockIndex, String> {
+    fn create_block_index(&self) -> Result<ChainBlock, String> {
         let block = self.block;
         let hash = BlockHash::from(block.hash());
         let parent_hash = BlockHash::from(block.header.previous_block_hash);
@@ -285,11 +285,13 @@ impl<'a> BlockWithMetadata<'a> {
             .parent_chainwork
             .add(&ChainWork::from(U256::from(block_work.as_u128())));
 
-        Ok(BlockIndex {
-            hash,
+        Ok(ChainBlock {
+            index: crate::chain_index::non_finalised_state::BlockIndex {
+                height,
+                blockhash: hash,
+            },
             parent_hash,
             chainwork,
-            height,
         })
     }
 
@@ -320,7 +322,7 @@ impl TryFrom<BlockWithMetadata<'_>> for IndexedBlock {
         let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
 
         Ok(IndexedBlock {
-            index,
+            chain_block: index,
             data,
             transactions,
             commitment_tree_data,

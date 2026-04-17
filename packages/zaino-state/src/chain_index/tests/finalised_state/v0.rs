@@ -261,7 +261,7 @@ async fn get_compact_blocks() {
 
         let compact_block = chain_block.to_compact_block();
 
-        parent_chain_work = *chain_block.index().chainwork();
+        parent_chain_work = *chain_block.chain_block().chainwork();
 
         let reader_compact_block_default = db_reader
             .get_compact_block(Height(*height), PoolTypeFilter::default())

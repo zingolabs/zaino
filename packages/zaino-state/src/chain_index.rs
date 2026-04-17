@@ -11,7 +11,7 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::non_finalised_state::BlockIdent;
+use crate::chain_index::non_finalised_state::BlockIndex;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
@@ -364,7 +364,7 @@ pub trait ChainIndex {
     fn best_chaintip(
         &self,
         nonfinalized_snapshot: &Self::Snapshot,
-    ) -> impl std::future::Future<Output = Result<BlockIdent, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockIndex, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -735,7 +735,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 .values()
                 .find(|h| **h == hash)
                 // Canonical height is None for blocks not on the best chain
-                .map(|_| block.index().height())),
+                .map(|_| block.chain_block().height())),
             None => self
                 // ChainIndex step 4:
                 .finalized_state
@@ -1288,7 +1288,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     Ok(Some((*block.hash(), block.height())))
                 } else {
                     // Otherwise, it's non-best chain! Grab its parent, and recurse
-                    Box::pin(self.find_fork_point(snapshot, block.index().parent_hash())).await
+                    Box::pin(self.find_fork_point(snapshot, block.chain_block().parent_hash()))
+                        .await
                     // gotta pin recursive async functions to prevent infinite-sized
                     // Future-implementing types
                 }
@@ -1416,7 +1417,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .await?
                     .next()
                 {
-                    Some(block) => block.index.height.into(),
+                    Some(block) => block.chain_block.index.height.into(),
                     // If we don't have a block containing the transaction
                     // locally and the transaction's not on the validator's
                     // best chain, we can't determine its consensus branch ID
@@ -1649,12 +1650,12 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn best_chaintip(
         &self,
         nonfinalized_snapshot: &Self::Snapshot,
-    ) -> Result<BlockIdent, Self::Error> {
+    ) -> Result<BlockIndex, Self::Error> {
         Ok(
             if nonfinalized_snapshot.validator_finalized_height
                 > nonfinalized_snapshot.best_tip.height
             {
-                BlockIdent {
+                BlockIndex {
                     height: nonfinalized_snapshot.validator_finalized_height,
                     blockhash: self
                         .source()
