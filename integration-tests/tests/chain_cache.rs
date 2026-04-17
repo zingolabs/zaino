@@ -168,6 +168,7 @@ mod chain_query_interface {
                         },
                     },
                     network.into(),
+                    None,
                 ))
                 .await
                 .unwrap();
