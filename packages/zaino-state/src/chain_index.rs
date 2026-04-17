@@ -11,7 +11,7 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::non_finalised_state::BestTip;
+use crate::chain_index::non_finalised_state::BlockIdent;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
@@ -364,7 +364,7 @@ pub trait ChainIndex {
     fn best_chaintip(
         &self,
         nonfinalized_snapshot: &Self::Snapshot,
-    ) -> impl std::future::Future<Output = Result<BestTip, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockIdent, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -1649,12 +1649,12 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn best_chaintip(
         &self,
         nonfinalized_snapshot: &Self::Snapshot,
-    ) -> Result<BestTip, Self::Error> {
+    ) -> Result<BlockIdent, Self::Error> {
         Ok(
             if nonfinalized_snapshot.validator_finalized_height
                 > nonfinalized_snapshot.best_tip.height
             {
-                BestTip {
+                BlockIdent {
                     height: nonfinalized_snapshot.validator_finalized_height,
                     blockhash: self
                         .source()
