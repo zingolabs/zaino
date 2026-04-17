@@ -1913,11 +1913,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
-        Ok(BlockId {
-            height: tip.height.0 as u64,
-            hash: tip.blockhash.0.to_vec(),
-        })
+        Ok(self.indexer.snapshot_nonfinalized_state().best_tip.into())
     }
 
     /// Return the compact block corresponding to the given block identifier
