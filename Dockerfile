@@ -12,9 +12,10 @@ ARG HOME=/home/container_user
 ############################
 # Dependencies 
 ############################
-FROM stagex/pallet-rust@sha256:9c38bf1066dd9ad1b6a6b584974dd798c2bf798985bf82e58024fbe0515592ca AS pallet-rust
-FROM stagex/user-protobuf@sha256:5e67b3d3a7e7e9db9aa8ab516ffa13e54acde5f0b3d4e8638f79880ab16da72c AS protobuf 
-FROM stagex/user-abseil-cpp@sha256:3dca99adfda0cb631bd3a948a99c2d5f89fab517bda034ce417f222721115aa2 AS abseil-cpp
+FROM stagex/pallet-rust:1.94.0@sha256:2fbe7b164dd92edb9c1096152f6d27592d8a69b1b8eb2fc907b5fadea7d11668 AS pallet-rust
+FROM stagex/user-protobuf:26.1@sha256:a135aaf060990b6ef8a7c715c16f175811d3a1f5383970f5771adef05a0bc56a AS protobuf
+FROM stagex/user-abseil-cpp:20240116.2@sha256:20a241145158a0aa7cb83ed5dc4f9ad6360dc975352787f4e6b00e8a39943f62 AS abseil-cpp
+# todo deprecated. change to busybox or core-profile and core-filesystem
 FROM stagex/core-user-runtime@sha256:055ae534e1e01259449fb4e0226f035a7474674c7371a136298e8bdac65d90bb AS user-runtime
 
 ############################
