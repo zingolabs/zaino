@@ -3,7 +3,7 @@
 ############################
 # Global build args
 ############################
-ARG RUST_VERSION=1.86.0
+ARG RUST_VERSION=1.94.0
 ARG UID=1000
 ARG GID=1000
 ARG USER=container_user
@@ -13,34 +13,62 @@ ARG HOME=/home/container_user
 # Dependencies 
 ############################
 FROM stagex/pallet-rust:1.94.0@sha256:2fbe7b164dd92edb9c1096152f6d27592d8a69b1b8eb2fc907b5fadea7d11668 AS pallet-rust
+FROM stagex/pallet-clang@sha256:07c01477a41eba3ec57a0e84c73659dec17662247a8f92b8b902f0aa02b58ca3 AS pallet-clang
 FROM stagex/user-protobuf:26.1@sha256:a135aaf060990b6ef8a7c715c16f175811d3a1f5383970f5771adef05a0bc56a AS protobuf
 FROM stagex/user-abseil-cpp:20240116.2@sha256:20a241145158a0aa7cb83ed5dc4f9ad6360dc975352787f4e6b00e8a39943f62 AS abseil-cpp
-# todo deprecated. change to busybox or core-profile and core-filesystem
-FROM stagex/core-user-runtime@sha256:055ae534e1e01259449fb4e0226f035a7474674c7371a136298e8bdac65d90bb AS user-runtime
+FROM stagex/core-busybox:1.37.0@sha256:d608daa946e4799cf28b105aba461db00187657bd55ea7c2935ff11dac237e27 AS busybox
+FROM stagex/core-gmp:6.3.0@sha256:35f1f6f285efd438e7d985dc0538b7a5ca1a228e69f50d39de2bcafe830b4beb AS gmp
+FROM stagex/core-mpfr:4.1.0@sha256:b390b6023fce662a834d207e683864d4c37001b0af9e56a62aab6b7ee9fda097 AS mpfr
+FROM stagex/core-mpc:1.2.1@sha256:5385d8ddf991a1911da0d2ee69b0eaeb95baa111101ebf50933559956ac5ca71 AS mpc
+FROM stagex/core-isl:0.24@sha256:6c78dd13483288b4ddd967866cf4ccf5cc20f9130368c0d10e3e498ddb6d3573 AS isl
+
 
 ############################
 # Builder
 ############################
 FROM pallet-rust AS builder
-COPY --from=protobuf . /
-COPY --from=abseil-cpp . /
 
 SHELL ["/bin/sh", "-euo", "pipefail", "-c"]
+COPY --from=pallet-clang . /
+COPY --from=protobuf . /
+COPY --from=abseil-cpp . /
+# GCC runtime dependencies
+COPY --from=gmp . /
+COPY --from=mpfr . /
+COPY --from=mpc . /
+COPY --from=isl . /
+
+# Crate build scripts (librocksdb-sys, libzcash-script) emit -lstdc++, but
+# pallet-clang provides libc++ (LLVM) instead. Create a linker script so lld
+# resolves -lstdc++ to libc++ + libc++abi.
+RUN printf 'INPUT(-lc++ -lc++abi)\n' > /usr/lib/libstdc++.a
+
 WORKDIR /usr/src/app
 
 # Toggle to build without TLS feature if needed
 ARG NO_TLS=false
 
-# Copy entire workspace (prevents missing members)
-ENV SOURCE_DATE_EPOCH=1
-ENV CXXFLAGS="-include cstdint"
-ENV ROCKSDB_USE_PKG_CONFIG=0
 ENV CARGO_HOME=/usr/local/cargo
 
 ENV RUST_BACKTRACE=1
 ENV RUSTFLAGS="-C codegen-units=1"
 ENV RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
+ENV RUSTFLAGS="${RUSTFLAGS} -C linker=clang -C link-arg=-fuse-ld=mold"
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--allow-multiple-definition"
+
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--whole-archive"
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++.a"
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++abi.a"
+
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--no-whole-archive"
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-ldl"
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-lm"
+
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--build-id=none"
+ENV SOURCE_DATE_EPOCH=1
+ENV CXXFLAGS="-stdlib=libc++ -include cstdint"
+ENV ROCKSDB_USE_PKG_CONFIG=0
+
 ENV TARGET_ARCH="x86_64-unknown-linux-musl"
 
 COPY . .
@@ -75,7 +103,7 @@ COPY --from=builder /usr/local/bin/zainod /zainod
 ############################
 # Runtime (slim, non-root)
 ############################
-FROM user-runtime AS runtime
+FROM busybox AS runtime
 
 ARG HOME
 
