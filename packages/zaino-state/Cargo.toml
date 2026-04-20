@@ -83,7 +83,7 @@ once_cell = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
 incrementalmerkletree = "0.8.2"
-rand = "0.8.5"
+rand = "0.9.4"
 
 [build-dependencies]
 whoami = { workspace = true }

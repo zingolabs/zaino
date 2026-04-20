@@ -343,7 +343,67 @@ async fn get_filtered_mempool_transactions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn get_mempool_stream() {
+async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
+    let (blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(true).await;
+
+    let block_data: Vec<zebra_chain::block::Block> = blocks
+        .iter()
+        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
+        .collect();
+
+    sleep(Duration::from_millis(2000)).await;
+
+    let next_mempool_height_index = (dbg!(mockchain.active_height()) as usize) + 1;
+    let mut mempool_transactions: Vec<_> = block_data
+        .get(next_mempool_height_index)
+        .map(|b| {
+            b.transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    mempool_transactions.sort_by_key(|transaction| transaction.hash());
+
+    let mempool_stream_task = tokio::spawn(async move {
+        let mut mempool_stream = index_reader
+            .get_mempool_stream(None)
+            .expect("failed to create mempool stream");
+
+        let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
+            Vec::new();
+
+        while let Some(tx_bytes_res) = mempool_stream.next().await {
+            let tx_bytes = tx_bytes_res.expect("stream error");
+            let tx: zebra_chain::transaction::Transaction =
+                tx_bytes.zcash_deserialize_into().expect("deserialize tx");
+            indexer_mempool_transactions.push(tx);
+        }
+
+        indexer_mempool_transactions.sort_by_key(|tx| tx.hash());
+        indexer_mempool_transactions
+    });
+
+    sleep(Duration::from_millis(500)).await;
+
+    mockchain.mine_blocks(1);
+
+    let indexer_mempool_stream_transactions =
+        mempool_stream_task.await.expect("collector task failed");
+
+    assert_eq!(
+        mempool_transactions
+            .iter()
+            .map(|tx| tx.as_ref().clone())
+            .collect::<Vec<_>>(),
+        indexer_mempool_stream_transactions,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
     let (blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(true).await;
 
