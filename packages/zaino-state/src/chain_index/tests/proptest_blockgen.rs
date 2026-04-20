@@ -5,7 +5,7 @@ use proptest::{
     prelude::{Arbitrary as _, BoxedStrategy, Just},
     strategy::Strategy,
 };
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
 use tonic::async_trait;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
@@ -505,7 +505,7 @@ impl BlockchainSource for ProptestMockchain {
                 .cloned()
                 .or_else(|| {
                     self.branching_segments
-                        .choose(&mut rand::thread_rng())
+                        .choose(&mut rand::rng())
                         .unwrap()
                         .iter()
                         .find(|block| block.coinbase_height().unwrap() == height)
