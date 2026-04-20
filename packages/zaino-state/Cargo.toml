@@ -68,7 +68,7 @@ prost = { workspace = true }
 primitive-types = { workspace = true }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
-core2 = { workspace = true }
+corez = { workspace = true }
 bs58 = { workspace = true }
 nonempty = { workspace = true }
 arc-swap = { workspace = true }

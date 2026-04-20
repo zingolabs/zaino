@@ -55,7 +55,7 @@ use zebra_chain::parameters::NetworkKind;
 use zebra_state::HashOrHeight;
 
 use async_trait::async_trait;
-use core2::io::{self, Read};
+use corez::io::{self, Read};
 use dashmap::DashSet;
 use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags,

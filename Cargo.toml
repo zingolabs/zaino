@@ -112,7 +112,7 @@ ctrlc = "3.4"
 chrono = "0.4"
 which = "4"
 whoami = "1.5"
-core2 = "0.4"
+corez = "0.1"
 
 # Formats
 base64 = "0.22"
