@@ -29,7 +29,7 @@
 // IMPORTS
 // =============================================================================
 
-use core2::io::{self, Read, Write};
+use corez::io::{self, Read, Write};
 use hex::{FromHex, ToHex};
 use primitive_types::U256;
 use std::{fmt, io::Cursor};

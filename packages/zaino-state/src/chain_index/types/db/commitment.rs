@@ -6,7 +6,7 @@
 //! Commitment trees track the existence of shielded notes in the Sapling and Orchard
 //! shielded pools, enabling efficient zero-knowledge proofs and wallet synchronization.
 
-use core2::io::{self, Read, Write};
+use corez::io::{self, Read, Write};
 
 use crate::chain_index::encoding::{
     read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,

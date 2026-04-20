@@ -58,7 +58,7 @@ Safety note
 #![allow(dead_code)]
 
 use core::iter::FromIterator;
-use core2::io::{self, Read, Write};
+use corez::io::{self, Read, Write};
 
 /// Wire-format version tags.
 pub mod version {
@@ -268,7 +268,7 @@ pub trait ZainoVersionedSerde: Sized {
     /// Reconstruct from a `&[u8]` (expects tag + body).
     #[inline]
     fn from_bytes(data: &[u8]) -> io::Result<Self> {
-        let mut cursor = core2::io::Cursor::new(data);
+        let mut cursor = corez::io::Cursor::new(data);
         Self::deserialize(&mut cursor)
     }
 }
@@ -625,7 +625,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core2::io::Cursor;
+    use corez::io::Cursor;
 
     #[test]
     fn compactsize_roundtrip_various() {
