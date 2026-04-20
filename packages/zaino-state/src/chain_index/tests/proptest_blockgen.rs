@@ -20,13 +20,14 @@ use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
     chain_index::{
+        non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
         NonFinalizedSnapshot,
     },
     BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber, NonfinalizedBlockCacheSnapshot, TransactionHash,
+    NodeBackedChainIndexSubscriber, TransactionHash,
 };
 
 /// Handle all the boilerplate for a passthrough
@@ -38,7 +39,7 @@ fn passthrough_test(
         // The subscriber to test against
         NodeBackedChainIndexSubscriber<ProptestMockchain>,
         // A snapshot, which will have only the genesis block
-        Arc<NonfinalizedBlockCacheSnapshot>,
+        &ChainIndexSnapshot,
     ),
 ) {
     init_tracing();
@@ -83,13 +84,12 @@ fn passthrough_test(
                 .unwrap();
             tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
-            let snapshot = index_reader.snapshot_nonfinalized_state();
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             // 101 instead of 100 as heights are 0-indexed
-            assert_eq!(snapshot.validator_finalized_height.0 as usize, (2 * segment_length) - 101);
-            assert_eq!(snapshot.best_tip.height.0, 0);
+            assert_eq!(snapshot.max_serviceable_height().0 as usize, (2 * segment_length) - 101);
+            assert!(matches!(snapshot, ChainIndexSnapshot::StillSyncingFinalizedState { .. }));
 
-
-            test(&mockchain, index_reader, snapshot).await;
+            test(&mockchain, index_reader, &snapshot).await;
 
 
 
@@ -123,7 +123,7 @@ fn passthrough_find_fork_point() {
                     .await
                     .unwrap();
 
-                if height <= snapshot.validator_finalized_height {
+                if height <= *snapshot.max_serviceable_height() {
                     // passthrough fork point can only ever be the requested block
                     // as we don't passthrough to nonfinalized state
                     assert_eq!(hash, fork_point.unwrap().0);
@@ -162,7 +162,7 @@ fn passthrough_get_transaction_status() {
                     .await
                     .unwrap();
 
-                if height <= snapshot.validator_finalized_height {
+                if height <= *snapshot.max_serviceable_height() {
                     // passthrough transaction status can only ever be on the best
                     // chain as we don't passthrough to nonfinalized state
                     let Some(BestChainLocation::Block(_block_hash, transaction_height)) =
@@ -226,7 +226,7 @@ fn passthrough_get_raw_transaction() {
 #[test]
 fn passthrough_best_chaintip() {
     passthrough_test(async |mockchain, index_reader, snapshot| {
-        let tip = index_reader.best_chaintip(&snapshot).await.unwrap();
+        let tip = index_reader.best_chaintip(snapshot).await.unwrap();
         assert_eq!(
             tip.height.0,
             mockchain
@@ -262,7 +262,7 @@ fn passthrough_get_block_height() {
                     .get_block_height(&snapshot, hash.into())
                     .await
                     .unwrap();
-                if expected_height <= snapshot.validator_finalized_height {
+                if expected_height <= *snapshot.max_serviceable_height() {
                     assert_eq!(height, Some(expected_height.into()));
                 } else {
                     assert_eq!(height, None);
@@ -297,7 +297,7 @@ fn passthrough_get_block_range() {
                         expected_start_height.into(),
                         Some(expected_end_height.into()),
                     );
-                    if expected_start_height <= snapshot.validator_finalized_height {
+                    if expected_start_height <= *snapshot.max_serviceable_height() {
                         let mut block_range_stream = Box::pin(block_range_stream.unwrap());
                         let mut num_blocks_in_stream = 0;
                         while let Some(block) = block_range_stream.next().await {
@@ -318,7 +318,7 @@ fn passthrough_get_block_range() {
                                 // in that case, expect all blocks between start height
                                 // and finalized height, (+1 for inclusive range)
                                 snapshot
-                                    .validator_finalized_height
+                                    .max_serviceable_height()
                                     .0
                                     .saturating_sub(expected_start_height.0)
                                     + 1
@@ -374,24 +374,25 @@ fn make_chain() {
                 .unwrap();
             tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
-            let snapshot = index_reader.snapshot_nonfinalized_state();
-            let best_tip_hash = snapshot.best_tip.blockhash;
-            let best_tip_block = snapshot
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+            let non_finalized_snapshot = snapshot.get_nfs_snapshot().expect("not synced");
+            let best_tip_hash = non_finalized_snapshot.best_tip.blockhash;
+            let best_tip_block = non_finalized_snapshot
                 .get_chainblock_by_hash(&best_tip_hash)
                 .unwrap();
-            for (hash, block) in &snapshot.blocks {
+            for (hash, block) in &non_finalized_snapshot.blocks {
                 if hash != &best_tip_hash {
                     assert!(block.chainwork().to_u256() <= best_tip_block.chainwork().to_u256());
-                    if snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
+                    if non_finalized_snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
                         assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
                     } else {
                         assert_ne!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
                     }
                 }
             }
-            assert_eq!(snapshot.heights_to_hashes.len(), (segment_length * 2) );
+            assert_eq!(non_finalized_snapshot.heights_to_hashes.len(), (segment_length * 2) );
             assert_eq!(
-                snapshot.blocks.len(),
+                non_finalized_snapshot.blocks.len(),
                 segment_length * (branch_count + 1)
             );
         });

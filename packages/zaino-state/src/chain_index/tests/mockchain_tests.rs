@@ -13,7 +13,7 @@ use crate::chain_index::{
 async fn get_block_range() {
     let (blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(false).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
     let start = crate::Height(0);
 
@@ -38,7 +38,7 @@ async fn get_block_range() {
 async fn get_raw_transaction() {
     let (blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(false).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     for (expected_transaction, height) in blocks.into_iter().flat_map(|block| {
         block
             .zebra_block
@@ -79,7 +79,7 @@ async fn get_raw_transaction() {
 async fn get_transaction_status() {
     let (blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(false).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
     for (expected_transaction, block_hash, block_height) in blocks.into_iter().flat_map(|block| {
         block
@@ -122,9 +122,17 @@ async fn sync_blocks_after_startup() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(true).await;
 
-    let indexer_tip = dbg!(&index_reader.snapshot_nonfinalized_state().best_tip)
-        .height
-        .0;
+    let indexer_tip = dbg!(
+        &index_reader
+            .snapshot_nonfinalized_state()
+            .await
+            .unwrap()
+            .get_nfs_snapshot()
+            .unwrap()
+            .best_tip
+    )
+    .height
+    .0;
     let active_mockchain_tip = dbg!(mockchain.active_height());
     assert_eq!(active_mockchain_tip, indexer_tip);
 
@@ -134,9 +142,17 @@ async fn sync_blocks_after_startup() {
     }
     sleep(Duration::from_millis(2000)).await;
 
-    let indexer_tip = dbg!(&index_reader.snapshot_nonfinalized_state().best_tip)
-        .height
-        .0;
+    let indexer_tip = dbg!(
+        &index_reader
+            .snapshot_nonfinalized_state()
+            .await
+            .unwrap()
+            .get_nfs_snapshot()
+            .unwrap()
+            .best_tip
+    )
+    .height
+    .0;
     let active_mockchain_tip = dbg!(mockchain.active_height());
     assert_eq!(active_mockchain_tip, indexer_tip);
 }
@@ -165,7 +181,7 @@ async fn get_mempool_transaction() {
         })
         .unwrap_or_default();
 
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     for expected_transaction in mempool_transactions.into_iter() {
         let (transaction, branch_id) = index_reader
             .get_raw_transaction(
@@ -212,7 +228,7 @@ async fn get_mempool_transaction_status() {
         })
         .unwrap_or_default();
 
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     for expected_transaction in mempool_transactions.into_iter() {
         let expected_txid = expected_transaction.hash();
 
@@ -352,7 +368,7 @@ async fn get_mempool_stream() {
     mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
     let mempool_stream_task = tokio::spawn(async move {
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
         let mut mempool_stream = index_reader
             .get_mempool_stream(Some(&nonfinalized_snapshot))
             .expect("failed to create mempool stream");
@@ -393,7 +409,7 @@ async fn get_mempool_stream_for_stale_snapshot() {
         load_test_vectors_and_sync_chain_index(true).await;
     sleep(Duration::from_millis(2000)).await;
 
-    let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
     mockchain.mine_blocks(1);
     sleep(Duration::from_millis(2000)).await;
@@ -407,7 +423,7 @@ async fn get_mempool_stream_for_stale_snapshot() {
 async fn get_block_height() {
     let (blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(false).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
     // Positive cases: every known best-chain block returns its height
     for TestVectorBlockData {
