@@ -73,7 +73,7 @@ use blake2::{
     digest::{Update, VariableOutput},
     Blake2bVar,
 };
-use core2::io::{self, Read, Write};
+use corez::io::{self, Read, Write};
 
 /// Fixed-length checksummed database value wrapper.
 ///

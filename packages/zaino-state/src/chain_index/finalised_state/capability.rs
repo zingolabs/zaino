@@ -90,7 +90,7 @@ use crate::{chain_index::types::AddrEventBytes, AddrScript, Outpoint};
 
 use async_trait::async_trait;
 use bitflags::bitflags;
-use core2::io::{self, Read, Write};
+use corez::io::{self, Read, Write};
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 // ***** Capability definition structs *****

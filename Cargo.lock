@@ -802,13 +802,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "core2"
-version = "0.4.0"
+name = "corez"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b49ba7ef1ad6107f8824dbe97de947cbaac53c44e7f9756a1fba0d37c1eec505"
-dependencies = [
- "memchr",
-]
+checksum = "4df6f98652d30167eaeea34d77b730e07c8caba6df17bd4551842b9b8da01deb"
 
 [[package]]
 name = "cpufeatures"
@@ -1170,7 +1167,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca4f333d4ccc9d23c06593733673026efa71a332e028b00f12cf427b9677dce9"
 dependencies = [
  "blake2b_simd",
- "core2 0.3.3",
+ "core2",
  "document-features",
 ]
 
@@ -2637,7 +2634,7 @@ dependencies = [
  "aes",
  "bitvec",
  "blake2b_simd",
- "core2 0.3.3",
+ "core2",
  "ff",
  "fpe",
  "getset",
@@ -3699,7 +3696,7 @@ dependencies = [
  "blake2b_simd",
  "blake2s_simd",
  "bls12_381",
- "core2 0.3.3",
+ "core2",
  "document-features",
  "ff",
  "fpe",
@@ -5680,7 +5677,7 @@ dependencies = [
  "bs58",
  "cargo-lock",
  "chrono",
- "core2 0.4.0",
+ "corez",
  "dashmap",
  "derive_more",
  "futures",
@@ -5755,7 +5752,7 @@ checksum = "ee4491dddd232de02df42481757054dc19c8bc51cf709cfec58feebfef7c3c9a"
 dependencies = [
  "bech32",
  "bs58",
- "core2 0.3.3",
+ "core2",
  "f4jumble",
  "zcash_encoding",
  "zcash_protocol",
@@ -5767,7 +5764,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bca38087e6524e5f51a5b0fb3fc18f36d7b84bf67b2056f494ca0c281590953d"
 dependencies = [
- "core2 0.3.3",
+ "core2",
  "nonempty",
 ]
 
@@ -5792,7 +5789,7 @@ dependencies = [
  "blake2b_simd",
  "bls12_381",
  "bs58",
- "core2 0.3.3",
+ "core2",
  "document-features",
  "group",
  "memuse",
@@ -5831,7 +5828,7 @@ dependencies = [
  "blake2b_simd",
  "block-buffer 0.11.0-rc.3",
  "bs58",
- "core2 0.3.3",
+ "core2",
  "crypto-common 0.2.0-rc.1",
  "document-features",
  "equihash",
@@ -5894,7 +5891,7 @@ version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18b1a337bbc9a7d55ae35d31189f03507dbc7934e9a4bee5c1d5c47464860e48"
 dependencies = [
- "core2 0.3.3",
+ "core2",
  "document-features",
  "hex",
  "memuse",
@@ -5935,7 +5932,7 @@ dependencies = [
  "bip32",
  "blake2b_simd",
  "bs58",
- "core2 0.3.3",
+ "core2",
  "document-features",
  "getset",
  "hex",
