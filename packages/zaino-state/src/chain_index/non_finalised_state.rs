@@ -34,13 +34,13 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
     >,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// created for NonfinalizedBlockCacheSnapshot block_id field for naming fields
-pub struct BlockIdent {
+pub struct BlockIndex {
     /// from chain_index types
     pub height: Height,
     /// from chain_index types
-    pub blockhash: BlockHash,
+    pub hash: BlockHash,
 }
 
 #[derive(Debug, Clone)]
@@ -98,7 +98,7 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     /// The highest known block
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
-    pub best_tip: BlockIdent,
+    pub best_tip: BlockIndex,
 }
 
 #[derive(Debug)]
@@ -195,19 +195,19 @@ pub enum InitError {
 }
 
 /// This is the core of the concurrent block cache.
-impl BlockIdent {
+impl BlockIndex {
     /// Create a BlockID from an IndexedBlock
     fn from_block(block: &IndexedBlock) -> Self {
         let height = block.height();
-        let blockhash = *block.hash();
-        Self { height, blockhash }
+        let hash = *block.hash();
+        Self { height, hash }
     }
 }
 
 impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
     fn from_initial_block(block: IndexedBlock) -> Self {
-        let best_tip = BlockIdent::from_block(&block);
+        let best_tip = BlockIndex::from_block(&block);
         let hash = *block.hash();
         let height = best_tip.height;
 
@@ -225,9 +225,9 @@ impl NonfinalizedBlockCacheSnapshot {
     }
 
     fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
-        self.best_tip = BlockIdent {
+        self.best_tip = BlockIndex {
             height: block.height(),
-            blockhash: *block.hash(),
+            hash: *block.hash(),
         };
         self.add_block(block)
     }
@@ -400,11 +400,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             })?
         {
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
-            if parent_hash == working_snapshot.best_tip.blockhash {
+            if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
                 let prev_block = working_snapshot
                     .blocks
-                    .get(&working_snapshot.best_tip.blockhash)
+                    .get(&working_snapshot.best_tip.hash)
                     .ok_or_else(|| {
                         SyncError::ReorgFailure(format!(
                             "found blocks {:?}, expected block {:?}",
@@ -572,25 +572,25 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     info!(
                         old_height = stale_best_tip.height.0,
                         new_height = new_best_tip.height.0,
-                        old_hash = %stale_best_tip.blockhash,
-                        new_hash = %new_best_tip.blockhash,
+                        old_hash = %stale_best_tip.hash,
+                        new_hash = %new_best_tip.hash,
                         "Non-finalized tip advanced"
                     );
                 } else if new_best_tip.height == stale_best_tip.height
-                    && new_best_tip.blockhash != stale_best_tip.blockhash
+                    && new_best_tip.hash != stale_best_tip.hash
                 {
                     info!(
                         height = new_best_tip.height.0,
-                        old_hash = %stale_best_tip.blockhash,
-                        new_hash = %new_best_tip.blockhash,
+                        old_hash = %stale_best_tip.hash,
+                        new_hash = %new_best_tip.hash,
                         "Non-finalized tip reorg"
                     );
                 } else if new_best_tip.height < stale_best_tip.height {
                     info!(
                         old_height = stale_best_tip.height.0,
                         new_height = new_best_tip.height.0,
-                        old_hash = %stale_best_tip.blockhash,
-                        new_hash = %new_best_tip.blockhash,
+                        old_hash = %stale_best_tip.hash,
+                        new_hash = %new_best_tip.hash,
                         "Non-finalized tip rollback"
                     );
                 }

@@ -1935,7 +1935,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let tip = non_finalized_snapshot.best_tip;
         Ok(BlockId {
             height: tip.height.0 as u64,
-            hash: tip.blockhash.0.to_vec(),
+            hash: tip.hash.0.to_vec(),
         })
     }
 
