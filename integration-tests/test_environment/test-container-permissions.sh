@@ -2,12 +2,16 @@
 
 # Local container permission tests for zaino image.
 # These tests verify the entrypoint correctly handles volume mounts
-# with various ownership scenarios.
+# and refuses to run as root.
 #
 # Usage: ./test-container-permissions.sh [image-name]
 # Default image: zaino:test-entrypoint
 
 set -uo pipefail
+
+# Enforce rootless podman hardening via repo-wide containers.conf
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../" && pwd)"
+export CONTAINERS_CONF_OVERRIDE="${SCRIPT_DIR}/.config/containers.conf"
 
 IMAGE="${1:-zaino:test-entrypoint}"
 TEST_DIR="/tmp/zaino-container-tests-$$"
@@ -23,12 +27,12 @@ trap cleanup EXIT
 mkdir -p "${TEST_DIR}"
 
 pass() {
-  echo "✅ $1"
+  echo "PASS: $1"
   ((PASSED++))
 }
 
 fail() {
-  echo "❌ $1"
+  echo "FAIL: $1"
   ((FAILED++))
 }
 
@@ -43,6 +47,13 @@ run_test() {
   fi
   echo
 }
+
+# Verify the container refuses to run as root
+# Override userns so --user 0:0 actually maps to root inside the container
+test_refuses_root() {
+  podman run --rm --userns=host --user 0:0 "${IMAGE}" --version 2>&1 | grep -q "Refusing to run as root"
+}
+run_test "refuses to run as root" test_refuses_root
 
 # Basic smoke tests
 run_test "help command" \
@@ -78,46 +89,17 @@ test_file_ownership() {
   local dir="${TEST_DIR}/ownership-test"
   mkdir -p "${dir}"
   podman run --rm -v "${dir}:/app/config" "${IMAGE}" generate-config
-  # File should be owned by UID 1000 (container_user)
   local uid
   uid=$(stat -c '%u' "${dir}/zainod.toml" 2>/dev/null || stat -f '%u' "${dir}/zainod.toml")
   test "${uid}" = "1000"
 }
 run_test "files created with correct UID (1000)" test_file_ownership
 
-# Root-owned directory tests (requires sudo)
-if command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
-  test_root_owned_mount() {
-    local dir="${TEST_DIR}/root-owned"
-    sudo mkdir -p "${dir}"
-    sudo chown root:root "${dir}"
-    podman run --rm -v "${dir}:/app/data" "${IMAGE}" --version
-    # Entrypoint should have chowned it
-    local uid
-    uid=$(stat -c '%u' "${dir}" 2>/dev/null || stat -f '%u' "${dir}")
-    test "${uid}" = "1000"
-  }
-  run_test "root-owned dir gets chowned" test_root_owned_mount
-
-  test_root_owned_config_write() {
-    local dir="${TEST_DIR}/root-config"
-    sudo mkdir -p "${dir}"
-    sudo chown root:root "${dir}"
-    podman run --rm -v "${dir}:/app/config" "${IMAGE}" generate-config
-    test -f "${dir}/zainod.toml"
-  }
-  run_test "write to root-owned config dir" test_root_owned_config_write
-else
-  echo "⚠️  Skipping root-owned tests (sudo not available or requires password)"
-fi
-
 # Read-only config mount
 test_readonly_config() {
   local dir="${TEST_DIR}/ro-config"
   mkdir -p "${dir}"
-  # First generate a config
   podman run --rm -v "${dir}:/app/config" "${IMAGE}" generate-config
-  # Then mount it read-only and verify we can still run
   podman run --rm -v "${dir}:/app/config:ro" "${IMAGE}" --version
 }
 run_test "read-only config mount" test_readonly_config

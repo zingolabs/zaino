@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
-# Entrypoint for running Zaino in Docker.
+# Entrypoint for running Zaino in a container.
 #
-# This script handles privilege dropping and directory setup for default paths.
+# The container MUST run as a non-root user. If started as root, the
+# entrypoint exits immediately with an error.
+#
 # Configuration is managed by config-rs using defaults, optional TOML, and
 # environment variables prefixed with ZAINO_.
 #
@@ -13,9 +15,14 @@
 
 set -eo pipefail
 
+if [[ "$(id -u)" == '0' ]]; then
+  echo "ERROR: Refusing to run as root. Run this container as a non-root user." >&2
+  exit 1
+fi
+
 # Default writable paths.
 # The Dockerfile creates symlinks: /app/config -> ~/.config/zaino, /app/data -> ~/.cache/zaino
-# So we handle /app/* paths directly for Docker users.
+# So we handle /app/* paths directly for container users.
 #
 # Database path (symlinked from ~/.cache/zaino)
 : "${ZAINO_STORAGE__DATABASE__PATH:=/app/data}"
@@ -26,51 +33,12 @@ set -eo pipefail
 # Config directory (symlinked from ~/.config/zaino)
 ZAINO_CONFIG_DIR="/app/config"
 
-# Drop privileges and execute command as non-root user
-exec_as_user() {
-  user=$(id -u)
-  if [[ ${user} == '0' ]]; then
-    exec setpriv --reuid="${UID}" --regid="${GID}" --init-groups "$@"
-  else
-    exec "$@"
-  fi
-}
-
-exit_error() {
-  echo "ERROR: $1" >&2
-  exit 1
-}
-
-# Creates a directory if it doesn't exist and sets ownership to UID:GID.
-# Gracefully handles read-only mounts by skipping chown if it fails.
-create_owned_directory() {
-  local dir="$1"
-  [[ -z ${dir} ]] && return
-
-  # Try to create directory; skip if read-only
+# Create directories if they don't exist
+for dir in "${ZAINO_STORAGE__DATABASE__PATH}" "${ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR}" "${ZAINO_CONFIG_DIR}"; do
+  [[ -z "${dir}" ]] && continue
   if ! mkdir -p "${dir}" 2>/dev/null; then
-    echo "WARN: Cannot create ${dir} (read-only or permission denied), skipping"
-    return 0
+    echo "WARN: Cannot create ${dir} (read-only or permission denied), skipping" >&2
   fi
+done
 
-  # Try to set ownership; skip if read-only
-  if ! chown -R "${UID}:${GID}" "${dir}" 2>/dev/null; then
-    echo "WARN: Cannot chown ${dir} (read-only?), skipping"
-    return 0
-  fi
-
-  # Set ownership on parent if it's not root or home
-  local parent_dir
-  parent_dir="$(dirname "${dir}")"
-  if [[ "${parent_dir}" != "/" && "${parent_dir}" != "${HOME}" ]]; then
-    chown "${UID}:${GID}" "${parent_dir}" 2>/dev/null || true
-  fi
-}
-
-# Create and set ownership on writable directories
-create_owned_directory "${ZAINO_STORAGE__DATABASE__PATH}"
-create_owned_directory "${ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR}"
-create_owned_directory "${ZAINO_CONFIG_DIR}"
-
-# Execute zainod with dropped privileges
-exec_as_user zainod "$@"
+exec zainod "$@"

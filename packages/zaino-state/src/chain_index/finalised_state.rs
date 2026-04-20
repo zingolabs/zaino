@@ -186,7 +186,10 @@ use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
 use crate::{
-    chain_index::{source::BlockchainSourceError, types::GENESIS_HEIGHT},
+    chain_index::{
+        finalised_state::db::v1::DB_VERSION_V1, source::BlockchainSourceError,
+        types::GENESIS_HEIGHT,
+    },
     config::BlockCacheConfig,
     error::FinalisedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, StatusType,
@@ -260,7 +263,7 @@ impl ZainoDB {
     ///
     /// ## Version selection rules
     /// - `cfg.db_version == 0` targets `DbVersion { 0, 0, 0 }` (legacy layout).
-    /// - `cfg.db_version == 1` targets `DbVersion { 1, 0, 0 }` (current layout).
+    /// - `cfg.db_version == 1` targets the latest v1 DB version (`DB_VERSION_V1`)..
     /// - Any other value returns an error.
     ///
     /// ## Migrations
@@ -292,11 +295,7 @@ impl ZainoDB {
                 minor: 0,
                 patch: 0,
             },
-            1 => DbVersion {
-                major: 1,
-                minor: 0,
-                patch: 0,
-            },
+            1 => DB_VERSION_V1,
             x => {
                 return Err(FinalisedStateError::Custom(format!(
                     "unsupported database version: DbV{x}"
@@ -518,9 +517,8 @@ impl ZainoDB {
         let sapling_activation_height = zebra_chain::parameters::NetworkUpgrade::Sapling
             .activation_height(&zebra_network)
             .expect("Sapling activation height must be set");
-        let nu5_activation_height = zebra_chain::parameters::NetworkUpgrade::Nu5
-            .activation_height(&zebra_network)
-            .expect("NU5 activation height must be set");
+        let nu5_activation_height =
+            zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&zebra_network);
 
         let mut parent_chainwork = if db_height_opt.is_none() {
             ChainWork::from_u256(0.into())
@@ -602,7 +600,8 @@ impl ZainoDB {
                 let (sapling_opt, orchard_opt) =
                     source.get_commitment_tree_roots(block_hash).await?;
                 let is_sapling_active = height_int >= sapling_activation_height.0;
-                let is_orchard_active = height_int >= nu5_activation_height.0;
+                let is_orchard_active = nu5_activation_height
+                    .is_some_and(|nu5_activation_height| height_int >= nu5_activation_height.0);
                 let (sapling_root, sapling_size) = if is_sapling_active {
                     sapling_opt.ok_or_else(|| {
                         FinalisedStateError::BlockchainSourceError(

@@ -1,5 +1,6 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
+use crate::chain_index::NonFinalizedSnapshot;
 #[allow(deprecated)]
 use crate::{
     chain_index::{
@@ -7,7 +8,7 @@ use crate::{
         source::ValidatorConnector,
         types as chain_types, ChainIndex,
     },
-    config::StateServiceConfig,
+    config::{DonationAddress, StateServiceConfig},
     error::ChainIndexError,
     error::{BlockCacheError, StateServiceError},
     indexer::{
@@ -199,33 +200,6 @@ impl ZcashService for StateService {
 
         let zebra_build_data = rpc_client.get_info().await?;
 
-        // This const is optional, as the build script can only
-        // generate it from hash-based dependencies.
-        // in all other cases, this check will be skipped.
-        if let Some(expected_zebrad_version) = crate::ZEBRA_VERSION {
-            // this `+` indicates a git describe run
-            // i.e. the first seven characters of the commit hash
-            // have been appended. We match on those
-            if zebra_build_data.build.contains('+') {
-                if !zebra_build_data
-                    .build
-                    .contains(&expected_zebrad_version[0..7])
-                {
-                    return Err(StateServiceError::ZebradVersionMismatch {
-                        expected_zebrad_version: expected_zebrad_version.to_string(),
-                        connected_zebrad_version: zebra_build_data.build,
-                    });
-                }
-            } else {
-                // With no `+`, we expect a version number to be an exact match
-                if expected_zebrad_version != zebra_build_data.build {
-                    return Err(StateServiceError::ZebradVersionMismatch {
-                        expected_zebrad_version: expected_zebrad_version.to_string(),
-                        connected_zebrad_version: zebra_build_data.build,
-                    });
-                }
-            }
-        };
         let data = ServiceMetadata::new(
             get_build_info(),
             config.network.to_zebra_network(),
@@ -589,13 +563,18 @@ impl StateServiceSubscriber {
         let state_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = state_service_clone
+            .indexer
+            .snapshot_nonfinalized_state()
+            .await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
-                let snapshot = state_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_tip.height.0;
+                // This method does not support passthrough. Just return.
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return};
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
 
                 match state_service_clone
                     .indexer
@@ -702,12 +681,12 @@ impl StateServiceSubscriber {
         e: BlockCacheError,
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let chain_height = snapshot.best_tip.height.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let chain_height = snapshot.max_serviceable_height().0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
+                                is greater than Zaino's best chain tip [{chain_height}].",
             )))
         } else {
             // TODO: Hide server error from clients before release.
@@ -1541,62 +1520,69 @@ impl ZcashIndexer for StateServiceSubscriber {
             .collect())
     }
 
+    /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
+    ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
+    ///       required, this second call could be removed, improving the performance of this method.
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
-        let mut state = self.read_state_service.clone();
+        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
-        let hash_or_height = HashOrHeight::from_str(&hash_or_height)?;
-        let block_header_response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::BlockHeader(hash_or_height)))
-            .await?;
-        let (header, hash, height) = match block_header_response {
-            ReadResponse::BlockHeader {
-                header,
-                hash,
-                height,
-                ..
-            } => (header, hash, height),
-            unexpected => {
-                unreachable!("Unexpected response from state service: {unexpected:?}")
-            }
+        let block_data = match hash_or_height_struct {
+            HashOrHeight::Hash(hash) => self
+                .indexer
+                .get_indexed_block_by_hash(&snapshot, &hash.into())
+                .await
+                .map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
+            HashOrHeight::Height(height) => self
+                .indexer
+                .get_indexed_block_by_height(&snapshot, &height.into())
+                .await
+                .map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
         };
 
-        let sapling =
-            match NetworkUpgrade::Sapling.activation_height(&self.config.network.into()) {
-                Some(activation_height) if height >= activation_height => Some(
-                    state
-                        .ready()
-                        .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
-                        .await?,
-                ),
-                _ => None,
-            }
-            .and_then(|sap_response| {
-                expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
-            });
-
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network.into()) {
-            Some(activation_height) if height >= activation_height => Some(
-                state
-                    .ready()
-                    .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
-                    .await?,
-            ),
-            _ => None,
-        }
-        .and_then(|orch_response| {
-            expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
-        });
+        let (sapling, orchard) = self
+            .indexer
+            .get_treestate(block_data.hash())
+            .await
+            .map_err(|_error| {
+                StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch treestate.",
+                ))
+            })?;
+        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+            StateServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                "Block time is out of range for u32.",
+            ))
+        })?;
 
         #[allow(deprecated)]
         Ok(GetTreestateResponse::from_parts(
-            hash,
-            height,
-            // If the timestamp is pre-unix epoch, something has gone terribly wrong
-            u32::try_from(header.time.timestamp()).unwrap(),
+            (*block_data.hash()).into(),
+            block_data.height().into(),
+            time,
             sapling,
             orchard,
         ))
@@ -1634,8 +1620,14 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        let nfs_snapshot = self.indexer.snapshot_nonfinalized_state();
-        let h = nfs_snapshot.best_tip.height;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let h = non_finalized_snapshot.best_tip.height;
         Ok(h.into())
     }
 
@@ -1822,7 +1814,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                             // This should be None for sidechain transactions,
                             // which currently aren't returned by ReadResponse::Transaction
                             let best_chain_height = Some(tx.height);
-                            let snapshot = self.indexer.snapshot_nonfinalized_state();
+                            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
                             let compact_block = self
                                 .indexer
                                 .get_compact_block(
@@ -2088,7 +2080,14 @@ impl ZcashIndexer for StateServiceSubscriber {
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let tip = non_finalized_snapshot.best_tip;
         Ok(BlockId {
             height: tip.height.0 as u64,
             hash: tip.blockhash.0.to_vec(),
@@ -2103,7 +2102,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             )),
         )?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
         // Convert HashOrHeight to chain_types::Height
         let block_height = match hash_or_height {
@@ -2127,7 +2126,13 @@ impl LightWalletIndexer for StateServiceSubscriber {
         {
             Ok(Some(block)) => Ok(block),
             Ok(None) => {
-                let chain_height = snapshot.best_tip.height.0;
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    // TODO: This probably shouldn't be an error.
+                    // this is an improvement over previous behaviour of
+                    // acting as if we are only synced to the genesis block
+                    return Err(StateServiceError::UnavailableNotSyncedEnough);
+                };
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -2141,7 +2146,13 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 }
             }
             Err(e) => {
-                let chain_height = snapshot.best_tip.height.0;
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    // TODO: This probably shouldn't be an error.
+                    // this is an improvement over previous behaviour of
+                    // acting as if we are only synced to the genesis block
+                    return Err(StateServiceError::UnavailableNotSyncedEnough);
+                };
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -2170,7 +2181,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             ))
         })?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let block_height = chain_types::Height(height);
 
         match self
@@ -2556,8 +2567,14 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let mempool_height = snapshot.best_tip.height.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let mempool_height = non_finalized_snapshot.best_tip.height.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
@@ -2790,7 +2807,12 @@ impl LightWalletIndexer for StateServiceSubscriber {
             estimated_height: blockchain_info.estimated_height().0 as u64,
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
-            donation_address: "".to_string(),
+            donation_address: self
+                .config
+                .donation_address
+                .as_ref()
+                .map(DonationAddress::encode)
+                .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
             lightwallet_protocol_version: "v0.4.0".to_string(),

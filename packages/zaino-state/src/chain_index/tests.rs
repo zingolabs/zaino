@@ -5,6 +5,7 @@ pub(crate) mod mempool;
 mod mockchain_tests;
 mod proptest_blockgen;
 mod sync_loop;
+pub(crate) mod types;
 pub(crate) mod vectors;
 
 pub(crate) fn init_tracing() {

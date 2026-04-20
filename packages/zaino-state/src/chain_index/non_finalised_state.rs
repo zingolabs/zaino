@@ -35,8 +35,8 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-/// created for NonfinalizedBlockCacheSnapshot best_tip field for naming fields
-pub struct BestTip {
+/// created for NonfinalizedBlockCacheSnapshot block_id field for naming fields
+pub struct BlockIdent {
     /// from chain_index types
     pub height: Height,
     /// from chain_index types
@@ -44,8 +44,48 @@ pub struct BestTip {
 }
 
 #[derive(Debug, Clone)]
+/// A snapshot of the chain index
+///
+/// If zaino has synced above the validator's finalized tip,
+/// this contains a snapshot of the non-finalized state.
+///
+/// If zaino is still syncing, this contains only the height
+/// of the validator's finalized tip as of snapshot creation,
+/// which is used to determine how high we can pass through
+/// calls to the backing validator without serving nonfinalized
+/// data.
+pub enum ChainIndexSnapshot {
+    /// Zaino is ready to serve non-finalized data.
+    NonFinalizedStateExists {
+        /// The snapshot of the non_finalized state.
+        #[allow(private_interfaces)]
+        // Rust doesn't support private fields of enum variants
+        // The type of this field being private gives us something like it, though
+        non_finalized_snapshot: Arc<NonfinalizedBlockCacheSnapshot>,
+    },
+    /// Zaino is not ready to serve non-finalized data.
+    StillSyncingFinalizedState {
+        /// The height the validater had last finalized as of snapshot creation.
+        validator_finalized_height: Height,
+    },
+}
+
+impl ChainIndexSnapshot {
+    /// Convenience fn to go from ChainIndexSnapshot to Option<NonFinalizedBlockCacheSnapshot>,
+    /// throwing away the validator_finalized_height in the None case. For ease of mapping, etc.
+    pub(crate) fn get_nfs_snapshot(&self) -> Option<&NonfinalizedBlockCacheSnapshot> {
+        match self {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => Some(non_finalized_snapshot),
+            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
-pub struct NonfinalizedBlockCacheSnapshot {
+pub(crate) struct NonfinalizedBlockCacheSnapshot {
     /// the set of all known blocks < 100 blocks old
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
@@ -58,12 +98,7 @@ pub struct NonfinalizedBlockCacheSnapshot {
     /// The highest known block
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
-    pub best_tip: BestTip,
-
-    /// if the validator has finalized above the tip
-    /// of the snapshot, we can use it for some queries
-    /// and pass through to the validator
-    pub validator_finalized_height: Height,
+    pub best_tip: BlockIdent,
 }
 
 #[derive(Debug)]
@@ -160,8 +195,8 @@ pub enum InitError {
 }
 
 /// This is the core of the concurrent block cache.
-impl BestTip {
-    /// Create a BestTip from an IndexedBlock
+impl BlockIdent {
+    /// Create a BlockID from an IndexedBlock
     fn from_block(block: &IndexedBlock) -> Self {
         let height = block.height();
         let blockhash = *block.hash();
@@ -171,8 +206,8 @@ impl BestTip {
 
 impl NonfinalizedBlockCacheSnapshot {
     /// Create initial snapshot from a single block
-    fn from_initial_block(block: IndexedBlock, validator_finalized_height: Height) -> Self {
-        let best_tip = BestTip::from_block(&block);
+    fn from_initial_block(block: IndexedBlock) -> Self {
+        let best_tip = BlockIdent::from_block(&block);
         let hash = *block.hash();
         let height = best_tip.height;
 
@@ -186,12 +221,11 @@ impl NonfinalizedBlockCacheSnapshot {
             blocks,
             heights_to_hashes,
             best_tip,
-            validator_finalized_height,
         }
     }
 
     fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
-        self.best_tip = BestTip {
+        self.best_tip = BlockIdent {
             height: block.height(),
             blockhash: *block.hash(),
         };
@@ -233,24 +267,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<Self, InitError> {
         info!(network = %network, "Initializing non-finalized state");
 
-        let validator_tip = source
-            .get_best_block_height()
-            .await
-            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
-            .ok_or_else(|| {
-                InitError::InvalidNodeData(Box::new(MissingBlockError(
-                    "Validator has no best block".to_string(),
-                )))
-            })?;
-
         // Resolve the initial block (provided or genesis)
         let initial_block = Self::resolve_initial_block(&source, &network, start_block).await?;
 
         // Create initial snapshot from the block
-        let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(
-            initial_block,
-            Height(validator_tip.0.saturating_sub(100)),
-        );
+        let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(initial_block);
 
         // Set up optional listener
         let nfs_change_listener = Self::setup_listener(&source).await;
@@ -345,7 +366,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 NonfinalizedBlockCacheSnapshot::from_initial_block(
                     finalized_db
                         .to_reader()
-                        .get_chain_block(
+                        .get_chain_block_by_height(
                             local_finalized_tip.expect("known to be some due to above if"),
                         )
                         .await?
@@ -353,7 +374,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             "Missing block {}",
                             local_finalized_tip.unwrap().0
                         )))?,
-                    local_finalized_tip.unwrap(),
                 ),
             ));
             initial_state = self.get_snapshot()
@@ -536,16 +556,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.handle_reorg(&mut new_snapshot, best_block)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
-
-        let validator_tip = self
-            .source
-            .get_best_block_height()
-            .await
-            .map_err(|e| UpdateError::ValidatorConnectionError(Box::new(e)))?
-            .ok_or(UpdateError::ValidatorConnectionError(Box::new(
-                MissingBlockError("no best block height".to_string()),
-            )))?;
-        new_snapshot.validator_finalized_height = Height(validator_tip.0.saturating_sub(100));
 
         // Need to get best hash at some point in this process
         let stored = self

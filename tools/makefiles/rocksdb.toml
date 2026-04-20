@@ -15,7 +15,13 @@ done
 # --- System RocksDB present? ---
 if ! pkg-config --exists rocksdb 2>/dev/null; then
     echo "ERROR: System RocksDB not found via pkg-config."
-    echo "Install it with: paru -S rocksdb"
+    if command -v pacman &>/dev/null; then
+        echo "Install it with: pacman -S rocksdb"
+    elif command -v apt-get &>/dev/null; then
+        echo "Install it with: apt-get install -y librocksdb-dev"
+    else
+        echo "Install the rocksdb development package for your distribution."
+    fi
     exit 1
 fi
 

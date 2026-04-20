@@ -17,6 +17,4 @@ target/
 # Misc
 **/*.log
 
-podman_cargo/
-container-target/
 

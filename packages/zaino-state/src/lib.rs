@@ -9,8 +9,6 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-include!(concat!(env!("OUT_DIR"), "/zebraversion.rs"));
-
 // Zaino's Indexer library frontend.
 pub(crate) mod indexer;
 
@@ -37,8 +35,7 @@ pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
 pub use chain_index::encoding::*;
 pub use chain_index::mempool::Mempool;
 pub use chain_index::non_finalised_state::{
-    InitError, NodeConnectionError, NonFinalizedState, NonfinalizedBlockCacheSnapshot, SyncError,
-    UpdateError,
+    ChainIndexSnapshot, InitError, NodeConnectionError, NonFinalizedState, SyncError, UpdateError,
 };
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
@@ -67,7 +64,8 @@ pub(crate) mod config;
 
 #[allow(deprecated)]
 pub use config::{
-    BackendConfig, BackendType, BlockCacheConfig, FetchServiceConfig, StateServiceConfig,
+    BackendConfig, BackendType, BlockCacheConfig, DonationAddress, FetchServiceConfig,
+    StateServiceConfig,
 };
 
 pub(crate) mod error;

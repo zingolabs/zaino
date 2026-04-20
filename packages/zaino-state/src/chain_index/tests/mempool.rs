@@ -10,7 +10,7 @@ use crate::{
         source::test::MockchainSource,
         tests::vectors::{build_active_mockchain_source, load_test_vectors, TestVectorBlockData},
     },
-    Mempool, MempoolKey, MempoolValue,
+    BlockchainSource as _, Mempool, MempoolKey, MempoolValue,
 };
 
 async fn spawn_mempool_and_mockchain() -> (
@@ -263,7 +263,7 @@ async fn get_mempool_info() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn get_mempool_stream() {
+async fn get_mempool_stream_no_expected_chain_tip() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
     let mut subscriber = subscriber;
 
@@ -332,4 +332,116 @@ async fn get_mempool_stream() {
     .expect("mempool stream did not close after mining a new block");
 
     handle.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_mempool_stream_correct_expected_chain_tip() {
+    let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
+    let mut subscriber = subscriber;
+
+    mockchain.mine_blocks(150);
+    let active_chain_tip_height = dbg!(mockchain.active_height());
+    let active_chain_tip_hash = mockchain.get_best_block_hash().await.unwrap().unwrap();
+
+    sleep(Duration::from_millis(2000)).await;
+
+    let mempool_index = (active_chain_tip_height as usize) + 1;
+
+    let mempool_transactions: Vec<_> = block_data
+        .get(mempool_index)
+        .map(|b| {
+            b.transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let (mut rx, handle) = subscriber
+        .get_mempool_stream(Some(active_chain_tip_hash.into()))
+        .await
+        .unwrap();
+
+    let expected_count = mempool_transactions.len();
+    let mut received: HashMap<String, Vec<u8>> = HashMap::new();
+
+    let collect_deadline = Duration::from_secs(2);
+
+    timeout(collect_deadline, async {
+        while received.len() < expected_count {
+            match rx.recv().await {
+                Some(Ok((MempoolKey { txid: k }, MempoolValue { serialized_tx: v }))) => {
+                    received.insert(k, v.as_ref().as_ref().to_vec());
+                }
+                Some(Err(e)) => panic!("stream yielded error: {e:?}"),
+                None => break,
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for initial mempool stream items");
+
+    let expected: HashMap<String, Vec<u8>> = mempool_transactions
+        .iter()
+        .map(|tx| {
+            let key = tx.hash().to_string();
+            let st: zebra_chain::transaction::SerializedTransaction = tx.as_ref().into();
+            (key, st.as_ref().to_vec())
+        })
+        .collect();
+
+    assert_eq!(received.len(), expected.len(), "entry count mismatch");
+    for (k, bytes) in expected.iter() {
+        let got = received
+            .get(k)
+            .unwrap_or_else(|| panic!("missing tx {k} in stream"));
+        assert_eq!(got, bytes, "bytes mismatch for {k}");
+    }
+
+    mockchain.mine_blocks(1);
+
+    timeout(Duration::from_secs(5), async {
+        while let Some(_msg) = rx.recv().await {}
+    })
+    .await
+    .expect("mempool stream did not close after mining a new block");
+
+    handle.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_mempool_stream_stale_expected_chain_tip() {
+    let (_mempool, subscriber, mockchain, _block_data) = spawn_mempool_and_mockchain().await;
+    let mut subscriber = subscriber;
+
+    mockchain.mine_blocks(149);
+    let state_chain_tip_hash = mockchain.get_best_block_hash().await.unwrap().unwrap();
+
+    sleep(Duration::from_millis(2000)).await;
+
+    mockchain.mine_blocks(1);
+
+    sleep(Duration::from_millis(2000)).await;
+
+    let result = subscriber
+        .get_mempool_stream(Some(state_chain_tip_hash.into()))
+        .await;
+
+    match result {
+        Err(crate::error::MempoolError::IncorrectChainTip {
+            expected_chain_tip,
+            current_chain_tip,
+        }) => {
+            assert_eq!(expected_chain_tip, state_chain_tip_hash);
+            assert_ne!(current_chain_tip, state_chain_tip_hash);
+        }
+        Ok((_rx, handle)) => {
+            handle.abort();
+            panic!("expected IncorrectChainTip error, got Ok");
+        }
+        Err(other) => {
+            panic!("expected IncorrectChainTip error, got {other:?}");
+        }
+    }
 }
