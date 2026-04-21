@@ -1,14 +1,42 @@
-# This Decision Record Communicates our strategy for periodic releases
+# This Decision Record Communicates our release strategy
 
 ### Periodic Releases
-
-Why?
 
 * predictability for remote partners
 * refereancable version for all consumers
 * stable cadence for internal planning
 
-##### Periodic Releases
+##### Process
+
+  flowchart TD
+      FB["feature branch<br/>(new code)"]
+      DEV["dev branch<br/>(merges frequent & coherent)"]
+      INT["integration-and-stress tests<br/>on latest dev commit"]
+      RC["release branch<br/>commit tagged <b>rc</b>"]
+      REL_TEST["release-tests<br/>against the rc"]
+      NASCENT["nascent release =<br/>most recent rc that passed release-tests"]
+      VER["set semver on changed crates<br/>commit tagged
+  <b>periodic-DATE-A.x.y.z-B.x.y.z-…</b><br/>update CHANGELOG: Unreleased → this
+  release"]
+      STABLE["merge release → <b>stable</b><br/>(every 14 days: Apr 24, May 8, May 22,
+  …)"]
+      PUB["cargo publish changed crates<br/>(from stable)"]
+      CONT["publish zainod container image<br/>(from stable)"]
+      BACK["merge stable → dev"]
+
+      FB -->|"collaborator approval"| DEV
+      DEV --> INT
+      INT -->|"fail: wait for next dev commit"| DEV
+      INT -->|"pass"| RC
+      RC --> REL_TEST
+      REL_TEST -->|"fail: skip this rc"| RC
+      REL_TEST -->|"pass"| NASCENT
+      NASCENT -->|"on release date"| VER
+      VER --> STABLE
+      STABLE --> PUB
+      PUB --> CONT
+      CONT --> BACK
+      BACK -.->|"cycle continues"| DEV
 
   Developers innovate on the shared mind-state by diverging along their own mental trajectory tracking the evolution as a  "feature branch".   Once a feature branch is approved by collaborators on a project it can be merged into "dev".
 
@@ -16,20 +44,11 @@ Why?
 
   Every 14 days, April 24, April 38, April 52, ....  a new periodic release merges from "release" in to "stable".
 
+  Periodically full-integration-and-stress tests run on the latest dev commit.
 
-In order to be considered for release, code must have landed on dev before the 1 week prior "relese candidate genesis" moment.
+  Any dev commit that passes all integtration-and-stress tests is merged to the release branch with an "rc" tag, and a release-tests flow is triggered against the release candidate.
 
-After the genesis dev and release are not constrained to be the same and may diverge.  "dev" maintains its identity as new shared understanding of the code, while "release" accumulates minimal tagged changes (called "candidates") that are proposed to be important for public consumers, stable, and integrated with other (on release features).
-
-Any update to "release" must pass the following set of "gates" that assure it has the integrated, stable, and useful properties listed above.
-
-Gates:
-
-   * all integration tests pass
-   * all unit tests pass
-   * the candidate has run..  "in the wild" for 48 hours
-
-This means that no release candidate will make it into the "current" periodic release if it is not on "release" at least 48 hours prior to the "periodic" release moment.
+  The most recent release candidate that has passed the "release-tests" is the nascent release.  The nascent release is merged into stable, and tagged on the release date.
 
 ##### Periodic Release Protocol
 
@@ -37,7 +56,7 @@ This means that no release candidate will make it into the "current" periodic re
       * this is new commit on release, the commit is uniquely ahead of the rc tag
       * the versioned commit is tagged "periodic-DATE-A.x.y.z-B.x.y.z-C...."
       * the versioned commit will have all changelogs updated such that any changes previously listed as unreleased are now listed in the new release number, and the unreleased sections are empty.
- (2) cargo-publish all changed crates
- (3) publish new zainod to container repository
- (4) merge release commit into stable
+ (2) merge release commit into stable
+ (3) cargo-publish all changed crates from stable
+ (4) publish new zainod to container repository from stable
  (5) merge new stable into dev
