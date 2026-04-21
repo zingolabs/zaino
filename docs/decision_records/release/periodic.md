@@ -9,7 +9,8 @@
 ##### Process
 
 ```mermaid
-  flowchart TD
+%%{init: {'themeVariables': {'fontSize': '15px'}}}%%
+  flowchart LR
       FB["feature branch<br/>(new code)"]
       DEV["dev branch<br/>(merges frequent & coherent)"]
       INT["integration-and-stress tests<br/>on latest dev commit"]
