@@ -36,4 +36,8 @@ This means that no release candidate will make it into the "current" periodic re
  (1) set the version numbers of changed relative to dev packages to the correct semver numbers
       * this is new commit on release, the commit is uniquely ahead of the rc tag
       * the versioned commit is tagged "periodic-DATE-A.x.y.z-B.x.y.z-C...."
-      * 
+      * the versioned commit will have all changelogs updated such that any changes previously listed as unreleased are now listed in the new release number, and the unreleased sections are empty.
+ (2) cargo-publish all changed crates
+ (3) publish new zainod to container repository
+ (4) merge release commit into stable
+ (5) merge new stable into dev
