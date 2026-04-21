@@ -8,6 +8,7 @@
 
 ##### Process
 
+```mermaid
   flowchart TD
       FB["feature branch<br/>(new code)"]
       DEV["dev branch<br/>(merges frequent & coherent)"]
@@ -37,6 +38,7 @@
       PUB --> CONT
       CONT --> BACK
       BACK -.->|"cycle continues"| DEV
+```
 
   Developers innovate on the shared mind-state by diverging along their own mental trajectory tracking the evolution as a  "feature branch".   Once a feature branch is approved by collaborators on a project it can be merged into "dev".
 
