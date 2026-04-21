@@ -27,11 +27,15 @@ structured form for severity, description, and affected versions.
 
 Send a PGP-encrypted email to:
 
-**security@zingolabs.org**
+**zingodisclosure@proton.me**
 
-<!-- TODO: Generate and embed PGP public key block here. -->
-<!-- The key should be generated for security@zingolabs.org and held by -->
-<!-- the core maintainers responsible for security triage. -->
+Proton Mail provides end-to-end encryption by default when both sender and
+recipient use Proton. For non-Proton senders, you can encrypt your message
+using our PGP public key:
+
+<!-- TODO: Export and embed the Proton Mail PGP public key block here. -->
+<!-- In Proton Mail: Settings > Encryption and keys > copy the public key -->
+<!-- for zingodisclosure@proton.me. -->
 
 Use encrypted email when:
 
