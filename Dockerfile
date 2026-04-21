@@ -35,6 +35,8 @@ ARG NO_TLS=false
 
 ENV CARGO_HOME=/usr/local/cargo
 
+ENV CXXSTDLIB="c++"
+
 ENV RUST_BACKTRACE=1
 ENV RUSTFLAGS="-C codegen-units=1"
 ENV RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
