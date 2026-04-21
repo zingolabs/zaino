@@ -759,7 +759,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 .values()
                 .find(|h| **h == hash)
                 // Canonical height is None for blocks not on the best chain
-                .map(|_| block.index().height())),
+                .map(|_| block.context.index.height)),
             None => self
                 // ChainIndex step 4:
                 .finalized_state
@@ -1384,7 +1384,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             Ok(Some((*block.hash(), block.height())))
                         } else {
                             // Otherwise, it's non-best chain! Grab its parent, and recurse
-                            Box::pin(self.find_fork_point(snapshot, block.index().parent_hash()))
+                            Box::pin(self.find_fork_point(snapshot, &block.context.parent_hash))
                                 .await
                             // gotta pin recursive async functions to prevent infinite-sized
                             // Future-implementing types
@@ -1523,7 +1523,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .await?
                     .next()
                 {
-                    Some(block) => block.index.height.into(),
+                    Some(block) => block.context.index.height.into(),
                     // As above Ok(None)
                     None => return Ok(None),
                 }

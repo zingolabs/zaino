@@ -35,11 +35,18 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-/// created for NonfinalizedBlockCacheSnapshot block_id field for naming fields
+/// The internal `(height, hash)` primitive that uniquely identifies a block.
+///
+/// Business-layer type. It is neither persisted nor serialized directly —
+/// persistence goes through a database-adjacent helper (`PersistentBlockContext`
+/// in `types/db/legacy.rs`), and the wire/gRPC boundary converts via
+/// `From<proto::BlockId>` (the conversion is the validation step).
+// TODO: tighten to `pub(crate)` once `ChainIndex::best_chaintip` no longer
+// exposes this type through a `pub` trait.
 pub struct BlockIndex {
-    /// from chain_index types
+    /// Height of the block.
     pub height: Height,
-    /// from chain_index types
+    /// Hash of the block.
     pub hash: BlockHash,
 }
 
@@ -411,7 +418,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             working_snapshot
                                 .blocks
                                 .values()
-                                .map(|block| (block.index().hash(), block.index().height()))
+                                .map(|block| (block.context.index.hash, block.context.index.height))
                                 .collect::<Vec<_>>(),
                             working_snapshot.best_tip
                         ))
@@ -419,7 +426,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
                 info!(
                     height = (working_snapshot.best_tip.height + 1).0,
-                    hash = %chainblock.index().hash(),
+                    hash = %chainblock.context.index.hash,
                     "Syncing block"
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
@@ -747,7 +754,7 @@ impl Block for IndexedBlock {
     }
 
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32] {
-        self.index.parent_hash.0
+        self.context.parent_hash.0
     }
 
     async fn to_indexed_block<Source: BlockchainSource>(
