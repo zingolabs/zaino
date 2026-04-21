@@ -28,11 +28,6 @@ COPY --from=pallet-clang . /
 COPY --from=protobuf . /
 COPY --from=abseil-cpp . /
 
-# Crate build scripts (librocksdb-sys, libzcash-script) emit -lstdc++, but
-# pallet-clang provides libc++ (LLVM) instead. Create a linker script so lld
-# resolves -lstdc++ to libc++ + libc++abi.
-RUN printf 'INPUT(-lc++ -lc++abi)\n' > /usr/lib/libstdc++.a
-
 WORKDIR /usr/src/app
 
 # Toggle to build without TLS feature if needed
@@ -44,7 +39,6 @@ ENV RUST_BACKTRACE=1
 ENV RUSTFLAGS="-C codegen-units=1"
 ENV RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
 ENV RUSTFLAGS="${RUSTFLAGS} -C linker=clang -C link-arg=-fuse-ld=mold"
-
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++.a"
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++abi.a"
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--build-id=none"
