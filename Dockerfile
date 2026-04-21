@@ -3,7 +3,7 @@
 ############################
 # Global build args
 ############################
-ARG RUST_VERSION=1.86.0
+ARG RUST_VERSION=1.94.0
 ARG UID=1000
 ARG GID=1000
 ARG USER=container_user
@@ -12,34 +12,42 @@ ARG HOME=/home/container_user
 ############################
 # Dependencies 
 ############################
-FROM stagex/pallet-rust@sha256:9c38bf1066dd9ad1b6a6b584974dd798c2bf798985bf82e58024fbe0515592ca AS pallet-rust
-FROM stagex/user-protobuf@sha256:5e67b3d3a7e7e9db9aa8ab516ffa13e54acde5f0b3d4e8638f79880ab16da72c AS protobuf 
-FROM stagex/user-abseil-cpp@sha256:3dca99adfda0cb631bd3a948a99c2d5f89fab517bda034ce417f222721115aa2 AS abseil-cpp
-FROM stagex/core-user-runtime@sha256:055ae534e1e01259449fb4e0226f035a7474674c7371a136298e8bdac65d90bb AS user-runtime
+FROM stagex/pallet-rust:1.94.0@sha256:2fbe7b164dd92edb9c1096152f6d27592d8a69b1b8eb2fc907b5fadea7d11668 AS pallet-rust
+FROM stagex/pallet-clang@sha256:07c01477a41eba3ec57a0e84c73659dec17662247a8f92b8b902f0aa02b58ca3 AS pallet-clang
+FROM stagex/user-protobuf:26.1@sha256:a135aaf060990b6ef8a7c715c16f175811d3a1f5383970f5771adef05a0bc56a AS protobuf
+FROM stagex/user-abseil-cpp:20240116.2@sha256:20a241145158a0aa7cb83ed5dc4f9ad6360dc975352787f4e6b00e8a39943f62 AS abseil-cpp
+FROM stagex/core-busybox:1.37.0@sha256:d608daa946e4799cf28b105aba461db00187657bd55ea7c2935ff11dac237e27 AS busybox
 
 ############################
 # Builder
 ############################
 FROM pallet-rust AS builder
+
+SHELL ["/bin/sh", "-euo", "pipefail", "-c"]
+COPY --from=pallet-clang . /
 COPY --from=protobuf . /
 COPY --from=abseil-cpp . /
 
-SHELL ["/bin/sh", "-euo", "pipefail", "-c"]
 WORKDIR /usr/src/app
 
 # Toggle to build without TLS feature if needed
 ARG NO_TLS=false
 
-# Copy entire workspace (prevents missing members)
-ENV SOURCE_DATE_EPOCH=1
-ENV CXXFLAGS="-include cstdint"
-ENV ROCKSDB_USE_PKG_CONFIG=0
 ENV CARGO_HOME=/usr/local/cargo
+
+ENV CXXSTDLIB="c++"
 
 ENV RUST_BACKTRACE=1
 ENV RUSTFLAGS="-C codegen-units=1"
 ENV RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
+ENV RUSTFLAGS="${RUSTFLAGS} -C linker=clang -C link-arg=-fuse-ld=mold"
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++.a"
+ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++abi.a"
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--build-id=none"
+ENV SOURCE_DATE_EPOCH=1
+ENV CXXFLAGS="-stdlib=libc++ -include cstdint"
+ENV ROCKSDB_USE_PKG_CONFIG=0
+
 ENV TARGET_ARCH="x86_64-unknown-linux-musl"
 
 COPY . .
@@ -74,7 +82,7 @@ COPY --from=builder /usr/local/bin/zainod /zainod
 ############################
 # Runtime (slim, non-root)
 ############################
-FROM user-runtime AS runtime
+FROM busybox AS runtime
 
 ARG HOME
 
