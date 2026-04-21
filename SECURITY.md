@@ -33,9 +33,24 @@ Proton Mail provides end-to-end encryption by default when both sender and
 recipient use Proton. For non-Proton senders, you can encrypt your message
 using our PGP public key:
 
-<!-- TODO: Export and embed the Proton Mail PGP public key block here. -->
-<!-- In Proton Mail: Settings > Encryption and keys > copy the public key -->
-<!-- for zingodisclosure@proton.me. -->
+```
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+xjMEZj0VexYJKwYBBAHaRw8BAQdAepugX0ypZXyEhE65sKgCuop80LF8GSOO
+0eDG+iwqG/7NNXppbmdvZGlzY2xvc3VyZUBwcm90b24ubWUgPHppbmdvZGlz
+Y2xvc3VyZUBwcm90b24ubWU+wowEEBYKAD4FgmY9FXsECwkHCAmQOX0pQubt
+5ioDFQgKBBYAAgECGQECmwMCHgEWIQRB7j3aI80BkBVAyUI5fSlC5u3mKgAA
+ot0A/24C/7GbAKeo1qbx+e/hHSkNkI/htA0XNpiOf/Nr43e+AQD3gnvBQHgD
+huSqdlWYjjr7jh5hvQCeRc/CUKoLE2MXDs44BGY9FXsSCisGAQQBl1UBBQEB
+B0Ckih69m55HXPcoLKDfYi1D1GOQvstUqgYG2iAgeFg7YgMBCAfCeAQYFgoA
+KgWCZj0VewmQOX0pQubt5ioCmwwWIQRB7j3aI80BkBVAyUI5fSlC5u3mKgAA
+vGcA/A3WN88yejxRPbKf+8eISjYWsQML5UQK+7BewC4tbuz6AQCrsGeThqKb
+hLMKaxtWrjPfQcAuaBCB3wUtvdvgFk4YAA==
+=xKDi
+-----END PGP PUBLIC KEY BLOCK-----
+```
+
+Fingerprint: `41EE 3DDA 23CD 0190 1540 C942 397D 2942 E6ED E62A`
 
 Use encrypted email when:
 
