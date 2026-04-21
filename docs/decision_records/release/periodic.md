@@ -16,11 +16,8 @@
       RC["release branch<br/>commit tagged <b>rc</b>"]
       REL_TEST["release-tests<br/>against the rc"]
       NASCENT["nascent release =<br/>most recent rc that passed release-tests"]
-      VER["set semver on changed crates<br/>commit tagged
-  <b>periodic-DATE-A.x.y.z-B.x.y.z-…</b><br/>update CHANGELOG: Unreleased → this
-  release"]
-      STABLE["merge release → <b>stable</b><br/>(every 14 days: Apr 24, May 8, May 22,
-  …)"]
+      VER["set semver on changed crates<br/>commit tagged <b>periodic-DATE-A.x.y.z-B.x.y.z-…</b><br/>update CHANGELOG: Unreleased → this release"]
+      STABLE["merge release → <b>stable</b><br/>(every 14 days: Apr 24, May 8, May 22, …)"]
       PUB["cargo publish changed crates<br/>(from stable)"]
       CONT["publish zainod container image<br/>(from stable)"]
       BACK["merge stable → dev"]
