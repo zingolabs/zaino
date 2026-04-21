@@ -45,14 +45,8 @@ ENV RUSTFLAGS="-C codegen-units=1"
 ENV RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
 ENV RUSTFLAGS="${RUSTFLAGS} -C linker=clang -C link-arg=-fuse-ld=mold"
 
-#
-ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--allow-multiple-definition"
-ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--whole-archive"
-
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++.a"
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++abi.a"
-
-ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--no-whole-archive"
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--build-id=none"
 ENV SOURCE_DATE_EPOCH=1
 ENV CXXFLAGS="-stdlib=libc++ -include cstdint"
