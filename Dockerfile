@@ -17,11 +17,6 @@ FROM stagex/pallet-clang@sha256:07c01477a41eba3ec57a0e84c73659dec17662247a8f92b8
 FROM stagex/user-protobuf:26.1@sha256:a135aaf060990b6ef8a7c715c16f175811d3a1f5383970f5771adef05a0bc56a AS protobuf
 FROM stagex/user-abseil-cpp:20240116.2@sha256:20a241145158a0aa7cb83ed5dc4f9ad6360dc975352787f4e6b00e8a39943f62 AS abseil-cpp
 FROM stagex/core-busybox:1.37.0@sha256:d608daa946e4799cf28b105aba461db00187657bd55ea7c2935ff11dac237e27 AS busybox
-FROM stagex/core-gmp:6.3.0@sha256:35f1f6f285efd438e7d985dc0538b7a5ca1a228e69f50d39de2bcafe830b4beb AS gmp
-FROM stagex/core-mpfr:4.1.0@sha256:b390b6023fce662a834d207e683864d4c37001b0af9e56a62aab6b7ee9fda097 AS mpfr
-FROM stagex/core-mpc:1.2.1@sha256:5385d8ddf991a1911da0d2ee69b0eaeb95baa111101ebf50933559956ac5ca71 AS mpc
-FROM stagex/core-isl:0.24@sha256:6c78dd13483288b4ddd967866cf4ccf5cc20f9130368c0d10e3e498ddb6d3573 AS isl
-
 
 ############################
 # Builder
@@ -32,11 +27,6 @@ SHELL ["/bin/sh", "-euo", "pipefail", "-c"]
 COPY --from=pallet-clang . /
 COPY --from=protobuf . /
 COPY --from=abseil-cpp . /
-# GCC runtime dependencies
-COPY --from=gmp . /
-COPY --from=mpfr . /
-COPY --from=mpc . /
-COPY --from=isl . /
 
 # Crate build scripts (librocksdb-sys, libzcash-script) emit -lstdc++, but
 # pallet-clang provides libc++ (LLVM) instead. Create a linker script so lld
