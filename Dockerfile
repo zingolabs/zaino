@@ -53,8 +53,6 @@ ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++.a"
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=/usr/lib/libc++abi.a"
 
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--no-whole-archive"
-ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-ldl"
-
 ENV RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,--build-id=none"
 ENV SOURCE_DATE_EPOCH=1
 ENV CXXFLAGS="-stdlib=libc++ -include cstdint"
