@@ -11,9 +11,47 @@ env = { RUSTDOCFLAGS = "-D warnings" }
 command = "cargo"
 args = ["doc", "--no-deps", "--all-features", "--document-private-items"]
 
+[tasks.lint-persistent-conversions]
+description = "Forbid From/TryFrom impls across the persistence boundary. Persistent* <-> business-layer conversions must be named inherent methods (from_business / into_business)."
+# See CLAUDE.md 'Persistence-boundary conversions' and the reference
+# implementation in packages/zaino-state/src/chain_index/types/db/block.rs.
+script_runner = "bash"
+script = [
+    '''
+    set -euo pipefail
+
+    # Regex — matches either direction of a From/TryFrom where the persistent
+    # side of the boundary appears.
+    #   impl From<...Persistent...> for ...        (business <- persistent)
+    #   impl From<...> for Persistent...           (persistent <- business, owned)
+    #   impl From<&...> for Persistent...          (persistent <- business, borrow)
+    #   impl TryFrom<...Persistent...> for ...
+    #   impl TryFrom<...> for Persistent...
+    pattern='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*>[[:space:]]+for[[:space:]]+(Persistent|[A-Za-z0-9_:]+::Persistent)'
+    persistent_on_lhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*Persistent[^>]*>[[:space:]]+for[[:space:]]+'
+
+    # Scan all Rust sources; exclude generated / vendored paths.
+    hits=$(
+      git ls-files '*.rs' ':!target/*' \
+      | xargs -r grep -nE "$pattern|$persistent_on_lhs" \
+      || true
+    )
+
+    if [ -n "$hits" ]; then
+      echo ""
+      echo "Persistence-boundary conversion lint: forbidden From/TryFrom impls found."
+      echo "These must be replaced with named inherent methods on the Persistent* type"
+      echo "(canonical: from_business / into_business). See CLAUDE.md for the rule."
+      echo ""
+      echo "$hits"
+      exit 1
+    fi
+    '''
+]
+
 [tasks.lint]
 description = "Run all lints. Use as a pre-commit hook."
-dependencies = ["fmt", "clippy", "doc"]
+dependencies = ["fmt", "clippy", "doc", "lint-persistent-conversions"]
 
 [tasks.toggle-hooks]
 description = "Toggles the git config for core.hooksPath"
