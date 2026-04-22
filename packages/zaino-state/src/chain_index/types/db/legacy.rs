@@ -1221,7 +1221,7 @@ impl ZainoVersionedSerde for IndexedBlock {
     }
 
     fn encode_v1<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from(&self.context).serialize_with_version(&mut w, 1)?;
+        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut w, 1)?;
         self.data.serialize_with_version(&mut w, 1)?;
         write_vec(&mut w, &self.transactions, |w, tx| {
             tx.serialize_with_version(w, 1)
@@ -1231,7 +1231,7 @@ impl ZainoVersionedSerde for IndexedBlock {
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
-        let context: BlockContext = PersistentBlockContext::deserialize(&mut r)?.into();
+        let context = PersistentBlockContext::deserialize(&mut r)?.into_business();
         let data = BlockData::deserialize(&mut r)?;
         let tx = read_vec(&mut r, |r| CompactTxData::deserialize(r))?;
         let ctd = CommitmentTreeData::deserialize(&mut r)?;
@@ -2798,17 +2798,17 @@ impl ZainoVersionedSerde for BlockHeaderData {
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from(&self.context).serialize_with_version(&mut *w, 1)?;
+        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 1)?;
         self.data.serialize_with_version(w, 1)
     }
 
     fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from(&self.context).serialize_with_version(&mut *w, 2)?;
+        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 2)?;
         self.data.serialize_with_version(w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let context: BlockContext = PersistentBlockContext::deserialize(&mut *r)?.into();
+        let context = PersistentBlockContext::deserialize(&mut *r)?.into_business();
         let data = BlockData::deserialize(r)?;
         Ok(BlockHeaderData::new(context, data))
     }

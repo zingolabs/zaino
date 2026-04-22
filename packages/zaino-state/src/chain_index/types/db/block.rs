@@ -40,26 +40,37 @@ pub(super) struct PersistentBlockContext {
     pub(super) height: Height,
 }
 
-impl From<&BlockContext> for PersistentBlockContext {
-    fn from(c: &BlockContext) -> Self {
+impl PersistentBlockContext {
+    /// Build a `PersistentBlockContext` from a business-layer `BlockContext`,
+    /// flattening the nested `(height, hash)` primitive into the
+    /// persistence-shape fields.
+    ///
+    /// Replaces `impl From<&BlockContext>`. The named method makes the
+    /// direction (business → persistence) and the boundary it crosses
+    /// unambiguous at every call site.
+    pub(super) fn from_business(context: &BlockContext) -> Self {
         Self {
-            hash: c.index.hash,
-            parent_hash: c.parent_hash,
-            chainwork: c.chainwork,
-            height: c.index.height,
+            hash: context.index.hash,
+            parent_hash: context.parent_hash,
+            chainwork: context.chainwork,
+            height: context.height(),
         }
     }
-}
 
-impl From<PersistentBlockContext> for BlockContext {
-    fn from(p: PersistentBlockContext) -> Self {
-        Self {
+    /// Consume this `PersistentBlockContext` and produce the business-layer
+    /// `BlockContext`. This conversion is the on-disk → business validation
+    /// boundary — any check that must hold for a `BlockContext` to exist
+    /// should live here.
+    ///
+    /// Replaces `impl From<PersistentBlockContext> for BlockContext`.
+    pub(super) fn into_business(self) -> BlockContext {
+        BlockContext {
             index: BlockIndex {
-                height: p.height,
-                hash: p.hash,
+                height: self.height,
+                hash: self.hash,
             },
-            parent_hash: p.parent_hash,
-            chainwork: p.chainwork,
+            parent_hash: self.parent_hash,
+            chainwork: self.chainwork,
         }
     }
 }
@@ -137,9 +148,9 @@ mod tests {
 
     /// `BlockContext → PersistentBlockContext → BlockContext` is identity.
     ///
-    /// Fails if the `From` impls ever drift into lossy or non-total
-    /// conversions — catches a class of bug where a deserialised record
-    /// cannot be mapped back to the business-layer type.
+    /// Fails if the `from_business` / `into_business` conversions ever drift
+    /// into lossy or non-total mappings — catches a class of bug where a
+    /// deserialised record cannot be mapped back to the business-layer type.
     #[test]
     fn block_context_round_trips_through_persistent() {
         let bctx = BlockContext::new(
@@ -148,8 +159,8 @@ mod tests {
             ChainWork::from_u256(0x0123_4567u64.into()),
             Height(0x0dec_0de_0),
         );
-        let persisted = PersistentBlockContext::from(&bctx);
-        let back: BlockContext = persisted.into();
+        let persisted = PersistentBlockContext::from_business(&bctx);
+        let back = persisted.into_business();
         assert_eq!(bctx, back);
     }
 }
