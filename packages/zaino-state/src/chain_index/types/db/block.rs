@@ -157,7 +157,7 @@ mod tests {
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
             ChainWork::from_u256(0x0123_4567u64.into()),
-            Height(0x0dec_0de_0),
+            Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);
         let back = persisted.into_business();

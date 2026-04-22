@@ -78,27 +78,53 @@ in the same directory need access.
 `packages/zaino-state/src/chain_index/types/db/block.rs`. Copy its shape
 when adding new `Persistent*` types.
 
-**Scope**: this rule covers DB-boundary conversions only. It does not
-govern conversions between two business-layer types, error `From` impls
-used with `?`, conversions involving foreign types outside the
-persistence boundary, or wire-format (gRPC) conversions.
+**Scope**: this rule covers DB-boundary conversions. It does not govern
+conversions between two business-layer types, error `From` impls used
+with `?`, or conversions involving foreign types that don't cross the
+persistence or wire boundaries.
 
-**Enforcement**:
+## Wire-boundary conversions: named methods, not `From`/`TryFrom`
 
-- CI lint: `makers lint-persistent-conversions` (run as part of
+The same rule applies at the gRPC/wire boundary for the same reasons —
+the wire → business direction is the *external-input* validation step
+and the named method encodes that contract in the API surface. Canonical
+methods live on the business-layer type (proto types are foreign; we
+can't add inherent methods to them):
+
+- `impl X { pub fn to_wire(&self) -> proto::X }` — infallible forward.
+  Replaces `impl From<X> for proto::X`.
+- `impl X { pub fn try_from_wire(w: proto::X) -> Result<Self, WireXError> }`
+  — fallible reverse. The conversion *is* the wire-input validation
+  step; the `WireXError` enum documents each rejection reason.
+  Replaces `impl TryFrom<proto::X> for X`.
+
+**Reference**: `BlockIndex` wire methods in
+`packages/zaino-state/src/chain_index/types/wire.rs`. Copy its shape
+when adding wire conversions for other business types (BlockHash,
+TransactionHash, etc.).
+
+**Enforcement (covers both boundaries)**:
+
+- CI lint: `makers lint-boundary-conversions` (run as part of
   `makers lint`) greps the tree for any `impl From` / `impl TryFrom`
-  where either side of the boundary is a `Persistent*` type and fails
-  the build. Mechanically prevents the common drift.
-- Review checklist — apply on every PR that touches `types/db/` or
-  introduces a new `Persistent*` type:
-  1. No `impl From<&X> for PersistentY` or `impl From<PersistentX> for Y`
-     (the lint catches this, but read for it anyway).
-  2. Conversion methods are named literally `from_business` /
-     `into_business` (or a fallible `into_business*` variant). Any
-     deviation has an in-file comment explaining why.
-  3. The persistent type's visibility is `pub(super)` unless the
-     compiler required a wider scope. Don't widen speculatively.
-  4. The persistent type does *nothing else* — no business logic, no
-     accessors — it only crosses the serde boundary. The round-trip
-     test for the pair lives in the same file under
-     `#[cfg(test)] mod tests`.
+  where either side is a `Persistent*` type or a `proto::` type and
+  fails the build. Mechanically prevents the common drift at both
+  boundaries.
+- Review checklist — apply on every PR that touches `types/db/`,
+  `types/wire.rs`, or introduces a new `Persistent*` type or wire
+  conversion:
+  1. No `impl From<&X> for PersistentY` / `impl From<PersistentX> for Y`;
+     no `impl From<X> for proto::Y` / `impl TryFrom<proto::X> for Y`.
+     (The lint catches these, but read for them anyway.)
+  2. Persistence methods are named `from_business` / `into_business`
+     (fallible variants `into_business*`). Wire methods are named
+     `to_wire` / `try_from_wire`. Any deviation has an in-file comment
+     explaining why.
+  3. `Persistent*` types are `pub(super)`. Wire methods are `pub`
+     (they're part of the business type's public API). Don't widen
+     `Persistent*` speculatively.
+  4. `Persistent*` types do *nothing else* — no business logic, no
+     accessors — they only cross the serde boundary. Round-trip tests
+     for the pair live in the same file under `#[cfg(test)] mod tests`.
+     Wire conversions get the same treatment: a golden / round-trip
+     test next to the method, not in a distant test module.

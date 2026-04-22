@@ -36,6 +36,7 @@ pub mod block_context;
 pub mod db;
 pub mod helpers;
 pub mod primitives;
+pub mod wire;
 
 // Re-export database types for backward compatibility
 pub use db::legacy::*;
