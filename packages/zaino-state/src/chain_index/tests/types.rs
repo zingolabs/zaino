@@ -5,12 +5,13 @@ use crate::{
     version, BlockContext, BlockData, BlockHeaderData, ZainoVersionedSerde as _,
 };
 
-/// Canonical [`BlockHeaderData`] used by the serde tests in this module.
+/// Canonical [`BlockHeaderData`] used by the serde tests in this module
+/// and by cross-boundary tests that start from its encoded bytes.
 ///
 /// Changing the values produced here invalidates every golden-bytes test
-/// below: if you change this, regenerate the goldens and audit what the
-/// change means for on-disk stability.
-fn canonical_blockheaderdata() -> BlockHeaderData {
+/// that pins an encoding — regenerate goldens and audit the change for
+/// on-disk-stability implications.
+pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let hash = crate::BlockHash::from([1u8; 32]);
     let parent_hash = crate::BlockHash::from([2u8; 32]);
     let chainwork = crate::ChainWork::from_u256(0.into());
@@ -32,7 +33,7 @@ fn canonical_blockheaderdata() -> BlockHeaderData {
 /// A change in encoder output will be diffed directly against this
 /// reconstruction, and the failing line should point at the offending
 /// field.
-fn expected_v2_bytes() -> Vec<u8> {
+pub(crate) fn expected_v2_bytes() -> Vec<u8> {
     let mut out = Vec::with_capacity(1565);
     // Outer BlockHeaderData V2 version tag.
     out.push(version::V2);

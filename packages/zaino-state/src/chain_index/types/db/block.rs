@@ -144,7 +144,9 @@ mod tests {
     //! live alongside its definition.
 
     use super::{BlockContext, PersistentBlockContext};
-    use crate::chain_index::types::{BlockHash, ChainWork, Height};
+    use crate::chain_index::tests::types::{canonical_blockheaderdata, expected_v2_bytes};
+    use crate::chain_index::types::{BlockHash, BlockIndex, ChainWork, Height};
+    use crate::{BlockHeaderData, ZainoVersionedSerde as _};
 
     /// `BlockContext → PersistentBlockContext → BlockContext` is identity.
     ///
@@ -162,5 +164,51 @@ mod tests {
         let persisted = PersistentBlockContext::from_business(&bctx);
         let back = persisted.into_business();
         assert_eq!(bctx, back);
+    }
+
+    /// Cross-boundary tour for the `(height, hash)` slice:
+    ///
+    /// ```text
+    ///   DB bytes → BlockHeaderData → BlockContext → BlockIndex →
+    ///   proto::BlockId → BlockIndex'
+    /// ```
+    ///
+    /// Assertions:
+    ///   1. Decoding the canonical V2 golden bytes produces the canonical
+    ///      `BlockHeaderData` (DB serde + DB→business crossing intact).
+    ///   2. Re-encoding yields the same bytes byte-for-byte (the DB-side
+    ///      round-trip is whole; no encoder drift hidden behind this test).
+    ///   3. The `BlockIndex` slice survives the wire round-trip
+    ///      (`to_wire` / `try_from_wire`) unchanged.
+    ///
+    /// Pair with `block_index_round_trips_through_wire` in `types/wire.rs`:
+    /// if the narrow wire test passes but this cross-boundary test fails,
+    /// the bug lives in the DB layer or at the DB↔business crossing, not in
+    /// the wire conversion itself.
+    ///
+    /// A full `BlockContext` round-trip via wire is intentionally NOT
+    /// attempted — `proto::BlockId` carries only `(height, hash)`, dropping
+    /// `parent_hash` and `chainwork`. That asymmetry is the point: the wire
+    /// protocol is narrower than the business type, by design.
+    #[test]
+    fn block_index_slice_round_trips_across_boundaries() {
+        let original_bytes = expected_v2_bytes();
+
+        // DB bytes → business.
+        let header =
+            BlockHeaderData::from_bytes(&original_bytes).expect("decode canonical V2 bytes");
+        assert_eq!(header, canonical_blockheaderdata());
+
+        // DB side is whole: re-encoding produces identical bytes.
+        let re_encoded = header.to_bytes().expect("re-encode BlockHeaderData");
+        assert_eq!(re_encoded, original_bytes);
+
+        // Extract the (height, hash) slice.
+        let index: BlockIndex = header.context.index;
+
+        // Business → wire → business.
+        let wire = index.to_wire();
+        let recovered = BlockIndex::try_from_wire(wire).expect("valid wire shape");
+        assert_eq!(index, recovered);
     }
 }
