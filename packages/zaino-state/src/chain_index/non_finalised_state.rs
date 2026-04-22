@@ -1,6 +1,8 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource};
 use crate::{
-    chain_index::types::{self, BlockHash, BlockMetadata, BlockWithMetadata, Height, TreeRootData},
+    chain_index::types::{
+        self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
+    },
     error::FinalisedStateError,
     ChainWork, IndexedBlock,
 };
@@ -32,22 +34,6 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
             tokio::sync::mpsc::Receiver<(zebra_chain::block::Hash, Arc<zebra_chain::block::Block>)>,
         >,
     >,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-/// The internal `(height, hash)` primitive that uniquely identifies a block.
-///
-/// Business-layer type. It is neither persisted nor serialized directly —
-/// persistence goes through a database-adjacent helper (`PersistentBlockContext`
-/// in `types/db/legacy.rs`), and the wire/gRPC boundary converts via
-/// `From<proto::BlockId>` (the conversion is the validation step).
-// TODO: tighten to `pub(crate)` once `ChainIndex::best_chaintip` no longer
-// exposes this type through a `pub` trait.
-pub struct BlockIndex {
-    /// Height of the block.
-    pub height: Height,
-    /// Hash of the block.
-    pub hash: BlockHash,
 }
 
 #[derive(Debug, Clone)]

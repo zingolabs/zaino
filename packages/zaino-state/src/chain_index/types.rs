@@ -40,6 +40,9 @@ pub mod primitives;
 pub use db::legacy::*;
 pub use db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
+// Re-export business-layer primitives
+pub use primitives::BlockIndex;
+
 // Re-export helper types
 pub use helpers::{
     BestChainLocation, BlockMetadata, BlockWithMetadata, NonBestChainLocation, TreeRootData,

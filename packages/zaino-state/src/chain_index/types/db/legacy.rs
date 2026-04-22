@@ -40,7 +40,7 @@ use crate::chain_index::encoding::{
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
     write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
 };
-use crate::chain_index::non_finalised_state::BlockIndex;
+use crate::chain_index::types::BlockIndex;
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
