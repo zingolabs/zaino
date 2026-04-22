@@ -14,6 +14,7 @@
 use primitive_types::U256;
 
 use super::db::legacy::*;
+use crate::chain_index::types::BlockContext;
 use crate::ChainWork;
 
 /// The location of a transaction in the best chain

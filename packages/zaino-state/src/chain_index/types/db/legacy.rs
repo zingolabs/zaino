@@ -35,12 +35,13 @@ use primitive_types::U256;
 use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
+use super::block::PersistentBlockContext;
 use crate::chain_index::encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
     write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
 };
-use crate::chain_index::types::BlockIndex;
+use crate::chain_index::types::BlockContext;
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
@@ -720,161 +721,6 @@ impl FixedEncodedLen for Outpoint {
 
 // *** Block Level Objects ***
 
-/// The block's [`BlockIndex`], parent hash, and cumulative chainwork.
-///
-/// This is the type business code operates on; it deliberately has no serde
-/// impl. Persistence is the sole responsibility of the module-private
-/// `PersistentBlockContext`, which is strictly mapped to this type via
-/// `From` conversions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlockContext {
-    /// Uniquely identifies this block: its `(height, hash)` pair.
-    pub index: BlockIndex,
-    /// The hash of this block's parent block (previous block in chain).
-    pub parent_hash: BlockHash,
-    /// The cumulative proof-of-work of the blockchain up to this block, used for chain selection.
-    pub chainwork: ChainWork,
-}
-
-impl BlockContext {
-    /// Constructs a new `BlockContext` by packaging `(height, hash)` into a
-    /// [`BlockIndex`].
-    pub fn new(
-        hash: BlockHash,
-        parent_hash: BlockHash,
-        chainwork: ChainWork,
-        height: Height,
-    ) -> Self {
-        Self {
-            index: BlockIndex { height, hash },
-            parent_hash,
-            chainwork,
-        }
-    }
-
-    /// Returns the hash of this block.
-    pub fn hash(&self) -> &BlockHash {
-        &self.index.hash
-    }
-
-    /// Returns the hash of the parent block.
-    pub fn parent_hash(&self) -> &BlockHash {
-        &self.parent_hash
-    }
-
-    /// Returns the cumulative chainwork up to this block.
-    pub fn chainwork(&self) -> &ChainWork {
-        &self.chainwork
-    }
-
-    /// Returns the height of this block.
-    pub fn height(&self) -> Height {
-        self.index.height
-    }
-}
-
-/// Database-adjacent persistence shape for [`BlockContext`].
-///
-/// Its sole responsibility is serde at the storage boundary. It is kept
-/// module-private so business code cannot reach it — every round-trip between
-/// a `BlockContext` and on-disk bytes goes through this type via the
-/// `From` conversions below.
-///
-/// The field layout and order match the on-disk v1/v2 wire format exactly —
-/// no format change accompanies the rename.
-#[derive(Debug)]
-struct PersistentBlockContext {
-    hash: BlockHash,
-    parent_hash: BlockHash,
-    chainwork: ChainWork,
-    height: Height,
-}
-
-impl From<&BlockContext> for PersistentBlockContext {
-    fn from(c: &BlockContext) -> Self {
-        Self {
-            hash: c.index.hash,
-            parent_hash: c.parent_hash,
-            chainwork: c.chainwork,
-            height: c.index.height,
-        }
-    }
-}
-
-impl From<PersistentBlockContext> for BlockContext {
-    fn from(p: PersistentBlockContext) -> Self {
-        Self {
-            index: BlockIndex {
-                height: p.height,
-                hash: p.hash,
-            },
-            parent_hash: p.parent_hash,
-            chainwork: p.chainwork,
-        }
-    }
-}
-
-impl ZainoVersionedSerde for PersistentBlockContext {
-    const VERSION: u8 = version::V2;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v2(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v2(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        self.hash.serialize_with_version(&mut w, 1)?;
-        self.parent_hash.serialize_with_version(&mut w, 1)?;
-        self.chainwork.serialize_with_version(&mut w, 1)?;
-        write_option(&mut w, &Some(self.height), |w, h| {
-            h.serialize_with_version(w, 1)
-        })
-    }
-
-    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        self.hash.serialize_with_version(&mut w, 1)?;
-        self.parent_hash.serialize_with_version(&mut w, 1)?;
-        self.chainwork.serialize_with_version(&mut w, 1)?;
-        self.height.serialize_with_version(&mut w, 1)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let hash = BlockHash::deserialize(&mut r)?;
-        let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = ChainWork::deserialize(&mut r)?;
-        let height =
-            read_option(&mut r, |r| Height::deserialize(r))?.expect("blocks always have height");
-        Ok(Self {
-            hash,
-            parent_hash,
-            chainwork,
-            height,
-        })
-    }
-
-    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let hash = BlockHash::deserialize(&mut r)?;
-        let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = ChainWork::deserialize(&mut r)?;
-        let height = Height::deserialize(&mut r)?;
-        Ok(Self {
-            hash,
-            parent_hash,
-            chainwork,
-            height,
-        })
-    }
-}
-
 /// Cumulative proof-of-work of the chain,
 /// stored as a **big-endian** 256-bit unsigned integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1262,7 +1108,7 @@ impl ZainoVersionedSerde for EquihashSolution {
 /// Provides efficient indexing for blockchain state queries and updates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexedBlock {
-    /// The block's [`BlockIndex`], parent hash, and cumulative chainwork.
+    /// The block's `BlockIndex`, parent hash, and cumulative chainwork.
     pub context: BlockContext,
     /// Essential header and metadata information for the block.
     pub data: BlockData,
@@ -2922,7 +2768,7 @@ impl FixedEncodedLen for ShardRoot {
 /// additional header data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockHeaderData {
-    /// The block's [`BlockIndex`], parent hash, and cumulative chainwork.
+    /// The block's `BlockIndex`, parent hash, and cumulative chainwork.
     pub context: BlockContext,
     /// Block header data
     data: BlockData,
