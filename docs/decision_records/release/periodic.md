@@ -2,8 +2,7 @@
 
 ## Context
 
-Zaino is developed on a `dev` branch. Features are PRed against `dev` and land
-via fast-forward merge. Anything that lands on `dev` is effectively scheduled
+Zaino is developed on a `dev` branch. Features are PRed against `dev`. Anything that lands on `dev` is effectively scheduled
 for release, in the order it landed. We do not cherry-pick from `dev` to cut
 releases -- the release is always a **prefix** of `dev`'s history.
 
