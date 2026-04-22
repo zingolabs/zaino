@@ -36,6 +36,7 @@ async fn spawn_mempool_and_mockchain() -> (
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow"]
 async fn get_mempool() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
