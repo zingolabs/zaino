@@ -5,6 +5,9 @@ use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
+use zaino_fetch::jsonrpsee::response::z_validate_address::{
+    ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
+};
 use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -147,6 +150,24 @@ pub trait ZcashIndexerRpc {
         &self,
         address: String,
     ) -> Result<ValidateAddressResponse, ErrorObjectOwned>;
+
+    /// Return information about the given address.
+    ///
+    /// # Deprecation
+    ///
+    /// See [`DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
+    ///
+    /// # Parameters
+    /// - `address`: (string, required) The address to validate.
+    ///
+    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
+    /// method: post
+    /// tags: util
+    #[method(name = "z_validateaddress")]
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -541,6 +562,25 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .validate_address(address)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    #[allow(deprecated)]
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned> {
+        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
+        self.service_subscriber
+            .inner_ref()
+            .z_validate_address(address)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

@@ -90,6 +90,11 @@ transparent_address_history_experimental = [
     "zaino-testutils/transparent_address_history_experimental"
 ]
 
+[dependencies]
+zaino-fetch = { workspace = true }
+zaino-testutils = { workspace = true }
+tracing.workspace = true
+
 [dev-dependencies]
 anyhow = { workspace = true }
 

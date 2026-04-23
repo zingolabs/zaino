@@ -2224,9 +2224,36 @@ mod zebra {
         }
 
         mod z {
-            use zcash_local_net::validator::zebrad::Zebrad;
-
             use super::*;
+
+            #[allow(deprecated)]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            pub(crate) async fn z_validate_address() {
+                let (
+                    mut test_manager,
+                    _fetch_service,
+                    _fetch_service_subscriber,
+                    _state_service,
+                    state_service_subscriber,
+                ) = create_test_manager_and_services::<Zebrad>(
+                    &ValidatorKind::Zebrad,
+                    None,
+                    true,
+                    true,
+                    None,
+                )
+                .await;
+
+                let rpc_call = |addr: String| {
+                    let subscriber = &state_service_subscriber;
+                    async move { subscriber.z_validate_address(addr).await.unwrap() }
+                };
+
+                integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+                integration_tests::rpc::z_validate_address::run_z_validate_sapling(&rpc_call).await;
+
+                test_manager.close().await;
+            }
 
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn get_block_range_default_request_returns_no_t_data_regtest() {

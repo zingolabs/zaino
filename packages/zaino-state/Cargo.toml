@@ -31,7 +31,7 @@ zaino-proto = { workspace = true }
 # LibRustZcash
 incrementalmerkletree = { workspace = true }
 zcash_address = { workspace = true }
-zcash_keys = { workspace = true }
+zcash_keys = { workspace = true, features = ["sapling"] }
 zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
