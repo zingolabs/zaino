@@ -61,7 +61,7 @@ fn passthrough_test(
                 // This number can be played with. We want to slow down
                 // sync enough to trigger passthrough without
                 // slowing down passthrough more than we need to
-                delay: Some(Duration::from_secs(1)),
+                delay: Some(Duration::from_millis(100)),
             };
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
