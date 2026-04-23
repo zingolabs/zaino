@@ -35,7 +35,6 @@ async fn get_block_range() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "slow"]
 async fn get_raw_transaction() {
     let (blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(false).await;
