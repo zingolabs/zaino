@@ -22,7 +22,7 @@ use crate::{
     chain_index::{
         non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
-        tests::{init_tracing, proptest_blockgen::proptest_helpers::add_segment},
+        tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
         NonFinalizedSnapshot,
     },
@@ -61,7 +61,9 @@ fn passthrough_test(
                 // This number can be played with. We want to slow down
                 // sync enough to trigger passthrough without
                 // slowing down passthrough more than we need to
-                delay: Some(Duration::from_secs(1)),
+                delay: Some(Duration::from_millis(100)),
+                best_branch_cache: Arc::new(std::sync::OnceLock::new()),
+                tx_index: Arc::new(std::sync::OnceLock::new()),
             };
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
@@ -82,11 +84,28 @@ fn passthrough_test(
             let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
-            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             // 101 instead of 100 as heights are 0-indexed
-            assert_eq!(snapshot.max_serviceable_height().0 as usize, (2 * segment_length) - 101);
+            let expected_max_serviceable_height = (2 * segment_length) - 101;
+            // Poll rather than sleeping a fixed 5 s: the indexer discovers the
+            // chain topology as soon as the sync task has walked enough of the
+            // source to identify the finalized-state cutoff. With a 1 s
+            // per-block source delay (above) that's well under 5 s in practice,
+            // but can be longer under parallel-suite scheduler pressure.
+            poll_until(
+                "indexer to reach expected max_serviceable_height",
+                Duration::from_secs(30),
+                Duration::from_millis(50),
+                || async {
+                    let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+                    (snapshot.max_serviceable_height().0 as usize
+                        == expected_max_serviceable_height)
+                        .then_some(())
+                },
+            )
+            .await;
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+            assert_eq!(snapshot.max_serviceable_height().0 as usize, expected_max_serviceable_height);
             assert!(matches!(snapshot, ChainIndexSnapshot::StillSyncingFinalizedState { .. }));
 
             test(&mockchain, index_reader, &snapshot).await;
@@ -351,7 +370,9 @@ fn make_chain() {
             let mockchain = ProptestMockchain {
                 genesis_segment,
                 branching_segments,
-                delay: None
+                delay: None,
+                best_branch_cache: Arc::new(std::sync::OnceLock::new()),
+                tx_index: Arc::new(std::sync::OnceLock::new()),
             };
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
@@ -404,35 +425,85 @@ struct ProptestMockchain {
     genesis_segment: ChainSegment,
     branching_segments: Vec<ChainSegment>,
     delay: Option<Duration>,
+    /// Cached result of `best_branch()`. The best branch is pure function of
+    /// the other fields (which are never mutated after construction), so it's
+    /// safe to memoize. Shared via `Arc` so `mockchain.clone()` — which
+    /// happens per-future in the test bodies via `index_reader.clone()` —
+    /// reuses the same cache rather than recomputing per clone.
+    best_branch_cache: Arc<std::sync::OnceLock<SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>>>,
+    /// Cached txid → (tx, location) index. Built lazily on first `get_transaction`
+    /// call. Replaces the O(N_blocks × M_txs) linear scan that recomputed
+    /// `transaction.hash()` on every iteration — the dominant cost in the
+    /// tx-iterating passthrough tests.
+    tx_index: Arc<
+        std::sync::OnceLock<
+            std::collections::HashMap<
+                zebra_chain::transaction::Hash,
+                (
+                    Arc<zebra_chain::transaction::Transaction>,
+                    GetTransactionLocation,
+                ),
+            >,
+        >,
+    >,
 }
 
 impl ProptestMockchain {
-    fn best_branch(&self) -> SummaryDebug<Vec<Arc<zebra_chain::block::Block>>> {
-        let mut best_branch_and_work = None;
-        for branch in self.branching_segments.clone() {
-            let branch_chainwork: u128 = branch
-                .iter()
-                .map(|block| {
-                    block
-                        .header
-                        .difficulty_threshold
-                        .to_work()
-                        .unwrap()
-                        .as_u128()
-                })
-                .sum();
-            match best_branch_and_work {
-                Some((ref _b, w)) => {
-                    if w < branch_chainwork {
-                        best_branch_and_work = Some((branch, branch_chainwork))
+    fn best_branch(&self) -> &SummaryDebug<Vec<Arc<zebra_chain::block::Block>>> {
+        self.best_branch_cache.get_or_init(|| {
+            let mut best_branch_and_work = None;
+            for branch in self.branching_segments.clone() {
+                let branch_chainwork: u128 = branch
+                    .iter()
+                    .map(|block| {
+                        block
+                            .header
+                            .difficulty_threshold
+                            .to_work()
+                            .unwrap()
+                            .as_u128()
+                    })
+                    .sum();
+                match best_branch_and_work {
+                    Some((ref _b, w)) => {
+                        if w < branch_chainwork {
+                            best_branch_and_work = Some((branch, branch_chainwork))
+                        }
                     }
+                    None => best_branch_and_work = Some((branch, branch_chainwork)),
                 }
-                None => best_branch_and_work = Some((branch, branch_chainwork)),
             }
-        }
-        let mut combined = self.genesis_segment.clone();
-        combined.append(&mut best_branch_and_work.unwrap().0.clone());
-        combined
+            let mut combined = self.genesis_segment.clone();
+            combined.append(&mut best_branch_and_work.unwrap().0.clone());
+            combined
+        })
+    }
+
+    /// Builds (lazily) and returns the tx-by-hash index.
+    fn tx_index(
+        &self,
+    ) -> &std::collections::HashMap<
+        zebra_chain::transaction::Hash,
+        (
+            Arc<zebra_chain::transaction::Transaction>,
+            GetTransactionLocation,
+        ),
+    > {
+        self.tx_index.get_or_init(|| {
+            let best = self.best_branch().clone();
+            let mut map = std::collections::HashMap::new();
+            for block in self.all_blocks_arb_branch_order() {
+                let location = if best.contains(block) {
+                    GetTransactionLocation::BestChain(block.coinbase_height().unwrap())
+                } else {
+                    GetTransactionLocation::NonbestChain
+                };
+                for tx in block.transactions.iter() {
+                    map.insert(tx.hash(), (tx.clone(), location.clone()));
+                }
+            }
+            map
+        })
     }
 
     fn all_blocks_arb_branch_order(&self) -> impl Iterator<Item = &Arc<zebra_chain::block::Block>> {
@@ -614,18 +685,7 @@ impl BlockchainSource for ProptestMockchain {
         if let Some(delay) = self.delay {
             tokio::time::sleep(delay).await;
         }
-        Ok(self.all_blocks_arb_branch_order().find_map(|block| {
-            block
-                .transactions
-                .iter()
-                .find(|transaction| transaction.hash() == txid.into())
-                .cloned()
-                .zip(Some(if self.best_branch().contains(block) {
-                    GetTransactionLocation::BestChain(block.coinbase_height().unwrap())
-                } else {
-                    GetTransactionLocation::NonbestChain
-                }))
-        }))
+        Ok(self.tx_index().get(&txid.into()).cloned())
     }
 
     /// Returns the hash of the block at the tip of the best chain.

@@ -48,9 +48,9 @@ zcash_transparent = "0.6.3"
 zcash_client_backend = "0.21.0"
 
 # Zebra
-zebra-chain = "6.0.1"
+zebra-chain = "6.0.2"
 zebra-state = "5.0.0"
-zebra-rpc = "6.0.1"
+zebra-rpc = "6.0.2"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

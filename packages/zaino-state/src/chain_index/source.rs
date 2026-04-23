@@ -801,7 +801,7 @@ impl BlockchainSource for ValidatorConnector {
 
 /// The location of a transaction returned by
 /// [BlockchainSource::get_transaction]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GetTransactionLocation {
     // get_transaction can get the height of the block
     // containing the transaction if it's on the best
@@ -838,8 +838,12 @@ pub(crate) mod test {
     /// height 0).
     fn build_txid_index(
         blocks: &[Arc<Block>],
-    ) -> Arc<HashMap<zebra_chain::transaction::Hash, (usize, Arc<zebra_chain::transaction::Transaction>)>>
-    {
+    ) -> Arc<
+        HashMap<
+            zebra_chain::transaction::Hash,
+            (usize, Arc<zebra_chain::transaction::Transaction>),
+        >,
+    > {
         let mut index = HashMap::new();
         for (height, block) in blocks.iter().enumerate() {
             for tx in &block.transactions {
@@ -862,8 +866,12 @@ pub(crate) mod test {
         /// txid → (block index, tx). Built once at construction; lets
         /// `get_transaction` run in O(1) instead of scanning every tx.
         /// Wrapped in `Arc` so cloning a `MockchainSource` is cheap.
-        txid_index:
-            Arc<HashMap<zebra_chain::transaction::Hash, (usize, Arc<zebra_chain::transaction::Transaction>)>>,
+        txid_index: Arc<
+            HashMap<
+                zebra_chain::transaction::Hash,
+                (usize, Arc<zebra_chain::transaction::Transaction>),
+            >,
+        >,
         active_chain_height: Arc<AtomicU32>,
         force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
     }

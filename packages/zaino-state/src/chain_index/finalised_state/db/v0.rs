@@ -69,7 +69,10 @@ use lmdb::{Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Trans
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::{fs, sync::Arc, time::Duration};
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::{
+    sync::Notify,
+    time::{interval, MissedTickBehavior},
+};
 use tracing::{info, warn};
 
 // ───────────────────────── ZainoDb v0 Capabilities ─────────────────────────
@@ -178,17 +181,41 @@ impl DbCore for DbV0 {
 
     /// Requests shutdown of background tasks and syncs the LMDB environment before returning.
     ///
-    /// This method is best-effort: background tasks are aborted after a timeout and the LMDB
-    /// environment is fsync’d before exit.
+    /// Signals the background task via `shutdown_notify` so it wakes out of
+    /// `zaino_db_handler_sleep` immediately, then awaits its join handle with
+    /// a 5 s timeout (aborting only if the handle fails to exit in time).
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Closing);
+        // `notify_one` stores a permit if no waiter is currently registered,
+        // so the task consumes the signal on its next `notified().await` even
+        // if shutdown fires before the task has entered the select.
+        // `notify_waiters` would be lost in that window (no stored permit).
+        self.shutdown_notify.notify_one();
 
-        if let Some(handle) = &self.db_handler {
+        let taken = self
+            .db_handler
+            .lock()
+            .expect("db_handler mutex poisoned")
+            .take();
+        if let Some(mut handle) = taken {
             let timeout = tokio::time::sleep(Duration::from_secs(5));
-            timeout.await;
-            // TODO: Check if handle is returned else abort
-            handle.abort();
+            tokio::pin!(timeout);
+
+            tokio::select! {
+                res = &mut handle => {
+                    match res {
+                        Ok(_) => {}
+                        Err(e) if e.is_cancelled() => {}
+                        Err(e) => warn!("background task ended with error: {e:?}"),
+                    }
+                }
+                _ = &mut timeout => {
+                    warn!("background task didn’t exit in time – aborting");
+                    handle.abort();
+                }
+            }
         }
+
         let _ = self.clean_trailing().await;
         if let Err(e) = self.env.sync(true) {
             warn!("LMDB fsync before close failed: {e}");
@@ -251,8 +278,15 @@ pub struct DbV0 {
 
     /// Background maintenance task handle.
     ///
-    /// This task periodically performs housekeeping (currently reader-slot cleanup).
-    db_handler: Option<tokio::task::JoinHandle<()>>,
+    /// Wrapped in a `Mutex` so `shutdown(&self)` can `.take()` the handle on
+    /// the trait's `&self` signature. The lock is only held to swap the
+    /// `Option`; no `.await` happens while it's held.
+    db_handler: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    /// Wakes the background task out of `zaino_db_handler_sleep` when shutdown
+    /// is requested, so it observes `StatusType::Closing` without waiting for
+    /// the next idle-sleep or maintenance-tick boundary.
+    shutdown_notify: Arc<Notify>,
 
     /// Backend lifecycle status.
     status: NamedAtomicStatus,
@@ -318,7 +352,8 @@ impl DbV0 {
             env: Arc::new(env),
             heights_to_hashes,
             hashes_to_blocks,
-            db_handler: None,
+            db_handler: std::sync::Mutex::new(None),
+            shutdown_notify: Arc::new(Notify::new()),
             status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
             config: config.clone(),
         };
@@ -327,42 +362,6 @@ impl DbV0 {
         zaino_db.spawn_handler().await?;
 
         Ok(zaino_db)
-    }
-
-    /// Attempts a graceful shutdown and falls back to aborting the maintenance task after a timeout.
-    ///
-    /// This is a legacy lifecycle method retained for v0 compatibility. Newer backends should
-    /// implement shutdown via the `DbCore` trait.
-    ///
-    /// # Errors
-    /// Returns `FinalisedStateError` if LMDB cleanup or sync fails.
-    pub(crate) async fn close(&mut self) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Closing);
-
-        if let Some(mut handle) = self.db_handler.take() {
-            let timeout = tokio::time::sleep(Duration::from_secs(5));
-            tokio::pin!(timeout);
-
-            tokio::select! {
-                res = &mut handle => {
-                    match res {
-                        Ok(_) => {}
-                        Err(e) if e.is_cancelled() => {}
-                        Err(e) => warn!("background task ended with error: {e:?}"),
-                    }
-                }
-                _ = &mut timeout => {
-                    warn!("background task didn’t exit in time – aborting");
-                    handle.abort();
-                }
-            }
-        }
-
-        let _ = self.clean_trailing().await;
-        if let Err(e) = self.env.sync(true) {
-            warn!("LMDB fsync before close failed: {e}");
-        }
-        Ok(())
     }
 
     /// Returns the current backend status.
@@ -403,7 +402,8 @@ impl DbV0 {
             env: Arc::clone(&self.env),
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
-            db_handler: None,
+            db_handler: std::sync::Mutex::new(None),
+            shutdown_notify: Arc::clone(&self.shutdown_notify),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -427,7 +427,7 @@ impl DbV0 {
             }
         });
 
-        self.db_handler = Some(handle);
+        *self.db_handler.lock().expect("db_handler mutex poisoned") = Some(handle);
         Ok(())
     }
 
@@ -444,6 +444,7 @@ impl DbV0 {
                     warn!("clean_trailing failed: {}", e);
                 }
             }
+            _ = self.shutdown_notify.notified() => {},
         }
     }
 
@@ -545,7 +546,8 @@ impl DbV0 {
             env: Arc::clone(&self.env),
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
-            db_handler: None,
+            db_handler: std::sync::Mutex::new(None),
+            shutdown_notify: Arc::clone(&self.shutdown_notify),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -653,7 +655,8 @@ impl DbV0 {
             env: Arc::clone(&self.env),
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
-            db_handler: None,
+            db_handler: std::sync::Mutex::new(None),
+            shutdown_notify: Arc::clone(&self.shutdown_notify),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -703,7 +706,8 @@ impl DbV0 {
             env: Arc::clone(&self.env),
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
-            db_handler: None,
+            db_handler: std::sync::Mutex::new(None),
+            shutdown_notify: Arc::clone(&self.shutdown_notify),
             status: self.status.clone(),
             config: self.config.clone(),
         };
