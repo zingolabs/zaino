@@ -70,7 +70,10 @@ use std::{
     },
     time::Duration,
 };
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::{
+    sync::Notify,
+    time::{interval, MissedTickBehavior},
+};
 use tracing::{error, info, warn};
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -149,6 +152,7 @@ impl DbCore for DbV1 {
 
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Closing);
+        self.shutdown_notify.notify_waiters();
 
         let taken = self
             .db_handler
@@ -268,6 +272,11 @@ pub(crate) struct DbV1 {
     /// `Option`; no `.await` happens while it's held.
     db_handler: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
+    /// Wakes the background task out of `zaino_db_handler_sleep` when shutdown
+    /// is requested, so it observes `StatusType::Closing` without waiting for
+    /// the next idle-sleep or maintenance-tick boundary.
+    shutdown_notify: Arc<Notify>,
+
     /// ZainoDB status.
     status: NamedAtomicStatus,
 
@@ -374,6 +383,7 @@ impl DbV1 {
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
+                shutdown_notify: Arc::new(Notify::new()),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
                 config: config.clone(),
             };
@@ -394,6 +404,7 @@ impl DbV1 {
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
+                shutdown_notify: Arc::new(Notify::new()),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
                 config: config.clone(),
             };
@@ -458,6 +469,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
+            shutdown_notify: Arc::clone(&self.shutdown_notify),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -566,6 +578,7 @@ impl DbV1 {
                     warn!("clean_trailing failed: {}", e);
                 }
             }
+            _ = self.shutdown_notify.notified() => {},
         }
     }
 
@@ -645,6 +658,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
+            shutdown_notify: Arc::clone(&self.shutdown_notify),
             status: self.status.clone(),
             config: self.config.clone(),
         };
