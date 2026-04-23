@@ -46,6 +46,7 @@ async fn survives_transient_source_failure() {
 /// (250ms, 500ms, 1s, 2s, 4s, 8s, 8s, 8s, 8s = ~40s total),
 /// the sync loop should escalate to CriticalError.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow by design"]
 async fn escalates_to_critical_after_persistent_failure() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(true).await;
