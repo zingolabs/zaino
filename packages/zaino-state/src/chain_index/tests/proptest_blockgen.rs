@@ -430,8 +430,7 @@ struct ProptestMockchain {
     /// safe to memoize. Shared via `Arc` so `mockchain.clone()` — which
     /// happens per-future in the test bodies via `index_reader.clone()` —
     /// reuses the same cache rather than recomputing per clone.
-    best_branch_cache:
-        Arc<std::sync::OnceLock<SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>>>,
+    best_branch_cache: Arc<std::sync::OnceLock<SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>>>,
     /// Cached txid → (tx, location) index. Built lazily on first `get_transaction`
     /// call. Replaces the O(N_blocks × M_txs) linear scan that recomputed
     /// `transaction.hash()` on every iteration — the dominant cost in the
