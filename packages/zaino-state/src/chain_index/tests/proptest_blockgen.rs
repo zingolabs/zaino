@@ -22,7 +22,7 @@ use crate::{
     chain_index::{
         non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
-        tests::{init_tracing, proptest_blockgen::proptest_helpers::add_segment},
+        tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
         NonFinalizedSnapshot,
     },
@@ -82,11 +82,28 @@ fn passthrough_test(
             let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
-            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             // 101 instead of 100 as heights are 0-indexed
-            assert_eq!(snapshot.max_serviceable_height().0 as usize, (2 * segment_length) - 101);
+            let expected_max_serviceable_height = (2 * segment_length) - 101;
+            // Poll rather than sleeping a fixed 5 s: the indexer discovers the
+            // chain topology as soon as the sync task has walked enough of the
+            // source to identify the finalized-state cutoff. With a 1 s
+            // per-block source delay (above) that's well under 5 s in practice,
+            // but can be longer under parallel-suite scheduler pressure.
+            poll_until(
+                "indexer to reach expected max_serviceable_height",
+                Duration::from_secs(30),
+                Duration::from_millis(50),
+                || async {
+                    let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+                    (snapshot.max_serviceable_height().0 as usize
+                        == expected_max_serviceable_height)
+                        .then_some(())
+                },
+            )
+            .await;
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+            assert_eq!(snapshot.max_serviceable_height().0 as usize, expected_max_serviceable_height);
             assert!(matches!(snapshot, ChainIndexSnapshot::StillSyncingFinalizedState { .. }));
 
             test(&mockchain, index_reader, &snapshot).await;
