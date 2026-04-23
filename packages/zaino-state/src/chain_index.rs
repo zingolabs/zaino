@@ -503,6 +503,61 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     status: NamedAtomicStatus,
     network: ZebraNetwork,
     source: Source,
+    sync_timings: SyncTimings,
+}
+
+/// Timing parameters for the ChainIndex sync loop.
+///
+/// [`SyncTimings::default()`] produces production values (500 ms inter-iteration
+/// sleep, 250 ms initial backoff doubling up to 8 s, 10 consecutive failures
+/// before escalating to [`StatusType::CriticalError`] — ~40 s total window).
+/// [`SyncTimings::fast()`] shrinks each duration by 10× so backoff-dependent
+/// unit tests finish in ~4 s instead of ~40 s.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SyncTimings {
+    pub(crate) interval: Duration,
+    pub(crate) initial_backoff: Duration,
+    pub(crate) max_backoff: Duration,
+    pub(crate) max_consecutive_failures: u32,
+}
+
+impl Default for SyncTimings {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_millis(500),
+            initial_backoff: Duration::from_millis(250),
+            max_backoff: Duration::from_secs(8),
+            max_consecutive_failures: 10,
+        }
+    }
+}
+
+#[cfg(test)]
+impl SyncTimings {
+    /// 10× faster than [`Self::default`] — test-only.
+    pub(crate) const fn fast() -> Self {
+        Self {
+            interval: Duration::from_millis(50),
+            initial_backoff: Duration::from_millis(25),
+            max_backoff: Duration::from_millis(800),
+            max_consecutive_failures: 10,
+        }
+    }
+
+    /// Upper bound on the cumulative sleep the sync loop performs before
+    /// escalating to [`StatusType::CriticalError`] under persistent failure.
+    ///
+    /// Sums backoff delays for failures `1..max_consecutive_failures` — the
+    /// final failure sets CriticalError without sleeping.
+    pub(crate) fn max_backoff_window(&self) -> Duration {
+        let mut total = Duration::ZERO;
+        let mut current = self.initial_backoff;
+        for _ in 0..self.max_consecutive_failures.saturating_sub(1) {
+            total += current;
+            current = (current * 2).min(self.max_backoff);
+        }
+        total
+    }
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
@@ -511,6 +566,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     pub async fn new(
         source: Source,
         config: crate::config::BlockCacheConfig,
+    ) -> Result<Self, crate::InitError> {
+        Self::new_with_sync_timings(source, config, SyncTimings::default()).await
+    }
+
+    /// Like [`Self::new`] but overrides the sync-loop timings. Intended for
+    /// tests that exercise the backoff path and need a faster schedule.
+    pub(crate) async fn new_with_sync_timings(
+        source: Source,
+        config: crate::config::BlockCacheConfig,
+        sync_timings: SyncTimings,
     ) -> Result<Self, crate::InitError> {
         use futures::TryFutureExt as _;
 
@@ -528,6 +593,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
             network: config.network.to_zebra_network(),
             source,
+            sync_timings,
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
@@ -572,46 +638,19 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
     #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
-        const SYNC_LOOP_INTERVAL: Duration = Duration::from_millis(500);
-        const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
-        const MAX_BACKOFF: Duration = Duration::from_secs(8);
-        const MAX_CONSECUTIVE_FAILURES: u32 = 10;
-
-        /// Returns `Ok(backoff_duration)` if the caller should retry, or
-        /// `Err(())` if the failure limit has been reached.
-        fn exponential_backoff(
-            consecutive_failures: u32,
-            current_backoff: Duration,
-            error: &SyncError,
-        ) -> Result<Duration, ()> {
-            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                tracing::error!(
-                    "Sync loop failed {consecutive_failures} consecutive times, \
-                     giving up: {error:?}"
-                );
-                return Err(());
-            }
-
-            let next_backoff = (current_backoff * 2).min(MAX_BACKOFF);
-            tracing::warn!(
-                "Sync loop iteration failed ({consecutive_failures}/\
-                 {MAX_CONSECUTIVE_FAILURES}), retrying in {current_backoff:?}: {error:?}"
-            );
-            Ok(next_backoff)
-        }
-
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
         let source = self.source.clone();
         let network = self.network.clone();
+        let timings = self.sync_timings;
 
         tokio::task::spawn(async move {
             let status = status.clone();
             let source = source.clone();
             let mut consecutive_failures: u32 = 0;
-            let mut current_backoff = INITIAL_BACKOFF;
+            let mut current_backoff = timings.initial_backoff;
 
             loop {
                 let source = source.clone();
@@ -674,23 +713,28 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 match sync_result {
                     Ok(()) => {
                         consecutive_failures = 0;
-                        current_backoff = INITIAL_BACKOFF;
+                        current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
-                        tokio::time::sleep(SYNC_LOOP_INTERVAL).await;
+                        tokio::time::sleep(timings.interval).await;
                     }
                     Err(e) => {
                         consecutive_failures += 1;
-                        match exponential_backoff(consecutive_failures, current_backoff, &e) {
-                            Ok(next_backoff) => {
-                                status.store(StatusType::RecoverableError);
-                                tokio::time::sleep(current_backoff).await;
-                                current_backoff = next_backoff;
-                            }
-                            Err(()) => {
-                                status.store(StatusType::CriticalError);
-                                return Err(e);
-                            }
+                        if consecutive_failures >= timings.max_consecutive_failures {
+                            tracing::error!(
+                                "Sync loop failed {consecutive_failures} consecutive times, \
+                                 giving up: {e:?}"
+                            );
+                            status.store(StatusType::CriticalError);
+                            return Err(e);
                         }
+                        tracing::warn!(
+                            "Sync loop iteration failed ({consecutive_failures}/{}), \
+                             retrying in {current_backoff:?}: {e:?}",
+                            timings.max_consecutive_failures
+                        );
+                        status.store(StatusType::RecoverableError);
+                        tokio::time::sleep(current_backoff).await;
+                        current_backoff = (current_backoff * 2).min(timings.max_backoff);
                     }
                 }
             }
