@@ -5905,9 +5905,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_transparent"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9b7b4bc11d8bb20833d1b8ab6807f4dca941b381f1129e5bbd72a84e391991"
+checksum = "2cd0a5fdc55d2310e1788d379edf0d68aa735041c18773503366b3c1a6df138b"
 dependencies = [
  "bip32",
  "blake2b_simd",
@@ -5931,9 +5931,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "6.0.1"
+version = "6.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0eebcd0ad0160d7bbc7f8ed26e6d00e257adf17c6d136628ea8ae979c027eced"
+checksum = "1ba7508b73a38ee9ddaaf2ba9b3c4799fbe47f6f4b47282fc109b78230f0b0f1"
 dependencies = [
  "bech32",
  "bitflags 2.11.1",
@@ -6000,9 +6000,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-consensus"
-version = "5.0.1"
+version = "5.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3f9fb46b7fb3d7065fdf6d36f11cd48aa0fd7c0efc5294311dc756d06275348"
+checksum = "ccc131c6833e7f325605b245773d4f75ca61a8c52b01849b78ee0ab3d616fc73"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6039,9 +6039,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-network"
-version = "5.0.0"
+version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "456c7afee9c651c8db90970db9ab86d42a313016457271fdf3340ae0b6bc4b2d"
+checksum = "57f1d5d4fe6fcc7be986f5a26a9c66f814c62d11746645fc6b7314573de9fb51"
 dependencies = [
  "bitflags 2.11.1",
  "byteorder",
@@ -6093,9 +6093,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-rpc"
-version = "6.0.1"
+version = "6.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5465db3b35a3c894567f32036c84d6ff1aacdfa300f87ddfa237d29ac9f120df"
+checksum = "17c7ad0e43df0860c33ad26a5814baaa5ae183d8d1d397e93ca7205cec286d08"
 dependencies = [
  "base64",
  "chrono",
@@ -6147,9 +6147,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-script"
-version = "5.0.0"
+version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86811347886796806663c5e66cfef8085ba5bbc04bb9f94adf5fcb54e3ef76c6"
+checksum = "41281ee4b0f1f2c0e14b228356696ce88d5be14f874cad23e980b26febc8c356"
 dependencies = [
  "libzcash_script",
  "thiserror 2.0.18",
