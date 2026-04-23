@@ -408,11 +408,17 @@ From [ADR 003 §1, "Branch / development strategy"](https://github.com/zingolabs
 > - Merge into `dev`: **1 approval** from CODEOWNERS.
 > - Merge into `stable`: **2 approvals** from CODEOWNERS.
 
-This ADR adds an intermediate `rc` branch between `dev` and `stable` (see
-[Branch Model](#branch-model)). PRs into `stable` originate from `rc`, which is
-itself advanced only to commits on `dev`; the "no feature branches directly
-into stable" invariant is preserved. The 1-approval and 2-approval rules above
-are unchanged.
+**Superseded by this ADR** (branch model and PR targeting): ADR 003 specifies
+two branches (`dev`, `stable`) with PRs into `stable` coming directly from
+`dev`. This repo specifies **three branches** — `dev → rc → stable` (see
+[Branch Model](#branch-model)). PRs into `stable` originate from `rc`, and
+`rc` is itself advanced only to commits on `dev`; the "no feature branches
+directly into stable" invariant is preserved via the `rc` intermediary. Where
+ADR 003 and this section disagree on the branch graph or PR targeting, this
+ADR is authoritative.
+
+**Inherited unchanged**: the 1-CODEOWNER approval requirement for merges into
+`dev` and the 2-CODEOWNER approval requirement for merges into `stable`.
 
 ### CI test execution (refined by this ADR)
 
@@ -424,19 +430,26 @@ From [ADR 003 §1, "CI / test execution rules"](https://github.com/zingolabs/zin
 
 This ADR refines the two-tier model into three tiers. Mapping:
 
-| ADR 003                              | This ADR                                 |
-| ------------------------------------ | ---------------------------------------- |
-| Fast test set (PRs into `dev`)       | Tier 1 (unit tests, pre-merge)           |
-| Full suite (nightly on `dev`)        | Tier 2 (integration tests, nightly)      |
-| Full suite (`dev → stable` PR)       | Tier 3 (long sync / soak on RC)          |
+| ADR 003                              | This ADR                                                   |
+| ------------------------------------ | ---------------------------------------------------------- |
+| Fast test set (PRs into `dev`)       | Tier 1 (unit tests, pre-merge into `dev`)                  |
+| Full suite (nightly on `dev`)        | Tier 2 (integration / e2e tests, nightly)                  |
+| —                                    | Tier 3 (long sync / soak, runs against each RC)            |
+| Full suite (`dev → stable` PR)       | **Superseded**: no gate on the blessing merge              |
 
-The substantive change is the split between tier 2 and tier 3. ADR 003's "full
-suite" collapsed integration and long-sync testing into a single gate.
-Long-sync validation requires days to complete per run, which is incompatible
-with gating a synchronous PR on it. Tier 3 therefore runs against RCs rather
-than PRs, and its outcome is recorded on the release dashboard rather than
-blocking a merge (see [Tier 3](#tier-3-long-sync--soak) and [Stable Release:
-Manual Blessing](#stable-release-manual-blessing)).
+**Superseded by this ADR** (gate placement): ADR 003 places a full-suite gate
+on the `dev → stable` PR. In this repo, tier 3 runs against an RC on the `rc`
+branch (days-long per RC), and its outcome is recorded on the [release
+dashboard](#stable-release-manual-blessing). The final merge that promotes an
+RC into `stable` is a manual blessing, not a gate — all three tiers have
+already been cleared by the RC being promoted. Where ADR 003 implies a
+re-run of the full suite at merge-into-`stable` time, this ADR is
+authoritative: no new suite runs at blessing; blessing is a deterministic
+promotion of the most-advanced RC that cleared every tier.
+
+Tier 3 is also genuinely new content: ADR 003's single "full suite"
+collapsed integration and long-sync testing, which is incompatible with
+gating a synchronous PR on days-long operations.
 
 ### Dependency policy (inherited from ADR 003 §1)
 
@@ -521,6 +534,35 @@ From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/
 
 > This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
 
+**Authoritative crate list (this repo)**: [Context](#context) enumerates the
+**6 crates.io-published packages** — `zainod`, `zaino-serve`, `zaino-state`,
+`zaino-fetch`, `zaino-proto`, `zaino-common` — and **2 internal-only
+packages** — `integration-tests` and `zaino-testutils`.
+
+`zainodlib` exists as a library target inside the `zainod` package
+(`packages/zainod/Cargo.toml`: `[[bin]] name = "zainod"` alongside
+`[lib] name = "zainodlib"`). It is **not** a first-class crates.io-published
+package: it has no independent version number and is not `cargo publish`ed
+separately. External consumers who import `zainodlib` do so by depending on
+the `zainod` package. ADR 003 treats `zainodlib` as a distinct governed
+interface surface, and its public-item list remains in force (below), but
+its SemVer bumps are expressed through the `zainod` package version, not an
+independent version of its own. Changes to `zainodlib`'s public API are
+therefore recorded as governed public-interface changes on the `zainod`
+crate for changeset purposes.
+
+`zaino-testvectors` is not in this repo. It has been extracted to a separate
+repository/workspace and is now published independently to crates.io; its
+release policy is governed there, not here. ADR 003's listing of it as an
+excluded crate in this repo is therefore moot — it is out of scope entirely
+for this ADR. The excluded (internal-only, not-crates.io-published) crate
+list governed by this ADR is the two packages named above.
+
+The per-crate subsections below reproduce the public-interface and
+public-item lists from ADR 003 verbatim. Subsection headers use the Rust
+module form (underscore) to match ADR 003's original headings; the
+corresponding package names (`Cargo.toml`) use the hyphenated form.
+
 #### `zainod` (daemon)
 
 > Public interfaces:
@@ -598,11 +640,14 @@ From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/
 
 #### Excluded (not governed)
 
-> - `zaino-testvectors`
 > - `zaino-testutils`
 > - `integration-tests`
 >
 > These may change freely without affecting SemVer, except where they force changes to governed public crates.
+
+(ADR 003's original excluded list also named `zaino-testvectors`; that crate
+now lives in a separate repo with its own crates.io publication cadence, so
+it is out of scope for this ADR entirely rather than "excluded" from it.)
 
 > **Note** The codebase does not currently reflect this in some places, with entities that should be private currently publicised (or error / config types in the wrong locations). Where this is the case issues / PRs should be opened to provide fixes (make entities pub(crate) or move to the correct location), or a subsequent ADR opened to update the public interface officially maintained.
 
