@@ -77,6 +77,11 @@ pub(crate) async fn load_vectors_v0db_and_reader(
 // *** ZainoDB Tests ***
 
 #[tokio::test(flavor = "multi_thread")]
+async fn shutdown_returns_promptly() {
+    super::assert_shutdown_returns_promptly("DbV0", spawn_v0_zaino_db).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sync_to_height() {
     init_tracing();
 

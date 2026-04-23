@@ -801,7 +801,7 @@ impl BlockchainSource for ValidatorConnector {
 
 /// The location of a transaction returned by
 /// [BlockchainSource::get_transaction]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GetTransactionLocation {
     // get_transaction can get the height of the block
     // containing the transaction if it's on the best
@@ -820,12 +820,40 @@ pub enum GetTransactionLocation {
 pub(crate) mod test {
     use super::*;
     use async_trait::async_trait;
+    use std::collections::HashMap;
     use std::sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
     };
     use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
     use zebra_state::HashOrHeight;
+
+    /// Build the txid → (height, tx) lookup map used by
+    /// [`MockchainSource::get_transaction`].
+    ///
+    /// Each tx's `hash()` is computed once here (cryptographic cost) and
+    /// cached for the lifetime of the `MockchainSource`. First occurrence
+    /// wins if the same txid appears at multiple heights — matches the
+    /// original linear-scan behaviour (return on first match starting at
+    /// height 0).
+    fn build_txid_index(
+        blocks: &[Arc<Block>],
+    ) -> Arc<
+        HashMap<
+            zebra_chain::transaction::Hash,
+            (usize, Arc<zebra_chain::transaction::Transaction>),
+        >,
+    > {
+        let mut index = HashMap::new();
+        for (height, block) in blocks.iter().enumerate() {
+            for tx in &block.transactions {
+                index
+                    .entry(tx.hash())
+                    .or_insert_with(|| (height, Arc::clone(tx)));
+            }
+        }
+        Arc::new(index)
+    }
 
     /// A test-only mock implementation of BlockchainReader using ordered lists by height.
     #[derive(Clone)]
@@ -835,6 +863,15 @@ pub(crate) mod test {
         roots: Vec<(Option<(sapling::Root, u64)>, Option<(orchard::Root, u64)>)>,
         treestates: Vec<(Vec<u8>, Vec<u8>)>,
         hashes: Vec<BlockHash>,
+        /// txid → (block index, tx). Built once at construction; lets
+        /// `get_transaction` run in O(1) instead of scanning every tx.
+        /// Wrapped in `Arc` so cloning a `MockchainSource` is cheap.
+        txid_index: Arc<
+            HashMap<
+                zebra_chain::transaction::Hash,
+                (usize, Arc<zebra_chain::transaction::Transaction>),
+            >,
+        >,
         active_chain_height: Arc<AtomicU32>,
         force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
     }
@@ -858,11 +895,13 @@ pub(crate) mod test {
 
             // len() returns one-indexed length, height is zero-indexed.
             let tip_height = blocks.len().saturating_sub(1) as u32;
+            let txid_index = build_txid_index(&blocks);
             Self {
                 blocks,
                 roots,
                 treestates,
                 hashes,
+                txid_index,
                 active_chain_height: Arc::new(AtomicU32::new(tip_height)),
                 force_requests_against_source_to_fail: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
@@ -900,11 +939,13 @@ pub(crate) mod test {
                 "active_chain_height must be in 0..=len-1"
             );
 
+            let txid_index = build_txid_index(&blocks);
             Self {
                 blocks,
                 roots,
                 treestates,
                 hashes,
+                txid_index,
                 active_chain_height: Arc::new(AtomicU32::new(active_chain_height)),
                 force_requests_against_source_to_fail: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
@@ -1058,40 +1099,25 @@ pub(crate) mod test {
                 GetTransactionLocation,
             )>,
         > {
-            let zebra_txid: zebra_chain::transaction::Hash =
-                zebra_chain::transaction::Hash::from(txid.0);
-
+            let zebra_txid = zebra_chain::transaction::Hash::from(txid.0);
             let active_chain_height = self.active_height() as usize;
             let mempool_height = active_chain_height + 1;
 
-            for height in 0..=active_chain_height {
-                if height > self.max_chain_height() as usize {
-                    break;
-                }
-                if let Some(found) = self.blocks[height]
-                    .transactions
-                    .iter()
-                    .find(|transaction| transaction.hash() == zebra_txid)
-                {
-                    return Ok(Some((
-                        Arc::clone(found),
-                        GetTransactionLocation::BestChain(zebra_chain::block::Height(
-                            height as u32,
-                        )),
-                    )));
-                }
-            }
+            let Some((stored_height, tx)) = self.txid_index.get(&zebra_txid) else {
+                return Ok(None);
+            };
 
-            if mempool_height < self.blocks.len() {
-                if let Some(found) = self.blocks[mempool_height]
-                    .transactions
-                    .iter()
-                    .find(|transaction| transaction.hash() == zebra_txid)
-                {
-                    return Ok(Some((Arc::clone(found), GetTransactionLocation::Mempool)));
-                }
+            if *stored_height <= active_chain_height {
+                return Ok(Some((
+                    Arc::clone(tx),
+                    GetTransactionLocation::BestChain(zebra_chain::block::Height(
+                        *stored_height as u32,
+                    )),
+                )));
             }
-
+            if *stored_height == mempool_height {
+                return Ok(Some((Arc::clone(tx), GetTransactionLocation::Mempool)));
+            }
             Ok(None)
         }
 

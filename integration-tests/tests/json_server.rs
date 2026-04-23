@@ -910,6 +910,23 @@ mod zcashd {
             validate_address_inner().await;
         }
 
+        #[allow(deprecated)]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn z_validate_address() {
+            let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, _zaino_sub) =
+                create_zcashd_test_manager_and_fetch_services(false).await;
+
+            let rpc_call = |addr: String| {
+                let subscriber: &FetchServiceSubscriber = &zcashd_subscriber;
+                async move { subscriber.z_validate_address(addr).await.unwrap() }
+            };
+
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_sapling(&rpc_call).await;
+
+            test_manager.close().await;
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn z_get_block() {
             z_get_block_inner().await;
