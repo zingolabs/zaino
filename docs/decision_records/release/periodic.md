@@ -11,6 +11,31 @@ There are 6 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
 (`integration-tests`, `zaino-testutils`). Each public crate is versioned and
 released independently.
 
+### Relationship to ADR 003
+
+[Zingolabs ADR 003](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md)
+previously stated Zaino's branching, versioning, changelog, public-interface,
+and release policy at the level of the broader zingolabs organization. That ADR
+explicitly deferred two items: a fixed release cadence ("A stable release
+schedule should be set in a later ADR") and the process for creating and
+validating release candidates (a TODO in its "Release steps" and an entry in
+its "Actions" list). This document resolves both.
+
+**Governance principle**: a decision record versioned alongside the code it
+governs is authoritative over a decision record held in a separate, generic
+repository. Release policy, branching rules, and public-interface governance
+are only meaningful relative to a specific state of the code; divorcing them
+from the `Cargo.toml`, `CODEOWNERS`, and crate graph they constrain makes the
+policy impossible to evolve coherently (a change to the governed public-item
+list in one repo has no way to land atomically with the code change it
+describes in another). This ADR therefore **supersedes ADR 003** as the
+authoritative statement of Zaino's branching, versioning, public-interface,
+changelog, and release policy. ADR 003 is **deprecated**; the text this
+document inherits from it is reproduced verbatim under [Cross
+References](#cross-references) with per-section back-references to the
+original. Future changes to any of these rules should be made here, not in
+zingo-adrs.
+
 ## Branch Model
 
 Three branches with a clear lineage:
@@ -72,6 +97,11 @@ one couldn't. A commit must clear all tiers to be releasable.
 | 1    | Unit tests*        | PR time (pre-merge)      | Local correctness within a crate             |
 | 2    | Integration tests* | Nightly advancement      | Cross-crate and cross-service correctness    |
 | 3    | Long sync / soak   | On RC cut (tier 2 pass)  | No regressions at scale (full chain, perf)   |
+
+This three-tier model refines the two-tier fast/full split ADR 003 originally
+prescribed; the mapping and the reasoning for splitting long-sync validation
+into its own tier are documented in [Cross References: CI test
+execution](#ci-test-execution-refined-by-this-adr).
 
 > **\* A note on test naming:** The current Zaino codebase calls "unit tests"
 > all tests that don't require launching external services, and "integration
@@ -195,6 +225,21 @@ version table and changelog in the release PR.
 
 **Enforcement**: CI rejects PRs that touch crate source without including a
 changeset file.
+
+**Per-public-change entries**: when a PR changes a [governed public
+interface](#governed-public-interfaces-inherited-from-adr-003-5), the changeset
+must include a separate `[[changes]]` entry for each such change. Bundling
+multiple public-interface changes under a single entry is not permitted,
+because the aggregated set of changesets since last stable is the source from
+which the workspace and per-crate changelogs are generated, and every
+user-visible change must appear as its own entry so it can be listed
+individually. The `description` field may be a multiline string and should be
+written to stand alone as a changelog line (operator-facing, plain language, no
+invented jargon). Internal-only changes within a governed crate still require a
+changeset entry (typically a `patch` bump) but may be collapsed into a single
+entry describing the net effect. This implements the recording requirement of
+ADR 003 §4 (see [Cross References: Changelog
+policy](#changelog-policy-inherited-from-adr-003-4)).
 
 On merge of the release PR, changeset files are cleared. The next release
 period starts fresh.
@@ -332,4 +377,245 @@ is deferred until fix-forward proves insufficient in practice.
 The team has consensus on per-crate independent versioning, but the specific
 version targeting strategy (when to go 1.0, whether all crates move in lockstep
 or independently) remains to be defined.
+
+## Cross References
+
+This ADR inherits a body of rules from [zingolabs ADR
+003](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md).
+The inherited text is reproduced here verbatim so that the authoritative
+statement of each rule travels with the code it governs. Each subsection
+attributes the source section of ADR 003.
+
+**ADR 003 is deprecated** by this document, per the governance principle in
+[Relationship to ADR 003](#relationship-to-adr-003): a repo-bound,
+version-bound decision record supersedes a generic cross-repo decision record
+on matters specific to this repo. Future changes to any rule below must be
+made in this file, not in `zingolabs/zingo-adrs`.
+
+### Branching and approvals (inherited from ADR 003 §1)
+
+From [ADR 003 §1, "Branch / development strategy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#1-branch--development-strategy):
+
+> **Branches**
+> - `dev`: primary development branch (default branch).
+> - `stable`: release branch (only release-quality changes land here).
+>
+> **PR targeting rules**
+> - PRs may target `dev` directly.
+> - PRs may target `stable` **only if they are merges from `dev`** (i.e., *no feature branches directly into stable*).
+>
+> **Review rules**
+> - Merge into `dev`: **1 approval** from CODEOWNERS.
+> - Merge into `stable`: **2 approvals** from CODEOWNERS.
+
+This ADR adds an intermediate `rc` branch between `dev` and `stable` (see
+[Branch Model](#branch-model)). PRs into `stable` originate from `rc`, which is
+itself advanced only to commits on `dev`; the "no feature branches directly
+into stable" invariant is preserved. The 1-approval and 2-approval rules above
+are unchanged.
+
+### CI test execution (refined by this ADR)
+
+From [ADR 003 §1, "CI / test execution rules"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#1-branch--development-strategy):
+
+> - PRs into `dev`: run a **fast test set** (unit tests where available, small subset of integration tests included while unit tests are missing).
+> - Nightly on `dev`: run the **full test suite**.
+> - PRs into `stable` (i.e., `dev` → `stable` release PRs): run the **full test suite**.
+
+This ADR refines the two-tier model into three tiers. Mapping:
+
+| ADR 003                              | This ADR                                 |
+| ------------------------------------ | ---------------------------------------- |
+| Fast test set (PRs into `dev`)       | Tier 1 (unit tests, pre-merge)           |
+| Full suite (nightly on `dev`)        | Tier 2 (integration tests, nightly)      |
+| Full suite (`dev → stable` PR)       | Tier 3 (long sync / soak on RC)          |
+
+The substantive change is the split between tier 2 and tier 3. ADR 003's "full
+suite" collapsed integration and long-sync testing into a single gate.
+Long-sync validation requires days to complete per run, which is incompatible
+with gating a synchronous PR on it. Tier 3 therefore runs against RCs rather
+than PRs, and its outcome is recorded on the release dashboard rather than
+blocking a merge (see [Tier 3](#tier-3-long-sync--soak) and [Stable Release:
+Manual Blessing](#stable-release-manual-blessing)).
+
+### Dependency policy (inherited from ADR 003 §1)
+
+From [ADR 003 §1, "Dependency rules"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#1-branch--development-strategy):
+
+> All non-test dependencies must be crates.io imports on stable.
+> Dev may temporarily use feature branches via `[patch.crates-io]`.
+
+### Versioning semantics (inherited from ADR 003 §2)
+
+From [ADR 003 §2, "Versioning strategy (SemVer)"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#2-versioning-strategy-semver-and-what-it-means-in-zaino):
+
+> Zaino follows **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`.
+>
+> **Scope choice**
+> - Zaino versions are treated as **crate-specific** meaning each publishable crates in this repository will have an individual version number which will be bumped when changes to that repo necessitate it.
+>
+> **Definitions for Zaino**
+> - **MAJOR**: any *backward-incompatible* change to a governed public interface (see "Public interfaces" section), including:
+>   - breaking changes to gRPC service behavior/requests/responses,
+>   - removing or changing semantics/signatures of public Rust items intended for external users,
+>   - breaking configuration/CLI contract for `zainod` where it impacts operators in a non-compatible way.
+> - **MINOR**: backward-compatible feature additions, including:
+>   - new RPC endpoints/services added without breaking existing ones,
+>   - new fields added in a backward-compatible way (where supported by the protocol/encoding),
+>   - new public Rust APIs that do not break old ones.
+> - **PATCH**: backward-compatible bug fixes, performance fixes, and internal refactors with no externally observable contract change.
+
+**Pre-1.0 relaxation**, from the same section:
+
+> While Zaino remains in the 0.y.z phase, version bumps will be treated as one level "less critical" than post-1.0.0. Specifically, changes that would normally require a major bump will instead require a minor bump, and changes that would normally require a minor bump will instead require a patch bump. Patch bumps keep the same meaning as post-1.0.0.
+
+**ZainoDB versioning**, from the same section:
+
+> - **MAJOR**: Distinct database implementations, providing differing sets of functionality (Currently V1 is the only supported major version. A lightweight V2 database that only holds the minimal set of data required to produce the extra indexes (compared to zebrad) required in Zaino is planned but not yet implemented. V0 is a backwards compatibility layer for the legacy local cache implementation).
+> - **MINOR**: Updates that contain changes to either the public APIs or the on disk schema.
+> - **PATCH**: Internal bug fixes / performance improvements that do not touch the public APIs or on disk schema.
+>
+> Due to this, version changes in ZainoDB may not dictate a change of the same type at the library level.
+
+### Documentation publication (inherited from ADR 003 §3)
+
+From [ADR 003 §3, "GitHub Pages + crates.io documentation update strategy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#3-github-pages--cratesio-documentation-update-strategy):
+
+> **Docs targets**
+> - **GitHub Pages (gh-pages)**: the canonical "workspace documentation" site.
+> - **docs.rs (crates.io)**: Rust API docs are automatically built for crates published to crates.io.
+>
+> **Update rules**
+> - Every time `stable` is updated as part of a release (and crates.io is updated), **GitHub Pages MUST be updated** to match that release state.
+> - docs.rs updates automatically when crates are published to crates.io.
+
+Implementation via `actions/deploy-pages` as part of the release workflow is
+currently unimplemented; manual update of gh-pages at release time is required
+until that is automated.
+
+### Changelog policy (inherited from ADR 003 §4)
+
+From [ADR 003 §4, "Changelog policy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#4-changelog-policy):
+
+> **Changelog locations**
+> - **Workspace changelog:** one primary changelog for the repository/workspace (covers cross-cutting changes and release-level summaries).
+> - **Per-crate changelogs:** each publishable crate maintains its own changelog for crate-specific changes.
+> - **ZainoDB changelog:** ZainoDB maintains an additional database-specific changelog, following the ZainoDB versioning policy defined in this ADR (separate from the crate/workspace SemVer policy).
+>
+> **What must be recorded**
+> - Any change to a governed **public interface** (as defined in this ADR) must be recorded in:
+>   - the **workspace changelog**, and
+>   - the **relevant crate's changelog**.
+> - Any change that affects the **ZainoDB on-disk schema** or database behaviour covered by the ZainoDB versioning policy must be recorded in the **ZainoDB changelog**, and does not necessarily imply a crate/workspace version bump of the same type.
+
+This ADR implements the recording mechanism via changesets (see
+[Changesets](#changesets-per-crate-version-tracking)): each governed
+public-interface change is declared in its own `[[changes]]` entry, and CI
+aggregates the changesets accumulated since the last stable to produce the
+workspace and per-crate changelogs at release time. The ZainoDB changelog is
+maintained separately on the ZainoDB versioning cadence.
+
+### Governed public interfaces (inherited from ADR 003 §5)
+
+From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#5-public-interfaces-governed-by-this-adr-and-officially-supported-in-zaino):
+
+> This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
+
+#### `zainod` (daemon)
+
+> Public interfaces:
+> - Zainod daemon: Main indexing daemon
+>   - Zcash JsonRPC service
+>   - Zcash LightClient gRPC service
+>
+> Public items:
+> - CLI arguments
+> - Config format
+> - RPC Specs
+
+#### `zainodlib` (daemon library)
+
+> Public interfaces:
+> - `indexer::Indexer`: Full indexing server
+>
+> Public items:
+> - `config::*`
+> - `error::*`
+
+#### `zaino_serve` (gRPC + JsonRPC servers)
+
+> Public interfaces:
+> - `server::{grpc::TonicServer, jsonrpc::JsonRpcServer}`: gRPC / JsonRPC server implementations
+>
+> Public items:
+> - `rpc::{GrpcClient, JsonRpcClient}`
+> - `rpc::jsonrpc::service::ZcashIndexerRpc`
+> - `server::config::*`
+> - `server::error::*`
+
+#### `zaino_state` (core indexing library)
+
+> Public interfaces:
+> - `chain_index::source::ValidatorConnector`: Validator agnostic Chain data fetch service
+> - `chain_index::{NodeBackedChainIndex, NodeBackedChainIndexSubscriber}`: Core chain indexing service
+> - `backends::{fetch::{FetchService, FetchServiceSubscriber}, state::{StateService, StateServiceSubscriber}}`: Indexing API (IndexerService / IndexerSubscriber) based on the zcash RPC services for compatibility, utilising Zaino's underlying indexing services
+>
+> Public items:
+> - `indexer::{IndexerService, ZcashService, IndexerSubscriber, ZcashIndexer, LightWalletIndexer, LightWalletService}`
+> - `chain_index::{ChainIndex, NonFinalizedSnapshot}`
+> - `chain_index::source::{BlockchainSource, State, BlockchainSourceResult}`
+> - `chain_index::encoding::*`
+> - `chain_index::types::*`
+> - `status::*`
+> - `stream::*`
+> - `config::*`
+> - `error::*`
+> - ZainoDB's on disk schema.
+
+#### `zaino_fetch` (Zcash-specific JsonRPC client + parsing)
+
+> Public interfaces:
+> - `jsonrpc::connector::JsonRpcConnector`: Zcash specific JsonRPC client with full chain data fetch and block / transaction parsing capability
+>
+> Public items:
+> - `chain::utils::ParseFromSlice`
+> - `chain::transaction::*`
+> - `chain::block::*`
+> - `chain::error::*`
+> - `jsonrpc::connector::test_node_and_return_url`
+> - `jsonrpc::response::*`
+> - `jsonrpc::error::*`
+
+#### `zaino_proto` (LightClient protocol implementation)
+
+> Public items:
+> - `::*`
+
+#### `zaino_common` (common types + utilities)
+
+> Public items:
+> - `::*`
+
+#### Excluded (not governed)
+
+> - `zaino-testvectors`
+> - `zaino-testutils`
+> - `integration-tests`
+>
+> These may change freely without affecting SemVer, except where they force changes to governed public crates.
+
+> **Note** The codebase does not currently reflect this in some places, with entities that should be private currently publicised (or error / config types in the wrong locations). Where this is the case issues / PRs should be opened to provide fixes (make entities pub(crate) or move to the correct location), or a subsequent ADR opened to update the public interface officially maintained.
+
+### Release strategy (superseded by this ADR)
+
+ADR 003 §6 defined release prerequisites, steps, and cadence at a level that
+left rc creation/validation and a concrete cadence as open TODOs. Those TODOs
+are resolved in the body of this document:
+
+- **Cadence** — [Stable Release: Manual Blessing](#stable-release-manual-blessing)
+- **RC creation and validation** — [The Pipeline](#the-pipeline), [Tier 2](#tier-2-nightly-rc-advancement), [Tier 3](#tier-3-long-sync--soak)
+- **Release steps** — [Stable Release: Manual Blessing](#stable-release-manual-blessing)
+- **Container image publication** — follows ADR 003 §6 step 7 verbatim: images MUST be tagged with the release version (`vMAJOR.MINOR.PATCH`) and SHOULD also be tagged with the Git commit SHA.
+
+Source: [ADR 003 §6, "Release strategy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#6-release-strategy).
 
