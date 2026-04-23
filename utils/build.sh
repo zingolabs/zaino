@@ -6,7 +6,7 @@ DIR="$( cd "$( dirname "$0" )" && pwd )"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PLATFORM="linux/amd64"
 OCI_OUTPUT="$REPO_ROOT/build/oci"
-DOCKERFILE="$REPO_ROOT/Dockerfile"
+DOCKERFILE="$REPO_ROOT/Dockerfile.deterministic"
 
 export DOCKER_BUILDKIT=1
 export SOURCE_DATE_EPOCH=1
