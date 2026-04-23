@@ -1,15 +1,17 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
 use futures::StreamExt as _;
+use hex::ToHex as _;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetMempoolTxRequest, GetSubtreeRootsArg,
     PoolType, TransparentAddressBlockFilter, TxFilter,
 };
+use zaino_state::ChainIndex;
 use zaino_state::FetchServiceSubscriber;
 #[allow(deprecated)]
-use zaino_state::{FetchService, LightWalletIndexer, StatusType, ZcashIndexer};
+use zaino_state::{FetchService, LightWalletIndexer, Status, StatusType, ZcashIndexer};
 use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
@@ -316,22 +318,30 @@ pub async fn test_get_mempool_info<V: ValidatorExt>(validator: &ValidatorKind) {
     let info = fetch_service_subscriber.get_mempool_info().await.unwrap();
 
     // Derive expected values directly from the current mempool contents.
-    let entries = fetch_service_subscriber.mempool.get_mempool().await;
+
+    let keys = fetch_service_subscriber
+        .indexer
+        .get_mempool_txids()
+        .await
+        .unwrap();
+
+    let values = fetch_service_subscriber
+        .indexer
+        .get_mempool_transactions(Vec::new())
+        .await
+        .unwrap();
 
     // Size
-    assert_eq!(info.size, entries.len() as u64);
+    assert_eq!(info.size, values.len() as u64);
     assert!(info.size >= 1);
 
     // Bytes: sum of SerializedTransaction lengths
-    let expected_bytes: u64 = entries
-        .iter()
-        .map(|(_, value)| value.serialized_tx.as_ref().as_ref().len() as u64)
-        .sum();
+    let expected_bytes: u64 = values.iter().map(|entry| entry.len() as u64).sum();
 
     // Key heap bytes: sum of txid String capacities
-    let expected_key_heap_bytes: u64 = entries
+    let expected_key_heap_bytes: u64 = keys
         .iter()
-        .map(|(key, _)| key.txid.capacity() as u64)
+        .map(|key| key.encode_hex::<String>().capacity() as u64)
         .sum();
 
     let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
@@ -385,8 +395,10 @@ async fn fetch_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKin
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
+    let chain_height = dbg!(fetch_service_subscriber.chain_height().await.unwrap()).0;
+
     dbg!(fetch_service_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 
@@ -527,12 +539,12 @@ async fn fetch_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
-    let chain_height = fetch_service_subscriber
-        .block_cache
-        .get_chain_height()
-        .await
-        .unwrap()
-        .0;
+    let chain_height: u32 = fetch_service_subscriber
+        .indexer
+        .snapshot_nonfinalized_state()
+        .best_tip
+        .height
+        .into();
     dbg!(&chain_height);
 
     let fetch_service_txids = fetch_service_subscriber
@@ -765,11 +777,6 @@ async fn fetch_service_get_block_subsidy<V: ValidatorExt>(validator: &ValidatorK
         test_manager
             .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
             .await;
-        // Zebrad does not support the founders' reward block subsidy
-        if i < first_halving_height.0 && validator == &ValidatorKind::Zebrad {
-            assert!(fetch_service_subscriber.get_block_subsidy(i).await.is_err());
-            continue;
-        }
         let fetch_service_get_block_subsidy =
             fetch_service_subscriber.get_block_subsidy(i).await.unwrap();
 
@@ -1168,11 +1175,10 @@ async fn fetch_service_get_block_range_returns_all_pools<V: ValidatorExt>(
 
     assert_eq!(compact_block.height, end_height);
 
-    let expected_transaction_count = if matches!(validator, ValidatorKind::Zebrad) {
-        3
-    } else {
-        4 // zcashd uses shielded coinbase which will add an extra compact tx
-    };
+    // Transparent tx are now included in compact blocks unless specified so the
+    // expected block count should be 4 (3 sent tx + coinbase)
+    let expected_transaction_count = 4;
+
     // the compact block has the right number of transactions
     assert_eq!(compact_block.vtx.len(), expected_transaction_count);
 
@@ -1557,12 +1563,12 @@ async fn fetch_service_get_taddress_txids<V: ValidatorExt>(validator: &Validator
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
-    let chain_height = fetch_service_subscriber
-        .block_cache
-        .get_chain_height()
-        .await
-        .unwrap()
-        .0;
+    let chain_height: u32 = fetch_service_subscriber
+        .indexer
+        .snapshot_nonfinalized_state()
+        .best_tip
+        .height
+        .into();
     dbg!(&chain_height);
 
     let block_filter = TransparentAddressBlockFilter {
@@ -1735,8 +1741,11 @@ async fn fetch_service_get_mempool_tx<V: ValidatorExt>(validator: &ValidatorKind
     let mut sorted_fetch_mempool_tx = fetch_mempool_tx.clone();
     sorted_fetch_mempool_tx.sort_by_key(|tx| tx.txid.clone());
 
+    // Transaction IDs from quick_send are already in internal byte order,
+    // which matches what the mempool returns, so no reversal needed
     let tx1_bytes = *tx_1.first().as_ref();
     let tx2_bytes = *tx_2.first().as_ref();
+
     let mut sorted_txids = [tx1_bytes, tx2_bytes];
     sorted_txids.sort_by_key(|hash| *hash);
 
@@ -1858,8 +1867,10 @@ async fn fetch_service_get_tree_state<V: ValidatorExt>(validator: &ValidatorKind
 
     let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
+    let chain_height = dbg!(fetch_service_subscriber.chain_height().await.unwrap()).0;
+
     let block_id = BlockId {
-        height: 1,
+        height: chain_height as u64,
         hash: Vec::new(),
     };
 
@@ -1906,7 +1917,7 @@ async fn fetch_service_get_subtree_roots<V: ValidatorExt>(validator: &ValidatorK
     };
 
     let fetch_service_stream = fetch_service_subscriber
-        .get_subtree_roots(subtree_roots_arg.clone())
+        .get_subtree_roots(subtree_roots_arg)
         .await
         .unwrap();
     let fetch_service_roots: Vec<_> = fetch_service_stream.collect().await;
@@ -2363,7 +2374,7 @@ mod zcashd {
             fetch_service_get_lightd_info::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn get_network_sol_ps() {
             assert_fetch_service_getnetworksols_matches_rpc::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
@@ -2592,7 +2603,7 @@ mod zebrad {
             fetch_service_get_lightd_info::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn get_network_sol_ps() {
             assert_fetch_service_getnetworksols_matches_rpc::<Zebrad>(&ValidatorKind::Zebrad).await;
         }

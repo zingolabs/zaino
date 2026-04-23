@@ -6,18 +6,31 @@ and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
-- [808] Adopt lightclient-protocol v0.4.0
+- [943] Zallet regtest fixes
 
 ### Added 
 ### Changed
-- zaino-proto now references v0.4.0 files
+- `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`
+  whose `sapling` and `orchard` fields are optional. In regtest mode, these
+  fields may be omitted when the corresponding network upgrade activation
+  height is not configured.
 ### Removed
-- `
+### Deprecated
+
+## [v0.2.0] - 2026-03-25
+- [808] Adopt lightclient-protocol v0.4.0
+
+### Added
+### Changed
+- zaino-proto now references v0.4.0 files
+- `zaino_fetch::jsonrpsee::response::ErrorsTimestamp` no longer supports a String
+  variant.
+### Removed
 
 ### Deprecated
-- `zaino-fetch::chain:to_compact` in favor of `to_compact_tx` which takes an 
+- `zaino-fetch::chain:to_compact` in favor of `to_compact_tx` which takes an
   optional height and a `PoolTypeFilter` (see zaino-proto changes)
-- 
+-
 ## [v0.4.0] - 2025-12-03
 
 ### Added

@@ -5,8 +5,8 @@
 3) [Zcashd, Zcash-Cli](https://github.com/zcash/zcash)
 
 ### Tests
-1) Symlink or copy compiled `zebrad`, `zcashd` and `zcash-cli` binaries to `zaino/test_binaries/bins/*`
-2) Add `zaino/test_binaries/bins` to `$PATH` or to `$TEST_BINARIES_DIR`
+1) Symlink or copy compiled `zebrad`, `zcashd` and `zcash-cli` binaries to `zaino/integration-tests/test_binaries/bins/*`
+2) Add `zaino/integration-tests/test_binaries/bins` to `$PATH` or to `$TEST_BINARIES_DIR`
 3) Run `cargo nextest run`
 
 The expected versions of these binaries is detailed in the file ``.env.testing-artifacts`.

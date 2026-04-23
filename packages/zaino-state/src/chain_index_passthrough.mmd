@@ -1,0 +1,21 @@
+flowchart TD
+    m_end_return_it[Return it]
+    m_start(Receive call)
+    m_start --> m_step_1
+    m_step_1["STEP 1:Is the requested data available in cached Mempool?"]
+    m_step_1 --> |Yes| m_end_return_it
+    m_step_1 --> |No| m_step_2
+    m_step_2["STEP 2:Is the requested data available in the NONFINALIZED SnapShot "]
+    m_step_2 --> |Yes| m_step_3
+    m_step_2 --> |No| m_step_4
+    m_step_3["STEP 3:Is that data on the ``BestChain``?, or is it acceptable on a ``NonBestChain``?"]
+    m_step_3 --> |Yes| m_end_return_it
+    m_step_3 --> |No| m_end_return_none
+    m_step_4["STEP 4: Is the requested data in the FINALIZED index?"]
+    m_step_4 -->|Yes| m_end_return_it
+    m_step_4 --> |No| m_step_5
+    m_step_5["STEP 5:Is the requested data available and FINALIZED in the validator (passthrough)?"]
+    m_step_5 --> |Yes| m_end_return_it
+    m_step_5 --> |No| m_end_return_none
+    m_end_return_none[Return None]
+
