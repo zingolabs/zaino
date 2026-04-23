@@ -3,8 +3,8 @@
 //!
 //! `BlockContext` deliberately has no serde impl — persistence is the sole
 //! responsibility of a module-private helper in `types/db/block.rs`
-//! (`PersistentBlockContext`), and the two types round-trip via `From`
-//! conversions defined alongside that helper.
+//! (`PersistentBlockContext`), and the two types round-trip via `from_business`/
+//! `to_business` conversion methods defined on that type.
 
 use super::{BlockHash, BlockIndex, ChainWork, Height};
 
