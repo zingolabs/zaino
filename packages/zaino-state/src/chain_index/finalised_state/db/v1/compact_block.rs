@@ -338,7 +338,7 @@ impl DbV1 {
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
-            db_handler: None,
+            db_handler: std::sync::Mutex::new(None),
             status: self.status.clone(),
             config: self.config.clone(),
         };
