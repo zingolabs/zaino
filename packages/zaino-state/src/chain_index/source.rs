@@ -801,7 +801,7 @@ impl BlockchainSource for ValidatorConnector {
 
 /// The location of a transaction returned by
 /// [BlockchainSource::get_transaction]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GetTransactionLocation {
     // get_transaction can get the height of the block
     // containing the transaction if it's on the best
