@@ -4,7 +4,7 @@ use tokio_stream::StreamExt as _;
 use zebra_chain::serialization::ZcashDeserializeInto;
 
 use crate::chain_index::{
-    tests::vectors::TestVectorBlockData,
+    tests::{poll::poll_until, vectors::TestVectorBlockData},
     types::{BestChainLocation, TransactionHash},
     ChainIndex,
 };
@@ -138,9 +138,25 @@ async fn sync_blocks_after_startup() {
 
     for _ in 0..20 {
         mockchain.mine_blocks(1);
-        sleep(Duration::from_millis(600)).await;
+        let expected_tip = mockchain.active_height();
+        poll_until(
+            "indexer tip to match mockchain after mine",
+            Duration::from_secs(10),
+            Duration::from_millis(25),
+            || async {
+                let tip = index_reader
+                    .snapshot_nonfinalized_state()
+                    .await
+                    .ok()?
+                    .get_nfs_snapshot()?
+                    .best_tip
+                    .height
+                    .0;
+                (tip == expected_tip).then_some(())
+            },
+        )
+        .await;
     }
-    sleep(Duration::from_millis(2000)).await;
 
     let indexer_tip = dbg!(
         &index_reader
