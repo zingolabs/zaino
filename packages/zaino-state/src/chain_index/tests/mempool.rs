@@ -87,7 +87,7 @@ async fn get_mempool() {
             mockchain.mine_blocks(10);
             active_chain_height = dbg!(mockchain.active_height());
 
-            sleep(Duration::from_millis(2000)).await;
+            sleep(Duration::from_millis(501)).await;
         }
     }
 }
