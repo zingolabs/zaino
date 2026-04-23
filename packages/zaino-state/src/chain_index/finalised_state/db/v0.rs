@@ -186,7 +186,11 @@ impl DbCore for DbV0 {
     /// a 5 s timeout (aborting only if the handle fails to exit in time).
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Closing);
-        self.shutdown_notify.notify_waiters();
+        // `notify_one` stores a permit if no waiter is currently registered,
+        // so the task consumes the signal on its next `notified().await` even
+        // if shutdown fires before the task has entered the select.
+        // `notify_waiters` would be lost in that window (no stored permit).
+        self.shutdown_notify.notify_one();
 
         let taken = self
             .db_handler
