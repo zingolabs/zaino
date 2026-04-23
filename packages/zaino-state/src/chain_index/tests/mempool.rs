@@ -17,7 +17,7 @@ use crate::{
             vectors::{build_active_mockchain_source, load_test_vectors, TestVectorBlockData},
         },
     },
-    BlockchainSource as _, Mempool, MempoolKey, MempoolValue,
+    BlockHash, BlockchainSource as _, Mempool, MempoolKey, MempoolValue,
 };
 
 /// Poll the subscriber until its mempool keys exactly match `expected_txids`.
@@ -44,6 +44,23 @@ async fn wait_for_mempool_to_reflect(
                 .collect();
             (got == expected).then_some(())
         },
+    )
+    .await;
+}
+
+/// Poll the subscriber until its `mempool_chain_tip` equals `expected`.
+///
+/// The mempool propagates new tips via a `watch::Sender<BlockHash>` updated
+/// from its background sync task. Waiters that only check transaction ids
+/// (see [`wait_for_mempool_to_reflect`]) can observe the new txs before the
+/// tip-hash channel is updated, so callers about to pass an expected tip to
+/// `get_mempool_stream` must wait on this helper separately.
+async fn wait_for_mempool_tip_hash(subscriber: &MempoolSubscriber, expected: BlockHash) {
+    poll_until(
+        "mempool chain tip to match expected hash",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || async { (subscriber.mempool_chain_tip() == expected).then_some(()) },
     )
     .await;
 }
@@ -419,6 +436,7 @@ async fn get_mempool_stream_correct_expected_chain_tip() {
         mempool_transactions.iter().map(|tx| tx.hash().to_string()),
     )
     .await;
+    wait_for_mempool_tip_hash(&subscriber, active_chain_tip_hash.into()).await;
 
     let (mut rx, handle) = subscriber
         .get_mempool_stream(Some(active_chain_tip_hash.into()))
