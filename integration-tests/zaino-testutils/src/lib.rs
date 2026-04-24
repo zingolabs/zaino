@@ -644,9 +644,31 @@ where
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
-        while u32::from(chain_index.snapshot_nonfinalized_state().best_tip.height)
-            < chain_height + n
-        {
+        // Read the current nonfinalized tip height via the public ChainIndex API.
+        // `snapshot_nonfinalized_state` became async returning a Result, and the
+        // snapshot's inner `NonfinalizedBlockCacheSnapshot` is now `pub(crate)`,
+        // so external callers must go through `best_chaintip(&snapshot)`.
+        //
+        // Friction note: this patch was needed because the integration-tests
+        // workspace is separate from the root workspace, so these call sites
+        // rotted silently across a dev merge — root-workspace CI never compiled
+        // them. Expect the same class of breakage to recur in `chain_cache.rs`
+        // and anywhere else that consumes `ChainIndex::Snapshot` from outside
+        // `zaino-state`, until the split-workspace issue is addressed.
+        // See https://github.com/zingolabs/zaino/issues/1043.
+        async fn read_tip_height(chain_index: &NodeBackedChainIndexSubscriber) -> u32 {
+            let snapshot = chain_index
+                .snapshot_nonfinalized_state()
+                .await
+                .expect("chain index snapshot should succeed during test setup");
+            let tip = chain_index
+                .best_chaintip(&snapshot)
+                .await
+                .expect("best chaintip should be available during test setup");
+            u32::from(tip.height)
+        }
+
+        while read_tip_height(chain_index).await < chain_height + n {
             // Check liveness - fail fast if the chain index is dead
             if !chain_index.is_live() {
                 let status = chain_index.combined_status();
@@ -660,9 +682,7 @@ where
                 interval.tick().await;
             } else {
                 self.local_net.generate_blocks(1).await.unwrap();
-                while u32::from(chain_index.snapshot_nonfinalized_state().best_tip.height)
-                    != next_block_height
-                {
+                while read_tip_height(chain_index).await != next_block_height {
                     if !chain_index.is_live() {
                         let status = chain_index.combined_status();
                         panic!(

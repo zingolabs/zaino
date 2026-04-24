@@ -3,6 +3,7 @@
 use futures::StreamExt as _;
 use hex::ToHex as _;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
+use zaino_fetch::jsonrpsee::request::block_selector::BlockSelector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetMempoolTxRequest, GetSubtreeRootsArg,
@@ -13,6 +14,7 @@ use zaino_state::FetchServiceSubscriber;
 #[allow(deprecated)]
 use zaino_state::{FetchService, LightWalletIndexer, Status, StatusType, ZcashIndexer};
 use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
+use zebra_chain::block::Height;
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
@@ -930,6 +932,45 @@ async fn fetch_service_get_best_blockhash<V: ValidatorExt>(validator: &Validator
         fetch_service_get_best_blockhash.hash(),
         ret.expect("ret to be Some(GetBlockHashResponse) not None")
     );
+
+    test_manager.close().await;
+}
+
+#[allow(deprecated)]
+async fn fetch_service_get_blockhash<V: ValidatorExt>(validator: &ValidatorKind) {
+    let mut test_manager =
+        TestManager::<V, FetchService>::launch(validator, None, None, None, true, false, false)
+            .await
+            .unwrap();
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    test_manager
+        .generate_blocks_and_poll_indexer(5, &fetch_service_subscriber)
+        .await;
+
+    // Resolve the expected hash for a fixed, non-tip height via z_get_block.
+    let inspected_block: GetBlock = fetch_service_subscriber
+        .z_get_block("7".to_string(), Some(1))
+        .await
+        .unwrap();
+    let expected_hash_at_height = match inspected_block {
+        GetBlock::Object(obj) => obj.hash(),
+        GetBlock::Raw(_) => panic!("expected Object variant with verbosity=1"),
+    };
+
+    let got_by_height: GetBlockHashResponse = fetch_service_subscriber
+        .get_blockhash(BlockSelector::Height(Height(7)))
+        .await
+        .unwrap();
+    assert_eq!(got_by_height.hash(), expected_hash_at_height);
+
+    // Tip selector should agree with get_best_blockhash.
+    let got_by_tip: GetBlockHashResponse = fetch_service_subscriber
+        .get_blockhash(BlockSelector::Tip)
+        .await
+        .unwrap();
+    let best = fetch_service_subscriber.get_best_blockhash().await.unwrap();
+    assert_eq!(got_by_tip.hash(), best.hash());
 
     test_manager.close().await;
 }
@@ -2304,6 +2345,11 @@ mod zcashd {
         }
 
         #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn blockhash() {
+            fetch_service_get_blockhash::<Zcashd>(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn block_count() {
             fetch_service_get_block_count::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
@@ -2570,6 +2616,11 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn best_blockhash() {
             fetch_service_get_best_blockhash::<Zebrad>(&ValidatorKind::Zebrad).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn blockhash() {
+            fetch_service_get_blockhash::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]

@@ -1,6 +1,7 @@
 use futures::StreamExt;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
+use zaino_fetch::jsonrpsee::request::block_selector::BlockSelector;
 use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
 use zaino_proto::proto::service::{BlockId, BlockRange, PoolType, TransparentAddressBlockFilter};
 use zaino_state::ChainIndex as _;
@@ -16,9 +17,12 @@ use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
 use zainodlib::config::ZainodConfig;
 use zainodlib::error::IndexerError;
 use zcash_local_net::validator::{zebrad::Zebrad, Validator};
+use zebra_chain::block::Height;
 use zebra_chain::parameters::NetworkKind;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
-use zebra_rpc::methods::{GetAddressBalanceRequest, GetAddressTxIdsRequest, GetInfo};
+use zebra_rpc::methods::{
+    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlockHashResponse, GetInfo,
+};
 use zip32::AccountId;
 
 #[allow(deprecated)]
@@ -529,6 +533,86 @@ async fn state_service_get_block_object(
         .await
         .unwrap();
     assert_eq!(state_service_get_block_by_hash, state_service_block);
+
+    test_manager.close().await;
+}
+
+async fn state_service_get_blockhash(
+    validator: &ValidatorKind,
+    chain_cache: Option<std::path::PathBuf>,
+    network: NetworkKind,
+) {
+    let (
+        mut test_manager,
+        _fetch_service,
+        fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<Zebrad>(
+        validator,
+        chain_cache,
+        false,
+        false,
+        Some(network),
+    )
+    .await;
+
+    let target_height: u32 = match network {
+        NetworkKind::Regtest => 1,
+        _ => 1_000_000,
+    };
+
+    // Reference hash: pull block at target_height via z_get_block.
+    let reference_block = fetch_service_subscriber
+        .z_get_block(target_height.to_string(), Some(1))
+        .await
+        .unwrap();
+    let expected_hash_at_height = match reference_block {
+        zebra_rpc::methods::GetBlock::Object(obj) => obj.hash(),
+        zebra_rpc::methods::GetBlock::Raw(_) => panic!("expected Object variant with verbosity=1"),
+    };
+
+    let got_by_height: GetBlockHashResponse = state_service_subscriber
+        .get_blockhash(BlockSelector::Height(Height(target_height)))
+        .await
+        .unwrap();
+    assert_eq!(got_by_height.hash(), expected_hash_at_height);
+
+    // Tip selector should agree with get_best_blockhash.
+    let got_by_tip: GetBlockHashResponse = state_service_subscriber
+        .get_blockhash(BlockSelector::Tip)
+        .await
+        .unwrap();
+    let best = state_service_subscriber.get_best_blockhash().await.unwrap();
+    assert_eq!(got_by_tip.hash(), best.hash());
+
+    test_manager.close().await;
+}
+
+async fn state_service_get_blockhash_out_of_range_returns_err(validator: &ValidatorKind) {
+    let (
+        mut test_manager,
+        _fetch_service,
+        _fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<Zebrad>(
+        validator,
+        None,
+        false,
+        false,
+        Some(NetworkKind::Regtest),
+    )
+    .await;
+
+    // A regtest chain at launch has only a handful of blocks; 9_999 is far beyond any tip.
+    let far_beyond_tip = BlockSelector::Height(Height(9_999));
+    let result = state_service_subscriber.get_blockhash(far_beyond_tip).await;
+
+    assert!(
+        result.is_err(),
+        "out-of-range height must return Err, not panic or succeed"
+    );
 
     test_manager.close().await;
 }
@@ -2415,6 +2499,16 @@ mod zebra {
         async fn block_object_regtest() {
             state_service_get_block_object(&ValidatorKind::Zebrad, None, NetworkKind::Regtest)
                 .await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn blockhash_regtest() {
+            state_service_get_blockhash(&ValidatorKind::Zebrad, None, NetworkKind::Regtest).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn blockhash_out_of_range_returns_err() {
+            state_service_get_blockhash_out_of_range_returns_err(&ValidatorKind::Zebrad).await;
         }
 
         #[ignore = "requires fully synced testnet."]

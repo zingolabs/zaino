@@ -95,6 +95,12 @@ zaino-fetch = { workspace = true }
 zaino-testutils = { workspace = true }
 tracing.workspace = true
 
+# Pin to a yanked version that `zcash_protocol ^0.7.2` transitively requires
+# via `core2 = "^0.3"`. All 0.3.x are yanked, so fresh resolves without this
+# explicit pin fail. The root workspace `Cargo.lock` already has 0.3.3 locked.
+# TODO: drop when `zcash_protocol` no longer pulls `core2 0.3.x`.
+core2 = "=0.3.3"
+
 [dev-dependencies]
 anyhow = { workspace = true }
 
