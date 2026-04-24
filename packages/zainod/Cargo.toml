@@ -1,0 +1,69 @@
+[package]
+name = "zainod"
+description = "Crate containing the Zaino Indexer binary."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.2.0"
+
+[[bin]]
+name = "zainod"
+path = "src/main.rs"
+
+[lib]
+name = "zainodlib"
+path = "src/lib.rs"
+
+[features]
+# Removes network restrictions.
+no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
+
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = [
+  "zaino-state/transparent_address_history_experimental",
+  "zaino-serve/transparent_address_history_experimental"
+]
+
+[dependencies]
+zaino-common = { workspace = true }
+zaino-fetch = { workspace = true }
+zaino-state = { workspace = true }
+zaino-serve = { workspace = true }
+
+# Zebra
+zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
+
+# Runtime
+tokio = { workspace = true, features = ["full"] }
+
+# CLI
+clap = { workspace = true, features = ["derive"] }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time"] }
+
+# Network / RPC
+http = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+# Utility
+thiserror = { workspace = true }
+
+# Formats
+toml = { workspace = true }
+config = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+zcash_address = { workspace = true }
+zcash_protocol = { workspace = true }

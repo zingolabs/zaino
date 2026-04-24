@@ -34,7 +34,7 @@ Other channels where you may be able to reach Zingolabs developers that include 
 Code and documentation are very helpful and the lifeblood of Free Software. To merge in code to this repo, one will have to have a [GitHub account](https://docs.github.com/en/account-and-profile).
 
 Code, being Rust, must be formatted using `rustfmt` and applying the `clippy` suggestions.
-For convenience, there are scripts included in the `utils` directory which run these tools and remove trailing whitespaces. From the project's workspace root, you can run `./utils/precommit-check.sh`
+For convenience, there are scripts included in the `tools/scripts` directory which run these tools and remove trailing whitespaces. From the project's workspace root, you can run `./tools/scripts/precommit-check.sh`
 
 In general, PRs should be opened against [the `dev` branch](https://github.com/zingolabs/zaino/tree/dev).
 
