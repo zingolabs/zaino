@@ -500,7 +500,6 @@ mod chain_query_interface {
 
         for iteration in 0..5 {
             let snapshot = indexer.snapshot_nonfinalized_state();
-            let snapshot_tip = snapshot.best_tip;
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -509,9 +508,7 @@ mod chain_query_interface {
                     .get_mempool_stream(Some(&snapshot))
                     .unwrap_or_else(|| {
                         panic!(
-                            "fresh snapshot unexpectedly returned None on iteration {iteration}: \
-                     snapshot best tip height={:?} hash={:?}",
-                            snapshot_tip.height, snapshot_tip.blockhash,
+                            "fresh snapshot unexpectedly returned None on iteration {iteration}"
                         )
                     });
 
