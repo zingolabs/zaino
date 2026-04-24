@@ -539,12 +539,11 @@ async fn fetch_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
-    let chain_height: u32 = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let fetch_service_txids = fetch_service_subscriber
@@ -1563,12 +1562,11 @@ async fn fetch_service_get_taddress_txids<V: ValidatorExt>(validator: &Validator
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
-    let chain_height: u32 = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let block_filter = TransparentAddressBlockFilter {

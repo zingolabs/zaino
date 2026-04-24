@@ -59,14 +59,10 @@ mod chain_query_interface {
     use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
     use zaino_state::{
         chain_index::{
-            source::ValidatorConnector,
-            types::{BestChainLocation, TransactionHash},
-            NodeBackedChainIndex, NodeBackedChainIndexSubscriber, ShieldedPool,
+            source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+            ShieldedPool,
         },
-        test_dependencies::{
-            chain_index::{self, ChainIndex},
-            BlockCacheConfig,
-        },
+        test_dependencies::{chain_index::ChainIndex, BlockCacheConfig},
         FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
@@ -75,9 +71,8 @@ mod chain_query_interface {
             testnet::{ConfiguredActivationHeights, RegtestParameters},
             NetworkKind,
         },
-        serialization::{ZcashDeserialize, ZcashDeserializeInto},
+        serialization::ZcashDeserializeInto,
     };
-    use zaino_state::test_dependencies::chain_index::non_finalised_state::BestTip;
 
     use super::*;
 
@@ -268,7 +263,7 @@ mod chain_query_interface {
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
+        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
         let range = indexer
             .get_block_range(&snapshot, Height::try_from(0).unwrap(), None)
             .unwrap()
@@ -326,7 +321,7 @@ mod chain_query_interface {
 
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
-        let snapshot = indexer.snapshot_nonfinalized_state();
+        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
         let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;
 
         let finalised_start = Height::try_from(chain_height - 150).unwrap();
@@ -497,7 +492,7 @@ mod chain_query_interface {
             .await;
 
         for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state();
+            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -556,24 +551,24 @@ mod chain_query_interface {
             .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
 
-        let initial_snapshot = indexer.snapshot_nonfinalized_state();
-        let mut prev_tip: BestTip = indexer.best_chaintip(&initial_snapshot).await.unwrap();
+        let initial_snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let mut prev_tip = indexer.best_chaintip(&initial_snapshot).await.unwrap();
 
         for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state();
+            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
             let current_tip = indexer.best_chaintip(&snapshot).await.unwrap();
 
             let fork_point = indexer
-            .find_fork_point(&snapshot, &prev_tip.blockhash)
+            .find_fork_point(&snapshot, &prev_tip.hash)
             .await
             .unwrap()
             .unwrap_or_else(|| {
                 panic!(
                     "no fork point found on iteration {iteration}: prev_tip=({:?}, {:?}) current_tip=({:?}, {:?})",
                     prev_tip.height,
-                    prev_tip.blockhash,
+                    prev_tip.hash,
                     current_tip.height,
-                    current_tip.blockhash,
+                    current_tip.hash,
                 )
             });
 
@@ -618,9 +613,9 @@ mod chain_query_interface {
                      current tip height={:?} hash={:?}, \
                      prev_tip height={:?} hash={:?}",
                             current_tip.height,
-                            current_tip.blockhash,
+                            current_tip.hash,
                             prev_tip.height,
-                            prev_tip.blockhash,
+                            prev_tip.hash,
                         )
                     });
 
