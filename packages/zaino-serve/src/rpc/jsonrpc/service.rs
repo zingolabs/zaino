@@ -1,5 +1,6 @@
 //! Zcash RPC implementations.
 
+use zaino_fetch::jsonrpsee::request::block_selector::BlockSelector;
 use zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas;
 use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
@@ -91,6 +92,17 @@ pub trait ZcashIndexerRpc {
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     #[method(name = "getbestblockhash")]
     async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, ErrorObjectOwned>;
+
+    /// Returns the hash of the block at the given index in the best valid block chain.
+    ///
+    /// zcashd reference: [`getblockhash`](https://zcash.github.io/rpc/getblockhash.html)
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "getblockhash")]
+    async fn get_blockhash(
+        &self,
+        block_index: BlockSelector,
+    ) -> Result<GetBlockHashResponse, ErrorObjectOwned>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
@@ -447,6 +459,23 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_best_blockhash()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_blockhash(
+        &self,
+        block_index: BlockSelector,
+    ) -> Result<GetBlockHashResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_blockhash(block_index)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(
