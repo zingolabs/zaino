@@ -811,13 +811,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         match self.indexer.snapshot_nonfinalized_state().await? {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
-            } => {
-                let tip = non_finalized_snapshot.best_tip;
-                Ok(BlockId {
-                    height: tip.height.0 as u64,
-                    hash: tip.blockhash.0.to_vec(),
-                })
-            }
+            } => Ok(non_finalized_snapshot.best_tip.to_wire()),
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
                 // TODO: This probably shouldn't be an error.
                 // this is an improvement over previous behaviour of reporting

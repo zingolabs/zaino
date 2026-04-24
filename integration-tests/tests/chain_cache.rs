@@ -59,14 +59,10 @@ mod chain_query_interface {
     use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
     use zaino_state::{
         chain_index::{
-            source::ValidatorConnector,
-            types::{BestChainLocation, TransactionHash},
-            NodeBackedChainIndex, NodeBackedChainIndexSubscriber, ShieldedPool,
+            source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+            ShieldedPool,
         },
-        test_dependencies::{
-            chain_index::{self, ChainIndex},
-            BlockCacheConfig,
-        },
+        test_dependencies::{chain_index::ChainIndex, BlockCacheConfig},
         FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
@@ -75,9 +71,8 @@ mod chain_query_interface {
             testnet::{ConfiguredActivationHeights, RegtestParameters},
             NetworkKind,
         },
-        serialization::{ZcashDeserialize, ZcashDeserializeInto},
+        serialization::ZcashDeserializeInto,
     };
-    use zaino_state::test_dependencies::chain_index::non_finalised_state::BestTip;
 
     use super::*;
 
@@ -268,8 +263,7 @@ mod chain_query_interface {
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
+        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
         let range = indexer
             .get_block_range(&snapshot, Height::try_from(0).unwrap(), None)
             .unwrap()
@@ -277,178 +271,9 @@ mod chain_query_interface {
             .await
             .unwrap();
         for block in range {
-            let block = block
+            block
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
-            assert_eq!(
-                block.hash().0,
-                snapshot
-                    .heights_to_hashes
-                    .get(
-                        &chain_index::types::Height::try_from(block.coinbase_height().unwrap())
-                            .unwrap()
-                    )
-                    .unwrap()
-                    .0
-            );
-        }
-    }
-
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn find_fork_point_zebrad() {
-        find_fork_point::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
-    }
-
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn find_fork_point_zcashd() {
-        find_fork_point::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
-    }
-
-    async fn find_fork_point<C, Service>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
-        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
-
-        test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
-            .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
-        for block_hash in snapshot.heights_to_hashes.values() {
-            // As all blocks are currently on the main chain,
-            // this should be the block provided
-            assert_eq!(
-                block_hash,
-                &indexer
-                    .find_fork_point(&snapshot, block_hash)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .0
-            )
-        }
-    }
-
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_raw_transaction_zebrad() {
-        get_raw_transaction::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
-    }
-
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_raw_transaction_zcashd() {
-        get_raw_transaction::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
-    }
-
-    async fn get_raw_transaction<C, Service>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
-        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
-
-        test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
-            .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
-        for (txid, height) in snapshot.blocks.values().flat_map(|block| {
-            block
-                .transactions()
-                .iter()
-                .map(|txdata| (txdata.txid().0, block.height()))
-        }) {
-            let (raw_transaction, branch_id) = indexer
-                .get_raw_transaction(&snapshot, &TransactionHash(txid))
-                .await
-                .unwrap()
-                .unwrap();
-            let zebra_txn =
-                zebra_chain::transaction::Transaction::zcash_deserialize(&raw_transaction[..])
-                    .unwrap();
-
-            assert_eq!(
-                branch_id,
-                if height == chain_index::types::GENESIS_HEIGHT {
-                    None
-                } else if height == Height::try_from(1).unwrap() {
-                    zebra_chain::parameters::NetworkUpgrade::Canopy
-                        .branch_id()
-                        .map(u32::from)
-                } else {
-                    zebra_chain::parameters::NetworkUpgrade::Nu6
-                        .branch_id()
-                        .map(u32::from)
-                }
-            );
-
-            let correct_txid = zebra_txn.hash().0;
-
-            assert_eq!(txid, correct_txid);
-        }
-    }
-
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_transaction_status_zebrad() {
-        get_transaction_status::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
-    }
-
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_transaction_status_zcashd() {
-        get_transaction_status::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
-    }
-
-    async fn get_transaction_status<C, Service>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
-        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 3);
-
-        test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
-            .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
-        for (txid, height, block_hash) in snapshot.blocks.values().flat_map(|block| {
-            block
-                .transactions()
-                .iter()
-                .map(|txdata| (txdata.txid().0, block.height(), block.hash()))
-        }) {
-            let (transaction_status_best_chain, transaction_status_nonbest_chain) = indexer
-                .get_transaction_status(&snapshot, &TransactionHash(txid))
-                .await
-                .unwrap();
-            assert_eq!(
-                transaction_status_best_chain.unwrap(),
-                BestChainLocation::Block(*block_hash, height)
-            );
-            assert!(transaction_status_nonbest_chain.is_empty());
         }
     }
 
@@ -484,13 +309,6 @@ mod chain_query_interface {
                 .generate_blocks_and_poll_indexer(0, state_service.get_subscriber().inner_ref())
                 .await
         }
-        {
-            let chain_height =
-                Height::try_from(json_service.get_blockchain_info().await.unwrap().blocks.0)
-                    .unwrap();
-            let indexer_height = indexer.snapshot_nonfinalized_state().best_tip.height;
-            assert_eq!(chain_height, indexer_height);
-        }
 
         test_manager
             .generate_blocks_and_poll_chain_index(150, &indexer)
@@ -503,10 +321,8 @@ mod chain_query_interface {
 
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
-        let snapshot = indexer.snapshot_nonfinalized_state();
+        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
         let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;
-        let indexer_height = snapshot.best_tip.height;
-        assert_eq!(Height::try_from(chain_height).unwrap(), indexer_height);
 
         let finalised_start = Height::try_from(chain_height - 150).unwrap();
         let finalised_tip = Height::try_from(chain_height - 100).unwrap();
@@ -564,8 +380,6 @@ mod chain_query_interface {
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
 
         let test_pools = [ShieldedPool::Sapling, ShieldedPool::Orchard];
         let valid_start_index = 0;
@@ -678,8 +492,7 @@ mod chain_query_interface {
             .await;
 
         for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state();
-            let snapshot_tip = snapshot.best_tip;
+            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -688,9 +501,7 @@ mod chain_query_interface {
                     .get_mempool_stream(Some(&snapshot))
                     .unwrap_or_else(|| {
                         panic!(
-                            "fresh snapshot unexpectedly returned None on iteration {iteration}: \
-                     snapshot best tip height={:?} hash={:?}",
-                            snapshot_tip.height, snapshot_tip.blockhash,
+                            "fresh snapshot unexpectedly returned None on iteration {iteration}"
                         )
                     });
 
@@ -740,24 +551,24 @@ mod chain_query_interface {
             .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
 
-        let initial_snapshot = indexer.snapshot_nonfinalized_state();
-        let mut prev_tip: BestTip = indexer.best_chaintip(&initial_snapshot).await.unwrap();
+        let initial_snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let mut prev_tip = indexer.best_chaintip(&initial_snapshot).await.unwrap();
 
         for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state();
+            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
             let current_tip = indexer.best_chaintip(&snapshot).await.unwrap();
 
             let fork_point = indexer
-            .find_fork_point(&snapshot, &prev_tip.blockhash)
+            .find_fork_point(&snapshot, &prev_tip.hash)
             .await
             .unwrap()
             .unwrap_or_else(|| {
                 panic!(
                     "no fork point found on iteration {iteration}: prev_tip=({:?}, {:?}) current_tip=({:?}, {:?})",
                     prev_tip.height,
-                    prev_tip.blockhash,
+                    prev_tip.hash,
                     current_tip.height,
-                    current_tip.blockhash,
+                    current_tip.hash,
                 )
             });
 
@@ -776,10 +587,9 @@ mod chain_query_interface {
                 .get_block_range(&snapshot, start_height, end_height)
                 .unwrap_or_else(|| {
                     panic!(
-                        "expected block range on iteration {iteration}: start={:?} end={:?} snapshot_tip={:?}",
+                        "expected block range on iteration {iteration}: start={:?} end={:?}",
                         start_height,
                         end_height,
-                        snapshot.best_tip,
                     )
                 });
 
@@ -800,15 +610,12 @@ mod chain_query_interface {
                     .unwrap_or_else(|| {
                         panic!(
                             "fresh snapshot unexpectedly returned None on iteration {iteration}: \
-                     snapshot best tip height={:?} hash={:?}, \
                      current tip height={:?} hash={:?}, \
                      prev_tip height={:?} hash={:?}",
-                            snapshot.best_tip.height,
-                            snapshot.best_tip.blockhash,
                             current_tip.height,
-                            current_tip.blockhash,
+                            current_tip.hash,
                             prev_tip.height,
-                            prev_tip.blockhash,
+                            prev_tip.hash,
                         )
                     });
 

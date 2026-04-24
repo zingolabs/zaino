@@ -530,7 +530,7 @@ impl ZainoDB {
                 .get_block_header(height)
                 .await
             {
-                Ok(header) => *header.index().chainwork(),
+                Ok(header) => header.context.chainwork,
                 // V0 does not hold or use chainwork, and does not serve header data,
                 // can we handle this better?
                 //
@@ -647,7 +647,7 @@ impl ZainoDB {
                         ));
                     }
                 };
-                parent_chainwork = *chain_block.index().chainwork();
+                parent_chainwork = chain_block.context.chainwork;
 
                 self.write_block(chain_block).await?;
             }

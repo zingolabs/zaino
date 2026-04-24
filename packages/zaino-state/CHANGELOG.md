@@ -20,6 +20,17 @@ and this library adheres to Rust's notion of
     - `to_compact`: returns a compactTx from TxInCompact
   - new type: `non_finalized_state::ChainIndexSnapshot`
   - `NonFinalizedSnapshot` trait has new method: `max_serviceable_height`
+  - `::types`
+    - new submodule `primitives` with type `BlockIndex { height, hash }`
+      (re-exported as `chain_index::types::BlockIndex`)
+    - new submodule `block_context` with type
+      `BlockContext { index, parent_hash, chainwork }`, constructor
+      `BlockContext::new`, and accessors `hash`/`parent_hash`/`chainwork`/`height`
+      (re-exported as `chain_index::types::BlockContext`)
+    - new submodule `wire` carrying the business↔gRPC conversions:
+      - `BlockIndex::to_wire()` → `proto::BlockId`
+      - `BlockIndex::try_from_wire(proto::BlockId) -> Result<Self, WireBlockIdError>`
+      - new error enum `WireBlockIdError` (`HashWrongLength`, `HeightOverflow`)
 - `local_cache::compact_block_with_pool_types`
 ### Changed
 - `get_mempool_tx` now takes `GetMempoolTxRequest` as parameter
@@ -39,7 +50,10 @@ and this library adheres to Rust's notion of
   - `NodeBackedChainIndexSubscriber`'s `ChainIndex` implementation:
       - `Snapshot` associated type is now a `ChainIndexSnapshot`
       this effects all associated methods.
-  - `non_finalized_state::BestTip` renamed to `non_finalized_state::BlockIdent`
+  - `non_finalized_state::BestTip` renamed and relocated to
+    `chain_index::types::BlockIndex` (was briefly `non_finalized_state::BlockIdent`
+    earlier in the same unreleased cycle); its inner field is now named `hash`
+    (previously `blockhash`), and it gains `Eq`/`Hash` derives.
 
 ### Deprecated
 - `GetTaddressTxids` is replaced by `GetTaddressTransactions`

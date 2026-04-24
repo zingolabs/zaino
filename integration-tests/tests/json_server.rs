@@ -631,12 +631,11 @@ async fn get_address_tx_ids_inner() {
     )
     .await;
 
-    let chain_height = zcashd_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &zcashd_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let zcashd_txids = zcashd_subscriber

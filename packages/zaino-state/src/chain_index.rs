@@ -11,9 +11,10 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::non_finalised_state::{BlockIdent, ChainIndexSnapshot};
+use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
+use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
@@ -367,7 +368,7 @@ pub trait ChainIndex {
     fn best_chaintip(
         &self,
         nonfinalized_snapshot: &Self::Snapshot,
-    ) -> impl std::future::Future<Output = Result<BlockIdent, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockIndex, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -803,7 +804,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 .values()
                 .find(|h| **h == hash)
                 // Canonical height is None for blocks not on the best chain
-                .map(|_| block.index().height())),
+                .map(|_| block.context.index.height)),
             None => self
                 // ChainIndex step 4:
                 .finalized_state
@@ -1428,7 +1429,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             Ok(Some((*block.hash(), block.height())))
                         } else {
                             // Otherwise, it's non-best chain! Grab its parent, and recurse
-                            Box::pin(self.find_fork_point(snapshot, block.index().parent_hash()))
+                            Box::pin(self.find_fork_point(snapshot, &block.context.parent_hash))
                                 .await
                             // gotta pin recursive async functions to prevent infinite-sized
                             // Future-implementing types
@@ -1567,7 +1568,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .await?
                     .next()
                 {
-                    Some(block) => block.index.height.into(),
+                    Some(block) => block.context.index.height.into(),
                     // As above Ok(None)
                     None => return Ok(None),
                 }
@@ -1639,7 +1640,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .await;
                 if in_mempool {
                     let mempool_tip_hash = self.mempool.mempool_chain_tip();
-                    if mempool_tip_hash == non_finalized_snapshot.best_tip.blockhash {
+                    if mempool_tip_hash == non_finalized_snapshot.best_tip.hash {
                         if best_chain_block.is_some() {
                             return Err(ChainIndexError {
                         kind: ChainIndexErrorKind::InvalidSnapshot,
@@ -1760,7 +1761,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             },
             None => None,
         };
-        let expected_chain_tip = non_finalized_snapshot.map(|snapshot| snapshot.best_tip.blockhash);
+        let expected_chain_tip = non_finalized_snapshot.map(|snapshot| snapshot.best_tip.hash);
         let mut subscriber = self.mempool.clone();
 
         match subscriber
@@ -1824,7 +1825,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         self.mempool.get_mempool_info().await
     }
 
-    async fn best_chaintip(&self, snapshot: &Self::Snapshot) -> Result<BlockIdent, Self::Error> {
+    async fn best_chaintip(&self, snapshot: &Self::Snapshot) -> Result<BlockIndex, Self::Error> {
         Ok(match snapshot {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
@@ -1833,9 +1834,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             ChainIndexSnapshot::StillSyncingFinalizedState {
                 validator_finalized_height,
             } => {
-                BlockIdent {
+                BlockIndex {
                     height: *validator_finalized_height,
-                    blockhash: self
+                    hash: self
                         .source()
                         // TODO: do something more efficient than getting the whole block
                         .get_block(HashOrHeight::Height((*validator_finalized_height).into()))

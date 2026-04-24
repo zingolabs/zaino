@@ -397,7 +397,7 @@ fn make_chain() {
             let index_reader = indexer.subscriber();
             let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             let non_finalized_snapshot = snapshot.get_nfs_snapshot().expect("not synced");
-            let best_tip_hash = non_finalized_snapshot.best_tip.blockhash;
+            let best_tip_hash = non_finalized_snapshot.best_tip.hash;
             let best_tip_block = non_finalized_snapshot
                 .get_chainblock_by_hash(&best_tip_hash)
                 .unwrap();

@@ -639,14 +639,17 @@ where
         n: u32,
         chain_index: &NodeBackedChainIndexSubscriber,
     ) {
+        async fn current_tip_height(chain_index: &NodeBackedChainIndexSubscriber) -> u32 {
+            let snapshot = chain_index.snapshot_nonfinalized_state().await.unwrap();
+            u32::from(chain_index.best_chaintip(&snapshot).await.unwrap().height)
+        }
+
         let chain_height = self.local_net.get_chain_height().await;
         let mut next_block_height = chain_height + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
-        while u32::from(chain_index.snapshot_nonfinalized_state().best_tip.height)
-            < chain_height + n
-        {
+        while current_tip_height(chain_index).await < chain_height + n {
             // Check liveness - fail fast if the chain index is dead
             if !chain_index.is_live() {
                 let status = chain_index.combined_status();
@@ -660,9 +663,7 @@ where
                 interval.tick().await;
             } else {
                 self.local_net.generate_blocks(1).await.unwrap();
-                while u32::from(chain_index.snapshot_nonfinalized_state().best_tip.height)
-                    != next_block_height
-                {
+                while current_tip_height(chain_index).await != next_block_height {
                     if !chain_index.is_live() {
                         let status = chain_index.combined_status();
                         panic!(
