@@ -160,7 +160,6 @@ default-filter = """
         test(/^zcashd::zcash_indexer::get_best_blockhash$/) |
         test(/^zcashd::zcash_indexer::get_block_count$/) |
         test(/^zcashd::zcash_indexer::get_block_deltas$/) |
-        test(/^zcashd::zcash_indexer::get_peer_info$/) |
         test(/^zcashd::zcash_indexer::validate_address$/) |
         test(/^zcashd::zcash_indexer::z_get_block$/) |
         test(/^zebra::check_info::regtest_no_cache$/) |
