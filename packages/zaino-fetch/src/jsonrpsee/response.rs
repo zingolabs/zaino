@@ -510,6 +510,43 @@ impl From<GetBlockHash> for zebra_rpc::methods::GetBlockHashResponse {
     }
 }
 
+/// Internal deserialization target for the `getblockhash` RPC request.
+///
+/// Wraps [`GetBlockHash`] so that the `getblockhash` call site can bind
+/// [`GetBlockHashError`] as its error type via [`ResponseToError`], without
+/// affecting the `Infallible` error type used by `getbestblockhash`, which
+/// shares [`GetBlockHash`] as its response shape.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct GetBlockHashByIndex(pub(crate) GetBlockHash);
+
+impl ResponseToError for GetBlockHashByIndex {
+    type RpcError = GetBlockHashError;
+}
+
+/// Error type for the `getblockhash` RPC request.
+#[derive(Debug, thiserror::Error)]
+pub enum GetBlockHashError {
+    /// The requested block index is outside the best chain's valid range.
+    ///
+    /// Maps from zcashd's `RPC_INVALID_PARAMETER` (code `-8`) with message
+    /// "Block number out of range."
+    #[error("{0}")]
+    HeightOutOfRange(String),
+}
+
+impl TryFrom<RpcError> for GetBlockHashError {
+    type Error = RpcError;
+
+    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
+        if value.code == -8 {
+            Ok(Self::HeightOutOfRange(value.message))
+        } else {
+            Err(value)
+        }
+    }
+}
+
 /// A wrapper struct for a zebra serialized block.
 ///
 /// Stores bytes that are guaranteed to be deserializable into a [`zebra_chain::block::Block`].

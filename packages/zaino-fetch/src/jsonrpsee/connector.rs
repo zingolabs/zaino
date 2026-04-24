@@ -35,10 +35,10 @@ use crate::jsonrpsee::{
         peer_info::GetPeerInfo,
         z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        GetBlockHashByIndex, GetBlockHashError, GetBlockResponse, GetBlockchainInfoResponse,
+        GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError, GetSubtreesResponse,
+        GetTransactionResponse, GetTreestateError, GetTreestateResponse, GetUtxosError,
+        GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
@@ -631,13 +631,13 @@ impl JsonRpSeeConnector {
     /// zcashd reference: [`getblockhash`](https://zcash.github.io/rpc/getblockhash.html)
     /// method: post
     /// tags: blockchain
-    // TODO: use correct error
     pub async fn get_blockhash(
         &self,
         block_index: BlockSelector,
-    ) -> Result<GetBlockHash, RpcRequestError<Infallible>> {
+    ) -> Result<GetBlockHash, RpcRequestError<GetBlockHashError>> {
         let params = [serde_json::to_value(block_index).map_err(RpcRequestError::JsonRpc)?];
-        self.send_request("getblockhash", params).await
+        let wrapped: GetBlockHashByIndex = self.send_request("getblockhash", params).await?;
+        Ok(wrapped.0)
     }
 
     /// Returns the height of the most recent block in the best valid block chain
