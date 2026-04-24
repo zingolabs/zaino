@@ -25,9 +25,7 @@ use zaino_proto::proto::{
     },
 };
 use zebra_chain::{
-    block::{Height, TryIntoHeight},
-    serialization::BytesInDisplayOrder as _,
-    subtree::NoteCommitmentSubtreeIndex,
+    block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
@@ -389,6 +387,11 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339) returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error>;
 
+    /// Returns the hash of the block at the given index in the best valid block chain.
+    ///
+    /// zcashd reference: [`getblockhash`](https://zcash.github.io/rpc/getblockhash.html)
+    /// method: post
+    /// tags: blockchain
     async fn get_blockhash(&self, block_index: BlockSelector) -> Result<GetBlockHash, Self::Error>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

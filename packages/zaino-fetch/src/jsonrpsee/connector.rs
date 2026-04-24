@@ -626,11 +626,16 @@ impl JsonRpSeeConnector {
             .await
     }
 
+    /// Returns the hash of the block at the given index in the best valid block chain.
+    ///
+    /// zcashd reference: [`getblockhash`](https://zcash.github.io/rpc/getblockhash.html)
+    /// method: post
+    /// tags: blockchain
     // TODO: use correct error
     pub async fn get_blockhash(
         &self,
         block_index: BlockSelector,
-    ) -> Result<zebra_rpc::methods::GetBlockHash, RpcRequestError<Infallible>> {
+    ) -> Result<GetBlockHash, RpcRequestError<Infallible>> {
         let params = [serde_json::to_value(block_index).map_err(RpcRequestError::JsonRpc)?];
         self.send_request("getblockhash", params).await
     }

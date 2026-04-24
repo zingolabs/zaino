@@ -1596,7 +1596,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             .unwrap();
 
         let block_hash = match block {
-            GetBlock::Raw(serialized_block) => todo!(),
+            GetBlock::Raw(_serialized_block) => todo!(),
             GetBlock::Object(block_object) => block_object.hash(),
         };
 

@@ -1,11 +1,18 @@
+//! Types associated with the `getblockhash` RPC request.
+
 use core::fmt;
 
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 use zebra_chain::block::Height;
 
+/// Block index argument to `getblockhash`.
+///
+/// Mirrors zcashd's convention where `-1` selects the chain tip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BlockSelector {
+    /// The current chain tip.
     Tip,
+    /// An absolute block height.
     Height(Height),
 }
 
