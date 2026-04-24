@@ -39,24 +39,42 @@ packages/                          Cargo workspace member crates
   zainod/                            Daemon binary
 
 integration-tests/                 Separate workspace — runs against zcashd/zebrad
+  src/                               Library helpers exposed to test files
   tests/                             Integration test files
   zaino-testutils/                   Test harness and utilities
   test_binaries/                     Symlinked zcashd/zebrad/zcash-cli binaries
   test_environment/                  Container build context
     Containerfile                      CI/test container image definition
     entrypoint.sh                      Container entrypoint (binary symlink setup)
+    test-container-permissions.sh      Container permission / volume-mount tests
+  .config/nextest.toml               Nextest configuration for integration tests
+  Cargo.toml                         Integration-tests workspace manifest
 
 docs/                              Architecture diagrams, specs, and usage guides
-Dockerfile                         Production container image
-entrypoint.sh                      Production container entrypoint
-.config/containers.conf            Rootless podman defaults (userns, security)
 tools/                             Development tools, shell helpers, makefiles
   scripts/                           Shell scripts (CI tag computation, helpers, lints)
   makefiles/                         cargo-make task definitions (lints, rocksdb, notify)
 .github/                           CI workflows and issue templates
 .githooks/                         Git hooks (pre-push)
+.config/containers.conf            Rootless podman defaults (userns, security)
+
+Cargo.toml                         Top-level workspace manifest
+Cargo.lock                         Resolved dependency graph (committed)
 Makefile.toml                      cargo-make task definitions
+rust-toolchain.toml                Pinned Rust toolchain
+deny.toml                          cargo-deny policy (licenses, advisories)
 .env.testing-artifacts             Version pins for test container (Rust, zcashd, zebrad)
+
+Dockerfile                         Production container image
+entrypoint.sh                      Production container entrypoint
+.dockerignore                      Docker build context exclusions
+
+README.md                          This file
+CHANGELOG.md                       Release notes
+CLAUDE.md                          AI-contributor guidelines
+CONTRIBUTING.md                    Human-contributor guide
+LICENSE                            Apache-2.0 license text
+.gitignore                         Git ignore patterns
 ```
 
 ## Documentation

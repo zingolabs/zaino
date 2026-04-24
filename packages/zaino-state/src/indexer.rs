@@ -11,6 +11,7 @@ use zaino_fetch::jsonrpsee::response::{
     block_subsidy::GetBlockSubsidy,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
+    z_validate_address::ZValidateAddressResponse,
     GetMempoolInfoResponse, GetNetworkSolPsResponse,
 };
 use zaino_proto::proto::{
@@ -350,11 +351,29 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
-    /// tags: blockchain
+    /// tags: util
     async fn validate_address(
         &self,
         address: String,
     ) -> Result<ValidateAddressResponse, Self::Error>;
+
+    /// Return information about the given address.
+    ///
+    /// # Deprecation
+    ///
+    /// See [`z_validate_address::DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
+    ///
+    /// # Parameters
+    /// - `address`: (string, required) The address to validate.
+    ///
+    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
+    /// method: post
+    /// tags: util
+    #[deprecated(note = "https://github.com/zingolabs/zaino/issues/992#issuecomment-4245596178")]
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, Self::Error>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
     /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)

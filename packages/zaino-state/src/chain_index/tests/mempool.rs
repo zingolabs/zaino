@@ -1,17 +1,69 @@
 //! Zaino-State ChainIndex Mempool unit tests.
 
-use std::{collections::HashMap, io::Cursor, str::FromStr as _};
-use tokio::time::{sleep, timeout, Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Cursor,
+    str::FromStr as _,
+};
+use tokio::time::{timeout, Duration};
 use zebra_chain::serialization::ZcashDeserialize as _;
 
 use crate::{
     chain_index::{
         mempool::MempoolSubscriber,
         source::test::MockchainSource,
-        tests::vectors::{build_active_mockchain_source, load_test_vectors, TestVectorBlockData},
+        tests::{
+            poll::poll_until,
+            vectors::{build_active_mockchain_source, load_test_vectors, TestVectorBlockData},
+        },
     },
-    BlockchainSource as _, Mempool, MempoolKey, MempoolValue,
+    BlockHash, BlockchainSource as _, Mempool, MempoolKey, MempoolValue,
 };
+
+/// Poll the subscriber until its mempool keys exactly match `expected_txids`.
+///
+/// Mockchain mempool is deterministic — non-coinbase txs of block[tip+1] — so
+/// once the Mempool sync task has caught up to a mined tip, the subscriber's
+/// keys equal the expected set. Waiting for that exact match replaces fixed
+/// `sleep` pads and fails loud on drift.
+async fn wait_for_mempool_to_reflect(
+    subscriber: &MempoolSubscriber,
+    expected_txids: impl IntoIterator<Item = String>,
+) {
+    let expected: HashSet<String> = expected_txids.into_iter().collect();
+    poll_until(
+        "mempool to reflect expected txids",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || async {
+            let got: HashSet<String> = subscriber
+                .get_mempool()
+                .await
+                .into_iter()
+                .map(|(MempoolKey { txid }, _)| txid)
+                .collect();
+            (got == expected).then_some(())
+        },
+    )
+    .await;
+}
+
+/// Poll the subscriber until its `mempool_chain_tip` equals `expected`.
+///
+/// The mempool propagates new tips via a `watch::Sender<BlockHash>` updated
+/// from its background sync task. Waiters that only check transaction ids
+/// (see [`wait_for_mempool_to_reflect`]) can observe the new txs before the
+/// tip-hash channel is updated, so callers about to pass an expected tip to
+/// `get_mempool_stream` must wait on this helper separately.
+async fn wait_for_mempool_tip_hash(subscriber: &MempoolSubscriber, expected: BlockHash) {
+    poll_until(
+        "mempool chain tip to match expected hash",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || async { (subscriber.mempool_chain_tip() == expected).then_some(()) },
+    )
+    .await;
+}
 
 async fn spawn_mempool_and_mockchain() -> (
     Mempool<MockchainSource>,
@@ -56,6 +108,12 @@ async fn get_mempool() {
             })
             .unwrap_or_default();
 
+        wait_for_mempool_to_reflect(
+            &subscriber,
+            mempool_transactions.iter().map(|tx| tx.hash().to_string()),
+        )
+        .await;
+
         let subscriber_tx = subscriber.get_mempool().await;
 
         for transaction in mempool_transactions.into_iter() {
@@ -86,8 +144,6 @@ async fn get_mempool() {
         if active_chain_height < max_chain_height {
             mockchain.mine_blocks(10);
             active_chain_height = dbg!(mockchain.active_height());
-
-            sleep(Duration::from_millis(2000)).await;
         }
     }
 }
@@ -99,13 +155,20 @@ async fn get_filtered_mempool() {
     mockchain.mine_blocks(150);
     let active_chain_height = mockchain.active_height();
 
-    sleep(Duration::from_millis(2000)).await;
-
     let mempool_index = (active_chain_height as usize) + 1;
     let mempool_transactions = block_data
         .get(mempool_index)
         .map(|b| b.transactions.clone())
         .unwrap_or_default();
+
+    wait_for_mempool_to_reflect(
+        &subscriber,
+        mempool_transactions
+            .iter()
+            .filter(|tx| !tx.is_coinbase())
+            .map(|tx| tx.hash().to_string()),
+    )
+    .await;
 
     let exclude_hash = mempool_transactions[0].hash();
 
@@ -164,8 +227,6 @@ async fn get_mempool_transaction() {
     mockchain.mine_blocks(150);
     let active_chain_height = dbg!(mockchain.active_height());
 
-    sleep(Duration::from_millis(2000)).await;
-
     let mempool_index = (active_chain_height as usize) + 1;
 
     let mempool_transactions: Vec<_> = block_data
@@ -178,6 +239,12 @@ async fn get_mempool_transaction() {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+
+    wait_for_mempool_to_reflect(
+        &subscriber,
+        mempool_transactions.iter().map(|tx| tx.hash().to_string()),
+    )
+    .await;
 
     let target_transaction = mempool_transactions
         .first()
@@ -208,14 +275,12 @@ async fn get_mempool_info() {
     mockchain.mine_blocks(150);
     let active_chain_height = dbg!(mockchain.active_height());
 
-    sleep(Duration::from_millis(2000)).await;
-
     let mempool_index = (active_chain_height as usize) + 1;
 
     // 1) Take the “next block” as a mempool proxy, but:
     //    - exclude coinbase
     //    - dedupe by txid (mempool is keyed by txid)
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mempool_transactions: Vec<_> = block_data
         .get(mempool_index)
         .map(|b| {
@@ -227,6 +292,12 @@ async fn get_mempool_info() {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+
+    wait_for_mempool_to_reflect(
+        &subscriber,
+        mempool_transactions.iter().map(|tx| tx.hash().to_string()),
+    )
+    .await;
 
     let subscriber_mempool_info = subscriber.get_mempool_info().await;
 
@@ -270,8 +341,6 @@ async fn get_mempool_stream_no_expected_chain_tip() {
     mockchain.mine_blocks(150);
     let active_chain_height = dbg!(mockchain.active_height());
 
-    sleep(Duration::from_millis(2000)).await;
-
     let mempool_index = (active_chain_height as usize) + 1;
 
     let mempool_transactions: Vec<_> = block_data
@@ -284,6 +353,12 @@ async fn get_mempool_stream_no_expected_chain_tip() {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+
+    wait_for_mempool_to_reflect(
+        &subscriber,
+        mempool_transactions.iter().map(|tx| tx.hash().to_string()),
+    )
+    .await;
 
     let (mut rx, handle) = subscriber.get_mempool_stream(None).await.unwrap();
 
@@ -343,8 +418,6 @@ async fn get_mempool_stream_correct_expected_chain_tip() {
     let active_chain_tip_height = dbg!(mockchain.active_height());
     let active_chain_tip_hash = mockchain.get_best_block_hash().await.unwrap().unwrap();
 
-    sleep(Duration::from_millis(2000)).await;
-
     let mempool_index = (active_chain_tip_height as usize) + 1;
 
     let mempool_transactions: Vec<_> = block_data
@@ -357,6 +430,13 @@ async fn get_mempool_stream_correct_expected_chain_tip() {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+
+    wait_for_mempool_to_reflect(
+        &subscriber,
+        mempool_transactions.iter().map(|tx| tx.hash().to_string()),
+    )
+    .await;
+    wait_for_mempool_tip_hash(&subscriber, active_chain_tip_hash.into()).await;
 
     let (mut rx, handle) = subscriber
         .get_mempool_stream(Some(active_chain_tip_hash.into()))
@@ -412,17 +492,31 @@ async fn get_mempool_stream_correct_expected_chain_tip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn get_mempool_stream_stale_expected_chain_tip() {
-    let (_mempool, subscriber, mockchain, _block_data) = spawn_mempool_and_mockchain().await;
+    let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
     let mut subscriber = subscriber;
+
+    // Wait for mempool to reflect block N+1's non-coinbase txs — proves the
+    // sync task caught up to the mined tip. Use this as a steady-state signal
+    // before advancing again.
+    let next_block_txids = |tip_height: u32| -> Vec<String> {
+        block_data
+            .get(tip_height as usize + 1)
+            .map(|b| {
+                b.transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .map(|tx| tx.hash().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
     mockchain.mine_blocks(149);
     let state_chain_tip_hash = mockchain.get_best_block_hash().await.unwrap().unwrap();
-
-    sleep(Duration::from_millis(2000)).await;
+    wait_for_mempool_to_reflect(&subscriber, next_block_txids(mockchain.active_height())).await;
 
     mockchain.mine_blocks(1);
-
-    sleep(Duration::from_millis(2000)).await;
+    wait_for_mempool_to_reflect(&subscriber, next_block_txids(mockchain.active_height())).await;
 
     let result = subscriber
         .get_mempool_stream(Some(state_chain_tip_hash.into()))

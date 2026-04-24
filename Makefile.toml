@@ -127,7 +127,7 @@ script.post = ""
 [tasks.init-podman-volumes]
 description = "Initialize named podman volumes for container builds"
 script = '''
-for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry; do
+for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry zaino-rustup; do
     if ! podman volume inspect "$vol" >/dev/null 2>&1; then
         podman volume create "$vol"
         echo "Created podman volume: $vol"
@@ -266,6 +266,7 @@ podman run --rm \
   -v zaino-container-target:/home/container_user/zaino/target:U \
   -v zaino-cargo-git:/usr/local/cargo/git:U \
   -v zaino-cargo-registry:/usr/local/cargo/registry:U \
+  -v zaino-rustup:/usr/local/rustup:U \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "ZAINOLOG_FORMAT=${ZAINOLOG_FORMAT:-stream}" \
@@ -367,6 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-v", "zaino-container-target:/home/container_user/zaino/target:U",
             "-v", "zaino-cargo-git:/usr/local/cargo/git:U",
             "-v", "zaino-cargo-registry:/usr/local/cargo/registry:U",
+            "-v", "zaino-rustup:/usr/local/rustup:U",
             "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/integration-tests/test_binaries/bins",
             "-w", "/home/container_user/zaino",
             "-u", "container_user",
