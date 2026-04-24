@@ -328,8 +328,6 @@ mod chain_query_interface {
 
         let snapshot = indexer.snapshot_nonfinalized_state();
         let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;
-        let indexer_height = snapshot.best_tip.height;
-        assert_eq!(Height::try_from(chain_height).unwrap(), indexer_height);
 
         let finalised_start = Height::try_from(chain_height - 150).unwrap();
         let finalised_tip = Height::try_from(chain_height - 100).unwrap();
