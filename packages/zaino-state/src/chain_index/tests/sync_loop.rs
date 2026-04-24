@@ -1,7 +1,7 @@
 use super::{
     load_test_vectors_and_sync_chain_index, load_test_vectors_and_sync_chain_index_with_timings,
 };
-use crate::chain_index::SyncTimings;
+use crate::chain_index::{ChainIndex, SyncTimings};
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
 use zaino_common::status::{Status as _, StatusType};
@@ -78,4 +78,64 @@ async fn escalates_to_critical_after_persistent_failure() {
         elapsed < max_time_to_critical,
         "CriticalError took {elapsed:?}, exceeding the maximum backoff window"
     );
+}
+
+/// Moved here from the integration test
+/// `chain_cache::sync_large_chain_{zebrad,zcashd}`. That test contained one
+/// whitebox read — `snapshot.best_tip.height` (W11 in the issue #1044
+/// audit) — asserting the indexer tip matched the validator tip after
+/// ~150 blocks were produced in a burst. That property is about the sync
+/// loop absorbing many new source blocks between iterations, not about
+/// chain-cache shape, so it belongs next to the other sync-loop tests
+/// and inside the crate where the snapshot's fields are reachable.
+///
+/// `sync_blocks_after_startup` covers the one-block-at-a-time trickle.
+/// This test covers the distinct case where multiple blocks appear on
+/// the source before the next sync iteration runs. Porting to
+/// `MockchainSource` (which implements `BlockchainReader`) keeps the
+/// indexer's production sync code in the loop while removing the podman
+/// / live-validator fixture dependency the original test required.
+#[tokio::test(flavor = "multi_thread")]
+async fn tip_converges_after_burst_mine() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(true).await;
+
+    let initial_tip = mockchain.active_height();
+    mockchain.mine_blocks(20);
+    let expected_tip = mockchain.active_height();
+    assert!(
+        expected_tip > initial_tip,
+        "mockchain did not advance: burst mine was a no-op \
+         (initial_tip={initial_tip}, max_chain_height={})",
+        mockchain.max_chain_height(),
+    );
+
+    super::poll::poll_until(
+        "indexer tip to match mined mockchain tip",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let tip = index_reader
+                .snapshot_nonfinalized_state()
+                .await
+                .ok()?
+                .get_nfs_snapshot()?
+                .best_tip
+                .height
+                .0;
+            (tip == expected_tip).then_some(())
+        },
+    )
+    .await;
+
+    let indexer_tip = index_reader
+        .snapshot_nonfinalized_state()
+        .await
+        .unwrap()
+        .get_nfs_snapshot()
+        .unwrap()
+        .best_tip
+        .height
+        .0;
+    assert_eq!(indexer_tip, expected_tip);
 }
