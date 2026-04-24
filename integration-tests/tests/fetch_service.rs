@@ -17,7 +17,7 @@ use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{
-    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash,
+    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHashResponse,
 };
 use zip32::AccountId;
 
@@ -923,12 +923,12 @@ async fn fetch_service_get_best_blockhash<V: ValidatorExt>(validator: &Validator
         _ => None,
     };
 
-    let fetch_service_get_best_blockhash: GetBlockHash =
+    let fetch_service_get_best_blockhash: GetBlockHashResponse =
         dbg!(fetch_service_subscriber.get_best_blockhash().await.unwrap());
 
     assert_eq!(
         fetch_service_get_best_blockhash.hash(),
-        ret.expect("ret to be Some(GetBlockHash) not None")
+        ret.expect("ret to be Some(GetBlockHashResponse) not None")
     );
 
     test_manager.close().await;

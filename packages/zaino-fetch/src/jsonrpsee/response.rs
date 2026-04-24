@@ -505,7 +505,7 @@ impl Default for GetBlockHash {
     }
 }
 
-impl From<GetBlockHash> for zebra_rpc::methods::GetBlockHash {
+impl From<GetBlockHash> for zebra_rpc::methods::GetBlockHashResponse {
     fn from(value: GetBlockHash) -> Self {
         zebra_rpc::methods::GetBlockHashResponse::new(value.0)
     }

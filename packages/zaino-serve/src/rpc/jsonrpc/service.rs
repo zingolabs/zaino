@@ -18,7 +18,7 @@ use zebra_rpc::client::{
 };
 use zebra_rpc::methods::{
     AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-    GetBlockHash, GetInfo, GetRawTransaction, SentTransactionHash,
+    GetBlockHashResponse, GetInfo, GetRawTransaction, SentTransactionHash,
 };
 
 use jsonrpsee::types::ErrorObjectOwned;
@@ -90,7 +90,7 @@ pub trait ZcashIndexerRpc {
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     #[method(name = "getbestblockhash")]
-    async fn get_best_blockhash(&self) -> Result<GetBlockHash, ErrorObjectOwned>;
+    async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, ErrorObjectOwned>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
@@ -443,7 +443,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             })?)
     }
 
-    async fn get_best_blockhash(&self) -> Result<GetBlockHash, ErrorObjectOwned> {
+    async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .get_best_blockhash()

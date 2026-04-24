@@ -75,7 +75,7 @@ use zebra_rpc::{
     },
     methods::{
         chain_tip_difficulty, AddressBalance, ConsensusBranchIdHex, GetAddressTxIdsRequest,
-        GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader as GetBlockHeaderZebra,
+        GetAddressUtxos, GetBlock, GetBlockHashResponse, GetBlockHeader as GetBlockHeaderZebra,
         GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
         GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
         TipConsensusBranch, ValidateAddresses as _,
@@ -1569,7 +1569,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
-    async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error> {
+    async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error> {
         // return should be valid hex encoded.
         // Hash from zebra says:
         // Return the hash bytes in big-endian byte-order suitable for printing out byte by byte.
@@ -1577,7 +1577,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         // Zebra displays transaction and block hashes in big-endian byte-order,
         // following the u256 convention set by Bitcoin and zcashd.
         match self.read_state_service.best_tip() {
-            Some(x) => return Ok(GetBlockHash::new(x.1)),
+            Some(x) => return Ok(GetBlockHashResponse::new(x.1)),
             None => {
                 // try RPC if state read fails:
                 Ok(self.rpc_client.get_best_blockhash().await?.into())
@@ -1585,7 +1585,10 @@ impl ZcashIndexer for StateServiceSubscriber {
         }
     }
 
-    async fn get_blockhash(&self, block_index: BlockSelector) -> Result<GetBlockHash, Self::Error> {
+    async fn get_blockhash(
+        &self,
+        block_index: BlockSelector,
+    ) -> Result<GetBlockHashResponse, Self::Error> {
         let (tip, _hash) = self.read_state_service.best_tip().unwrap();
 
         let selected_block_height = block_index.resolve(tip);
@@ -1600,7 +1603,7 @@ impl ZcashIndexer for StateServiceSubscriber {
             GetBlock::Object(block_object) => block_object.hash(),
         };
 
-        Ok(GetBlockHash::new(block_hash))
+        Ok(GetBlockHashResponse::new(block_hash))
     }
 
     /// Returns the current block count in the best valid block chain.

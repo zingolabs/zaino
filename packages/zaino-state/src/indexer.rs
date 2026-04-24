@@ -31,7 +31,7 @@ use zebra_rpc::{
     client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
     methods::{
         AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos,
-        GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
+        GetBlock, GetBlockHashResponse, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
         SentTransactionHash,
     },
 };
@@ -385,14 +385,17 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339) returning a `std::string`
-    async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error>;
+    async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error>;
 
     /// Returns the hash of the block at the given index in the best valid block chain.
     ///
     /// zcashd reference: [`getblockhash`](https://zcash.github.io/rpc/getblockhash.html)
     /// method: post
     /// tags: blockchain
-    async fn get_blockhash(&self, block_index: BlockSelector) -> Result<GetBlockHash, Self::Error>;
+    async fn get_blockhash(
+        &self,
+        block_index: BlockSelector,
+    ) -> Result<GetBlockHashResponse, Self::Error>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
