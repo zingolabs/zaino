@@ -83,16 +83,7 @@ impl JsonRpcServer {
 
         let server_handle = server.start(rpc_impl.into_rpc());
 
-        let shutdown_check_status = status.clone();
-        let mut shutdown_check_interval = interval(Duration::from_millis(100));
-        let shutdown_signal = async move {
-            loop {
-                shutdown_check_interval.tick().await;
-                if shutdown_check_status.load() == StatusType::Closing {
-                    break;
-                }
-            }
-        };
+        let shutdown_signal = shutdown_signal(status.clone());
 
         let task_status = status.clone();
         let server_task_handle = tokio::task::spawn({
@@ -147,6 +138,18 @@ impl Drop for JsonRpcServer {
             warn!(
                 "Warning: JsonRpcServer dropped without explicit shutdown. Aborting server task."
             );
+        }
+    }
+}
+
+async fn shutdown_signal(
+    status: NamedAtomicStatus,
+) {
+    let mut shutdown_check_interval = interval(Duration::from_millis(100));
+    loop {
+        shutdown_check_interval.tick().await;
+        if status.load() == StatusType::Closing {
+            break;
         }
     }
 }
