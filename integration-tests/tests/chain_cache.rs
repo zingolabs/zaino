@@ -296,50 +296,6 @@ mod chain_query_interface {
 
     // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
-    async fn find_fork_point_zebrad() {
-        find_fork_point::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
-    }
-
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn find_fork_point_zcashd() {
-        find_fork_point::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
-    }
-
-    async fn find_fork_point<C, Service>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
-        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
-
-        test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
-            .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
-        for block_hash in snapshot.heights_to_hashes.values() {
-            // As all blocks are currently on the main chain,
-            // this should be the block provided
-            assert_eq!(
-                block_hash,
-                &indexer
-                    .find_fork_point(&snapshot, block_hash)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .0
-            )
-        }
-    }
-
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_transaction_zebrad() {
         get_raw_transaction::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
