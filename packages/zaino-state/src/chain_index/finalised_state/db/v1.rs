@@ -72,7 +72,8 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{sync::Notify, time::interval};
+use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -163,8 +164,8 @@ impl DbLifecycle for DbV1 {
         &self.db_handler
     }
 
-    fn shutdown_notify(&self) -> &Arc<Notify> {
-        &self.shutdown_notify
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
     }
 
     fn status_atomic(&self) -> &NamedAtomicStatus {
@@ -258,10 +259,11 @@ pub(crate) struct DbV1 {
     /// `Option`; no `.await` happens while it's held.
     db_handler: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
-    /// Wakes the background task out of `zaino_db_handler_sleep` when shutdown
-    /// is requested, so it observes `StatusType::Closing` without waiting for
-    /// the next idle-sleep or maintenance-tick boundary.
-    shutdown_notify: Arc<Notify>,
+    /// Cancels the background task so it observes shutdown without waiting for
+    /// the next idle-sleep or maintenance-tick boundary. Cloning the token
+    /// shares cancellation state with every clone, so all background tasks
+    /// (current and future) wake on a single `cancel()` call.
+    cancel_token: CancellationToken,
 
     /// ZainoDB status.
     status: NamedAtomicStatus,
@@ -369,7 +371,7 @@ impl DbV1 {
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
-                shutdown_notify: Arc::new(Notify::new()),
+                cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
                 config: config.clone(),
             };
@@ -390,7 +392,7 @@ impl DbV1 {
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
-                shutdown_notify: Arc::new(Notify::new()),
+                cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
                 config: config.clone(),
             };
@@ -433,7 +435,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -609,7 +611,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };

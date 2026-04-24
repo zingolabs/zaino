@@ -71,7 +71,8 @@ use lmdb::{Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Trans
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::{fs, sync::Arc, time::Duration};
-use tokio::{sync::Notify, time::interval};
+use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 // ───────────────────────── ZainoDb v0 Capabilities ─────────────────────────
@@ -193,8 +194,8 @@ impl DbLifecycle for DbV0 {
         &self.db_handler
     }
 
-    fn shutdown_notify(&self) -> &Arc<Notify> {
-        &self.shutdown_notify
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
     }
 
     fn status_atomic(&self) -> &NamedAtomicStatus {
@@ -261,10 +262,11 @@ pub struct DbV0 {
     /// `Option`; no `.await` happens while it's held.
     db_handler: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
-    /// Wakes the background task out of `zaino_db_handler_sleep` when shutdown
-    /// is requested, so it observes `StatusType::Closing` without waiting for
-    /// the next idle-sleep or maintenance-tick boundary.
-    shutdown_notify: Arc<Notify>,
+    /// Cancels the background task so it observes shutdown without waiting for
+    /// the next idle-sleep or maintenance-tick boundary. Cloning the token
+    /// shares cancellation state with every clone, so all background tasks
+    /// (current and future) wake on a single `cancel()` call.
+    cancel_token: CancellationToken,
 
     /// Backend lifecycle status.
     status: NamedAtomicStatus,
@@ -331,7 +333,7 @@ impl DbV0 {
             heights_to_hashes,
             hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::new(Notify::new()),
+            cancel_token: CancellationToken::new(),
             status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
             config: config.clone(),
         };
@@ -360,7 +362,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -460,7 +462,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -569,7 +571,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -620,7 +622,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };

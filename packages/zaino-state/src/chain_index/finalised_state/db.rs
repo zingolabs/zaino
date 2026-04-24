@@ -85,10 +85,10 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::Notify,
     task::JoinHandle,
     time::{interval, sleep, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::capability::Capability;
@@ -103,7 +103,7 @@ use super::capability::Capability;
 pub(super) trait DbLifecycle: Sync {
     fn env(&self) -> &Arc<Environment>;
     fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>>;
-    fn shutdown_notify(&self) -> &Arc<Notify>;
+    fn cancel_token(&self) -> &CancellationToken;
     fn status_atomic(&self) -> &NamedAtomicStatus;
 
     fn status(&self) -> StatusType {
@@ -135,17 +135,13 @@ pub(super) trait DbLifecycle: Sync {
                     warn!("clean_trailing failed: {}", e);
                 }
             }
-            _ = self.shutdown_notify().notified() => {},
+            _ = self.cancel_token().cancelled() => {},
         }
     }
 
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.status_atomic().store(StatusType::Closing);
-        // `notify_one` stores a permit if no waiter is currently registered,
-        // so the task consumes the signal on its next `notified().await` even
-        // if shutdown fires before the task has entered the select.
-        // `notify_waiters` would be lost in that window (no stored permit).
-        self.shutdown_notify().notify_one();
+        self.cancel_token().cancel();
 
         let taken = self
             .db_handler_slot()
@@ -746,7 +742,7 @@ mod shutdown {
     struct FakeDb {
         env: Arc<Environment>,
         db_handler: Mutex<Option<JoinHandle<()>>>,
-        shutdown_notify: Arc<Notify>,
+        cancel_token: CancellationToken,
         status: NamedAtomicStatus,
     }
 
@@ -757,23 +753,20 @@ mod shutdown {
         fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>> {
             &self.db_handler
         }
-        fn shutdown_notify(&self) -> &Arc<Notify> {
-            &self.shutdown_notify
+        fn cancel_token(&self) -> &CancellationToken {
+            &self.cancel_token
         }
         fn status_atomic(&self) -> &NamedAtomicStatus {
             &self.status
         }
     }
 
-    /// Regression for #1033.
-    ///
-    /// `DbLifecycle::shutdown` signals waiters with `Notify::notify_one`, which wakes
-    /// at most one task and stores at most one permit. With N > 1 tasks awaiting the
-    /// same `shutdown_notify`, N-1 are stranded after shutdown fires. Fails until the
-    /// trait switches to a wake-all primitive (e.g. `watch`, or a flag +
-    /// `notify_waiters`).
+    /// Regression for #1033 — every task awaiting cancellation must observe shutdown,
+    /// not just one. Originally written against the `Notify::notify_one` implementation
+    /// (which strands N-1 waiters); now passes against `CancellationToken::cancel`,
+    /// which wakes all current waiters and persists state for late subscribers.
     #[tokio::test]
-    async fn wakes_every_shutdown_notify_waiter() {
+    async fn wakes_every_shutdown_waiter() {
         let tmp = tempfile::tempdir().unwrap();
         let env = Arc::new(
             lmdb::Environment::new()
@@ -784,7 +777,7 @@ mod shutdown {
         let db = Arc::new(FakeDb {
             env,
             db_handler: Mutex::new(None),
-            shutdown_notify: Arc::new(Notify::new()),
+            cancel_token: CancellationToken::new(),
             status: NamedAtomicStatus::new("test", StatusType::Ready),
         });
 
@@ -794,17 +787,12 @@ mod shutdown {
 
         let mut waiters = Vec::with_capacity(N);
         for _ in 0..N {
-            let notify = Arc::clone(&db.shutdown_notify);
+            let token = db.cancel_token.clone();
             let woke = Arc::clone(&woke);
             let barrier = Arc::clone(&barrier);
             waiters.push(tokio::spawn(async move {
-                let wait = notify.notified();
-                tokio::pin!(wait);
-                // Register interest with `Notify` before crossing the barrier, so by
-                // the time shutdown fires every waiter is already enqueued.
-                wait.as_mut().enable();
                 barrier.wait().await;
-                wait.await;
+                token.cancelled().await;
                 woke.fetch_add(1, Ordering::Relaxed);
             }));
         }
@@ -815,9 +803,7 @@ mod shutdown {
         for (i, w) in waiters.into_iter().enumerate() {
             timeout(Duration::from_millis(200), w)
                 .await
-                .unwrap_or_else(|_| {
-                    panic!("waiter {i} stranded: shutdown_notify woke only a subset")
-                })
+                .unwrap_or_else(|_| panic!("waiter {i} stranded: cancel_token woke only a subset"))
                 .unwrap();
         }
         assert_eq!(woke.load(Ordering::Relaxed), N);
