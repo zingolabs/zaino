@@ -71,18 +71,128 @@ use crate::{
     config::BlockCacheConfig,
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+    NamedAtomicStatus, OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::finalised_state::capability::TransparentHistExt, AddrScript, Outpoint};
 
 use async_trait::async_trait;
-use std::time::Duration;
-use tokio::time::{interval, MissedTickBehavior};
+use lmdb::{Database, DatabaseFlags, Environment};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::{
+    sync::Notify,
+    task::JoinHandle,
+    time::{interval, sleep, MissedTickBehavior},
+};
+use tracing::warn;
 
 use super::capability::Capability;
+
+/// Lifecycle scaffolding shared by every `DbVx` finalised-state backend.
+///
+/// Implementors expose the four shared struct fields via required getters;
+/// provided methods cover the duplicated `status()`, `wait_until_ready()`,
+/// `shutdown()`, `clean_trailing()`, and the background task's per-iteration
+/// `zaino_db_handler_sleep()`.
+#[async_trait]
+pub(super) trait DbLifecycle: Sync {
+    fn env(&self) -> &Arc<Environment>;
+    fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>>;
+    fn shutdown_notify(&self) -> &Arc<Notify>;
+    fn status_atomic(&self) -> &NamedAtomicStatus;
+
+    fn status(&self) -> StatusType {
+        self.status_atomic().load()
+    }
+
+    async fn wait_until_ready(&self) {
+        let mut ticker = interval(Duration::from_millis(100));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            if self.status_atomic().load() == StatusType::Ready {
+                break;
+            }
+        }
+    }
+
+    async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
+        let txn = self.env().begin_ro_txn()?;
+        drop(txn);
+        Ok(())
+    }
+
+    async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
+        tokio::select! {
+            _ = sleep(Duration::from_secs(5)) => {},
+            _ = maintenance.tick() => {
+                if let Err(e) = self.clean_trailing().await {
+                    warn!("clean_trailing failed: {}", e);
+                }
+            }
+            _ = self.shutdown_notify().notified() => {},
+        }
+    }
+
+    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+        self.status_atomic().store(StatusType::Closing);
+        // `notify_one` stores a permit if no waiter is currently registered,
+        // so the task consumes the signal on its next `notified().await` even
+        // if shutdown fires before the task has entered the select.
+        // `notify_waiters` would be lost in that window (no stored permit).
+        self.shutdown_notify().notify_one();
+
+        let taken = self
+            .db_handler_slot()
+            .lock()
+            .expect("db_handler mutex poisoned")
+            .take();
+        if let Some(mut handle) = taken {
+            let timeout = sleep(Duration::from_secs(5));
+            tokio::pin!(timeout);
+
+            tokio::select! {
+                res = &mut handle => {
+                    match res {
+                        Ok(_) => {}
+                        Err(e) if e.is_cancelled() => {}
+                        Err(e) => warn!("background task ended with error: {e:?}"),
+                    }
+                }
+                _ = &mut timeout => {
+                    warn!("background task didn't exit in time – aborting");
+                    handle.abort();
+                }
+            }
+        }
+
+        let _ = self.clean_trailing().await;
+        if let Err(e) = self.env().sync(true) {
+            warn!("LMDB fsync before close failed: {e}");
+        }
+        Ok(())
+    }
+}
+
+/// Open an LMDB database if present, otherwise create it.
+pub(super) async fn open_or_create_db(
+    env: &Environment,
+    name: &str,
+    flags: DatabaseFlags,
+) -> Result<Database, FinalisedStateError> {
+    match env.open_db(Some(name)) {
+        Ok(db) => Ok(db),
+        Err(lmdb::Error::NotFound) => env
+            .create_db(Some(name), flags)
+            .map_err(FinalisedStateError::LmdbError),
+        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+    }
+}
 
 /// Version subdirectory names for versioned on-disk layouts.
 ///
@@ -190,8 +300,8 @@ impl DbCore for DbBackend {
     /// This is a thin delegation wrapper over the concrete implementation.
     fn status(&self) -> StatusType {
         match self {
-            Self::V0(db) => db.status(),
-            Self::V1(db) => db.status(),
+            Self::V0(db) => DbCore::status(db),
+            Self::V1(db) => DbCore::status(db),
         }
     }
 
@@ -200,8 +310,8 @@ impl DbCore for DbBackend {
     /// This is a thin delegation wrapper over the concrete implementation.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => db.shutdown().await,
-            Self::V1(db) => db.shutdown().await,
+            Self::V0(db) => DbCore::shutdown(db).await,
+            Self::V1(db) => DbCore::shutdown(db).await,
         }
     }
 }
