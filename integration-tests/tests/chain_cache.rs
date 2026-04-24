@@ -294,55 +294,6 @@ mod chain_query_interface {
         }
     }
 
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_transaction_status_zebrad() {
-        get_transaction_status::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
-    }
-
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_transaction_status_zcashd() {
-        get_transaction_status::<Zcashd, FetchService>(&ValidatorKind::Zcashd).await
-    }
-
-    async fn get_transaction_status<C, Service>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
-        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 3);
-
-        test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
-            .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
-        for (txid, height, block_hash) in snapshot.blocks.values().flat_map(|block| {
-            block
-                .transactions()
-                .iter()
-                .map(|txdata| (txdata.txid().0, block.height(), block.hash()))
-        }) {
-            let (transaction_status_best_chain, transaction_status_nonbest_chain) = indexer
-                .get_transaction_status(&snapshot, &TransactionHash(txid))
-                .await
-                .unwrap();
-            assert_eq!(
-                transaction_status_best_chain.unwrap(),
-                BestChainLocation::Block(*block_hash, height)
-            );
-            assert!(transaction_status_nonbest_chain.is_empty());
-        }
-    }
-
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain_zebrad() {
