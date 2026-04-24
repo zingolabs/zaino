@@ -160,7 +160,6 @@ default-filter = """
         test(/^zcashd::zcash_indexer::get_best_blockhash$/) |
         test(/^zcashd::zcash_indexer::get_block_count$/) |
         test(/^zcashd::zcash_indexer::get_block_deltas$/) |
-        test(/^zcashd::zcash_indexer::get_block_header$/) |
         test(/^zcashd::zcash_indexer::get_peer_info$/) |
         test(/^zcashd::zcash_indexer::validate_address$/) |
         test(/^zcashd::zcash_indexer::z_get_block$/) |
@@ -180,7 +179,6 @@ default-filter = """
         test(/^zebra::lightwallet_indexer::get_latest_block$/) |
         test(/^zebra::lightwallet_indexer::get_subtree_roots$/) |
         test(/^zebra::lightwallet_indexer::get_taddress_balance$/) |
-        test(/^zebra::lightwallet_indexer::get_taddress_txids$/) |
         test(/^zebrad::fetch_service::connect_to_node_get_info$/) |
         test(/^zebrad::get::best_blockhash$/) |
         test(/^zebrad::get::block_count$/) |
