@@ -1,0 +1,94 @@
+        FAIL [  20.532s] (  1/166) integration-tests::fetch_service zcashd::get::block
+        FAIL [  21.502s] (  2/166) integration-tests::fetch_service zcashd::get::block_nullifiers
+        FAIL [  21.535s] (  4/166) integration-tests::fetch_service zcashd::get::address_utxos
+        FAIL [  22.501s] (  5/166) integration-tests::fetch_service zcashd::get::address_tx_ids
+        FAIL [  22.543s] (  6/166) integration-tests::fetch_service zcashd::get::block_range_no_pool_type_returns_sapling_orchard
+        FAIL [  22.550s] (  8/166) integration-tests::fetch_service zcashd::get::address_balance
+        FAIL [  26.918s] ( 14/166) integration-tests::fetch_service zcashd::get::latest_tree_state
+        FAIL [  29.019s] ( 18/166) integration-tests::fetch_service zcashd::get::block_range_returns_all_pools_when_requested
+        FAIL [  35.499s] ( 20/166) integration-tests::fetch_service zcashd::get::mempool_info
+        FAIL [  37.429s] ( 22/166) integration-tests::fetch_service zcashd::get::mempool_stream
+        FAIL [  37.489s] ( 24/166) integration-tests::fetch_service zcashd::get::mempool_tx
+        FAIL [  27.286s] ( 27/166) integration-tests::fetch_service zcashd::get::taddress_balance
+        FAIL [  32.006s] ( 29/166) integration-tests::fetch_service zcashd::get::raw_transaction
+        FAIL [  29.030s] ( 30/166) integration-tests::fetch_service zcashd::get::taddress_utxos
+        FAIL [  39.046s] ( 31/166) integration-tests::fetch_service zcashd::get::raw_mempool
+        FAIL [  30.218s] ( 32/166) integration-tests::fetch_service zcashd::get::taddress_txids
+        FAIL [  31.932s] ( 33/166) integration-tests::fetch_service zcashd::get::taddress_utxos_stream
+        FAIL [  27.983s] ( 34/166) integration-tests::fetch_service zcashd::get::transaction_mempool
+        FAIL [  26.129s] ( 35/166) integration-tests::fetch_service zcashd::get::tree_state
+        FAIL [  29.996s] ( 36/166) integration-tests::fetch_service zcashd::get::transaction_mined
+        FAIL [  22.926s] ( 37/166) integration-tests::fetch_service zcashd::get::z::get_treestate
+        FAIL [  24.883s] ( 40/166) integration-tests::fetch_service zcashd::get::z::subtrees_by_index
+        FAIL [  14.346s] ( 41/166) integration-tests::fetch_service zebrad::get::address_utxos
+        FAIL [  11.482s] ( 45/166) integration-tests::fetch_service zebrad::get::block
+        FAIL [  16.889s] ( 46/166) integration-tests::fetch_service zebrad::get::address_balance
+        FAIL [  16.607s] ( 47/166) integration-tests::fetch_service zebrad::get::address_tx_ids
+        FAIL [  11.408s] ( 52/166) integration-tests::fetch_service zebrad::get::block_nullifiers
+        FAIL [  11.933s] ( 54/166) integration-tests::fetch_service zebrad::get::block_range_no_pool_type_returns_sapling_orchard
+        FAIL [  14.537s] ( 58/166) integration-tests::fetch_service zebrad::get::block_range_returns_all_pools_when_requested
+        FAIL [  12.112s] ( 61/166) integration-tests::fetch_service zebrad::get::mempool_info
+        FAIL [  11.967s] ( 62/166) integration-tests::fetch_service zebrad::get::mempool_stream
+        FAIL [  12.072s] ( 63/166) integration-tests::fetch_service zebrad::get::mempool_tx
+        FAIL [  15.906s] ( 65/166) integration-tests::fetch_service zebrad::get::latest_tree_state
+        FAIL [  11.762s] ( 67/166) integration-tests::fetch_service zebrad::get::raw_transaction
+        FAIL [  11.790s] ( 71/166) integration-tests::fetch_service zebrad::get::taddress_balance
+        FAIL [  11.768s] ( 72/166) integration-tests::fetch_service zebrad::get::taddress_txids
+        FAIL [  11.675s] ( 73/166) integration-tests::fetch_service zebrad::get::taddress_utxos
+        FAIL [  16.787s] ( 74/166) integration-tests::fetch_service zebrad::get::raw_mempool
+        FAIL [  13.277s] ( 75/166) integration-tests::fetch_service zebrad::get::tree_state
+        FAIL [  14.880s] ( 76/166) integration-tests::fetch_service zebrad::get::transaction_mined
+        FAIL [  15.505s] ( 77/166) integration-tests::fetch_service zebrad::get::transaction_mempool
+        FAIL [  16.685s] ( 78/166) integration-tests::fetch_service zebrad::get::taddress_utxos_stream
+        FAIL [   7.689s] ( 79/166) integration-tests::json_server zcashd::zcash_indexer::check_info_with_cookie
+        FAIL [  16.671s] ( 80/166) integration-tests::fetch_service zebrad::get::z::subtrees_by_index
+        FAIL [  16.670s] ( 81/166) integration-tests::fetch_service zebrad::get::z::treestate
+        FAIL [  25.593s] ( 88/166) integration-tests::json_server zcashd::zcash_indexer::get_address_tx_ids
+        FAIL [  28.518s] ( 89/166) integration-tests::json_server zcashd::zcash_indexer::get_raw_transaction
+        FAIL [  34.417s] ( 92/166) integration-tests::json_server zcashd::zcash_indexer::get_mempool_info
+        FAIL [  26.968s] ( 93/166) integration-tests::json_server zcashd::zcash_indexer::z_get_address_balance
+        FAIL [  36.820s] ( 95/166) integration-tests::json_server zcashd::zcash_indexer::get_raw_mempool
+        FAIL [  25.066s] ( 96/166) integration-tests::json_server zcashd::zcash_indexer::z_get_address_utxos
+        FAIL [  27.919s] ( 97/166) integration-tests::json_server zcashd::zcash_indexer::z_get_treestate
+        FAIL [  28.939s] (100/166) integration-tests::json_server zcashd::zcash_indexer::z_get_subtrees_by_index
+        FAIL [  15.282s] (101/166) integration-tests::state_service zebra::get::address_balance_regtest
+        FAIL [  15.070s] (102/166) integration-tests::state_service zebra::get::address_deltas
+        FAIL [  14.766s] (104/166) integration-tests::state_service zebra::get::address_tx_ids_regtest
+        FAIL [  19.195s] (107/166) integration-tests::state_service zebra::get::address_utxos
+        FAIL [  14.852s] (114/166) integration-tests::state_service zebra::get::get_mempool_info
+        FAIL [  18.527s] (120/166) integration-tests::state_service zebra::get::raw_mempool_regtest
+        FAIL [  14.326s] (121/166) integration-tests::state_service zebra::get::z::get_block_range_default_request_returns_all_pools_regtest
+        FAIL [  18.471s] (122/166) integration-tests::state_service zebra::get::raw_transaction_regtest
+        FAIL [  18.959s] (123/166) integration-tests::state_service zebra::get::taddress_transactions_regtest
+        FAIL [  15.219s] (124/166) integration-tests::state_service zebra::get::z::get_block_range_out_of_range_test_lower_bound_regtest
+        FAIL [  15.546s] (125/166) integration-tests::state_service zebra::get::z::get_block_range_default_request_returns_no_t_data_regtest
+        FAIL [  17.527s] (126/166) integration-tests::state_service zebra::get::z::subtrees_by_index_regtest
+        FAIL [  18.329s] (127/166) integration-tests::state_service zebra::get::z::get_block_range_out_of_range_test_upper_bound_regtest
+        FAIL [  14.796s] (128/166) integration-tests::state_service zebra::lightwallet_indexer::get_block
+        FAIL [  18.968s] (131/166) integration-tests::state_service zebra::get::z::treestate_regtest
+        FAIL [  16.712s] (132/166) integration-tests::state_service zebra::lightwallet_indexer::get_block_range_full
+        FAIL [  21.323s] (133/166) integration-tests::state_service zebra::lightwallet_indexer::get_address_utxos
+        FAIL [  21.353s] (135/166) integration-tests::state_service zebra::lightwallet_indexer::get_address_utxos_stream
+        FAIL [  16.821s] (137/166) integration-tests::state_service zebra::lightwallet_indexer::get_block_range_nullifiers
+        FAIL [  15.065s] (138/166) integration-tests::state_service zebra::lightwallet_indexer::get_latest_tree_state
+        FAIL [  15.333s] (142/166) integration-tests::state_service zebra::lightwallet_indexer::get_tree_state
+        FAIL [  14.114s] (143/166) integration-tests::wallet_to_validator zcashd::monitor_unverified_mempool
+        FAIL [  16.573s] (144/166) integration-tests::state_service zebra::lightwallet_indexer::get_transparent_data_from_compact_block_when_requested
+        FAIL [  12.346s] (145/166) integration-tests::wallet_to_validator zcashd::sent_to::orchard
+        FAIL [  13.682s] (146/166) integration-tests::wallet_to_validator zcashd::sent_to::sapling
+        FAIL [  13.516s] (147/166) integration-tests::wallet_to_validator zcashd::sent_to::transparent
+        FAIL [  12.714s] (148/166) integration-tests::wallet_to_validator zcashd::shield
+        FAIL [  17.526s] (149/166) integration-tests::wallet_to_validator zcashd::sent_to::all
+        FAIL [  15.098s] (151/166) integration-tests::wallet_to_validator zebrad::fetch_service::monitor_unverified_mempool
+        FAIL [  12.077s] (152/166) integration-tests::wallet_to_validator zebrad::fetch_service::send_to::orchard
+        FAIL [  11.983s] (153/166) integration-tests::wallet_to_validator zebrad::fetch_service::send_to::sapling
+        FAIL [  17.338s] (154/166) integration-tests::wallet_to_validator zebrad::fetch_service::send_to::all
+        FAIL [  13.316s] (155/166) integration-tests::wallet_to_validator zebrad::fetch_service::send_to::transparent
+        FAIL [  13.029s] (156/166) integration-tests::wallet_to_validator zebrad::fetch_service::shield
+        FAIL [  12.596s] (158/166) integration-tests::wallet_to_validator zebrad::state_service::send_to::transparent
+        FAIL [  17.865s] (159/166) integration-tests::wallet_to_validator zebrad::state_service::monitor_unverified_mempool
+        FAIL [  17.241s] (160/166) integration-tests::wallet_to_validator zebrad::state_service::send_to::orchard
+        FAIL [  17.204s] (161/166) integration-tests::wallet_to_validator zebrad::state_service::send_to::sapling
+        FAIL [  18.268s] (162/166) integration-tests::wallet_to_validator zebrad::state_service::send_to::all
+        FAIL [  13.698s] (163/166) integration-tests::wallet_to_validator zebrad::state_service::shield
+        FAIL [  65.182s] (166/166) integration-tests::state_service zebra::lightwallet_indexer::get_transaction

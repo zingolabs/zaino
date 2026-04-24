@@ -261,10 +261,10 @@ impl DbV1 {
                 let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
                     .map_err(|e| fail(&format!("parent header corrupt data: {e}")))?;
 
-                *entry.inner().index().hash()
+                *entry.inner().context.hash()
             };
 
-            let check_hash = header_entry.inner().index().parent_hash();
+            let check_hash = header_entry.inner().context.parent_hash();
 
             if &parent_block_hash != check_hash {
                 return Err(fail("parent hash mismatch"));
@@ -522,10 +522,11 @@ impl DbV1 {
                     }
                 })?;
 
-                let hash = *StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
+                let hash = StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
                     .inner()
-                    .index()
-                    .hash();
+                    .context
+                    .index
+                    .hash;
 
                 match self.validate_block_blocking(height, hash) {
                     Ok(()) => {}
@@ -580,10 +581,11 @@ impl DbV1 {
                         }
                     })?;
 
-                    let hash = *StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
+                    let hash = StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
                         .inner()
-                        .index()
-                        .hash();
+                        .context
+                        .index
+                        .hash;
 
                     match self.validate_block_blocking(height, hash) {
                         Ok(()) => {}

@@ -39,7 +39,7 @@ pub use chain_index::non_finalised_state::{
 };
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
-    AddrHistRecord, AddrScript, BlockData, BlockHash, BlockHeaderData, BlockIndex, BlockMetadata,
+    AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,
     BlockWithMetadata, ChainWork, CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes,
     CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTxData, Height,
     IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,

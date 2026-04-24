@@ -34,9 +34,9 @@ impl DbV1 {
     /// NOTE: This method should never leave a block partially written to the database.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
-        let block_hash = *block.index().hash();
+        let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
-        let block_height = block.index().height();
+        let block_height = block.context.index.height;
         let block_height_bytes = block_height.to_bytes()?;
 
         // Check if this specific block already exists (idempotent write support for shared DB).
@@ -57,15 +57,14 @@ impl DbV1 {
                                 ))
                             })?;
                     let stored_header = stored_entry.inner();
-                    if *stored_header.index().hash() == block_hash {
+                    if stored_header.context.index.hash == block_hash {
                         // Same block already written, this is a no-op success
                         return Ok(true);
                     } else {
                         return Err(FinalisedStateError::Custom(format!(
                             "block at height {block_height:?} already exists with different hash \
                              (stored: {:?}, incoming: {:?})",
-                            stored_header.index().hash(),
-                            block_hash
+                            stored_header.context.index.hash, block_hash
                         )));
                     }
                 }
@@ -116,12 +115,12 @@ impl DbV1 {
         }
 
         // Build DBHeight
-        let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.index().height());
+        let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.context.index.height);
 
         // Build header
         let header_entry = StoredEntryVar::new(
             &block_height_bytes,
-            BlockHeaderData::new(*block.index(), *block.data()),
+            BlockHeaderData::new(block.context, *block.data()),
         );
 
         // Build commitment tree data
@@ -480,17 +479,16 @@ impl DbV1 {
                 tokio::task::block_in_place(|| self.env.sync(true))
                     .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
                 self.status.store(StatusType::Ready);
-                if block.index().height().0.is_multiple_of(100) {
+                if block.context.index.height.0.is_multiple_of(100) {
                     info!(
                         "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.index().hash(),
-                        &block.index().height()
+                        &block.context.index.hash, &block.context.index.height
                     );
                 } else {
                     tracing::debug!(
                         "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.index().hash(),
-                        &block.index().height()
+                        &block.context.index.hash,
+                        &block.context.index.height
                     );
                 }
 
@@ -521,7 +519,7 @@ impl DbV1 {
                                         ))
                                     })?;
                             let stored_header = stored_entry.inner();
-                            if *stored_header.index().hash() == block_hash {
+                            if stored_header.context.index.hash == block_hash {
                                 // Block hash exists, verify block was fully written.
                                 self.validate_block_blocking(block_height, block_hash)
                                     .map(|()| true)
@@ -536,9 +534,7 @@ impl DbV1 {
                                 Err(FinalisedStateError::Custom(format!(
                                     "KeyExist race: different block at height {} \
                                      (stored: {:?}, incoming: {:?})",
-                                    block_height.0,
-                                    stored_header.index().hash(),
-                                    block_hash
+                                    block_height.0, stored_header.context.index.hash, block_hash
                                 )))
                             }
                         }
@@ -690,7 +686,7 @@ impl DbV1 {
         block: &IndexedBlock,
     ) -> Result<(), FinalisedStateError> {
         // Check block height and hash
-        let block_height = block.index().height();
+        let block_height = block.context.index.height;
         let block_height_bytes =
             block_height
                 .to_bytes()
@@ -700,7 +696,7 @@ impl DbV1 {
                     reason: "Corrupt block data: failed to serialise hash".to_string(),
                 })?;
 
-        let block_hash = *block.index().hash();
+        let block_hash = block.context.index.hash;
         let block_hash_bytes =
             block_hash
                 .to_bytes()

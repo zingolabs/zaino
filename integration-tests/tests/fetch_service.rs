@@ -539,12 +539,11 @@ async fn fetch_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
-    let chain_height: u32 = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let fetch_service_txids = fetch_service_subscriber
@@ -1563,12 +1562,11 @@ async fn fetch_service_get_taddress_txids<V: ValidatorExt>(validator: &Validator
         .generate_blocks_and_poll_indexer(1, &fetch_service_subscriber)
         .await;
 
-    let chain_height: u32 = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let block_filter = TransparentAddressBlockFilter {
@@ -2128,6 +2126,28 @@ mod zcashd {
         pub(crate) async fn validate_address() {
             fetch_service_validate_address::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
+
+        #[allow(deprecated)]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn z_validate_address() {
+            let (mut test_manager, fetch_service_subscriber) =
+                create_test_manager_and_fetch_service::<Zcashd>(
+                    &ValidatorKind::Zcashd,
+                    None,
+                    false,
+                )
+                .await;
+
+            let rpc_call = |addr: String| {
+                let subscriber = &fetch_service_subscriber;
+                async move { subscriber.z_validate_address(addr).await.unwrap() }
+            };
+
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_sapling(&rpc_call).await;
+
+            test_manager.close().await;
+        }
     }
 
     mod get {
@@ -2413,6 +2433,28 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn validate_address() {
             fetch_service_validate_address::<Zebrad>(&ValidatorKind::Zebrad).await;
+        }
+
+        #[allow(deprecated)]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        pub(crate) async fn z_validate_address() {
+            let (mut test_manager, fetch_service_subscriber) =
+                create_test_manager_and_fetch_service::<Zebrad>(
+                    &ValidatorKind::Zebrad,
+                    None,
+                    false,
+                )
+                .await;
+
+            let rpc_call = |addr: String| {
+                let subscriber = &fetch_service_subscriber;
+                async move { subscriber.z_validate_address(addr).await.unwrap() }
+            };
+
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_sapling_zebrad_passthrough_fetchservice(&rpc_call).await;
+
+            test_manager.close().await;
         }
     }
 

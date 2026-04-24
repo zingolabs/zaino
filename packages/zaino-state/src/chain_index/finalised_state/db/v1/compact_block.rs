@@ -249,9 +249,9 @@ impl DbV1 {
             // ----- Construct CompactBlock -----
             Ok(zaino_proto::proto::compact_formats::CompactBlock {
                 proto_version: 4,
-                height: header.index().height().0 as u64,
-                hash: header.index().hash().0.to_vec(),
-                prev_hash: header.index().parent_hash().0.to_vec(),
+                height: header.context.height().0 as u64,
+                hash: header.context.hash().0.to_vec(),
+                prev_hash: header.context.parent_hash().0.to_vec(),
                 // Is this safe?
                 time: header.data().time() as u32,
                 header: Vec::new(),
@@ -850,7 +850,7 @@ impl DbV1 {
                     };
 
                     // Contiguous-height check: ensures cursor ordering and storage invariants are intact.
-                    let current_height = header.index().height();
+                    let current_height = header.context.height();
                     if current_height != expected_height {
                         send_status(
                             &sender,
@@ -865,8 +865,8 @@ impl DbV1 {
                     // ----- Ensure the block is validated (on-demand) -----
                     // We are in a blocking task; call validate_block_blocking directly but only when needed.
                     if !zaino_db.is_validated(current_height.into()) {
-                        // header.index().hash() is the block hash we just read from DB; call validator.
-                        let block_hash = *header.index().hash();
+                        // header.context.hash() is the block hash we just read from DB; call validator.
+                        let block_hash = *header.context.hash();
 
                         match zaino_db.validate_block_blocking(current_height, block_hash) {
                             Ok(()) => {
@@ -1108,9 +1108,9 @@ impl DbV1 {
 
                     let compact_block = zaino_proto::proto::compact_formats::CompactBlock {
                         proto_version: 4,
-                        height: header.index().height().0 as u64,
-                        hash: header.index().hash().0.to_vec(),
-                        prev_hash: header.index().parent_hash().0.to_vec(),
+                        height: header.context.height().0 as u64,
+                        hash: header.context.hash().0.to_vec(),
+                        prev_hash: header.context.parent_hash().0.to_vec(),
                         // NOTE: `time()` is stored in the DB as a wider integer; this cast assumes it is
                         // always representable in `u32` for the protobuf.
                         time: header.data().time() as u32,

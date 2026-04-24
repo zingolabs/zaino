@@ -631,12 +631,11 @@ async fn get_address_tx_ids_inner() {
     )
     .await;
 
-    let chain_height = zcashd_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &zcashd_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let zcashd_txids = zcashd_subscriber
@@ -908,6 +907,23 @@ mod zcashd {
         #[tokio::test(flavor = "multi_thread")]
         async fn validate_address() {
             validate_address_inner().await;
+        }
+
+        #[allow(deprecated)]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn z_validate_address() {
+            let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, _zaino_sub) =
+                create_zcashd_test_manager_and_fetch_services(false).await;
+
+            let rpc_call = |addr: String| {
+                let subscriber: &FetchServiceSubscriber = &zcashd_subscriber;
+                async move { subscriber.z_validate_address(addr).await.unwrap() }
+            };
+
+            integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+            integration_tests::rpc::z_validate_address::run_z_validate_sapling(&rpc_call).await;
+
+            test_manager.close().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]

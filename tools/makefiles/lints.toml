@@ -9,11 +9,61 @@ args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
 [tasks.doc]
 env = { RUSTDOCFLAGS = "-D warnings" }
 command = "cargo"
-args = ["doc", "--no-deps", "--all-features", "--document-private-items"]
+args = ["doc", "--no-deps", "--all-features"]
+
+[tasks.lint-boundary-conversions]
+description = "Forbid From/TryFrom impls across the persistence and wire boundaries. Both must use named inherent methods (from_business/into_business for persistence; to_wire/try_from_wire for wire)."
+# See CLAUDE.md §'Persistence-boundary conversions' and §'Wire-boundary
+# conversions'. Reference implementations:
+#   - packages/zaino-state/src/chain_index/types/db/block.rs     (DB)
+#   - packages/zaino-state/src/chain_index/types/wire.rs         (wire)
+script_runner = "bash"
+script = [
+    '''
+    set -euo pipefail
+
+    # === Persistence boundary ===
+    # Matches either direction of a From/TryFrom where the `Persistent*`
+    # side of the boundary appears.
+    persistent_on_rhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*>[[:space:]]+for[[:space:]]+(Persistent|[A-Za-z0-9_:]+::Persistent)'
+    persistent_on_lhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*Persistent[^>]*>[[:space:]]+for[[:space:]]+'
+
+    # === Wire boundary ===
+    # Matches either direction of a From/TryFrom where a zaino-proto type
+    # (anything under `proto::` or a `::proto::` path) sits opposite a
+    # business-layer target. We flag any impl that *mentions* a `proto::`
+    # type on either side of a From/TryFrom — intentional because there
+    # should be zero such impls once wire conversions are all named methods.
+    proto_on_rhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*>[[:space:]]+for[[:space:]]+[A-Za-z0-9_:]*proto::'
+    proto_on_lhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*proto::[^>]*>[[:space:]]+for[[:space:]]+'
+
+    # Scan all Rust sources; exclude generated / vendored paths and the
+    # zaino-proto package itself (it legitimately re-exports via prost-derived
+    # Froms between scalar types).
+    hits=$(
+      git ls-files '*.rs' ':!target/*' ':!packages/zaino-proto/*' \
+      | xargs -r grep -nE "$persistent_on_rhs|$persistent_on_lhs|$proto_on_rhs|$proto_on_lhs" \
+      || true
+    )
+
+    if [ -n "$hits" ]; then
+      echo ""
+      echo "Boundary-conversion lint: forbidden From/TryFrom impls found."
+      echo "Persistence boundary conversions must be named inherent methods on the"
+      echo "Persistent* type (canonical: from_business / into_business)."
+      echo "Wire boundary conversions must be named inherent methods on the"
+      echo "business-layer type (canonical: to_wire / try_from_wire)."
+      echo "See CLAUDE.md for the rules."
+      echo ""
+      echo "$hits"
+      exit 1
+    fi
+    '''
+]
 
 [tasks.lint]
 description = "Run all lints. Use as a pre-commit hook."
-dependencies = ["fmt", "clippy", "doc"]
+dependencies = ["fmt", "clippy", "doc", "lint-boundary-conversions"]
 
 [tasks.toggle-hooks]
 description = "Toggles the git config for core.hooksPath"

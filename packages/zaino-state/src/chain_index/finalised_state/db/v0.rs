@@ -494,15 +494,15 @@ impl DbV0 {
         self.status.store(StatusType::Syncing);
 
         let compact_block: CompactBlock = block.to_compact_block();
-        let zebra_height: ZebraHeight = block.index().height().into();
-        let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.index().hash());
+        let zebra_height: ZebraHeight = block.context.height().into();
+        let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.context.hash());
 
         let height_key = DbHeight(zebra_height).to_be_bytes();
         let hash_key = serde_json::to_vec(&DbHash(zebra_hash))?;
         let block_value = serde_json::to_vec(&DbCompactBlock(compact_block))?;
 
         // check this is the *next* block in the chain.
-        let block_height = block.index().height().0;
+        let block_height = block.context.height().0;
 
         tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
@@ -512,7 +512,7 @@ impl DbV0 {
             match cur.get(None, None, lmdb_sys::MDB_LAST) {
                 // Database already has blocks
                 Ok((last_height_bytes, _last_hash_bytes)) => {
-                    let block_height = block.index().height().0;
+                    let block_height = block.context.height().0;
 
                     let last_height = DbHeight::from_be_bytes(
                         last_height_bytes.expect("Height is always some in the finalised state"),
@@ -591,7 +591,7 @@ impl DbV0 {
                 self.status.store(StatusType::RecoverableError);
                 Err(FinalisedStateError::InvalidBlock {
                     height: block_height,
-                    hash: *block.index().hash(),
+                    hash: *block.context.hash(),
                     reason: e.to_string(),
                 })
             }
@@ -695,8 +695,8 @@ impl DbV0 {
         &self,
         block: &IndexedBlock,
     ) -> Result<(), FinalisedStateError> {
-        let zebra_height: ZebraHeight = block.index().height().into();
-        let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.index().hash());
+        let zebra_height: ZebraHeight = block.context.height().into();
+        let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(*block.context.hash());
 
         let height_key = DbHeight(zebra_height).to_be_bytes();
         let hash_key = serde_json::to_vec(&DbHash(zebra_hash))?;

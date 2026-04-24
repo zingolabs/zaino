@@ -34,6 +34,9 @@ use zaino_fetch::{
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
+            z_validate_address::{
+                ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
+            },
             GetMempoolInfoResponse, GetNetworkSolPsResponse,
         },
     },
@@ -517,6 +520,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.validate_address(address).await?)
     }
 
+    #[allow(deprecated)]
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, Self::Error> {
+        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
+        Ok(self.fetcher.z_validate_address(address).await?)
+    }
+
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
@@ -799,13 +811,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         match self.indexer.snapshot_nonfinalized_state().await? {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
-            } => {
-                let tip = non_finalized_snapshot.best_tip;
-                Ok(BlockId {
-                    height: tip.height.0 as u64,
-                    hash: tip.blockhash.0.to_vec(),
-                })
-            }
+            } => Ok(non_finalized_snapshot.best_tip.to_wire()),
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
                 // TODO: This probably shouldn't be an error.
                 // this is an improvement over previous behaviour of reporting
