@@ -155,7 +155,6 @@ default-filter = """
         test(/^zcashd::get::lightd_info$/) |
         test(/^zcashd::get::mining_info$/) |
         test(/^zcashd::get::peer_info$/) |
-        test(/^zcashd::get::subtree_roots$/) |
         test(/^zcashd::validation::validate_address$/) |
         test(/^zcashd::zcash_indexer::get_best_blockhash$/) |
         test(/^zcashd::zcash_indexer::get_block_count$/) |
