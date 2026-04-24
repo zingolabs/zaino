@@ -524,6 +524,19 @@ impl ResponseToError for GetBlockHashByIndex {
     type RpcError = GetBlockHashError;
 }
 
+#[cfg(test)]
+mod get_block_hash_by_index {
+    use super::*;
+
+    #[test]
+    fn transparent_deserialize_matches_inner_get_block_hash() {
+        let hex_json = "\"0000000000000000000000000000000000000000000000000000000000000001\"";
+        let wrapped: GetBlockHashByIndex = serde_json::from_str(hex_json).unwrap();
+        let direct: GetBlockHash = serde_json::from_str(hex_json).unwrap();
+        assert_eq!(wrapped.0, direct);
+    }
+}
+
 /// Error type for the `getblockhash` RPC request.
 #[derive(Debug, thiserror::Error)]
 pub enum GetBlockHashError {
@@ -544,6 +557,39 @@ impl TryFrom<RpcError> for GetBlockHashError {
         } else {
             Err(value)
         }
+    }
+}
+
+#[cfg(test)]
+mod get_block_hash_error {
+    use super::*;
+
+    #[test]
+    fn code_neg8_maps_to_height_out_of_range() {
+        let rpc_err = RpcError {
+            code: -8,
+            message: "Block number out of range.".into(),
+            data: None,
+        };
+        match GetBlockHashError::try_from(rpc_err) {
+            Ok(GetBlockHashError::HeightOutOfRange(msg)) => {
+                assert_eq!(msg, "Block number out of range.");
+            }
+            other => panic!("expected Ok(HeightOutOfRange), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_neg8_code_passes_through_unchanged() {
+        let rpc_err = RpcError {
+            code: -32600,
+            message: "unrelated server error".into(),
+            data: None,
+        };
+        let returned = GetBlockHashError::try_from(rpc_err)
+            .expect_err("non-(-8) code should round-trip as Err(original)");
+        assert_eq!(returned.code, -32600);
+        assert_eq!(returned.message, "unrelated server error");
     }
 }
 
