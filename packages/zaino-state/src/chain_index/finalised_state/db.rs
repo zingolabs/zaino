@@ -736,3 +736,90 @@ impl TransparentHistExt for DbBackend {
         }
     }
 }
+
+#[cfg(test)]
+mod shutdown {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::{sync::Barrier, time::timeout};
+
+    struct FakeDb {
+        env: Arc<Environment>,
+        db_handler: Mutex<Option<JoinHandle<()>>>,
+        shutdown_notify: Arc<Notify>,
+        status: NamedAtomicStatus,
+    }
+
+    impl DbLifecycle for FakeDb {
+        fn env(&self) -> &Arc<Environment> {
+            &self.env
+        }
+        fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>> {
+            &self.db_handler
+        }
+        fn shutdown_notify(&self) -> &Arc<Notify> {
+            &self.shutdown_notify
+        }
+        fn status_atomic(&self) -> &NamedAtomicStatus {
+            &self.status
+        }
+    }
+
+    /// Regression for #1033.
+    ///
+    /// `DbLifecycle::shutdown` signals waiters with `Notify::notify_one`, which wakes
+    /// at most one task and stores at most one permit. With N > 1 tasks awaiting the
+    /// same `shutdown_notify`, N-1 are stranded after shutdown fires. Fails until the
+    /// trait switches to a wake-all primitive (e.g. `watch`, or a flag +
+    /// `notify_waiters`).
+    #[tokio::test]
+    async fn wakes_every_shutdown_notify_waiter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = Arc::new(
+            lmdb::Environment::new()
+                .set_map_size(1 << 20)
+                .open(tmp.path())
+                .unwrap(),
+        );
+        let db = Arc::new(FakeDb {
+            env,
+            db_handler: Mutex::new(None),
+            shutdown_notify: Arc::new(Notify::new()),
+            status: NamedAtomicStatus::new("test", StatusType::Ready),
+        });
+
+        const N: usize = 3;
+        let woke = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(N + 1));
+
+        let mut waiters = Vec::with_capacity(N);
+        for _ in 0..N {
+            let notify = Arc::clone(&db.shutdown_notify);
+            let woke = Arc::clone(&woke);
+            let barrier = Arc::clone(&barrier);
+            waiters.push(tokio::spawn(async move {
+                let wait = notify.notified();
+                tokio::pin!(wait);
+                // Register interest with `Notify` before crossing the barrier, so by
+                // the time shutdown fires every waiter is already enqueued.
+                wait.as_mut().enable();
+                barrier.wait().await;
+                wait.await;
+                woke.fetch_add(1, Ordering::Relaxed);
+            }));
+        }
+        barrier.wait().await;
+
+        DbLifecycle::shutdown(db.as_ref()).await.unwrap();
+
+        for (i, w) in waiters.into_iter().enumerate() {
+            timeout(Duration::from_millis(200), w)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("waiter {i} stranded: shutdown_notify woke only a subset")
+                })
+                .unwrap();
+        }
+        assert_eq!(woke.load(Ordering::Relaxed), N);
+    }
+}
