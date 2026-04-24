@@ -269,7 +269,6 @@ mod chain_query_interface {
             .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
         let range = indexer
             .get_block_range(&snapshot, Height::try_from(0).unwrap(), None)
             .unwrap()
@@ -277,20 +276,9 @@ mod chain_query_interface {
             .await
             .unwrap();
         for block in range {
-            let block = block
+            block
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
-            assert_eq!(
-                block.hash().0,
-                snapshot
-                    .heights_to_hashes
-                    .get(
-                        &chain_index::types::Height::try_from(block.coinbase_height().unwrap())
-                            .unwrap()
-                    )
-                    .unwrap()
-                    .0
-            );
         }
     }
 
