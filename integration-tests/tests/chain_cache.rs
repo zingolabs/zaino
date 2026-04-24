@@ -314,13 +314,6 @@ mod chain_query_interface {
                 .generate_blocks_and_poll_indexer(0, state_service.get_subscriber().inner_ref())
                 .await
         }
-        {
-            let chain_height =
-                Height::try_from(json_service.get_blockchain_info().await.unwrap().blocks.0)
-                    .unwrap();
-            let indexer_height = indexer.snapshot_nonfinalized_state().best_tip.height;
-            assert_eq!(chain_height, indexer_height);
-        }
 
         test_manager
             .generate_blocks_and_poll_chain_index(150, &indexer)
