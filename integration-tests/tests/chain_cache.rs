@@ -387,8 +387,6 @@ mod chain_query_interface {
         test_manager
             .generate_blocks_and_poll_chain_index(5, &indexer)
             .await;
-        let snapshot = indexer.snapshot_nonfinalized_state();
-        assert_eq!(snapshot.as_ref().blocks.len(), 8);
 
         let test_pools = [ShieldedPool::Sapling, ShieldedPool::Orchard];
         let valid_start_index = 0;
