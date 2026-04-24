@@ -147,7 +147,6 @@ default-filter = """
         test(/^pre_v4_txs_parsing$/) |
         test(/^zcashd::connect_to_node_get_info$/) |
         test(/^zcashd::get::block_deltas$/) |
-        test(/^zcashd::get::block_header$/) |
         test(/^zcashd::get::block_object$/) |
         test(/^zcashd::get::block_raw$/) |
         test(/^zcashd::get::difficulty$/) |
