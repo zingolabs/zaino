@@ -100,8 +100,15 @@ async fn tip_converges_after_burst_mine() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(true).await;
 
+    let initial_tip = mockchain.active_height();
     mockchain.mine_blocks(20);
     let expected_tip = mockchain.active_height();
+    assert!(
+        expected_tip > initial_tip,
+        "mockchain did not advance: burst mine was a no-op \
+         (initial_tip={initial_tip}, max_chain_height={})",
+        mockchain.max_chain_height(),
+    );
 
     super::poll::poll_until(
         "indexer tip to match mined mockchain tip",
@@ -120,4 +127,15 @@ async fn tip_converges_after_burst_mine() {
         },
     )
     .await;
+
+    let indexer_tip = index_reader
+        .snapshot_nonfinalized_state()
+        .await
+        .unwrap()
+        .get_nfs_snapshot()
+        .unwrap()
+        .best_tip
+        .height
+        .0;
+    assert_eq!(indexer_tip, expected_tip);
 }
