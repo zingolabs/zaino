@@ -594,10 +594,9 @@ mod chain_query_interface {
                 .get_block_range(&snapshot, start_height, end_height)
                 .unwrap_or_else(|| {
                     panic!(
-                        "expected block range on iteration {iteration}: start={:?} end={:?} snapshot_tip={:?}",
+                        "expected block range on iteration {iteration}: start={:?} end={:?}",
                         start_height,
                         end_height,
-                        snapshot.best_tip,
                     )
                 });
 
@@ -618,11 +617,8 @@ mod chain_query_interface {
                     .unwrap_or_else(|| {
                         panic!(
                             "fresh snapshot unexpectedly returned None on iteration {iteration}: \
-                     snapshot best tip height={:?} hash={:?}, \
                      current tip height={:?} hash={:?}, \
                      prev_tip height={:?} hash={:?}",
-                            snapshot.best_tip.height,
-                            snapshot.best_tip.blockhash,
                             current_tip.height,
                             current_tip.blockhash,
                             prev_tip.height,
