@@ -163,7 +163,6 @@ default-filter = """
         test(/^zcashd::zcash_indexer::get_peer_info$/) |
         test(/^zcashd::zcash_indexer::validate_address$/) |
         test(/^zcashd::zcash_indexer::z_get_block$/) |
-        test(/^zcashd::zcash_indexer::z_validate_address$/) |
         test(/^zebra::check_info::regtest_no_cache$/) |
         test(/^zebra::check_info::state_service_chaintip_update_subscriber$/) |
         test(/^zebra::get::best_blockhash$/) |
