@@ -27,10 +27,10 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
+        request::block_selector::BlockSelector,
         response::{
             address_deltas::{BlockInfo, GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
-            block_hash::BlockSelector,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,

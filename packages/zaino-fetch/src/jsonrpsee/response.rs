@@ -5,7 +5,6 @@
 
 pub mod address_deltas;
 pub mod block_deltas;
-pub mod block_hash;
 pub mod block_header;
 pub mod block_subsidy;
 pub mod common;

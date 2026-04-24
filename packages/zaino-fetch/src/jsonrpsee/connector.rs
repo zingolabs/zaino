@@ -22,8 +22,8 @@ use std::{
 use tracing::error;
 use zebra_rpc::client::ValidateAddressResponse;
 
+use crate::jsonrpsee::request::block_selector::BlockSelector;
 use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
-use crate::jsonrpsee::response::block_hash::BlockSelector;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{

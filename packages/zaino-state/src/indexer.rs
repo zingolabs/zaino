@@ -4,16 +4,18 @@
 use async_trait::async_trait;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
-use zaino_fetch::jsonrpsee::response::{
-    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-    block_deltas::BlockDeltas,
-    block_hash::BlockSelector,
-    block_header::GetBlockHeader,
-    block_subsidy::GetBlockSubsidy,
-    mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
-    z_validate_address::ZValidateAddressResponse,
-    GetMempoolInfoResponse, GetNetworkSolPsResponse,
+use zaino_fetch::jsonrpsee::{
+    request::block_selector::BlockSelector,
+    response::{
+        address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+        block_deltas::BlockDeltas,
+        block_header::GetBlockHeader,
+        block_subsidy::GetBlockSubsidy,
+        mining_info::GetMiningInfoWire,
+        peer_info::GetPeerInfo,
+        z_validate_address::ZValidateAddressResponse,
+        GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    },
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,

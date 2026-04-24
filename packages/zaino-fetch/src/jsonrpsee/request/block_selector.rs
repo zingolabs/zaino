@@ -1,4 +1,4 @@
-//! Types associated with the `getblockhash` RPC request.
+//! Block index request parameter for `getblockhash`.
 
 use core::fmt;
 
