@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
 
 [features]
 default = []
@@ -29,8 +29,9 @@ zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
 # LibRustZcash
+incrementalmerkletree = { workspace = true }
 zcash_address = { workspace = true }
-zcash_keys = { workspace = true }
+zcash_keys = { workspace = true, features = ["sapling"] }
 zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
@@ -68,7 +69,7 @@ primitive-types = { workspace = true }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
 zcash_history = "0.4"
-core2 = { workspace = true }
+corez = { workspace = true }
 bs58 = { workspace = true }
 nonempty = { workspace = true }
 arc-swap = { workspace = true }
@@ -82,8 +83,8 @@ tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
-incrementalmerkletree = "*"
-rand = "0.8.5"
+incrementalmerkletree = "0.8.2"
+rand = "0.9.4"
 
 [build-dependencies]
 whoami = { workspace = true }

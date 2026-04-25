@@ -1,6 +1,6 @@
 //! Test vector creation and validity tests, MockchainSource creation.
 
-use core2::io::{self, Read};
+use corez::io::{self, Read};
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;

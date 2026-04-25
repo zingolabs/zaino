@@ -18,6 +18,19 @@ and this library adheres to Rust's notion of
     - `compact_vin`
     - `compact_vout`
     - `to_compact`: returns a compactTx from TxInCompact
+  - new type: `non_finalized_state::ChainIndexSnapshot`
+  - `NonFinalizedSnapshot` trait has new method: `max_serviceable_height`
+  - `::types`
+    - new submodule `primitives` with type `BlockIndex { height, hash }`
+      (re-exported as `chain_index::types::BlockIndex`)
+    - new submodule `block_context` with type
+      `BlockContext { index, parent_hash, chainwork }`, constructor
+      `BlockContext::new`, and accessors `hash`/`parent_hash`/`chainwork`/`height`
+      (re-exported as `chain_index::types::BlockContext`)
+    - new submodule `wire` carrying the business↔gRPC conversions:
+      - `BlockIndex::to_wire()` → `proto::BlockId`
+      - `BlockIndex::try_from_wire(proto::BlockId) -> Result<Self, WireBlockIdError>`
+      - new error enum `WireBlockIdError` (`HashWrongLength`, `HeightOverflow`)
 - `local_cache::compact_block_with_pool_types`
 ### Changed
 - `get_mempool_tx` now takes `GetMempoolTxRequest` as parameter
@@ -31,6 +44,16 @@ and this library adheres to Rust's notion of
       - `get_compact_block` now takes a `PoolTypeFilter` parameter
 - `chain_index::types::db::legacy`:
   - `to_compact_block()`: now returns transparent data
+- `chain_index`:
+  - `ChainIndex::snapshot_nonfinalized_state` now returns a `Future<Output = Result<Self::Snapshot>>`
+    instead of a `Self::Snapshot`
+  - `NodeBackedChainIndexSubscriber`'s `ChainIndex` implementation:
+      - `Snapshot` associated type is now a `ChainIndexSnapshot`
+      this effects all associated methods.
+  - `non_finalized_state::BestTip` renamed and relocated to
+    `chain_index::types::BlockIndex` (was briefly `non_finalized_state::BlockIdent`
+    earlier in the same unreleased cycle); its inner field is now named `hash`
+    (previously `blockhash`), and it gains `Eq`/`Hash` derives.
 
 ### Deprecated
 - `GetTaddressTxids` is replaced by `GetTaddressTransactions`
@@ -38,3 +61,6 @@ and this library adheres to Rust's notion of
 ### Removed
 - `Ping` for GRPC service
 - `utils::blockid_to_hashorheight` moved to `zaino_proto::utils`
+- `non_finalized_state::NonfinalizedBlockCacheSnapshot` visibility narrowed
+  from `pub` to `pub(crate)`; it is no longer part of the public API.
+  External consumers should use `ChainIndexSnapshot` instead.

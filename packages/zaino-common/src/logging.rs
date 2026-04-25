@@ -27,6 +27,7 @@
 
 use std::env;
 use std::fmt;
+use std::io::IsTerminal;
 
 use time::macros::format_description;
 use tracing::Level;
@@ -109,7 +110,7 @@ impl Default for LogConfig {
             .and_then(|s| match s.to_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" => Some(true),
                 "0" | "false" | "no" | "off" => Some(false),
-                "auto" => Some(atty::is(atty::Stream::Stderr)),
+                "auto" => Some(std::io::stderr().is_terminal()),
                 _ => None,
             })
             .unwrap_or(true); // Default to color enabled

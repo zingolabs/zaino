@@ -1,6 +1,6 @@
 //! Metadata objects
 
-use core2::io::{self, Read, Write};
+use corez::io::{self, Read, Write};
 
 use crate::{read_u64_le, version, write_u64_le, FixedEncodedLen, ZainoVersionedSerde};
 

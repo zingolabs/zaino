@@ -1,12 +1,10 @@
-use super::load_test_vectors_and_sync_chain_index;
+use super::{
+    load_test_vectors_and_sync_chain_index, load_test_vectors_and_sync_chain_index_with_timings,
+};
+use crate::chain_index::{ChainIndex, SyncTimings};
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
 use zaino_common::status::{Status as _, StatusType};
-
-// The backoff sequence is: 250ms, 500ms, 1s, 2s, 4s, 8s, 8s, 8s, 8s
-// then CriticalError on the 10th failure.
-// Total: ~40s of backoff + up to 500ms until the sync loop's next iteration.
-const MAX_TIME_TO_CRITICAL: Duration = Duration::from_secs(45);
 
 /// Regression test (fixes #593): a source failure should not kill the
 /// sync loop.
@@ -36,40 +34,108 @@ async fn survives_transient_source_failure() {
         StatusType::CriticalError,
         "sync loop should survive transient source failure, not set CriticalError"
     );
+    let max_time_to_critical = SyncTimings::default().max_backoff_window() + Duration::from_secs(5);
     assert!(
-        elapsed < MAX_TIME_TO_CRITICAL,
+        elapsed < max_time_to_critical,
         "test took {elapsed:?}, which exceeds the maximum possible backoff window"
     );
 }
 
-/// After MAX_CONSECUTIVE_FAILURES (10) with exponential backoff
-/// (250ms, 500ms, 1s, 2s, 4s, 8s, 8s, 8s, 8s = ~40s total),
-/// the sync loop should escalate to CriticalError.
+/// After `max_consecutive_failures` with exponential backoff, the sync loop
+/// should escalate to [`StatusType::CriticalError`].
+///
+/// Uses [`SyncTimings::fast`] (10× shrunk) so the full backoff schedule fits
+/// in a few seconds instead of ~40 s.
 #[tokio::test(flavor = "multi_thread")]
 async fn escalates_to_critical_after_persistent_failure() {
+    let timings = SyncTimings::fast();
     let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(true).await;
+        load_test_vectors_and_sync_chain_index_with_timings(true, timings).await;
 
     let start = Instant::now();
     mockchain.set_failing(true);
 
-    // Poll until CriticalError rather than sleeping a fixed duration.
+    // 5× slack over the nominal backoff sum to absorb scheduling jitter and
+    // the per-iteration sync work the loop performs between sleeps.
+    let max_time_to_critical = timings.max_backoff_window() * 5;
+    let poll_interval = timings.initial_backoff;
+
     loop {
-        sleep(Duration::from_secs(1)).await;
+        sleep(poll_interval).await;
 
         if index_reader.status() == StatusType::CriticalError {
             break;
         }
 
         assert!(
-            start.elapsed() < MAX_TIME_TO_CRITICAL,
-            "CriticalError was not reached within {MAX_TIME_TO_CRITICAL:?}"
+            start.elapsed() < max_time_to_critical,
+            "CriticalError was not reached within {max_time_to_critical:?}"
         );
     }
 
     let elapsed = start.elapsed();
     assert!(
-        elapsed < MAX_TIME_TO_CRITICAL,
+        elapsed < max_time_to_critical,
         "CriticalError took {elapsed:?}, exceeding the maximum backoff window"
     );
+}
+
+/// Moved here from the integration test
+/// `chain_cache::sync_large_chain_{zebrad,zcashd}`. That test contained one
+/// whitebox read — `snapshot.best_tip.height` (W11 in the issue #1044
+/// audit) — asserting the indexer tip matched the validator tip after
+/// ~150 blocks were produced in a burst. That property is about the sync
+/// loop absorbing many new source blocks between iterations, not about
+/// chain-cache shape, so it belongs next to the other sync-loop tests
+/// and inside the crate where the snapshot's fields are reachable.
+///
+/// `sync_blocks_after_startup` covers the one-block-at-a-time trickle.
+/// This test covers the distinct case where multiple blocks appear on
+/// the source before the next sync iteration runs. Porting to
+/// `MockchainSource` (which implements `BlockchainReader`) keeps the
+/// indexer's production sync code in the loop while removing the podman
+/// / live-validator fixture dependency the original test required.
+#[tokio::test(flavor = "multi_thread")]
+async fn tip_converges_after_burst_mine() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(true).await;
+
+    let initial_tip = mockchain.active_height();
+    mockchain.mine_blocks(20);
+    let expected_tip = mockchain.active_height();
+    assert!(
+        expected_tip > initial_tip,
+        "mockchain did not advance: burst mine was a no-op \
+         (initial_tip={initial_tip}, max_chain_height={})",
+        mockchain.max_chain_height(),
+    );
+
+    super::poll::poll_until(
+        "indexer tip to match mined mockchain tip",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let tip = index_reader
+                .snapshot_nonfinalized_state()
+                .await
+                .ok()?
+                .get_nfs_snapshot()?
+                .best_tip
+                .height
+                .0;
+            (tip == expected_tip).then_some(())
+        },
+    )
+    .await;
+
+    let indexer_tip = index_reader
+        .snapshot_nonfinalized_state()
+        .await
+        .unwrap()
+        .get_nfs_snapshot()
+        .unwrap()
+        .best_tip
+        .height
+        .0;
+    assert_eq!(indexer_tip, expected_tip);
 }

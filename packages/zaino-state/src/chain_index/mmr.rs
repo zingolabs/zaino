@@ -123,7 +123,7 @@ impl InMemoryMmrTree {
             let commitment = &commitments[i];
             let height = epoch_start.0 + i as u32;
 
-            let current_chainwork = header.index().chainwork().to_u256();
+            let current_chainwork = header.context.chainwork().to_u256();
             let block_work = if let Some(prev) = prev_chainwork {
                 current_chainwork.saturating_sub(prev)
             } else {
@@ -135,7 +135,7 @@ impl InMemoryMmrTree {
 
             let node_data_bytes = serialize_v2_leaf_data(
                 branch_id,
-                &header.index().hash().0,
+                &header.context.hash().0,
                 header.data().time() as u32,
                 header.data().bits(),
                 commitment.roots().sapling(),
@@ -214,8 +214,8 @@ impl InMemoryMmrTree {
         commitment: &crate::chain_index::types::db::commitment::CommitmentTreeData,
         prev_chainwork: Option<&ChainWork>,
     ) -> Result<(), MmrError> {
-        let height = header.index().height().0;
-        let current_chainwork = header.index().chainwork().to_u256();
+        let height = header.context.height().0;
+        let current_chainwork = header.context.chainwork().to_u256();
         let block_work = match prev_chainwork {
             Some(prev) => current_chainwork.saturating_sub(prev.to_u256()),
             None => work_from_nbits(header.data().bits()),
@@ -225,7 +225,7 @@ impl InMemoryMmrTree {
 
         let node_data_bytes = serialize_v2_leaf_data(
             self.branch_id,
-            &header.index().hash().0,
+            &header.context.hash().0,
             header.data().time() as u32,
             header.data().bits(),
             commitment.roots().sapling(),
@@ -531,7 +531,7 @@ pub(crate) async fn update_mmr_after_sync(mmr: &MmrHandle, db: &DbReader, networ
 
     // Previous block's chainwork for computing per-block work
     let prev_chainwork = match db.get_block_header(Height(mmr_tip)).await {
-        Ok(h) => Some(*h.index().chainwork()),
+        Ok(h) => Some(*h.context.chainwork()),
         Err(_) => None,
     };
 
@@ -542,7 +542,7 @@ pub(crate) async fn update_mmr_after_sync(mmr: &MmrHandle, db: &DbReader, networ
             tracing::error!("MMR append failed: {e}");
             break;
         }
-        prev_cw = Some(*header.index().chainwork());
+        prev_cw = Some(*header.context.chainwork());
         appended += 1;
     }
 
@@ -731,12 +731,12 @@ pub fn current_epoch_start(network: &Network, tip_height: u32) -> u32 {
 /// Serialize a block header into its full wire format.
 pub fn serialize_block_header(header: &BlockHeaderData) -> Vec<u8> {
     let data = header.data();
-    let index = header.index();
+    let context = &header.context;
     let solution_bytes = data.solution.as_bytes();
 
     let mut buf = Vec::with_capacity(140 + 3 + solution_bytes.len());
     buf.extend_from_slice(&data.version.to_le_bytes());
-    buf.extend_from_slice(&index.parent_hash().0);
+    buf.extend_from_slice(&context.parent_hash().0);
     buf.extend_from_slice(data.merkle_root());
     buf.extend_from_slice(data.block_commitments());
     buf.extend_from_slice(&(data.time() as u32).to_le_bytes());

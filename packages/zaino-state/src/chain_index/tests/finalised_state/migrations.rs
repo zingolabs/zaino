@@ -493,8 +493,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
             .await
             .unwrap_or_else(|e| panic!("failed to read V1-format header at height {}: {e}", h.0));
         assert_eq!(
-            header.index().height(),
-            h,
+            header.context.index.height, h,
             "V1-format header at height {} returned wrong height",
             h.0
         );
@@ -508,8 +507,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
             .await
             .unwrap_or_else(|e| panic!("failed to read V2-format header at height {}: {e}", h.0));
         assert_eq!(
-            header.index().height(),
-            h,
+            header.context.index.height, h,
             "V2-format header at height {} returned wrong height",
             h.0
         );

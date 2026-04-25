@@ -22,7 +22,6 @@ repository = "https://github.com/zingolabs"
 homepage = "https://www.zingolabs.org/"
 edition = "2021"
 license = "Apache-2.0"
-version = "0.2.0"
 
 
 [workspace.dependencies]
@@ -40,6 +39,7 @@ zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev
 
 
 # Librustzcash
+incrementalmerkletree = "0.8"
 zcash_address = "0.10"
 zcash_keys = "0.12"
 zcash_protocol = "0.7.2"
@@ -48,9 +48,9 @@ zcash_transparent = "0.6.3"
 zcash_client_backend = "0.21.0"
 
 # Zebra
-zebra-chain = "6.0.1"
+zebra-chain = "6.0.2"
 zebra-state = "5.0.0"
-zebra-rpc = "6.0.1"
+zebra-rpc = "6.0.2"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -70,7 +70,6 @@ tracing-subscriber = { version = "0.3.20", features = [
 tracing-futures = "0.2"
 tracing-tree = "0.4"
 nu-ansi-term = "0.50"
-atty = "0.2"
 time = { version = "0.3", features = ["macros", "formatting"] }
 
 # Network / RPC
@@ -111,7 +110,7 @@ ctrlc = "3.4"
 chrono = "0.4"
 which = "4"
 whoami = "1.5"
-core2 = "0.4"
+corez = "0.1"
 
 # Formats
 base64 = "0.22"
@@ -127,13 +126,13 @@ bitflags = "2.9"
 # Test
 portpicker = "0.1"
 tempfile = "3.2"
-zaino-fetch = { path = "packages/zaino-fetch" }
-zaino-proto = { path = "packages/zaino-proto" }
-zaino-serve = { path = "packages/zaino-serve" }
-zaino-state = { path = "packages/zaino-state" }
-zaino-common = { path = "packages/zaino-common" }
-wire_serialized_transaction_test_data = "1.0.0"
 zainod = { path = "packages/zainod" }
+zaino-common = { path = "packages/zaino-common", version = "0.1.0" }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.1.0" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.1.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.1.0" }
+zaino-serve = { path = "packages/zaino-serve", version = "0.1.0" }
+wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
 proptest = "~1.6"

@@ -1,5 +1,6 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
+use crate::chain_index::NonFinalizedSnapshot;
 #[allow(deprecated)]
 use crate::{
     chain_index::{
@@ -7,7 +8,7 @@ use crate::{
         source::ValidatorConnector,
         types as chain_types, ChainIndex,
     },
-    config::StateServiceConfig,
+    config::{DonationAddress, StateServiceConfig},
     error::ChainIndexError,
     error::{BlockCacheError, StateServiceError},
     indexer::{
@@ -33,6 +34,10 @@ use zaino_fetch::{
             block_subsidy::GetBlockSubsidy,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
+            z_validate_address::{
+                InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
+                DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
+            },
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
         },
     },
@@ -49,7 +54,9 @@ use zaino_proto::proto::{
         SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
+use zcash_keys::{address::Address, encoding::AddressCodec};
 
+use zcash_primitives::legacy::TransparentAddress;
 use zcash_protocol::consensus::NetworkType;
 use zebra_chain::{
     amount::{Amount, NonNegative},
@@ -193,33 +200,6 @@ impl ZcashService for StateService {
 
         let zebra_build_data = rpc_client.get_info().await?;
 
-        // This const is optional, as the build script can only
-        // generate it from hash-based dependencies.
-        // in all other cases, this check will be skipped.
-        if let Some(expected_zebrad_version) = crate::ZEBRA_VERSION {
-            // this `+` indicates a git describe run
-            // i.e. the first seven characters of the commit hash
-            // have been appended. We match on those
-            if zebra_build_data.build.contains('+') {
-                if !zebra_build_data
-                    .build
-                    .contains(&expected_zebrad_version[0..7])
-                {
-                    return Err(StateServiceError::ZebradVersionMismatch {
-                        expected_zebrad_version: expected_zebrad_version.to_string(),
-                        connected_zebrad_version: zebra_build_data.build,
-                    });
-                }
-            } else {
-                // With no `+`, we expect a version number to be an exact match
-                if expected_zebrad_version != zebra_build_data.build {
-                    return Err(StateServiceError::ZebradVersionMismatch {
-                        expected_zebrad_version: expected_zebrad_version.to_string(),
-                        connected_zebrad_version: zebra_build_data.build,
-                    });
-                }
-            }
-        };
         let data = ServiceMetadata::new(
             get_build_info(),
             config.network.to_zebra_network(),
@@ -591,13 +571,18 @@ impl StateServiceSubscriber {
         let state_service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = state_service_clone
+            .indexer
+            .snapshot_nonfinalized_state()
+            .await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
-                let snapshot = state_service_clone.indexer.snapshot_nonfinalized_state();
-                let chain_height = snapshot.best_tip.height.0;
+                // This method does not support passthrough. Just return.
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {return};
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
 
                 match state_service_clone
                     .indexer
@@ -704,12 +689,12 @@ impl StateServiceSubscriber {
         e: BlockCacheError,
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let chain_height = snapshot.best_tip.height.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let chain_height = snapshot.max_serviceable_height().0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
+                                is greater than Zaino's best chain tip [{chain_height}].",
             )))
         } else {
             // TODO: Hide server error from clients before release.
@@ -1028,6 +1013,37 @@ impl StateServiceSubscriber {
         times.sort_unstable();
         Ok(times[times.len() / 2])
     }
+}
+
+/// Extracts the diversifier and pk_d bytes from a validated Sapling
+/// [`PaymentAddress`], returning pk_d in zcashd's big-endian byte order.
+///
+/// # Deprecation
+///
+/// See [`DEPRECATION_NOTICE`]. This function exists to support the
+/// `z_validateaddress` RPC endpoint, which itself exists solely for zcashd
+/// compatibility. The pk_d bytes are
+/// reversed from `sapling-crypto`'s native little-endian representation to
+/// match zcashd's big-endian hex output.
+///
+/// # Precondition
+///
+/// The caller must have obtained `s` through [`PaymentAddress::from_bytes`] or
+/// equivalent (e.g. `ZcashAddress::convert_if_network`), which guarantees the
+/// diversifier has a valid `g_d()` and pk_d is a non-identity Jubjub subgroup
+/// point. No additional validation is performed here.
+///
+/// # Layout
+///
+/// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
+/// `DiversifiedTransmissionKey::to_bytes()` is `pub(crate)` in `sapling-crypto`,
+/// so we extract pk_d from the serialized form.
+fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
+    let bytes = s.to_bytes();
+    let diversifier: [u8; 11] = bytes[..11].try_into().unwrap();
+    let mut pk_d: [u8; 32] = bytes[11..].try_into().unwrap();
+    pk_d.reverse();
+    (diversifier, pk_d)
 }
 
 #[async_trait]
@@ -1485,62 +1501,69 @@ impl ZcashIndexer for StateServiceSubscriber {
             .collect())
     }
 
+    /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
+    ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
+    ///       required, this second call could be removed, improving the performance of this method.
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
-        let mut state = self.read_state_service.clone();
+        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
-        let hash_or_height = HashOrHeight::from_str(&hash_or_height)?;
-        let block_header_response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::BlockHeader(hash_or_height)))
-            .await?;
-        let (header, hash, height) = match block_header_response {
-            ReadResponse::BlockHeader {
-                header,
-                hash,
-                height,
-                ..
-            } => (header, hash, height),
-            unexpected => {
-                unreachable!("Unexpected response from state service: {unexpected:?}")
-            }
+        let block_data = match hash_or_height_struct {
+            HashOrHeight::Hash(hash) => self
+                .indexer
+                .get_indexed_block_by_hash(&snapshot, &hash.into())
+                .await
+                .map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
+            HashOrHeight::Height(height) => self
+                .indexer
+                .get_indexed_block_by_height(&snapshot, &height.into())
+                .await
+                .map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    ))
+                })?
+                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                )))?,
         };
 
-        let sapling =
-            match NetworkUpgrade::Sapling.activation_height(&self.config.network.into()) {
-                Some(activation_height) if height >= activation_height => Some(
-                    state
-                        .ready()
-                        .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
-                        .await?,
-                ),
-                _ => None,
-            }
-            .and_then(|sap_response| {
-                expected_read_response!(sap_response, SaplingTree).map(|tree| tree.to_rpc_bytes())
-            });
-
-        let orchard = match NetworkUpgrade::Nu5.activation_height(&self.config.network.into()) {
-            Some(activation_height) if height >= activation_height => Some(
-                state
-                    .ready()
-                    .and_then(|service| service.call(ReadRequest::OrchardTree(hash_or_height)))
-                    .await?,
-            ),
-            _ => None,
-        }
-        .and_then(|orch_response| {
-            expected_read_response!(orch_response, OrchardTree).map(|tree| tree.to_rpc_bytes())
-        });
+        let (sapling, orchard) = self
+            .indexer
+            .get_treestate(block_data.hash())
+            .await
+            .map_err(|_error| {
+                StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch treestate.",
+                ))
+            })?;
+        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+            StateServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                "Block time is out of range for u32.",
+            ))
+        })?;
 
         #[allow(deprecated)]
         Ok(GetTreestateResponse::from_parts(
-            hash,
-            height,
-            // If the timestamp is pre-unix epoch, something has gone terribly wrong
-            u32::try_from(header.time.timestamp()).unwrap(),
+            (*block_data.hash()).into(),
+            block_data.height().into(),
+            time,
             sapling,
             orchard,
         ))
@@ -1578,8 +1601,14 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        let nfs_snapshot = self.indexer.snapshot_nonfinalized_state();
-        let h = nfs_snapshot.best_tip.height;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let h = non_finalized_snapshot.best_tip.height;
         Ok(h.into())
     }
 
@@ -1587,7 +1616,6 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         raw_address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
-        use zcash_keys::address::Address;
         use zcash_transparent::address::TransparentAddress;
 
         let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
@@ -1608,7 +1636,6 @@ impl ZcashIndexer for StateServiceSubscriber {
             }
         };
 
-        // we want to match zcashd's behaviour
         Ok(match address {
             Address::Transparent(taddr) => ValidateAddressResponse::new(
                 true,
@@ -1617,6 +1644,60 @@ impl ZcashIndexer for StateServiceSubscriber {
             ),
             _ => ValidateAddressResponse::invalid(),
         })
+    }
+
+    #[allow(deprecated)]
+    async fn z_validate_address(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, Self::Error> {
+        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
+
+        let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
+            return Ok(ZValidateAddressResponse::Known(
+                KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
+            ));
+        };
+
+        let converted_address = match parsed_address.convert_if_network::<Address>(
+            match self.config.network.to_zebra_network().kind() {
+                NetworkKind::Mainnet => NetworkType::Main,
+                NetworkKind::Testnet => NetworkType::Test,
+                NetworkKind::Regtest => NetworkType::Regtest,
+            },
+        ) {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::debug!(?err, "conversion error");
+                return Ok(ZValidateAddressResponse::Known(
+                    KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
+                ));
+            }
+        };
+
+        // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
+        match converted_address {
+            Address::Transparent(t) => match t {
+                TransparentAddress::PublicKeyHash(_) => {
+                    Ok(ZValidateAddressResponse::p2pkh(address))
+                }
+                TransparentAddress::ScriptHash(_) => Ok(ZValidateAddressResponse::p2sh(address)),
+            },
+            Address::Unified(u) => Ok(ZValidateAddressResponse::unified(
+                u.encode(&self.network().to_zebra_network()),
+            )),
+            Address::Sapling(s) => {
+                let (diversifier, pk_d) = sapling_key_bytes(&s);
+                Ok(ZValidateAddressResponse::sapling(
+                    s.encode(&self.network().to_zebra_network()),
+                    Some(hex::encode(diversifier)),
+                    Some(hex::encode(pk_d)),
+                ))
+            }
+            _ => Ok(ZValidateAddressResponse::Known(
+                KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
+            )),
+        }
     }
 
     async fn z_get_subtrees_by_index(
@@ -1766,7 +1847,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                             // This should be None for sidechain transactions,
                             // which currently aren't returned by ReadResponse::Transaction
                             let best_chain_height = Some(tx.height);
-                            let snapshot = self.indexer.snapshot_nonfinalized_state();
+                            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
                             let compact_block = self
                                 .indexer
                                 .get_compact_block(
@@ -1944,11 +2025,14 @@ impl ZcashIndexer for StateServiceSubscriber {
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let tip = self.indexer.snapshot_nonfinalized_state().best_tip;
-        Ok(BlockId {
-            height: tip.height.0 as u64,
-            hash: tip.blockhash.0.to_vec(),
-        })
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        Ok(non_finalized_snapshot.best_tip.to_wire())
     }
 
     /// Return the compact block corresponding to the given block identifier
@@ -1959,7 +2043,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             )),
         )?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
         // Convert HashOrHeight to chain_types::Height
         let block_height = match hash_or_height {
@@ -1983,7 +2067,13 @@ impl LightWalletIndexer for StateServiceSubscriber {
         {
             Ok(Some(block)) => Ok(block),
             Ok(None) => {
-                let chain_height = snapshot.best_tip.height.0;
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    // TODO: This probably shouldn't be an error.
+                    // this is an improvement over previous behaviour of
+                    // acting as if we are only synced to the genesis block
+                    return Err(StateServiceError::UnavailableNotSyncedEnough);
+                };
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -1997,7 +2087,13 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 }
             }
             Err(e) => {
-                let chain_height = snapshot.best_tip.height.0;
+                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    // TODO: This probably shouldn't be an error.
+                    // this is an improvement over previous behaviour of
+                    // acting as if we are only synced to the genesis block
+                    return Err(StateServiceError::UnavailableNotSyncedEnough);
+                };
+                let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
                         StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
@@ -2026,7 +2122,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             ))
         })?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let block_height = chain_types::Height(height);
 
         match self
@@ -2412,8 +2508,14 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let mempool_height = snapshot.best_tip.height.0;
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            // TODO: This probably shouldn't be an error.
+            // this is an improvement over previous behaviour of
+            // acting as if we are only synced to the genesis block
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
+        };
+        let mempool_height = non_finalized_snapshot.best_tip.height.0;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
@@ -2646,7 +2748,12 @@ impl LightWalletIndexer for StateServiceSubscriber {
             estimated_height: blockchain_info.estimated_height().0 as u64,
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
-            donation_address: "".to_string(),
+            donation_address: self
+                .config
+                .donation_address
+                .as_ref()
+                .map(DonationAddress::encode)
+                .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
             lightwallet_protocol_version: "v0.4.0".to_string(),
@@ -2804,3 +2911,188 @@ impl fmt::Display for MedianTimePast {
 }
 
 impl Error for MedianTimePast {}
+
+#[cfg(test)]
+mod tests {
+    /// Classifies the byte-level relationship between two slices.
+    #[derive(Debug, PartialEq)]
+    enum ByteRelation {
+        /// The slices are identical.
+        Equal,
+        /// `actual` fully byte-reversed equals `expected` (endian swap).
+        FullByteReversal,
+        /// Each byte's bits reversed maps `actual` to `expected`.
+        PerByteBitReversal,
+        /// Reversing bytes within 16-bit chunks maps `actual` to `expected`.
+        ChunkSwap16,
+        /// Reversing bytes within 32-bit chunks maps `actual` to `expected`.
+        ChunkSwap32,
+        /// Reversing bytes within 64-bit chunks maps `actual` to `expected`.
+        ChunkSwap64,
+        /// No recognized transformation.
+        Unrecognized,
+    }
+
+    impl std::fmt::Display for ByteRelation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Equal => write!(f, "equal"),
+                Self::FullByteReversal => write!(f, "full byte-reversal (endian swap)"),
+                Self::PerByteBitReversal => write!(f, "per-byte bit-reversal"),
+                Self::ChunkSwap16 => write!(f, "16-bit pairwise byte-swap"),
+                Self::ChunkSwap32 => write!(f, "32-bit chunk byte-reversal"),
+                Self::ChunkSwap64 => write!(f, "64-bit chunk byte-reversal"),
+                Self::Unrecognized => write!(f, "unrecognized mismatch"),
+            }
+        }
+    }
+
+    /// Applies each candidate byte transformation to `actual` and returns
+    /// the first that produces `expected`, or [`ByteRelation::Unrecognized`].
+    fn classify_byte_relation(actual: &[u8], expected: &[u8]) -> ByteRelation {
+        if actual == expected {
+            return ByteRelation::Equal;
+        }
+
+        let chunk_swap = |size: usize| -> Vec<u8> {
+            actual
+                .chunks(size)
+                .flat_map(|c| c.iter().rev())
+                .copied()
+                .collect()
+        };
+
+        let mut reversed = actual.to_vec();
+        reversed.reverse();
+        if reversed == expected {
+            return ByteRelation::FullByteReversal;
+        }
+
+        let bit_reversed: Vec<u8> = actual.iter().map(|b| b.reverse_bits()).collect();
+        if bit_reversed == expected {
+            return ByteRelation::PerByteBitReversal;
+        }
+
+        if actual.len() % 2 == 0 && chunk_swap(2) == expected {
+            return ByteRelation::ChunkSwap16;
+        }
+        if actual.len() % 4 == 0 && chunk_swap(4) == expected {
+            return ByteRelation::ChunkSwap32;
+        }
+        if actual.len() % 8 == 0 && chunk_swap(8) == expected {
+            return ByteRelation::ChunkSwap64;
+        }
+
+        ByteRelation::Unrecognized
+    }
+
+    /// Verifies that our Sapling address parsing logic produces the same
+    /// diversifier and diversified transmission key (pk_d) hex strings as
+    /// zcashd's `z_validateaddress` RPC.
+    ///
+    /// # Guarantees
+    ///
+    /// - Exercises the production `sapling_key_bytes` function directly.
+    /// - The 11-byte diversifier matches the zcashd-derived test vector.
+    /// - The 32-byte pk_d (after the endian reversal inside `sapling_key_bytes`)
+    ///   matches the zcashd-derived test vector.
+    /// - If the upstream serialization changes, the failure message
+    ///   classifies the mismatch (endian swap, bit-reversal, chunk swap,
+    ///   or unrecognized) to aid diagnosis.
+    ///
+    /// # Non-guarantees
+    ///
+    /// - Does not prove the test vector constants themselves are correct;
+    ///   they were captured from zcashd and are trusted as ground truth.
+    /// - Does not exercise the full `z_validate_address` RPC path through
+    ///   `StateService` — only the `sapling_key_bytes` extraction function.
+    /// - Does not verify behavior for malformed Sapling addresses or
+    ///   addresses on other networks (mainnet, testnet).
+    #[test]
+    fn sapling_pk_d_byte_order_matches_test_vector() {
+        use super::sapling_key_bytes;
+        use zcash_keys::address::Address;
+        use zcash_protocol::consensus::NetworkType;
+
+        // Canonical source: integration-tests/src/lib.rs::rpc::json_rpc
+        // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
+        const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
+        const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
+        const EXPECTED_PK_D: &str =
+            "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88";
+
+        let parsed: zcash_address::ZcashAddress = SAPLING_ADDRESS.parse().unwrap();
+        let converted = parsed
+            .convert_if_network::<Address>(NetworkType::Regtest)
+            .unwrap();
+
+        let Address::Sapling(s) = converted else {
+            panic!("expected Sapling address");
+        };
+
+        let (diversifier, pk_d) = sapling_key_bytes(&s);
+
+        let expected_diversifier = hex::decode(EXPECTED_DIVERSIFIER).unwrap();
+        let expected_pk_d = hex::decode(EXPECTED_PK_D).unwrap();
+
+        // Diversifier
+        match classify_byte_relation(&diversifier, &expected_diversifier) {
+            ByteRelation::Equal => {}
+            relation => panic!(
+                "diversifier mismatch.\n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(diversifier),
+                hex::encode(expected_diversifier),
+            ),
+        }
+
+        // pk_d (sapling_key_bytes already applies the endian reversal)
+        match classify_byte_relation(&pk_d, &expected_pk_d) {
+            ByteRelation::Equal => {}
+            relation => panic!(
+                "pk_d mismatch — upstream serialization may have changed.\
+                \n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(pk_d),
+                hex::encode(expected_pk_d),
+            ),
+        }
+    }
+
+    #[test]
+    fn classify_byte_relation_detects_known_transforms() {
+        let original = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        assert_eq!(
+            classify_byte_relation(&original, &original),
+            ByteRelation::Equal,
+        );
+
+        let mut reversed = original.to_vec();
+        reversed.reverse();
+        assert_eq!(
+            classify_byte_relation(&original, &reversed),
+            ByteRelation::FullByteReversal,
+        );
+
+        let bit_rev: Vec<u8> = original.iter().map(|b| b.reverse_bits()).collect();
+        assert_eq!(
+            classify_byte_relation(&original, &bit_rev),
+            ByteRelation::PerByteBitReversal,
+        );
+
+        let swapped_16: Vec<u8> = original
+            .chunks(2)
+            .flat_map(|c| c.iter().rev())
+            .copied()
+            .collect();
+        assert_eq!(
+            classify_byte_relation(&original, &swapped_16),
+            ByteRelation::ChunkSwap16,
+        );
+
+        let garbage = [0xFF; 8];
+        assert_eq!(
+            classify_byte_relation(&original, &garbage),
+            ByteRelation::Unrecognized,
+        );
+    }
+}

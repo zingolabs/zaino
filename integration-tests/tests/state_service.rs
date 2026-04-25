@@ -99,6 +99,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             ..Default::default()
         },
         network_type,
+        None,
     ))
     .await
     .unwrap();
@@ -140,6 +141,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             ..Default::default()
         },
         network_type,
+        None,
     ))
     .await
     .unwrap();
@@ -1211,13 +1213,15 @@ async fn state_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKin
     )
     .await;
 
+    let chain_height = dbg!(state_service_subscriber.chain_height().await.unwrap()).0;
+
     let fetch_service_treestate = dbg!(fetch_service_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 
     let state_service_treestate = dbg!(state_service_subscriber
-        .z_get_treestate("2".to_string())
+        .z_get_treestate(chain_height.to_string())
         .await
         .unwrap());
 
@@ -1525,12 +1529,11 @@ async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
     test_manager.local_net.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    let chain_height: u32 = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let state_service_txids = state_service_subscriber
@@ -1612,12 +1615,11 @@ async fn state_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
     )
     .await;
 
-    let chain_height = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
 
     dbg!(&chain_height);
 
@@ -2220,9 +2222,36 @@ mod zebra {
         }
 
         mod z {
-            use zcash_local_net::validator::zebrad::Zebrad;
-
             use super::*;
+
+            #[allow(deprecated)]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            pub(crate) async fn z_validate_address() {
+                let (
+                    mut test_manager,
+                    _fetch_service,
+                    _fetch_service_subscriber,
+                    _state_service,
+                    state_service_subscriber,
+                ) = create_test_manager_and_services::<Zebrad>(
+                    &ValidatorKind::Zebrad,
+                    None,
+                    true,
+                    true,
+                    None,
+                )
+                .await;
+
+                let rpc_call = |addr: String| {
+                    let subscriber = &state_service_subscriber;
+                    async move { subscriber.z_validate_address(addr).await.unwrap() }
+                };
+
+                integration_tests::rpc::z_validate_address::run_z_validate_suite(&rpc_call).await;
+                integration_tests::rpc::z_validate_address::run_z_validate_sapling(&rpc_call).await;
+
+                test_manager.close().await;
+            }
 
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn get_block_range_default_request_returns_no_t_data_regtest() {
@@ -2611,8 +2640,10 @@ mod zebra {
             )
             .await;
 
+            let chain_height = dbg!(state_service_subscriber.chain_height().await.unwrap()).0;
+
             let second_treestate_by_height = BlockId {
-                height: 2,
+                height: chain_height as u64,
                 hash: vec![],
             };
             let fetch_service_treestate_by_height = dbg!(fetch_service_subscriber

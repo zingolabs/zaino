@@ -2,6 +2,45 @@
 
 use std::path::PathBuf;
 use zaino_common::{Network, ServiceConfig, StorageConfig};
+use zcash_address::ZcashAddress;
+
+/// A validated Zcash donation address (transparent, sapling, orchard, or unified).
+///
+/// Constructed only from a string that parses as a valid [`ZcashAddress`], so
+/// the type can never hold an arbitrary or malformed value.
+#[derive(Clone, Debug)]
+pub struct DonationAddress(ZcashAddress);
+
+impl DonationAddress {
+    /// Attempts to parse the given string as a validated Zcash donation address.
+    pub(crate) fn try_from_encoded(s: &str) -> Result<Self, zcash_address::ParseError> {
+        ZcashAddress::try_from_encoded(s).map(DonationAddress)
+    }
+
+    /// Returns the canonical encoded string for this address.
+    pub(crate) fn encode(&self) -> String {
+        self.0.encode()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DonationAddress {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::try_from_encoded(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl serde::Serialize for DonationAddress {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0.encode())
+    }
+}
+
+impl std::fmt::Display for DonationAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.encode())
+    }
+}
 
 /// Type of backend to be used.
 ///
@@ -54,6 +93,8 @@ pub struct StateServiceConfig {
     pub storage: StorageConfig,
     /// Network type.
     pub network: Network,
+    /// Zcash donation UA address
+    pub donation_address: Option<DonationAddress>,
 }
 
 #[allow(deprecated)]
@@ -72,6 +113,7 @@ impl StateServiceConfig {
         service: ServiceConfig,
         storage: StorageConfig,
         network: Network,
+        donation_address: Option<DonationAddress>,
     ) -> Self {
         tracing::trace!(
             "State service expecting NU activations:\n{:?}",
@@ -88,6 +130,7 @@ impl StateServiceConfig {
             service,
             storage,
             network,
+            donation_address,
         }
     }
 }
@@ -110,6 +153,8 @@ pub struct FetchServiceConfig {
     pub storage: StorageConfig,
     /// Network type.
     pub network: Network,
+    /// Zcash donation UA address
+    pub donation_address: Option<DonationAddress>,
 }
 
 #[allow(deprecated)]
@@ -124,6 +169,7 @@ impl FetchServiceConfig {
         service: ServiceConfig,
         storage: StorageConfig,
         network: Network,
+        donation_address: Option<DonationAddress>,
     ) -> Self {
         FetchServiceConfig {
             validator_rpc_address,
@@ -133,6 +179,7 @@ impl FetchServiceConfig {
             service,
             storage,
             network,
+            donation_address,
         }
     }
 }
@@ -181,6 +228,105 @@ impl From<FetchServiceConfig> for BlockCacheConfig {
             // TODO: update zaino configs to include db version.
             db_version: 1,
             network: value.network,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod donation_address {
+        use super::*;
+        use zcash_address::{unified::Encoding as _, ToAddress as _, ZcashAddress};
+        use zcash_protocol::consensus::NetworkType;
+
+        // --- valid addresses ---
+
+        #[test]
+        fn valid_transparent_p2pkh() {
+            let encoded =
+                ZcashAddress::from_transparent_p2pkh(NetworkType::Main, [1u8; 20]).encode();
+            assert!(DonationAddress::try_from_encoded(&encoded).is_ok());
+        }
+
+        #[test]
+        fn valid_transparent_p2sh() {
+            let encoded =
+                ZcashAddress::from_transparent_p2sh(NetworkType::Main, [2u8; 20]).encode();
+            assert!(DonationAddress::try_from_encoded(&encoded).is_ok());
+        }
+
+        #[test]
+        fn valid_sapling() {
+            let encoded = ZcashAddress::from_sapling(NetworkType::Main, [3u8; 43]).encode();
+            assert!(DonationAddress::try_from_encoded(&encoded).is_ok());
+        }
+
+        #[test]
+        fn valid_unified_orchard() {
+            let (_network, ua) = zcash_address::unified::Address::decode(
+            "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx"
+        ).unwrap();
+            let encoded = ZcashAddress::from_unified(NetworkType::Main, ua).encode();
+            assert!(DonationAddress::try_from_encoded(&encoded).is_ok());
+        }
+
+        // --- invalid addresses ---
+
+        #[test]
+        fn invalid_empty_string() {
+            assert!(DonationAddress::try_from_encoded("").is_err());
+        }
+
+        #[test]
+        fn invalid_arbitrary_text() {
+            assert!(DonationAddress::try_from_encoded("not_a_zcash_address").is_err());
+        }
+
+        #[test]
+        fn invalid_truncated_prefix() {
+            assert!(DonationAddress::try_from_encoded("t1abc").is_err());
+        }
+
+        // --- round-trip ---
+
+        #[test]
+        fn round_trip_transparent() {
+            let encoded =
+                ZcashAddress::from_transparent_p2pkh(NetworkType::Main, [5u8; 20]).encode();
+            assert_eq!(
+                DonationAddress::try_from_encoded(&encoded)
+                    .unwrap()
+                    .encode(),
+                encoded
+            );
+        }
+
+        #[test]
+        fn round_trip_sapling() {
+            let encoded = ZcashAddress::from_sapling(NetworkType::Main, [6u8; 43]).encode();
+            assert_eq!(
+                DonationAddress::try_from_encoded(&encoded)
+                    .unwrap()
+                    .encode(),
+                encoded
+            );
+        }
+
+        #[test]
+        fn round_trip_unified() {
+            let (_network, ua) = zcash_address::unified::Address::decode(
+            "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx"
+        ).unwrap();
+
+            let encoded = ZcashAddress::from_unified(NetworkType::Main, ua).encode();
+            assert_eq!(
+                DonationAddress::try_from_encoded(&encoded)
+                    .unwrap()
+                    .encode(),
+                encoded
+            );
         }
     }
 }

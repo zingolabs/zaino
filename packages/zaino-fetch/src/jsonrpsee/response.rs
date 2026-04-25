@@ -10,6 +10,7 @@ pub mod block_subsidy;
 pub mod common;
 pub mod mining_info;
 pub mod peer_info;
+pub mod z_validate_address;
 
 use std::{convert::Infallible, num::ParseIntError};
 
@@ -1000,10 +1001,18 @@ pub struct GetTreestateResponse {
     pub time: u32,
 
     /// A treestate containing a Sapling note commitment tree, hex-encoded.
-    pub sapling: zebra_rpc::client::Treestate,
+    ///
+    /// Omitted if an activation height for the Sapling network upgrade is not configured
+    /// (i.e. in regtest mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sapling: Option<zebra_rpc::client::Treestate>,
 
     /// A treestate containing an Orchard note commitment tree, hex-encoded.
-    pub orchard: zebra_rpc::client::Treestate,
+    ///
+    /// Omitted if an activation height for the NU5 network upgrade is not configured
+    /// (i.e. in regtest mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchard: Option<zebra_rpc::client::Treestate>,
 }
 
 /// Error type for the `get_treestate` RPC request.
@@ -1035,11 +1044,15 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             zebra_chain::serialization::SerializationError::Parse("negative block height")
         })?;
 
-        let sapling_bytes = value.sapling.commitments().final_state().clone();
-        let sapling = Treestate::new(Commitments::new(None, sapling_bytes));
+        let sapling = value
+            .sapling
+            .clone()
+            .unwrap_or_else(|| Treestate::new(Commitments::new(None, None)));
 
-        let orchard_bytes = value.orchard.commitments().final_state().clone();
-        let orchard = Treestate::new(Commitments::new(None, orchard_bytes));
+        let orchard = value
+            .orchard
+            .clone()
+            .unwrap_or_else(|| Treestate::new(Commitments::new(None, None)));
 
         Ok(zebra_rpc::client::GetTreestateResponse::new(
             parsed_hash,
