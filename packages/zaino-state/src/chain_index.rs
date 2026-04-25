@@ -689,7 +689,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         None => {
                             nfs.store(Some(Arc::new(
                                 NonFinalizedState::initialize(
-                                    source,
+                                    source.clone(),
                                     network,
                                     fs.to_reader()
                                         .get_chain_block_by_height(finalised_height)
@@ -716,7 +716,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
-                        tokio::time::sleep(timings.interval).await;
+                        // Wait `interval`, but wake immediately if the source
+                        // signals new state (push-capable sources only — the
+                        // default `wait_for_change` never fires, so poll-only
+                        // sources still pace themselves on the timer).
+                        tokio::select! {
+                            _ = tokio::time::sleep(timings.interval) => {}
+                            _ = source.wait_for_change() => {}
+                        }
                     }
                     Err(e) => {
                         consecutive_failures += 1;

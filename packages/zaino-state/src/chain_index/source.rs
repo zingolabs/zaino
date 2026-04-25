@@ -100,6 +100,18 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         start_index: u16,
         max_entries: Option<u16>,
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>>;
+
+    /// Future that resolves when the source's observable state may have
+    /// changed (e.g. a new block was added). Sync loops can `select!` between
+    /// this and a fixed-cadence timer to drop per-iteration latency on
+    /// push-capable sources without losing the timer for poll-only sources.
+    ///
+    /// The default never resolves — sync loops fall through to their timer.
+    /// Push-capable sources (test mockchains) override this to wake the sync
+    /// loop on relevant state changes.
+    async fn wait_for_change(&self) {
+        std::future::pending::<()>().await
+    }
 }
 
 /// An error originating from a blockchain source.
@@ -825,6 +837,7 @@ pub(crate) mod test {
         atomic::{AtomicU32, Ordering},
         Arc,
     };
+    use tokio::sync::Notify;
     use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
     use zebra_state::HashOrHeight;
 
@@ -874,6 +887,10 @@ pub(crate) mod test {
         >,
         active_chain_height: Arc<AtomicU32>,
         force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
+        /// Pings consumers (chain-index sync loop) when [`Self::mine_blocks`]
+        /// advances the active height, so they can wake from their interval
+        /// timer immediately instead of polling.
+        change_notify: Arc<Notify>,
     }
 
     impl MockchainSource {
@@ -906,6 +923,7 @@ pub(crate) mod test {
                 force_requests_against_source_to_fail: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
+                change_notify: Arc::new(Notify::new()),
             }
         }
 
@@ -950,6 +968,7 @@ pub(crate) mod test {
                 force_requests_against_source_to_fail: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
+                change_notify: Arc::new(Notify::new()),
             }
         }
 
@@ -963,18 +982,20 @@ pub(crate) mod test {
         pub(crate) fn mine_blocks(&self, blocks: u32) {
             // len() returns one-indexed length, height is zero-indexed.
             let max_height = self.max_chain_height();
-            let _ = self.active_chain_height.fetch_update(
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-                |current| {
+            let advanced = self
+                .active_chain_height
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                     let target = current.saturating_add(blocks).min(max_height);
                     if target == current {
                         None
                     } else {
                         Some(target)
                     }
-                },
-            );
+                })
+                .is_ok();
+            if advanced {
+                self.change_notify.notify_one();
+            }
         }
 
         pub(crate) fn max_chain_height(&self) -> u32 {
@@ -1184,6 +1205,10 @@ pub(crate) mod test {
             _max_entries: Option<u16>,
         ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
             todo!()
+        }
+
+        async fn wait_for_change(&self) {
+            self.change_notify.notified().await
         }
     }
 }
