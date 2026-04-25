@@ -998,6 +998,26 @@ pub(crate) mod test {
             }
         }
 
+        /// Like [`Self::mine_blocks`] but does *not* fire the source's
+        /// change-notify. Lets the chain-index sync loop fall through to
+        /// its timer instead of waking immediately — the only way to put
+        /// the chain-index *behind* the mempool in tests, since the
+        /// mempool's serve loop polls `get_best_block_hash` directly and
+        /// always notices, notify or not.
+        pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
+            let max_height = self.max_chain_height();
+            let _ = self
+                .active_chain_height
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    let target = current.saturating_add(blocks).min(max_height);
+                    if target == current {
+                        None
+                    } else {
+                        Some(target)
+                    }
+                });
+        }
+
         pub(crate) fn max_chain_height(&self) -> u32 {
             // len() returns one-indexed length, height is zero-indexed.
             self.blocks.len().saturating_sub(1) as u32

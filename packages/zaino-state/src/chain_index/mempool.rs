@@ -365,6 +365,14 @@ pub struct MempoolSubscriber {
 }
 
 impl MempoolSubscriber {
+    /// Returns a clone of the watch receiver tracking the mempool's most
+    /// recently observed chain tip. Used by tests to detect the mempool↔
+    /// chain-index tip skew documented in #1037 without busy-polling.
+    #[cfg(test)]
+    pub(crate) fn mempool_tip(&self) -> tokio::sync::watch::Receiver<BlockHash> {
+        self.mempool_chain_tip.clone()
+    }
+
     /// Returns all tx currently in the mempool.
     pub async fn get_mempool(&self) -> Vec<(MempoolKey, MempoolValue)> {
         self.subscriber.get_filtered_state(&HashSet::new())

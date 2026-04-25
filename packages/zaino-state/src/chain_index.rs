@@ -793,6 +793,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         self.status.subscribe()
     }
 
+    /// Returns a watch receiver tracking the mempool serve loop's most
+    /// recently observed chain tip. Forwarder for
+    /// [`mempool::MempoolSubscriber::mempool_tip`].
+    #[cfg(test)]
+    pub(crate) fn mempool_tip(&self) -> tokio::sync::watch::Receiver<crate::BlockHash> {
+        self.mempool.mempool_tip()
+    }
+
     async fn get_fullblock_bytes_from_node(
         &self,
         id: HashOrHeight,

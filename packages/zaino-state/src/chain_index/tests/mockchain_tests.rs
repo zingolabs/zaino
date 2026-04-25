@@ -22,7 +22,7 @@ use crate::{
 /// successful iteration has updated the tip, so each Ready transition is the
 /// earliest moment the test can observe a new tip — no fixed-cadence polling
 /// required.
-async fn wait_for_indexer_tip(
+pub(super) async fn wait_for_indexer_tip(
     index_reader: &NodeBackedChainIndexSubscriber<MockchainSource>,
     expected: u32,
 ) {
@@ -509,31 +509,6 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
     );
 }
 
-/// Tip-skew direction #1 (#1037): chain-index sync loop ahead of mempool.
-///
-/// After `mine_blocks(1)` + `wait_for_indexer_tip`, the chain-index has
-/// reached the new tip but the mempool's serve loop may not have. Calling
-/// `get_mempool_stream` with a snapshot taken before mining must reject
-/// the snapshot as stale even when the mempool's own tip view still
-/// matches it — i.e. staleness must be defined against the *latest*
-/// observed tip, not whichever subsystem the consumer happens to read
-/// first. Companion direction (mempool ahead of chain-index) lives in a
-/// sibling test.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn skew_chain_index_ahead_returns_stale_stream() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(true).await;
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
-
-    let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
-
-    mockchain.mine_blocks(1);
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
-
-    let mempool_stream = index_reader.get_mempool_stream(Some(&stale_nonfinalized_snapshot));
-
-    assert!(mempool_stream.is_none());
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn get_block_height() {
