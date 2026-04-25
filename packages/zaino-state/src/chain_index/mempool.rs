@@ -53,6 +53,44 @@ pub struct Mempool<T: BlockchainSource> {
     status: NamedAtomicStatus,
 }
 
+/// Fetches the current mempool snapshot (all txids paired with their
+/// serialized transactions) from a blockchain source.
+async fn fetch_mempool_snapshot<T: BlockchainSource>(
+    fetcher: &T,
+) -> Result<Vec<(MempoolKey, MempoolValue)>, MempoolError> {
+    let txids = fetcher.get_mempool_txids().await?.ok_or_else(|| {
+        MempoolError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+            "could not fetch mempool data: mempool txid list was None".to_string(),
+        ))
+    })?;
+
+    let mut transactions = Vec::with_capacity(txids.len());
+    for txid in txids {
+        let (transaction, _location) =
+            fetcher
+                .get_transaction(txid.0.into())
+                .await?
+                .ok_or_else(|| {
+                    MempoolError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                        format!(
+                            "could not fetch mempool data: transaction not found for txid {txid}"
+                        ),
+                    ))
+                })?;
+
+        transactions.push((
+            MempoolKey {
+                txid: txid.to_string(),
+            },
+            MempoolValue {
+                serialized_tx: Arc::new(transaction.into()),
+            },
+        ));
+    }
+
+    Ok(transactions)
+}
+
 impl<T: BlockchainSource> Mempool<T> {
     /// Spawns a new [`Mempool`].
     #[instrument(name = "Mempool::spawn", skip(fetcher, capacity_and_shard_amount))]
@@ -60,12 +98,15 @@ impl<T: BlockchainSource> Mempool<T> {
         fetcher: T,
         capacity_and_shard_amount: Option<(usize, usize)>,
     ) -> Result<Self, MempoolError> {
-        // Run the two independent startup probes concurrently:
+        // Run the three independent startup probes concurrently:
         // (1) wait for the validator mempool to come online (retry loop),
-        // (2) fetch the initial best block hash (fatal if unavailable).
-        // They share nothing; serial ordering added one source round-trip
-        // to every indexer init for no semantic reason. `try_join!`
-        // cancels the retry loop if (2) returns a hard error.
+        // (2) fetch the initial best block hash (fatal if unavailable),
+        // (3) fetch the initial mempool snapshot (retry on transient
+        //     fetch errors).
+        // None of the three depend on each other; serial ordering added
+        // two source round-trips to every indexer init for no semantic
+        // reason. `try_join!` cancels the retry loops if (2) returns a
+        // hard error.
         let wait_for_mempool_online = async {
             loop {
                 match fetcher.get_mempool_txids().await {
@@ -85,8 +126,22 @@ impl<T: BlockchainSource> Mempool<T> {
                 )),
             }
         };
-        let (_, best_block_hash) =
-            tokio::try_join!(wait_for_mempool_online, fetch_best_block_hash)?;
+        let fetch_initial_snapshot = async {
+            loop {
+                match fetch_mempool_snapshot(&fetcher).await {
+                    Ok(txs) => return Ok::<_, MempoolError>(txs),
+                    Err(e) => {
+                        warn!("{e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        };
+        let (_, best_block_hash, initial_transactions) = tokio::try_join!(
+            wait_for_mempool_online,
+            fetch_best_block_hash,
+            fetch_initial_snapshot,
+        )?;
 
         let (chain_tip_sender, _chain_tip_reciever) = tokio::sync::watch::channel(best_block_hash);
 
@@ -101,26 +156,11 @@ impl<T: BlockchainSource> Mempool<T> {
             },
             mempool_chain_tip: chain_tip_sender,
             sync_task_handle: None,
-            status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
+            status: NamedAtomicStatus::new("Mempool", StatusType::Ready),
         };
-
-        loop {
-            match mempool.get_mempool_transactions().await {
-                Ok(mempool_transactions) => {
-                    mempool.status.store(StatusType::Ready);
-                    mempool
-                        .state
-                        .insert_filtered_set(mempool_transactions, mempool.status.load());
-                    break;
-                }
-                Err(e) => {
-                    mempool.state.notify(mempool.status.load());
-                    warn!("{e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    continue;
-                }
-            };
-        }
+        mempool
+            .state
+            .insert_filtered_set(initial_transactions, mempool.status.load());
 
         mempool.sync_task_handle = Some(std::sync::Mutex::new(mempool.serve().await?));
 
@@ -220,7 +260,7 @@ impl<T: BlockchainSource> Mempool<T> {
                     continue;
                 }
 
-                match mempool.get_mempool_transactions().await {
+                match fetch_mempool_snapshot(&mempool.fetcher).await {
                     Ok(mempool_transactions) => {
                         status.store(StatusType::Ready);
                         state.insert_filtered_set(mempool_transactions, status.load());
@@ -249,44 +289,6 @@ impl<T: BlockchainSource> Mempool<T> {
         });
 
         Ok(sync_handle)
-    }
-
-    /// Returns all transactions in the mempool.
-    async fn get_mempool_transactions(
-        &self,
-    ) -> Result<Vec<(MempoolKey, MempoolValue)>, MempoolError> {
-        let mut transactions = Vec::new();
-
-        let txids = self.fetcher.get_mempool_txids().await?.ok_or_else(|| {
-            MempoolError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                "could not fetch mempool data: mempool txid list was None".to_string(),
-            ))
-        })?;
-
-        for txid in txids {
-            let (transaction, _location) = self
-                .fetcher
-                .get_transaction(txid.0.into())
-                .await?
-                .ok_or_else(|| {
-                    MempoolError::BlockchainSourceError(
-                        crate::chain_index::source::BlockchainSourceError::Unrecoverable(format!(
-                            "could not fetch mempool data: transaction not found for txid {txid}"
-                        )),
-                    )
-                })?;
-
-            transactions.push((
-                MempoolKey {
-                    txid: txid.to_string(),
-                },
-                MempoolValue {
-                    serialized_tx: Arc::new(transaction.into()),
-                },
-            ));
-        }
-
-        Ok(transactions)
     }
 
     /// Returns a [`MempoolSubscriber`].
