@@ -9,8 +9,9 @@
 use tokio::time::{timeout, Duration};
 
 use super::{load_test_vectors_and_sync_chain_index, mockchain_tests::wait_for_indexer_tip};
-use crate::chain_index::{
-    source::test::MockchainSource, ChainIndex, NodeBackedChainIndexSubscriber,
+use crate::{
+    chain_index::{source::test::MockchainSource, ChainIndex, NodeBackedChainIndexSubscriber},
+    BlockHash,
 };
 
 /// Waits for the next change of the mempool serve loop's `mempool_chain_tip`
@@ -26,6 +27,29 @@ async fn wait_for_mempool_tip_change(
         .await
         .unwrap_or_else(|_| panic!("mempool tip did not change within 10 s"))
         .expect("mempool_chain_tip sender dropped");
+}
+
+/// Waits until the mempool serve loop's `mempool_chain_tip` equals
+/// `expected`, or panics after 10 s. Used to re-synchronise between
+/// iterations of property-style skew tests.
+async fn wait_for_mempool_tip(
+    index_reader: &NodeBackedChainIndexSubscriber<MockchainSource>,
+    expected: BlockHash,
+) {
+    let mut tip = index_reader.mempool_tip();
+    let work = async {
+        loop {
+            if *tip.borrow_and_update() == expected {
+                return;
+            }
+            tip.changed()
+                .await
+                .expect("mempool_chain_tip sender dropped");
+        }
+    };
+    timeout(Duration::from_secs(10), work)
+        .await
+        .unwrap_or_else(|_| panic!("mempool tip never reached expected hash within 10 s"));
 }
 
 /// Tip-skew direction #1 (#1037): chain-index sync loop ahead of mempool.
@@ -107,5 +131,53 @@ async fn mempool_ahead_rejects_fresh_snapshot() {
     assert!(
         mempool_stream.is_some(),
         "API rejected its own freshly-issued snapshot — mempool↔chain-index tip skew (#1037 direction #2)"
+    );
+}
+
+/// Convergence-bound (#1037 success criterion): each `mine_blocks` event
+/// should bring both subsystems to the new tip within a single iteration.
+///
+/// At each iteration the test mines one block, awaits the chain-index
+/// tip via the existing event-driven helper, then samples the mempool's
+/// tracked tip *immediately*. If the mempool also converged in the same
+/// iteration, the sample reflects the new tip; otherwise the sample
+/// still equals the pre-mining hash and the iteration is counted as a
+/// lag.
+///
+/// Today the chain-index sync loop wakes on `mine_blocks` (Option-2
+/// notify) but the mempool serve loop polls on its own 100 ms cadence,
+/// so the chain-index nearly always wins the race and the mempool lags
+/// in the vast majority of iterations. Repeating the sample 20× makes
+/// the failure deterministic in practice — the probability of zero lags
+/// across 20 events under a ~10 % per-iteration win rate is negligible.
+///
+/// Once the principled fix wakes both subsystems on `mine_blocks`, the
+/// expected outcome is `lag_count == 0` deterministically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn tips_converge_within_bounded_time_after_mining() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(true).await;
+    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
+
+    let mut lag_count = 0;
+    for _ in 0..20 {
+        let pre_mempool_tip = *index_reader.mempool_tip().borrow();
+        mockchain.mine_blocks(1);
+        let new_height = mockchain.active_height();
+        let new_hash = mockchain.active_block_hash();
+
+        wait_for_indexer_tip(&index_reader, new_height).await;
+        if *index_reader.mempool_tip().borrow() == pre_mempool_tip {
+            lag_count += 1;
+        }
+
+        // Resync mempool before the next iteration so we're not
+        // chasing multiple stacked updates.
+        wait_for_mempool_tip(&index_reader, new_hash).await;
+    }
+
+    assert_eq!(
+        lag_count, 0,
+        "mempool lagged chain-index in {lag_count}/20 mine_blocks events (#1037)"
     );
 }

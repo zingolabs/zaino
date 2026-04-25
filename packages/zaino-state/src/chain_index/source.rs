@@ -1027,6 +1027,13 @@ pub(crate) mod test {
             self.active_chain_height.load(Ordering::SeqCst)
         }
 
+        /// Returns the [`BlockHash`] at [`Self::active_height`]. Used by
+        /// tip-skew tests to compare the mempool's tracked tip against the
+        /// expected post-mining hash.
+        pub(crate) fn active_block_hash(&self) -> BlockHash {
+            self.hashes[self.active_height() as usize]
+        }
+
         fn valid_height(&self, height: u32) -> Option<usize> {
             let active_chain_height = self.active_height() as usize;
             let valid_height = height as usize;
