@@ -1786,13 +1786,31 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             },
             None => None,
         };
-        let expected_chain_tip = non_finalized_snapshot.map(|snapshot| snapshot.best_tip.hash);
+
+        // Stale-snapshot check: compare the caller's snapshot against the
+        // chain-index's *current* non-finalized tip (the same source of
+        // truth as `snapshot_nonfinalized_state`), not against the mempool
+        // serve loop's `mempool_chain_tip`. The mempool polls on its own
+        // cadence, so its tip view can diverge from the chain-index's by
+        // up to one poll cycle (#1037); using it here means the API can
+        // accept a stale snapshot whenever the mempool happens to be
+        // lagging, and reject a freshly-issued snapshot whenever the
+        // mempool happens to be ahead — both are caller-visible internal
+        // contradictions. The chain-index is authoritative.
+        if let Some(expected) = non_finalized_snapshot {
+            match self.non_finalized_state.load().as_ref() {
+                Some(current) => {
+                    if expected.best_tip.hash != current.get_snapshot().best_tip.hash {
+                        return None;
+                    }
+                }
+                None => return None,
+            }
+        }
+
         let mut subscriber = self.mempool.clone();
 
-        match subscriber
-            .get_mempool_stream(expected_chain_tip)
-            .now_or_never()
-        {
+        match subscriber.get_mempool_stream(None).now_or_never() {
             Some(Ok((in_rx, _handle))) => {
                 let (out_tx, out_rx) =
                     tokio::sync::mpsc::channel::<Result<Vec<u8>, ChainIndexError>>(32);
