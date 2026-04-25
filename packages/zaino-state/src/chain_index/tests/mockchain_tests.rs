@@ -509,7 +509,6 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
     );
 }
 
-
 #[tokio::test(flavor = "multi_thread")]
 async fn get_block_height() {
     let (blocks, _indexer, index_reader, _mockchain) =

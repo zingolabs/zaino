@@ -101,16 +101,39 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         max_entries: Option<u16>,
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>>;
 
-    /// Future that resolves when the source's observable state may have
-    /// changed (e.g. a new block was added). Sync loops can `select!` between
-    /// this and a fixed-cadence timer to drop per-iteration latency on
-    /// push-capable sources without losing the timer for poll-only sources.
+    /// Subscribe to source state-change notifications.
     ///
-    /// The default never resolves — sync loops fall through to their timer.
-    /// Push-capable sources (test mockchains) override this to wake the sync
-    /// loop on relevant state changes.
-    async fn wait_for_change(&self) {
-        std::future::pending::<()>().await
+    /// Each subscriber receives every change-event on its own buffered
+    /// receiver, so wakes between iterations are preserved (no missed-wake
+    /// gap). Sync loops typically call `change_subscribe` once at startup
+    /// and `select!` `recv()` against their fixed-cadence timer, falling
+    /// through to the timer when no push notification arrives.
+    ///
+    /// The default returns `None` — poll-only sources (real validators)
+    /// pace themselves on the timer alone. Push-capable sources (test
+    /// mockchains) override to provide a live receiver.
+    fn change_subscribe(&self) -> Option<tokio::sync::broadcast::Receiver<()>> {
+        None
+    }
+}
+
+/// Sleep up to `duration`, but return early if `change_rx` resolves first.
+///
+/// Both sync loops in this module (chain-index sync, mempool serve) pace
+/// themselves on a fixed-cadence timer and want to wake immediately when the
+/// source signals new state. The two-arm `tokio::select!` is identical at
+/// every call site; this helper is the single home for the pattern. Pass
+/// `None` for poll-only sources — the helper degrades to a plain sleep.
+pub(super) async fn wait_or_source_change(
+    change_rx: Option<&mut tokio::sync::broadcast::Receiver<()>>,
+    duration: std::time::Duration,
+) {
+    match change_rx {
+        Some(rx) => tokio::select! {
+            _ = tokio::time::sleep(duration) => {}
+            _ = rx.recv() => {}
+        },
+        None => tokio::time::sleep(duration).await,
     }
 }
 
@@ -837,7 +860,7 @@ pub(crate) mod test {
         atomic::{AtomicU32, Ordering},
         Arc,
     };
-    use tokio::sync::Notify;
+    use tokio::sync::broadcast;
     use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
     use zebra_state::HashOrHeight;
 
@@ -887,10 +910,14 @@ pub(crate) mod test {
         >,
         active_chain_height: Arc<AtomicU32>,
         force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
-        /// Pings consumers (chain-index sync loop) when [`Self::mine_blocks`]
-        /// advances the active height, so they can wake from their interval
-        /// timer immediately instead of polling.
-        change_notify: Arc<Notify>,
+        /// Pings every subscriber registered via
+        /// [`BlockchainSource::change_subscribe`] when [`Self::mine_blocks`]
+        /// advances the active height, so each can wake from its interval
+        /// timer immediately. `broadcast` (over `Notify`) gives every
+        /// subscriber its own buffered receiver, so a `mine_blocks` that
+        /// fires while one subsystem is mid-iteration is preserved on its
+        /// receiver and consumed on the next `recv().await`.
+        change_broadcast: broadcast::Sender<()>,
     }
 
     impl MockchainSource {
@@ -923,7 +950,7 @@ pub(crate) mod test {
                 force_requests_against_source_to_fail: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
-                change_notify: Arc::new(Notify::new()),
+                change_broadcast: broadcast::channel(16).0,
             }
         }
 
@@ -968,7 +995,7 @@ pub(crate) mod test {
                 force_requests_against_source_to_fail: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
-                change_notify: Arc::new(Notify::new()),
+                change_broadcast: broadcast::channel(16).0,
             }
         }
 
@@ -994,7 +1021,7 @@ pub(crate) mod test {
                 })
                 .is_ok();
             if advanced {
-                self.change_notify.notify_one();
+                let _ = self.change_broadcast.send(());
             }
         }
 
@@ -1006,16 +1033,18 @@ pub(crate) mod test {
         /// always notices, notify or not.
         pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
             let max_height = self.max_chain_height();
-            let _ = self
-                .active_chain_height
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            let _ = self.active_chain_height.fetch_update(
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+                |current| {
                     let target = current.saturating_add(blocks).min(max_height);
                     if target == current {
                         None
                     } else {
                         Some(target)
                     }
-                });
+                },
+            );
         }
 
         pub(crate) fn max_chain_height(&self) -> u32 {
@@ -1234,8 +1263,8 @@ pub(crate) mod test {
             todo!()
         }
 
-        async fn wait_for_change(&self) {
-            self.change_notify.notified().await
+        fn change_subscribe(&self) -> Option<broadcast::Receiver<()>> {
+            Some(self.change_broadcast.subscribe())
         }
     }
 }

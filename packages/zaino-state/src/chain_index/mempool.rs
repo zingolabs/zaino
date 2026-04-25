@@ -5,7 +5,7 @@ use std::{collections::HashSet, sync::Arc};
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
     chain_index::{
-        source::{BlockchainSource, BlockchainSourceError},
+        source::{wait_or_source_change, BlockchainSource, BlockchainSourceError},
         types::db::metadata::MempoolInfo,
     },
     error::{MempoolError, StatusError},
@@ -142,6 +142,7 @@ impl<T: BlockchainSource> Mempool<T> {
         status.store(StatusType::Spawning);
 
         let sync_handle = tokio::spawn(async move {
+            let mut change_rx = mempool.fetcher.change_subscribe();
             let mut best_block_hash: Hash;
             let mut check_block_hash: Hash;
 
@@ -207,7 +208,16 @@ impl<T: BlockchainSource> Mempool<T> {
                         .send_replace(check_block_hash.into());
                     best_block_hash = check_block_hash;
 
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    // Cool-down before we re-fetch mempool state at the new
+                    // tip — gives the validator a moment to settle. Stays
+                    // interruptible: a follow-on `mine_blocks` must wake us
+                    // immediately, otherwise the next iteration of the test
+                    // sees a stale tip until the timer expires (#1037).
+                    wait_or_source_change(
+                        change_rx.as_mut(),
+                        std::time::Duration::from_millis(100),
+                    )
+                    .await;
                     continue;
                 }
 
@@ -230,7 +240,12 @@ impl<T: BlockchainSource> Mempool<T> {
                     return;
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Wait the cadence interval, but wake immediately if the
+                // source signals new state — keeps mempool↔chain-index
+                // tip propagation aligned within a single iteration on
+                // push-capable sources (#1037 part 2/2).
+                wait_or_source_change(change_rx.as_mut(), std::time::Duration::from_millis(100))
+                    .await;
             }
         });
 

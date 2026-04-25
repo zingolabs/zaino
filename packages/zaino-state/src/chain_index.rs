@@ -650,6 +650,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         tokio::task::spawn(async move {
             let status = status.clone();
             let source = source.clone();
+            let mut change_rx = source.change_subscribe();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
 
@@ -716,14 +717,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
-                        // Wait `interval`, but wake immediately if the source
-                        // signals new state (push-capable sources only — the
-                        // default `wait_for_change` never fires, so poll-only
-                        // sources still pace themselves on the timer).
-                        tokio::select! {
-                            _ = tokio::time::sleep(timings.interval) => {}
-                            _ = source.wait_for_change() => {}
-                        }
+                        source::wait_or_source_change(change_rx.as_mut(), timings.interval).await;
                     }
                     Err(e) => {
                         consecutive_failures += 1;

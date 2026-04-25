@@ -81,7 +81,7 @@ async fn chain_index_ahead_returns_stale_stream() {
 /// Tip-skew direction #2 (#1037): mempool serve loop ahead of chain-index.
 ///
 /// Constructed by advancing the mockchain via `mine_blocks_silent`, which
-/// suppresses the chain-index sync loop's `wait_for_change` wake. The
+/// suppresses the source's `change_subscribe` broadcast. The
 /// mempool's serve loop polls `get_best_block_hash` on its own cadence,
 /// so it observes the new tip first. Once the mempool has advanced
 /// (`wait_for_mempool_tip_change`), the test takes a snapshot — which
@@ -114,12 +114,7 @@ async fn mempool_ahead_rejects_fresh_snapshot() {
     let fresh_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
     // Sanity check: chain-index is still at the old tip in this snapshot.
-    let chain_index_tip = fresh_snapshot
-        .get_nfs_snapshot()
-        .unwrap()
-        .best_tip
-        .height
-        .0;
+    let chain_index_tip = fresh_snapshot.get_nfs_snapshot().unwrap().best_tip.height.0;
     assert!(
         chain_index_tip < mockchain.active_height(),
         "test setup: chain-index should be behind the mockchain (got chain_index={chain_index_tip}, mockchain={})",
