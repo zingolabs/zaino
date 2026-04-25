@@ -512,8 +512,9 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
 /// [`SyncTimings::default()`] produces production values (500 ms inter-iteration
 /// sleep, 250 ms initial backoff doubling up to 8 s, 10 consecutive failures
 /// before escalating to [`StatusType::CriticalError`] — ~40 s total window).
-/// [`SyncTimings::fast()`] shrinks each duration by 10× so backoff-dependent
-/// unit tests finish in ~4 s instead of ~40 s.
+/// [`SyncTimings::fast()`] is the test-only shrink: ~120 ms total backoff
+/// window with the same three observable behaviours (counter→threshold,
+/// exponential doubling, cap clamp) — see its doc for the chosen values.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SyncTimings {
     pub(crate) interval: Duration,
@@ -535,13 +536,18 @@ impl Default for SyncTimings {
 
 #[cfg(test)]
 impl SyncTimings {
-    /// 10× faster than [`Self::default`] — test-only.
+    /// Test-only shrink: drives the backoff schedule to completion in
+    /// ~120 ms (4 sleeps: 10 + 20 + 40 + 50, with the 50 ms cap clamping
+    /// the would-be 80 ms doubling). Five `max_consecutive_failures` is
+    /// the smallest count that still exercises both exponential doubling
+    /// and `max_backoff` clamping — i.e. the same three observable
+    /// behaviours `default()` does, just compressed.
     pub(crate) const fn fast() -> Self {
         Self {
             interval: Duration::from_millis(50),
-            initial_backoff: Duration::from_millis(25),
-            max_backoff: Duration::from_millis(800),
-            max_consecutive_failures: 10,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(50),
+            max_consecutive_failures: 5,
         }
     }
 

@@ -44,8 +44,8 @@ async fn survives_transient_source_failure() {
 /// After `max_consecutive_failures` with exponential backoff, the sync loop
 /// should escalate to [`StatusType::CriticalError`].
 ///
-/// Uses [`SyncTimings::fast`] (10× shrunk) so the full backoff schedule fits
-/// in a few seconds instead of ~40 s.
+/// Uses [`SyncTimings::fast`] so the full backoff schedule fits in
+/// ~120 ms instead of ~40 s.
 #[tokio::test(flavor = "multi_thread")]
 async fn escalates_to_critical_after_persistent_failure() {
     let timings = SyncTimings::fast();
