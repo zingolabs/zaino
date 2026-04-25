@@ -553,7 +553,7 @@ impl DbV1 {
                         let ro = zaino_db.env.begin_ro_txn().ok()?;
                         let bytes = ro.get(zaino_db.headers, &hkey).ok()?;
                         let entry = StoredEntryVar::<BlockHeaderData>::deserialize(bytes).ok()?;
-                        Some(*entry.inner().index().hash())
+                        Some(entry.inner().context.index.hash)
                     })();
 
                     if let Some(hash) = hash_opt {

@@ -2021,11 +2021,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             // acting as if we are only synced to the genesis block
             return Err(StateServiceError::UnavailableNotSyncedEnough);
         };
-        let tip = non_finalized_snapshot.best_tip;
-        Ok(BlockId {
-            height: tip.height.0 as u64,
-            hash: tip.blockhash.0.to_vec(),
-        })
+        Ok(non_finalized_snapshot.best_tip.to_wire())
     }
 
     /// Return the compact block corresponding to the given block identifier

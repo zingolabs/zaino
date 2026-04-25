@@ -32,13 +32,19 @@
 //! 2. Used for in-memory operations, conversions, and coordination
 //! 3. Can be changed more freely as they're not persisted
 
+pub mod block_context;
 pub mod db;
 pub mod helpers;
 pub mod primitives;
+pub mod wire;
 
 // Re-export database types for backward compatibility
 pub use db::legacy::*;
 pub use db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
+
+// Re-export business-layer primitives and containers
+pub use block_context::BlockContext;
+pub use primitives::BlockIndex;
 
 // Re-export helper types
 pub use helpers::{

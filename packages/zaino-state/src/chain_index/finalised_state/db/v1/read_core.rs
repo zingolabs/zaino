@@ -31,7 +31,7 @@ impl DbRead for DbV1 {
         height: Height,
     ) -> Result<Option<BlockHash>, FinalisedStateError> {
         match self.get_block_header_data(height).await {
-            Ok(header) => Ok(Some(*header.index().hash())),
+            Ok(header) => Ok(Some(header.context.index.hash)),
             Err(
                 FinalisedStateError::DataUnavailable(_)
                 | FinalisedStateError::FeatureUnavailable(_),

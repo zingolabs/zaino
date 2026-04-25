@@ -243,10 +243,10 @@ async fn load_db_backend_from_file() {
             .unwrap()
             .unwrap();
         if let Some(prev_hash) = prev_hash {
-            assert_eq!(prev_hash, block.index().parent_hash);
+            assert_eq!(prev_hash, block.context.parent_hash);
         }
-        prev_hash = Some(block.index().hash);
-        assert_eq!(block.index.height, Height(height));
+        prev_hash = Some(block.context.index.hash);
+        assert_eq!(block.context.index.height, Height(height));
     }
     assert!(finalized_state_backend
         .get_chain_block(Height(101))
@@ -291,8 +291,8 @@ async fn try_write_invalid_block() {
     let mut chain_block =
         IndexedBlock::try_from(BlockWithMetadata::new(&zebra_block, metadata)).unwrap();
 
-    chain_block.index.height = crate::Height(height + 1);
-    dbg!(chain_block.index.height);
+    chain_block.context.index.height = crate::Height(height + 1);
+    dbg!(chain_block.context.index.height);
 
     let db_err = dbg!(zaino_db.write_block(chain_block).await);
 
@@ -390,7 +390,7 @@ async fn get_chain_blocks() {
         let block_with_metadata = BlockWithMetadata::new(zebra_block, metadata);
         let chain_block = IndexedBlock::try_from(block_with_metadata).unwrap();
 
-        parent_chain_work = *chain_block.index().chainwork();
+        parent_chain_work = chain_block.context.chainwork;
 
         let reader_chain_block = db_reader
             .get_chain_block_by_height(Height(*height))
@@ -448,7 +448,7 @@ async fn get_compact_blocks() {
         let chain_block = IndexedBlock::try_from(block_with_metadata).unwrap();
         let compact_block = chain_block.to_compact_block();
 
-        parent_chain_work = *chain_block.index().chainwork();
+        parent_chain_work = chain_block.context.chainwork;
 
         let reader_compact_block_default = db_reader
             .get_compact_block(Height(*height), PoolTypeFilter::default())
@@ -581,7 +581,7 @@ async fn get_faucet_txids() {
         let block_with_metadata = BlockWithMetadata::new(zebra_block, metadata);
         let chain_block = IndexedBlock::try_from(block_with_metadata).unwrap();
 
-        parent_chain_work = *chain_block.index().chainwork();
+        parent_chain_work = chain_block.context.chainwork;
 
         println!("Checking faucet txids at height {height}");
         let block_height = Height(*height);
@@ -689,7 +689,7 @@ async fn get_recipient_txids() {
         let block_with_metadata = BlockWithMetadata::new(zebra_block, metadata);
         let chain_block = IndexedBlock::try_from(block_with_metadata).unwrap();
 
-        parent_chain_work = *chain_block.index().chainwork();
+        parent_chain_work = chain_block.context.chainwork;
 
         println!("Checking recipient txids at height {height}");
         let block_height = Height(*height);
@@ -935,7 +935,7 @@ async fn check_faucet_spent_map() {
         let block_with_metadata = BlockWithMetadata::new(zebra_block, metadata);
         let chain_block = IndexedBlock::try_from(block_with_metadata).unwrap();
 
-        parent_chain_work = *chain_block.index().chainwork();
+        parent_chain_work = chain_block.context.chainwork;
 
         for tx in chain_block.transactions() {
             let txid = tx.txid().0;
@@ -1008,7 +1008,7 @@ async fn check_faucet_spent_map() {
                             .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
-                                chain_block.index().height() == Height(block_height)
+                                chain_block.context.index.height == Height(block_height)
                                     && tx.index() == tx_idx as u64
                             })
                             .cloned()
@@ -1105,7 +1105,7 @@ async fn check_recipient_spent_map() {
         let block_with_metadata = BlockWithMetadata::new(zebra_block, metadata);
         let chain_block = IndexedBlock::try_from(block_with_metadata).unwrap();
 
-        parent_chain_work = *chain_block.index().chainwork();
+        parent_chain_work = chain_block.context.chainwork;
 
         for tx in chain_block.transactions() {
             let txid = tx.txid().0;
@@ -1178,7 +1178,7 @@ async fn check_recipient_spent_map() {
                             .find(|tx| {
                                 let (block_height, tx_idx) =
                                     (spender_index.block_height(), spender_index.tx_index());
-                                chain_block.index().height() == Height(block_height)
+                                chain_block.context.index.height == Height(block_height)
                                     && tx.index() == tx_idx as u64
                             })
                             .cloned()

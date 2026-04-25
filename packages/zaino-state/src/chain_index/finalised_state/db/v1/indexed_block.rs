@@ -157,7 +157,7 @@ impl DbV1 {
 
             // Construct IndexedBlock
             Ok(Some(IndexedBlock::new(
-                *header.index(),
+                header.context,
                 *header.data(),
                 txs,
                 commitment_tree_data,

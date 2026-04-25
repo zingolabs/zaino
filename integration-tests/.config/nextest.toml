@@ -135,3 +135,62 @@ default-filter = """
 
 [profile.quick.junit]
 path = "junit.xml"
+
+[profile.stable]
+test-threads = "num-cpus"
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = "10" }
+default-filter = """
+        test(/^chain_query_interface::get_mempool_stream_fresh_snapshot_repeated_zebrad$/) |
+        test(/^chain_query_interface::get_subtree_roots_zebrad$/) |
+        test(/^chain_query_interface::zallet_like_steady_state_loop_zebrad$/) |
+        test(/^pre_v4_txs_parsing$/) |
+        test(/^zcashd::connect_to_node_get_info$/) |
+        test(/^zcashd::get::block_deltas$/) |
+        test(/^zcashd::get::block_object$/) |
+        test(/^zcashd::get::block_raw$/) |
+        test(/^zcashd::get::difficulty$/) |
+        test(/^zcashd::get::get_network_sol_ps$/) |
+        test(/^zcashd::get::latest_block$/) |
+        test(/^zcashd::get::lightd_info$/) |
+        test(/^zcashd::get::mining_info$/) |
+        test(/^zcashd::get::peer_info$/) |
+        test(/^zcashd::get::subtree_roots$/) |
+        test(/^zcashd::validation::validate_address$/) |
+        test(/^zcashd::zcash_indexer::get_best_blockhash$/) |
+        test(/^zcashd::zcash_indexer::get_block_count$/) |
+        test(/^zcashd::zcash_indexer::get_block_deltas$/) |
+        test(/^zcashd::zcash_indexer::validate_address$/) |
+        test(/^zcashd::zcash_indexer::z_get_block$/) |
+        test(/^zebra::check_info::regtest_no_cache$/) |
+        test(/^zebra::check_info::state_service_chaintip_update_subscriber$/) |
+        test(/^zebra::get::best_blockhash$/) |
+        test(/^zebra::get::block_count$/) |
+        test(/^zebra::get::block_object_regtest$/) |
+        test(/^zebra::get::block_raw_regtest$/) |
+        test(/^zebra::get::difficulty$/) |
+        test(/^zebra::get::get_network_sol_ps$/) |
+        test(/^zebra::get::mining_info$/) |
+        test(/^zebra::get::peer_info$/) |
+        test(/^zebra::get::z::z_validate_address$/) |
+        test(/^zebra::lightwallet_indexer::get_block_header$/) |
+        test(/^zebra::lightwallet_indexer::get_latest_block$/) |
+        test(/^zebra::lightwallet_indexer::get_subtree_roots$/) |
+        test(/^zebra::lightwallet_indexer::get_taddress_balance$/) |
+        test(/^zebrad::fetch_service::connect_to_node_get_info$/) |
+        test(/^zebrad::get::best_blockhash$/) |
+        test(/^zebrad::get::block_count$/) |
+        test(/^zebrad::get::block_object$/) |
+        test(/^zebrad::get::block_range_nullifiers$/) |
+        test(/^zebrad::get::difficulty$/) |
+        test(/^zebrad::get::get_network_sol_ps$/) |
+        test(/^zebrad::get::latest_block$/) |
+        test(/^zebrad::get::subtree_roots$/) |
+        test(/^zebrad::launch::regtest_no_cache$/) |
+        test(/^zebrad::state_service::connect_to_node_get_info$/) |
+        test(/^zebrad::validation::validate_address$/) |
+        test(/^zebrad::validation::z_validate_address$/)
+"""
+
+[profile.stable.junit]
+path = "junit.xml"

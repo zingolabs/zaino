@@ -14,6 +14,7 @@
 use primitive_types::U256;
 
 use super::db::legacy::*;
+use crate::chain_index::types::BlockContext;
 use crate::ChainWork;
 
 /// The location of a transaction in the best chain
@@ -267,8 +268,8 @@ impl<'a> BlockWithMetadata<'a> {
         )
     }
 
-    /// Create block index from block and metadata
-    fn create_block_index(&self) -> Result<BlockIndex, String> {
+    /// Create a [`BlockContext`] from block and metadata.
+    fn create_block_context(&self) -> Result<BlockContext, String> {
         let block = self.block;
         let hash = BlockHash::from(block.hash());
         let parent_hash = BlockHash::from(block.header.previous_block_hash);
@@ -285,12 +286,7 @@ impl<'a> BlockWithMetadata<'a> {
             .parent_chainwork
             .add(&ChainWork::from(U256::from(block_work.as_u128())));
 
-        Ok(BlockIndex {
-            hash,
-            parent_hash,
-            chainwork,
-            height,
-        })
+        Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }
 
     /// Create commitment tree data from metadata
@@ -316,11 +312,11 @@ impl TryFrom<BlockWithMetadata<'_>> for IndexedBlock {
     fn try_from(block_with_metadata: BlockWithMetadata<'_>) -> Result<Self, Self::Error> {
         let data = block_with_metadata.extract_block_data()?;
         let transactions = block_with_metadata.extract_transactions()?;
-        let index = block_with_metadata.create_block_index()?;
+        let context = block_with_metadata.create_block_context()?;
         let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
 
         Ok(IndexedBlock {
-            index,
+            context,
             data,
             transactions,
             commitment_tree_data,

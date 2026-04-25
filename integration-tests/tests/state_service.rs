@@ -1529,12 +1529,11 @@ async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
     test_manager.local_net.generate_blocks(1).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    let chain_height: u32 = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
     dbg!(&chain_height);
 
     let state_service_txids = state_service_subscriber
@@ -1616,12 +1615,11 @@ async fn state_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
     )
     .await;
 
-    let chain_height = fetch_service_subscriber
-        .indexer
-        .snapshot_nonfinalized_state()
-        .best_tip
-        .height
-        .into();
+    let chain_height: u32 = {
+        let idx = &fetch_service_subscriber.indexer;
+        let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+        u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
+    };
 
     dbg!(&chain_height);
 
