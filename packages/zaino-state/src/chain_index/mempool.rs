@@ -60,34 +60,33 @@ impl<T: BlockchainSource> Mempool<T> {
         fetcher: T,
         capacity_and_shard_amount: Option<(usize, usize)>,
     ) -> Result<Self, MempoolError> {
-        // Wait for mempool in validator to come online.
-        loop {
-            match fetcher.get_mempool_txids().await {
-                Ok(_) => {
-                    break;
+        // Run the two independent startup probes concurrently:
+        // (1) wait for the validator mempool to come online (retry loop),
+        // (2) fetch the initial best block hash (fatal if unavailable).
+        // They share nothing; serial ordering added one source round-trip
+        // to every indexer init for no semantic reason. `try_join!`
+        // cancels the retry loop if (2) returns a hard error.
+        let wait_for_mempool_online = async {
+            loop {
+                match fetcher.get_mempool_txids().await {
+                    Ok(_) => return Ok::<(), MempoolError>(()),
+                    Err(_) => {
+                        info!("Waiting for Validator mempool to come online");
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
                 }
-                Err(_) => {
-                    info!("Waiting for Validator mempool to come online");
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                }
-            }
-        }
-
-        let best_block_hash: BlockHash = match fetcher.get_best_block_hash().await {
-            Ok(block_hash_opt) => match block_hash_opt {
-                Some(hash) => hash.into(),
-                None => {
-                    return Err(MempoolError::Critical(
-                        "Error in mempool: Error connecting with validator".to_string(),
-                    ))
-                }
-            },
-            Err(_e) => {
-                return Err(MempoolError::Critical(
-                    "Error in mempool: Error connecting with validator".to_string(),
-                ))
             }
         };
+        let fetch_best_block_hash = async {
+            match fetcher.get_best_block_hash().await {
+                Ok(Some(hash)) => Ok(BlockHash::from(hash)),
+                Ok(None) | Err(_) => Err(MempoolError::Critical(
+                    "Error in mempool: Error connecting with validator".to_string(),
+                )),
+            }
+        };
+        let (_, best_block_hash) =
+            tokio::try_join!(wait_for_mempool_online, fetch_best_block_hash)?;
 
         let (chain_tip_sender, _chain_tip_reciever) = tokio::sync::watch::channel(best_block_hash);
 
