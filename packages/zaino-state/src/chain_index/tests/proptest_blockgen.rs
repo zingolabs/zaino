@@ -393,8 +393,19 @@ fn make_chain() {
             let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
+            let expected_block_count = segment_length * (branch_count + 1);
+            poll_until(
+                "indexer to load all branch blocks into the non-finalized state",
+                Duration::from_secs(30),
+                Duration::from_millis(50),
+                || async {
+                    let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+                    let nfs = snapshot.get_nfs_snapshot()?;
+                    (nfs.blocks.len() == expected_block_count).then_some(())
+                },
+            )
+            .await;
             let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             let non_finalized_snapshot = snapshot.get_nfs_snapshot().expect("not synced");
             let best_tip_hash = non_finalized_snapshot.best_tip.hash;

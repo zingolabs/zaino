@@ -52,32 +52,19 @@ async fn escalates_to_critical_after_persistent_failure() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index_with_timings(true, timings).await;
 
-    let start = Instant::now();
     mockchain.set_failing(true);
 
     // 5× slack over the nominal backoff sum to absorb scheduling jitter and
     // the per-iteration sync work the loop performs between sleeps.
     let max_time_to_critical = timings.max_backoff_window() * 5;
-    let poll_interval = timings.initial_backoff;
 
-    loop {
-        sleep(poll_interval).await;
-
-        if index_reader.status() == StatusType::CriticalError {
-            break;
-        }
-
-        assert!(
-            start.elapsed() < max_time_to_critical,
-            "CriticalError was not reached within {max_time_to_critical:?}"
-        );
-    }
-
-    let elapsed = start.elapsed();
-    assert!(
-        elapsed < max_time_to_critical,
-        "CriticalError took {elapsed:?}, exceeding the maximum backoff window"
-    );
+    super::poll::poll_until(
+        "sync loop to escalate to CriticalError under persistent source failure",
+        max_time_to_critical,
+        timings.initial_backoff,
+        || async { (index_reader.status() == StatusType::CriticalError).then_some(()) },
+    )
+    .await;
 }
 
 /// Moved here from the integration test
