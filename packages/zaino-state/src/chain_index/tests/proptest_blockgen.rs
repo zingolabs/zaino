@@ -61,7 +61,7 @@ fn passthrough_test(
                 // This number can be played with. We want to slow down
                 // sync enough to trigger passthrough without
                 // slowing down passthrough more than we need to
-                delay: Some(Duration::from_millis(100)),
+                delay: Some(Duration::from_millis(10)),
                 best_branch_cache: Arc::new(std::sync::OnceLock::new()),
                 tx_index: Arc::new(std::sync::OnceLock::new()),
             };
