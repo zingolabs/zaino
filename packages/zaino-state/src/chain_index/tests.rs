@@ -23,7 +23,6 @@ pub(crate) fn init_tracing() {
 
 use std::path::PathBuf;
 use tempfile::TempDir;
-use tokio::time::Duration;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 
 use crate::{
@@ -45,21 +44,7 @@ async fn load_test_vectors_and_sync_chain_index(
     NodeBackedChainIndexSubscriber<MockchainSource>,
     MockchainSource,
 ) {
-    // The 2 s poll interval here is load-bearing for other tests: most
-    // callers (mockchain_tests, mempool, poll, proptest_blockgen) drop the
-    // indexer without calling `shutdown()`, relying on the background sync
-    // loop being in its post-success `interval` sleep at teardown to avoid
-    // racing with runtime shutdown. Shorter polling lets the test body
-    // return before that settle point and exposes the latent race. Tests
-    // that need faster setup should use
-    // `load_test_vectors_and_sync_chain_index_with_timings` and handle
-    // their own teardown.
-    load_with_settings(
-        active_mockchain_source,
-        SyncTimings::default(),
-        Duration::from_secs(2),
-    )
-    .await
+    load_with_settings(active_mockchain_source, SyncTimings::default()).await
 }
 
 async fn load_test_vectors_and_sync_chain_index_with_timings(
@@ -71,18 +56,12 @@ async fn load_test_vectors_and_sync_chain_index_with_timings(
     NodeBackedChainIndexSubscriber<MockchainSource>,
     MockchainSource,
 ) {
-    load_with_settings(
-        active_mockchain_source,
-        sync_timings,
-        Duration::from_millis(25),
-    )
-    .await
+    load_with_settings(active_mockchain_source, sync_timings).await
 }
 
 async fn load_with_settings(
     active_mockchain_source: bool,
     sync_timings: SyncTimings,
-    setup_poll_interval: Duration,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
     NodeBackedChainIndex<MockchainSource>,
@@ -119,18 +98,35 @@ async fn load_with_settings(
         .unwrap();
     let index_reader = indexer.subscriber();
 
+    let check_height = crate::Height(match active_mockchain_source {
+        true => source.active_height() - 100,
+        false => 100,
+    });
+    let mut status = index_reader.status_subscribe();
     loop {
-        let check_height: u32 = match active_mockchain_source {
-            true => source.active_height() - 100,
-            false => 100,
-        };
-        if index_reader.finalized_state.db_height().await.unwrap()
-            == Some(crate::Height(check_height))
+        if *status.borrow_and_update() == crate::StatusType::Ready
+            && index_reader.finalized_state.db_height().await.unwrap() == Some(check_height)
         {
             break;
         }
-        tokio::time::sleep(setup_poll_interval).await;
+        status
+            .changed()
+            .await
+            .expect("ChainIndex status sender dropped before reaching Ready");
     }
+
+    // Most callers (mockchain_tests, mempool, poll, proptest_blockgen) drop
+    // the indexer without `shutdown()`, relying on the sync loop being
+    // parked in its `tokio::time::sleep(sync_timings.interval)` (see
+    // chain_index.rs sync loop) at teardown so runtime shutdown doesn't
+    // race a mid-iteration DB write. The watch-based rendezvous above
+    // wakes one statement *before* that sleep is polled, so under the
+    // multi-thread runtime there is a sub-millisecond window where the
+    // sync loop has not yet yielded. One full `interval` here lets the
+    // sync loop reach the sleep statement and stay there. Removing this
+    // requires explicit indexer shutdown (`CancellationToken`-based,
+    // tracked separately).
+    tokio::time::sleep(sync_timings.interval).await;
 
     (blocks, indexer, index_reader, source)
 }

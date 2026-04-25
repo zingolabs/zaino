@@ -776,6 +776,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         combined_status
     }
 
+    /// Returns a [`tokio::sync::watch::Receiver`] that wakes on every
+    /// transition of the chain-index sync loop's status.
+    ///
+    /// Used by tests to await a specific state (e.g. first transition to
+    /// [`StatusType::Ready`]) without busy-polling.
+    #[cfg(test)]
+    pub(crate) fn status_subscribe(&self) -> tokio::sync::watch::Receiver<StatusType> {
+        self.status.subscribe()
+    }
+
     async fn get_fullblock_bytes_from_node(
         &self,
         id: HashOrHeight,
