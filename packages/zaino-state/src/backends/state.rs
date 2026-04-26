@@ -198,7 +198,7 @@ impl ZcashService for StateService {
         let zebra_build_data = rpc_client.get_info().await?;
 
         let data = ServiceMetadata::new(
-            get_build_info(),
+            get_build_info(config.indexer_version.clone()),
             config.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,

@@ -95,6 +95,14 @@ pub struct StateServiceConfig {
     pub network: Network,
     /// Zcash donation UA address
     pub donation_address: Option<DonationAddress>,
+    /// Version of the indexer binary embedding this service.
+    ///
+    /// Reported on the wire via `LightdInfo.version`. Defaults to this
+    /// crate's `CARGO_PKG_VERSION` when constructed via [`Self::new`];
+    /// the embedding binary should overwrite it with its own
+    /// `CARGO_PKG_VERSION` so the wire reflects the deployed indexer
+    /// rather than the library crate.
+    pub indexer_version: String,
 }
 
 #[allow(deprecated)]
@@ -131,6 +139,7 @@ impl StateServiceConfig {
             storage,
             network,
             donation_address,
+            indexer_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 }
@@ -155,6 +164,14 @@ pub struct FetchServiceConfig {
     pub network: Network,
     /// Zcash donation UA address
     pub donation_address: Option<DonationAddress>,
+    /// Version of the indexer binary embedding this service.
+    ///
+    /// Reported on the wire via `LightdInfo.version`. Defaults to this
+    /// crate's `CARGO_PKG_VERSION` when constructed via [`Self::new`];
+    /// the embedding binary should overwrite it with its own
+    /// `CARGO_PKG_VERSION` so the wire reflects the deployed indexer
+    /// rather than the library crate.
+    pub indexer_version: String,
 }
 
 #[allow(deprecated)]
@@ -180,6 +197,7 @@ impl FetchServiceConfig {
             storage,
             network,
             donation_address,
+            indexer_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 }

@@ -41,9 +41,5 @@ fn main() -> io::Result<()> {
     let build_user = whoami::username();
     println!("cargo:rustc-env=BUILD_USER={build_user}");
 
-    // Set the version from Cargo.toml
-    let version = env::var("CARGO_PKG_VERSION").expect("Failed to get version from Cargo.toml");
-    println!("cargo:rustc-env=VERSION={version}");
-
     Ok(())
 }

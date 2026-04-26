@@ -378,6 +378,7 @@ impl TryFrom<ZainodConfig> for StateServiceConfig {
             storage: cfg.storage,
             network: cfg.network,
             donation_address: cfg.donation_address,
+            indexer_version: env!("CARGO_PKG_VERSION").to_string(),
         })
     }
 }
@@ -402,6 +403,7 @@ impl TryFrom<ZainodConfig> for FetchServiceConfig {
             storage: cfg.storage,
             network: cfg.network,
             donation_address: cfg.donation_address,
+            indexer_version: env!("CARGO_PKG_VERSION").to_string(),
         })
     }
 }
@@ -1039,5 +1041,25 @@ listen_address = "127.0.0.1:8137"
              listen_address = \"127.0.0.1:8232\"\n";
         let path = create_test_config_file(&dir, content, "invalid_donation.toml");
         assert!(load_config(&path).is_err());
+    }
+
+    /// `LightdInfo.version` (issue #1057) is sourced from
+    /// `*ServiceConfig.indexer_version`. This must be set to `zainod`'s
+    /// `CARGO_PKG_VERSION` at the boundary so the wire reflects the
+    /// deployed binary, not zaino-state's library version.
+    #[test]
+    #[allow(deprecated)]
+    fn indexer_version_is_zainod_pkg_version() {
+        let _guard = EnvGuard::new();
+
+        let cfg = ZainodConfig::default();
+
+        let state_cfg = StateServiceConfig::try_from(cfg.clone())
+            .expect("StateServiceConfig conversion should succeed for default ZainodConfig");
+        assert_eq!(state_cfg.indexer_version, env!("CARGO_PKG_VERSION"));
+
+        let fetch_cfg = FetchServiceConfig::try_from(cfg)
+            .expect("FetchServiceConfig conversion should succeed for default ZainodConfig");
+        assert_eq!(fetch_cfg.indexer_version, env!("CARGO_PKG_VERSION"));
     }
 }
