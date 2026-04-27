@@ -1,9 +1,15 @@
 use std::env;
 use std::io;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> io::Result<()> {
+    // Without these, cargo's default is "rerun if any file in the package
+    // changes", which combined with wall-clock-derived rustc-env values
+    // would invalidate this crate (and everything downstream) on every build.
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+
     // Fetch the commit hash
     let commit_hash = Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -22,19 +28,13 @@ fn main() -> io::Result<()> {
     let branch = String::from_utf8(branch).expect("Invalid UTF-8 sequence");
     println!("cargo:rustc-env=BRANCH={}", branch.trim());
 
-    // Set the build date
-    // SOURCE_DATE_EPOCH can be used to set system time to a desired value
-    // which is important for achieving determinism. More details can be found
-    // at https://reproducible-builds.org/docs/source-date-epoch/
-    let build_date = match env::var("SOURCE_DATE_EPOCH") {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .to_string(),
-    };
-
+    // BUILD_DATE: SOURCE_DATE_EPOCH if set
+    // (https://reproducible-builds.org/docs/source-date-epoch/), otherwise
+    // a fixed sentinel. Never wall-clock — that value would differ on every
+    // run and force rustc to rebuild this crate every time.
+    let build_date = env::var("SOURCE_DATE_EPOCH")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
 
     // Set the build user
