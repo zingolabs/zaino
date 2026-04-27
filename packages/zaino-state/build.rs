@@ -2,6 +2,11 @@ use std::env;
 use std::io;
 use std::process::Command;
 
+fn git(args: &[&str]) -> String {
+    let out = Command::new("git").args(args).output().expect("git failed").stdout;
+    String::from_utf8(out).expect("git output not UTF-8").trim().to_string()
+}
+
 fn main() -> io::Result<()> {
     // Without these, cargo's default is "rerun if any file in the package
     // changes", which combined with wall-clock-derived rustc-env values
@@ -10,23 +15,11 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
 
-    // Fetch the commit hash
-    let commit_hash = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .expect("Failed to get commit hash")
-        .stdout;
-    let commit_hash = String::from_utf8(commit_hash).expect("Invalid UTF-8 sequence");
-    println!("cargo:rustc-env=GIT_COMMIT={}", commit_hash.trim());
-
-    // Fetch the current branch
-    let branch = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .expect("Failed to get branch")
-        .stdout;
-    let branch = String::from_utf8(branch).expect("Invalid UTF-8 sequence");
-    println!("cargo:rustc-env=BRANCH={}", branch.trim());
+    println!("cargo:rustc-env=GIT_COMMIT={}", git(&["rev-parse", "HEAD"]));
+    println!(
+        "cargo:rustc-env=BRANCH={}",
+        git(&["rev-parse", "--abbrev-ref", "HEAD"])
+    );
 
     // BUILD_DATE: SOURCE_DATE_EPOCH if set
     // (https://reproducible-builds.org/docs/source-date-epoch/), otherwise
