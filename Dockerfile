@@ -12,7 +12,7 @@ ARG HOME=/home/container_user
 ############################
 # Builder
 ############################
-FROM rust:${RUST_VERSION}-bookworm AS builder
+FROM docker.io/library/rust:${RUST_VERSION}-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
@@ -42,7 +42,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 ############################
 # Runtime
 ############################
-FROM debian:bookworm-slim AS runtime
+FROM docker.io/library/debian:bookworm-slim AS runtime
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 ARG UID
