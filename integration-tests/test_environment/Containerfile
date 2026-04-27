@@ -17,14 +17,15 @@ ARG CARGO_HOME="/usr/local/cargo"
 # === DOWNLOADERS ===
 ########################
 
-FROM zfnd/zebra:${ZEBRA_VERSION} AS zebra-downloader
-FROM zodlinc/zcash:v${ZCASH_VERSION} AS zcashd-downloader
+FROM docker.io/zfnd/zebra:${ZEBRA_VERSION} AS zebra-downloader
+FROM docker.io/zodlinc/zcash:v${ZCASH_VERSION} AS zcashd-downloader
+
 
 ########################
 # === BUILDERS ===
 ########################
 
-FROM rust:${RUST_VERSION}-trixie AS zebra-builder
+FROM docker.io/library/rust:${RUST_VERSION}-trixie AS zebra-builder
 
 ARG ZEBRA_VERSION
 RUN apt-get update
@@ -39,7 +40,7 @@ RUN git checkout "${ZEBRA_VERSION}"
 RUN cargo build --release --bin zebrad
 RUN cp target/release/zebrad /tmp/zebrad
 
-FROM debian:trixie AS zcashd-builder
+FROM docker.io/library/debian:trixie AS zcashd-builder
 
 ARG ZCASH_VERSION
 RUN apt-get update && apt-get install -y \
@@ -55,7 +56,7 @@ RUN cp src/zcashd src/zcash-cli /tmp/
 # === BASE RUNTIME IMAGE ===
 ########################
 
-FROM rust:${RUST_VERSION}-trixie AS base
+FROM docker.io/library/rust:${RUST_VERSION}-trixie AS base
 
 ARG UID
 ARG GID
