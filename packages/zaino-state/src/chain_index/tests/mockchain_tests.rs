@@ -4,7 +4,7 @@ use tokio_stream::StreamExt as _;
 use zebra_chain::serialization::ZcashDeserializeInto;
 
 use crate::chain_index::{
-    source::test::MockchainSource,
+    source::mockchain_source::MockchainSource,
     tests::{poll::poll_until, vectors::TestVectorBlockData},
     types::{BestChainLocation, TransactionHash},
     ChainIndex, NodeBackedChainIndexSubscriber,
