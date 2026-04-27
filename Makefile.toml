@@ -12,6 +12,10 @@ default_to_workspace = false
 IMAGE_NAME = "zingodevops/zaino-ci"
 TEST_BINARIES_DIR = "/home/container_user/artifacts"
 CONTAINERS_CONF_OVERRIDE = "${CARGO_MAKE_WORKING_DIRECTORY}/.config/containers.conf"
+# Single source of truth: rust-toolchain.toml's `channel`, extracted via
+# tools/scripts/get-rust-version.sh. Replaces RUST_VERSION in
+# .env.testing-artifacts.
+RUST_VERSION = { script = ["./tools/scripts/get-rust-version.sh"] }
 
 [tasks.help]
 description = "List available commands and usage notes"
@@ -65,8 +69,9 @@ echo "  audit-system-rocksdb       Re-audit if Cargo.lock or system version chan
 echo "  set-worktree-parent-tools  Copy .cargo/config.toml to common worktree parent"
 echo ""
 echo "Environment:"
-echo "  Defined by: .env.testing-artifacts"
-echo "  Affects:    RUST_VERSION, ZCASH_VERSION, ZEBRA_VERSION"
+echo "  ZCASH_VERSION, ZEBRA_VERSION  Defined by: .env.testing-artifacts"
+echo "  RUST_VERSION                  Derived from rust-toolchain.toml"
+echo "                                via tools/scripts/get-rust-version.sh"
 echo ""
 echo "Build Context:"
 echo "  integration-tests/test_environment/   Directory containing the container build environment"
