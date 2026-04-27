@@ -28,7 +28,7 @@ jobs:
     runs-on: arc-sh-runners
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +55,7 @@ jobs:
     runs-on: arc-sh-runners
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +80,7 @@ jobs:
     runs-on: arc-sh-runners
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -105,7 +105,7 @@ jobs:
     runs-on: arc-sh-runners
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,7 +130,7 @@ jobs:
     runs-on: arc-sh-runners
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -142,7 +142,7 @@ jobs:
     name: Cargo Hack Check
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     runs-on: arc-sh-runners
     steps:
       - name: Checkout repository
@@ -177,7 +177,7 @@ jobs:
     name: Cargo Hack Build
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     runs-on: arc-sh-runners
     steps:
       - name: Checkout repository
