@@ -187,6 +187,8 @@ impl MockchainSource {
 
 #[async_trait]
 impl BlockchainSource for MockchainSource {
+    // ********** Block methods **********
+
     async fn get_block(
         &self,
         id: HashOrHeight,
@@ -208,63 +210,7 @@ impl BlockchainSource for MockchainSource {
         }
     }
 
-    async fn get_commitment_tree_roots(
-        &self,
-        id: BlockHash,
-    ) -> BlockchainSourceResult<(
-        Option<(zebra_chain::sapling::tree::Root, u64)>,
-        Option<(zebra_chain::orchard::tree::Root, u64)>,
-    )> {
-        let active_chain_height = self.active_height() as usize; // serve up to active tip
-
-        if let Some(height) = self.hashes.iter().position(|h| h == &id) {
-            if height <= active_chain_height {
-                Ok(self.roots[height])
-            } else {
-                Ok((None, None))
-            }
-        } else {
-            Ok((None, None))
-        }
-    }
-
-    /// Returns the sapling and orchard treestate by hash
-    async fn get_treestate(
-        &self,
-        id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
-        let active_chain_height = self.active_height() as usize; // serve up to active tip
-
-        if let Some(height) = self.hashes.iter().position(|h| h == &id) {
-            if height <= active_chain_height {
-                let (sapling_state, orchard_state) = &self.treestates[height];
-                Ok((Some(sapling_state.clone()), Some(orchard_state.clone())))
-            } else {
-                Ok((None, None))
-            }
-        } else {
-            Ok((None, None))
-        }
-    }
-
-    async fn get_mempool_txids(
-        &self,
-    ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>> {
-        let mempool_height = self.active_height() as usize + 1;
-
-        let txids = if mempool_height < self.blocks.len() {
-            self.blocks[mempool_height]
-                .transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase()) // <-- exclude coinbase
-                .map(|tx| tx.hash())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-
-        Ok(Some(txids))
-    }
+    // ********** Transaction methods **********
 
     async fn get_transaction(
         &self,
@@ -296,6 +242,27 @@ impl BlockchainSource for MockchainSource {
         }
         Ok(None)
     }
+
+    async fn get_mempool_txids(
+        &self,
+    ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>> {
+        let mempool_height = self.active_height() as usize + 1;
+
+        let txids = if mempool_height < self.blocks.len() {
+            self.blocks[mempool_height]
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase()) // <-- exclude coinbase
+                .map(|tx| tx.hash())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Some(txids))
+    }
+
+    // ********** Chain methods **********
 
     async fn get_best_block_hash(
         &self,
@@ -339,6 +306,91 @@ impl BlockchainSource for MockchainSource {
         ))
     }
 
+    /// Returns the sapling and orchard treestate by hash
+    async fn get_treestate(
+        &self,
+        id: BlockHash,
+    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+        let active_chain_height = self.active_height() as usize; // serve up to active tip
+
+        if let Some(height) = self.hashes.iter().position(|h| h == &id) {
+            if height <= active_chain_height {
+                let (sapling_state, orchard_state) = &self.treestates[height];
+                Ok((Some(sapling_state.clone()), Some(orchard_state.clone())))
+            } else {
+                Ok((None, None))
+            }
+        } else {
+            Ok((None, None))
+        }
+    }
+
+    async fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
+        //
+        todo!()
+    }
+
+    async fn get_commitment_tree_roots(
+        &self,
+        id: BlockHash,
+    ) -> BlockchainSourceResult<(
+        Option<(zebra_chain::sapling::tree::Root, u64)>,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
+    )> {
+        let active_chain_height = self.active_height() as usize; // serve up to active tip
+
+        if let Some(height) = self.hashes.iter().position(|h| h == &id) {
+            if height <= active_chain_height {
+                Ok(self.roots[height])
+            } else {
+                Ok((None, None))
+            }
+        } else {
+            Ok((None, None))
+        }
+    }
+
+    // ********** Transparent address methods **********
+
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> BlockchainSourceResult<GetAddressDeltasResponse> {
+        //
+        todo!()
+    }
+
+    async fn get_address_balance(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+    ) -> BlockchainSourceResult<AddressBalance> {
+        //
+        todo!()
+    }
+
+    async fn get_address_txids(
+        &self,
+        request: GetAddressTxIdsRequest,
+    ) -> BlockchainSourceResult<Vec<TransactionHash>> {
+        //
+        todo!()
+    }
+
+    async fn get_address_utxos(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+    ) -> BlockchainSourceResult<Vec<GetAddressUtxos>> {
+        //
+        todo!()
+    }
+
+    // ********** Utility methods **********
+
     async fn nonfinalized_listener(
         &self,
     ) -> Result<
@@ -348,14 +400,5 @@ impl BlockchainSource for MockchainSource {
         Box<dyn Error + Send + Sync>,
     > {
         Ok(None)
-    }
-
-    async fn get_subtree_roots(
-        &self,
-        _pool: ShieldedPool,
-        _start_index: u16,
-        _max_entries: Option<u16>,
-    ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
-        todo!()
     }
 }
