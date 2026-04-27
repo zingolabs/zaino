@@ -17,8 +17,9 @@ ARG CARGO_HOME="/usr/local/cargo"
 # === DOWNLOADERS ===
 ########################
 
-FROM zfnd/zebra:${ZEBRA_VERSION} AS zebra-downloader
-FROM zodlinc/zcash:v${ZCASH_VERSION} AS zcashd-downloader
+FROM docker.io/zfnd/zebra:${ZEBRA_VERSION} AS zebra-downloader
+FROM docker.io/zodlinc/zcash:v${ZCASH_VERSION} AS zcashd-downloader
+
 
 ########################
 # === BUILDERS ===
