@@ -2,12 +2,22 @@
 
 use super::*;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,
 };
+use zaino_common::network::ActivationHeights;
+use zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo;
+use zebra_chain::{
+    amount::{Amount, NonNegative},
+    block::Height,
+    parameters::NetworkKind,
+    serialization::BytesInDisplayOrder as _,
+    transparent::{Address, OutPoint, Output, OutputIndex},
+};
 use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
+use zebra_rpc::{client::TransactionObject, methods::ValidateAddresses as _};
 use zebra_state::HashOrHeight;
 
 /// Build the txid → (height, tx) lookup map used by
@@ -31,6 +41,98 @@ fn build_txid_index(
         }
     }
     Arc::new(index)
+}
+
+/// Transparent output data needed to answer address-index RPCs from mock chain blocks.
+#[derive(Clone)]
+struct MatchingTransparentOutput {
+    /// Address matched by the output lock script.
+    address: Address,
+    /// Transaction hash containing the matched output.
+    transaction_hash: zebra_chain::transaction::Hash,
+    /// Output index within the transaction.
+    output_index: u32,
+    /// Full transparent output.
+    output: Output,
+    /// Block height containing the transaction.
+    height: Height,
+    /// Transaction index within the block.
+    transaction_index: u32,
+}
+
+/// Normalizes a transparent address for matching against outputs on `network`.
+///
+/// Regtest and testnet share transparent address prefixes, so regtest
+/// transparent addresses are normalized to `network.t_addr_kind()`.
+/// Mainnet addresses are only matched on mainnet.
+fn normalize_transparent_address_for_network(
+    address: &Address,
+    network: &zebra_chain::parameters::Network,
+) -> Option<Address> {
+    let network_kind = address.network_kind();
+    let target_transparent_address_kind = network.t_addr_kind();
+
+    match network.kind() {
+        NetworkKind::Mainnet if network_kind != NetworkKind::Mainnet => return None,
+        NetworkKind::Testnet | NetworkKind::Regtest
+            if network_kind != NetworkKind::Testnet && network_kind != NetworkKind::Regtest =>
+        {
+            return None;
+        }
+        _ => {}
+    }
+
+    match address {
+        Address::PayToPublicKeyHash { pub_key_hash, .. } => Some(Address::from_pub_key_hash(
+            target_transparent_address_kind,
+            *pub_key_hash,
+        )),
+        Address::PayToScriptHash { script_hash, .. } => Some(Address::from_script_hash(
+            target_transparent_address_kind,
+            *script_hash,
+        )),
+        Address::Tex { .. } => None,
+    }
+}
+
+/// Returns the output address if it is one of the requested transparent addresses.
+fn matching_output_address(
+    output: &Output,
+    requested_addresses: &HashSet<Address>,
+    network: &zebra_chain::parameters::Network,
+) -> Option<Address> {
+    let output_address = output.address(network)?;
+
+    if requested_addresses.contains(&output_address) {
+        Some(output_address)
+    } else {
+        None
+    }
+}
+
+/// Normalizes all requested transparent addresses for matching on the mock chain network.
+fn normalize_requested_addresses_for_network(
+    addresses: &HashSet<Address>,
+    network: &zebra_chain::parameters::Network,
+) -> HashSet<Address> {
+    addresses
+        .iter()
+        .filter_map(|address| normalize_transparent_address_for_network(address, network))
+        .collect()
+}
+
+/// Returns the Zebra network used by this static mock chain.
+///
+/// The mock chain data is generated from a regtest chain. Regtest uses testnet
+/// transparent address prefixes, so output-derived transparent addresses use
+/// `NetworkKind::Testnet`.
+fn mockchain_network() -> zebra_chain::parameters::Network {
+    zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network()
+}
+
+/// Converts a non-negative Zcash amount to zatoshis as `u64`.
+fn amount_to_u64(amount: Amount<NonNegative>) -> u64 {
+    u64::from(amount)
 }
 
 /// A test-only mock implementation of BlockchainReader using ordered lists by height.
@@ -70,6 +172,10 @@ impl MockchainSource {
                 && hashes.len() == treestates.len(),
             "All input vectors must be the same length"
         );
+        assert!(
+            !blocks.is_empty(),
+            "MockchainSource requires at least a genesis block"
+        );
 
         // len() returns one-indexed length, height is zero-indexed.
         let tip_height = blocks.len().saturating_sub(1) as u32;
@@ -108,6 +214,10 @@ impl MockchainSource {
                 && roots.len() == hashes.len()
                 && hashes.len() == treestates.len(),
             "All input vectors must be the same length"
+        );
+        assert!(
+            !blocks.is_empty(),
+            "MockchainSource requires at least a genesis block"
         );
 
         // len() returns one-indexed length, height is zero-indexed.
@@ -182,6 +292,92 @@ impl MockchainSource {
         } else {
             None
         }
+    }
+
+    fn active_chain_height_as_usize(&self) -> usize {
+        self.active_height() as usize
+    }
+
+    fn block_height_at_index(&self, block_index: usize) -> Height {
+        self.blocks[block_index]
+            .coinbase_height()
+            .unwrap_or(Height(block_index as u32))
+    }
+
+    fn matching_transparent_outputs(
+        &self,
+        addresses: &HashSet<Address>,
+        network: &zebra_chain::parameters::Network,
+    ) -> HashMap<OutPoint, MatchingTransparentOutput> {
+        let requested_addresses = normalize_requested_addresses_for_network(addresses, network);
+        let mut matching_outputs = HashMap::new();
+        let active_chain_height = self.active_chain_height_as_usize();
+
+        if requested_addresses.is_empty() {
+            return matching_outputs;
+        }
+
+        for block_index in 0..=active_chain_height {
+            let block = &self.blocks[block_index];
+            let height = self.block_height_at_index(block_index);
+
+            for (transaction_index, transaction) in block.transactions.iter().enumerate() {
+                let transaction_hash = transaction.hash();
+
+                for (output_index, output) in transaction.outputs().iter().enumerate() {
+                    let Some(address) =
+                        matching_output_address(output, &requested_addresses, network)
+                    else {
+                        continue;
+                    };
+
+                    let outpoint = OutPoint::from_usize(transaction_hash, output_index);
+
+                    matching_outputs.insert(
+                        outpoint,
+                        MatchingTransparentOutput {
+                            address,
+                            transaction_hash,
+                            output_index: output_index as u32,
+                            output: output.clone(),
+                            height,
+                            transaction_index: transaction_index as u32,
+                        },
+                    );
+                }
+            }
+        }
+
+        matching_outputs
+    }
+
+    fn spent_transparent_outpoints(&self) -> HashSet<OutPoint> {
+        let mut spent_outpoints = HashSet::new();
+        let active_chain_height = self.active_chain_height_as_usize();
+
+        for block_index in 0..=active_chain_height {
+            for transaction in &self.blocks[block_index].transactions {
+                spent_outpoints.extend(transaction.spent_outpoints());
+            }
+        }
+
+        spent_outpoints
+    }
+
+    fn transaction_touches_addresses(
+        &self,
+        transaction: &zebra_chain::transaction::Transaction,
+        requested_addresses: &HashSet<Address>,
+        matching_outputs: &HashMap<OutPoint, MatchingTransparentOutput>,
+        network: &zebra_chain::parameters::Network,
+    ) -> bool {
+        transaction
+            .outputs()
+            .iter()
+            .any(|output| matching_output_address(output, requested_addresses, network).is_some())
+            || transaction
+                .spent_outpoints()
+                .any(|outpoint| matching_outputs.contains_key(&outpoint))
     }
 }
 
@@ -301,9 +497,13 @@ impl BlockchainSource for MockchainSource {
             return Ok(None);
         }
 
-        Ok(Some(
-            self.blocks[active_chain_height].coinbase_height().unwrap(),
-        ))
+        let Some(height) = self.blocks[active_chain_height].coinbase_height() else {
+            return Err(BlockchainSourceError::Unrecoverable(format!(
+                "active chain block at index {active_chain_height} has no coinbase height"
+            )));
+        };
+
+        Ok(Some(height))
     }
 
     /// Returns the sapling and orchard treestate by hash
@@ -331,8 +531,86 @@ impl BlockchainSource for MockchainSource {
         start_index: u16,
         max_entries: Option<u16>,
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
-        //
-        todo!()
+        let requested_limit = max_entries.map(usize::from).unwrap_or(usize::MAX);
+
+        if requested_limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut subtree_roots: Vec<([u8; 32], u32)> = Vec::new();
+
+        match pool {
+            ShieldedPool::Sapling => {
+                let mut note_commitment_tree = sapling::NoteCommitmentTree::default();
+
+                for block_index in 0..=self.active_chain_height_as_usize() {
+                    let block = &self.blocks[block_index];
+                    let height = self.block_height_at_index(block_index);
+
+                    for note_commitment in block.sapling_note_commitments() {
+                        note_commitment_tree
+                            .append(*note_commitment)
+                            .map_err(|error| {
+                                BlockchainSourceError::Unrecoverable(format!(
+                                    "could not append Sapling note commitment to tree: {error}"
+                                ))
+                            })?;
+
+                        let Some((subtree_index, subtree_root)) =
+                            note_commitment_tree.completed_subtree_index_and_root()
+                        else {
+                            continue;
+                        };
+
+                        if subtree_index.0 < start_index {
+                            continue;
+                        }
+
+                        subtree_roots.push((subtree_root.to_bytes(), height.0));
+
+                        if subtree_roots.len() == requested_limit {
+                            return Ok(subtree_roots);
+                        }
+                    }
+                }
+            }
+            ShieldedPool::Orchard => {
+                let mut note_commitment_tree = orchard::NoteCommitmentTree::default();
+
+                for block_index in 0..=self.active_chain_height_as_usize() {
+                    let block = &self.blocks[block_index];
+                    let height = self.block_height_at_index(block_index);
+
+                    for note_commitment in block.orchard_note_commitments() {
+                        note_commitment_tree
+                            .append(*note_commitment)
+                            .map_err(|error| {
+                                BlockchainSourceError::Unrecoverable(format!(
+                                    "could not append Orchard note commitment to tree: {error}"
+                                ))
+                            })?;
+
+                        let Some((subtree_index, subtree_root)) =
+                            note_commitment_tree.completed_subtree_index_and_root()
+                        else {
+                            continue;
+                        };
+
+                        if subtree_index.0 < start_index {
+                            continue;
+                        }
+
+                        subtree_roots.push((subtree_root.to_repr(), height.0));
+
+                        if subtree_roots.len() == requested_limit {
+                            return Ok(subtree_roots);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(subtree_roots)
     }
 
     async fn get_commitment_tree_roots(
@@ -361,32 +639,241 @@ impl BlockchainSource for MockchainSource {
         &self,
         params: GetAddressDeltasParams,
     ) -> BlockchainSourceResult<GetAddressDeltasResponse> {
-        //
-        todo!()
+        let (addresses, start_raw, end_raw, chain_info) = match &params {
+            GetAddressDeltasParams::Filtered {
+                addresses,
+                start,
+                end,
+                chain_info,
+            } => (addresses.clone(), *start, *end, *chain_info),
+            GetAddressDeltasParams::Address(address) => (vec![address.clone()], 0, 0, false),
+        };
+
+        let valid_addresses = GetAddressBalanceRequest::new(addresses.clone())
+            .valid_addresses()
+            .map_err(|error| {
+                BlockchainSourceError::Unrecoverable(format!("invalid address: {error}"))
+            })?;
+
+        let network = mockchain_network();
+
+        let mut normalized_addresses =
+            normalize_requested_addresses_for_network(&valid_addresses, &network)
+                .into_iter()
+                .map(|address| address.to_string())
+                .collect::<Vec<_>>();
+
+        normalized_addresses.sort();
+
+        let tip = Height(self.active_height());
+
+        let mut start = Height(start_raw);
+        let mut end = Height(end_raw);
+
+        if end == Height(0) || end > tip {
+            end = tip;
+        }
+
+        if start > tip {
+            start = tip;
+        }
+
+        let tx_ids_request =
+            GetAddressTxIdsRequest::new(addresses.clone(), Some(start.0), Some(end.0));
+
+        let txids = self.get_address_txids(tx_ids_request).await?;
+
+        let mut transactions: Vec<Box<TransactionObject>> = Vec::with_capacity(txids.len());
+
+        for txid in txids {
+            let Some((transaction, location)) = self.get_transaction(txid).await? else {
+                continue;
+            };
+
+            let height = match location {
+                GetTransactionLocation::BestChain(height) => Some(height),
+                GetTransactionLocation::NonbestChain | GetTransactionLocation::Mempool => None,
+            };
+
+            transactions.push(Box::new(TransactionObject::from_transaction(
+                transaction.clone(),
+                height,
+                None,
+                &network,
+                None,
+                None,
+                Some(matches!(location, GetTransactionLocation::BestChain(_))),
+                transaction.hash(),
+            )));
+        }
+
+        let deltas = GetAddressDeltasResponse::process_transactions_to_deltas(
+            &transactions,
+            &normalized_addresses,
+        );
+
+        if chain_info {
+            let Some(start_index) = self.valid_height(start.0) else {
+                return Err(BlockchainSourceError::Unrecoverable(format!(
+                    "Block not found at height {}",
+                    start.0
+                )));
+            };
+
+            let Some(end_index) = self.valid_height(end.0) else {
+                return Err(BlockchainSourceError::Unrecoverable(format!(
+                    "Block not found at height {}",
+                    end.0
+                )));
+            };
+
+            Ok(GetAddressDeltasResponse::WithChainInfo {
+                deltas,
+                start: BlockInfo::new(
+                    hex::encode(self.blocks[start_index].hash().bytes_in_display_order()),
+                    start.0,
+                ),
+                end: BlockInfo::new(
+                    hex::encode(self.blocks[end_index].hash().bytes_in_display_order()),
+                    end.0,
+                ),
+            })
+        } else {
+            Ok(GetAddressDeltasResponse::Simple(deltas))
+        }
     }
 
     async fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> BlockchainSourceResult<AddressBalance> {
-        //
-        todo!()
+        let valid_addresses = address_strings.valid_addresses().map_err(|error| {
+            BlockchainSourceError::Unrecoverable(format!("invalid address: {error}"))
+        })?;
+
+        let network = mockchain_network();
+        let matching_outputs = self.matching_transparent_outputs(&valid_addresses, &network);
+        let spent_outpoints = self.spent_transparent_outpoints();
+
+        let mut balance = 0_u64;
+        let mut received = 0_u64;
+
+        for (outpoint, matching_output) in matching_outputs {
+            let value = amount_to_u64(matching_output.output.value());
+
+            received = received.checked_add(value).ok_or_else(|| {
+                BlockchainSourceError::Unrecoverable(
+                    "address received amount overflowed u64".to_string(),
+                )
+            })?;
+
+            if !spent_outpoints.contains(&outpoint) {
+                balance = balance.checked_add(value).ok_or_else(|| {
+                    BlockchainSourceError::Unrecoverable(
+                        "address balance amount overflowed u64".to_string(),
+                    )
+                })?;
+            }
+        }
+
+        Ok(AddressBalance::new(balance, received))
     }
 
     async fn get_address_txids(
         &self,
         request: GetAddressTxIdsRequest,
     ) -> BlockchainSourceResult<Vec<TransactionHash>> {
-        //
-        todo!()
+        let (addresses, start, end) = request.into_parts();
+
+        let valid_addresses = GetAddressBalanceRequest::new(addresses)
+            .valid_addresses()
+            .map_err(|error| {
+                BlockchainSourceError::Unrecoverable(format!("invalid address: {error}"))
+            })?;
+
+        let chain_height = Height(self.active_height());
+
+        if start > end {
+            return Err(BlockchainSourceError::Unrecoverable(format!(
+                "start {start:?} must be less than or equal to end {end:?}"
+            )));
+        }
+
+        if Height(start) > chain_height || Height(end) > chain_height {
+            return Err(BlockchainSourceError::Unrecoverable(format!(
+            "start {start:?} and end {end:?} must both be less than or equal to the chain tip {chain_height:?}"
+        )));
+        }
+
+        let network = mockchain_network();
+        let requested_addresses =
+            normalize_requested_addresses_for_network(&valid_addresses, &network);
+        let matching_outputs = self.matching_transparent_outputs(&valid_addresses, &network);
+
+        let mut transaction_hashes = Vec::new();
+
+        if requested_addresses.is_empty() {
+            return Ok(transaction_hashes);
+        }
+
+        for block_index in start as usize..=end as usize {
+            let block = &self.blocks[block_index];
+
+            for transaction in &block.transactions {
+                if self.transaction_touches_addresses(
+                    transaction,
+                    &requested_addresses,
+                    &matching_outputs,
+                    &network,
+                ) {
+                    transaction_hashes.push(TransactionHash::from(transaction.hash()));
+                }
+            }
+        }
+
+        Ok(transaction_hashes)
     }
 
     async fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> BlockchainSourceResult<Vec<GetAddressUtxos>> {
-        //
-        todo!()
+        let valid_addresses = address_strings.valid_addresses().map_err(|error| {
+            BlockchainSourceError::Unrecoverable(format!("invalid address: {error}"))
+        })?;
+
+        let network = mockchain_network();
+        let matching_outputs = self.matching_transparent_outputs(&valid_addresses, &network);
+        let spent_outpoints = self.spent_transparent_outpoints();
+
+        let mut unspent_outputs = matching_outputs
+            .into_iter()
+            .filter(|(outpoint, _matching_output)| !spent_outpoints.contains(outpoint))
+            .collect::<Vec<_>>();
+
+        unspent_outputs.sort_by_key(|(_outpoint, matching_output)| {
+            (
+                matching_output.height,
+                matching_output.transaction_index,
+                matching_output.output_index,
+            )
+        });
+
+        let utxos = unspent_outputs
+            .into_iter()
+            .map(|(_outpoint, matching_output)| {
+                GetAddressUtxos::new(
+                    matching_output.address,
+                    matching_output.transaction_hash,
+                    OutputIndex::from_index(matching_output.output_index),
+                    matching_output.output.lock_script.clone(),
+                    amount_to_u64(matching_output.output.value()),
+                    matching_output.height,
+                )
+            })
+            .collect();
+
+        Ok(utxos)
     }
 
     // ********** Utility methods **********
