@@ -87,9 +87,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid ${GID} ${USER} && \
     useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
 
-# Install rustup (Rust toolchain manager) and set up the Rust toolchain
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-RUN rustup update stable
+# The rust: base image already includes rustup + the matching toolchain.
+# Add components declared in rust-toolchain.toml so the image is self-contained
+# and the zaino-rustup volume mount is not needed at runtime.
+RUN rustup component add rustfmt clippy
 
 # Create artifacts directory
 RUN mkdir -p /home/container_user/artifacts
