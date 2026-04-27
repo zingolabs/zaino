@@ -30,7 +30,7 @@ jobs:
     name: Build test artifacts
     needs: compute-tag
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     runs-on: arc-sh-runners
     # Skip on PRs until self-hosted runner is available
     if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
@@ -83,7 +83,7 @@ jobs:
     needs: [compute-tag, build-test-artifacts]
     runs-on: arc-sh-runners
     container:
-      image: zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     strategy:
       fail-fast: false
       matrix:
