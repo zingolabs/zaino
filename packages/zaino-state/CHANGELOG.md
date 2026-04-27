@@ -54,6 +54,13 @@ and this library adheres to Rust's notion of
     `chain_index::types::BlockIndex` (was briefly `non_finalized_state::BlockIdent`
     earlier in the same unreleased cycle); its inner field is now named `hash`
     (previously `blockhash`), and it gains `Eq`/`Hash` derives.
+- `chain_index::mempool::Mempool::spawn` runs its three independent
+  startup probes (validator-mempool liveness, best-block-hash, initial
+  mempool snapshot) concurrently via `tokio::try_join!`, saving one to
+  two source round-trips per indexer init in the happy path. The
+  previously private `Mempool::get_mempool_transactions` method is
+  refactored into a module-level `fetch_mempool_snapshot` free function
+  so it can be called before the `Mempool` struct is built.
 
 ### Deprecated
 - `GetTaddressTxids` is replaced by `GetTaddressTransactions`
