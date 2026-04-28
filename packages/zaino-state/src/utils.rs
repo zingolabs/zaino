@@ -53,13 +53,17 @@ impl fmt::Display for BuildInfo {
 }
 
 /// Returns build info for Zingo-Indexer.
-pub(crate) fn get_build_info() -> BuildInfo {
+///
+/// `version` is the version of the deployed indexer binary (e.g. `zainod`),
+/// supplied by the caller. Library crates do not know which binary embeds
+/// them, so each binary passes its own `CARGO_PKG_VERSION`.
+pub(crate) fn get_build_info(version: String) -> BuildInfo {
     BuildInfo {
         commit_hash: env!("GIT_COMMIT").to_string(),
         branch: env!("BRANCH").to_string(),
         build_date: env!("BUILD_DATE").to_string(),
         build_user: env!("BUILD_USER").to_string(),
-        version: env!("VERSION").to_string(),
+        version,
     }
 }
 
@@ -111,5 +115,19 @@ impl fmt::Display for ServiceMetadata {
         writeln!(f, "Network: {}", self.network)?;
         writeln!(f, "Zebra Build: {}", self.zebra_build)?;
         writeln!(f, "Zebra Subversion: {}", self.zebra_subversion)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for issue #1057: the version flowed onto the wire via
+    /// `LightdInfo.version` must come from the caller-supplied string (the
+    /// embedding binary's `CARGO_PKG_VERSION`), not from this library crate.
+    #[test]
+    fn get_build_info_uses_caller_supplied_version() {
+        let build_info = get_build_info("9.9.9-test".to_string());
+        assert_eq!(build_info.version(), "9.9.9-test");
     }
 }

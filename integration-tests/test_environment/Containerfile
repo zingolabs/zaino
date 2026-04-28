@@ -58,6 +58,7 @@ RUN cp src/zcashd src/zcash-cli /tmp/
 
 FROM docker.io/library/rust:${RUST_VERSION}-trixie AS base
 
+ARG RUST_VERSION
 ARG UID
 ARG GID
 ARG USER
@@ -87,9 +88,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid ${GID} ${USER} && \
     useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
 
-# Install rustup (Rust toolchain manager) and set up the Rust toolchain
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-RUN rustup update stable
+# Install the toolchain under the same channel name rust-toolchain.toml asks
+# for at runtime. The rust:${RUST_VERSION}-trixie base image installs its
+# toolchain under a point-release identity (e.g. "1.92.0-x86_64-unknown-linux-gnu")
+# that does not match rust-toolchain.toml's channel-style `channel = "1.92"` —
+# without this line rustup would re-download the whole toolchain on every
+# container start. RUST_VERSION is the canonical source from
+# .env.testing-artifacts, also used in the FROM clause above.
+RUN rustup toolchain install ${RUST_VERSION} --profile minimal \
+        --component rustfmt --component clippy && \
+    rustup default ${RUST_VERSION}
 
 # Create artifacts directory
 RUN mkdir -p /home/container_user/artifacts

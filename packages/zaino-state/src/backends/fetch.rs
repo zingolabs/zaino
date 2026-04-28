@@ -118,26 +118,26 @@ impl ZcashService for FetchService {
     type Config = FetchServiceConfig;
 
     /// Initializes a new FetchService instance and starts sync process.
-    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.network))]
+    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.common.network))]
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!(
-            rpc_address = %config.validator_rpc_address,
-            network = %config.network,
+            rpc_address = %config.common.validator_rpc_address,
+            network = %config.common.network,
             "Launching Fetch Service"
         );
 
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
-            &config.validator_rpc_address,
-            config.validator_rpc_user.clone(),
-            config.validator_rpc_password.clone(),
-            config.validator_cookie_path.clone(),
+            &config.common.validator_rpc_address,
+            config.common.validator_rpc_user.clone(),
+            config.common.validator_rpc_password.clone(),
+            config.common.validator_cookie_path.clone(),
         )
         .await?;
 
         let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(
-            get_build_info(),
-            config.network.to_zebra_network(),
+            get_build_info(config.common.indexer_version.clone()),
+            config.common.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -235,7 +235,7 @@ impl FetchServiceSubscriber {
     /// Returns the network type running.
     #[allow(deprecated)]
     pub fn network(&self) -> zaino_common::Network {
-        self.config.network
+        self.config.common.network
     }
 }
 
@@ -1011,8 +1011,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let end = validated_request.end() as u32;
 
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = fetch_service_clone
             .indexer
             .snapshot_nonfinalized_state()
@@ -1143,8 +1143,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let end = validated_request.end() as u32;
 
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = fetch_service_clone
             .indexer
             .snapshot_nonfinalized_state()
@@ -1331,8 +1331,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let chain_height = self.chain_height().await?;
         let txids = self.get_taddress_txids_helper(request).await?;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (transmitter, receiver) = mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1403,9 +1403,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         mut request: AddressStream,
     ) -> Result<Balance, Self::Error> {
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
+        let service_timeout = self.config.common.service.timeout;
         let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.service.channel_size as usize);
+            mpsc::channel::<String>(self.config.common.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1537,8 +1537,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         }
 
         let mempool = self.indexer.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
 
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1637,8 +1637,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let indexer = self.indexer.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = indexer.snapshot_nonfinalized_state().await?;
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1733,7 +1733,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.network.to_zebra_network().bip70_network_name(),
+            network: self.config.common.network.to_zebra_network().bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,
@@ -1755,8 +1755,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
-            self.config.service.timeout,
-            self.config.service.channel_size,
+            self.config.common.service.timeout,
+            self.config.common.service.channel_size,
         )
     }
 
@@ -1825,8 +1825,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     ) -> Result<UtxoReplyStream, Self::Error> {
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1944,6 +1944,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             zcashd_subversion: self.data.zebra_subversion(),
             donation_address: self
                 .config
+                .common
                 .donation_address
                 .as_ref()
                 .map(DonationAddress::encode)

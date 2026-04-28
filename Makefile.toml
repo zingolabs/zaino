@@ -12,6 +12,10 @@ default_to_workspace = false
 IMAGE_NAME = "zingodevops/zaino-ci"
 TEST_BINARIES_DIR = "/home/container_user/artifacts"
 CONTAINERS_CONF_OVERRIDE = "${CARGO_MAKE_WORKING_DIRECTORY}/.config/containers.conf"
+# Single source of truth: rust-toolchain.toml's `channel`, extracted via
+# tools/scripts/get-rust-version.sh. Replaces RUST_VERSION in
+# .env.testing-artifacts.
+RUST_VERSION = { script = ["./tools/scripts/get-rust-version.sh"] }
 
 [tasks.help]
 description = "List available commands and usage notes"
@@ -65,8 +69,9 @@ echo "  audit-system-rocksdb       Re-audit if Cargo.lock or system version chan
 echo "  set-worktree-parent-tools  Copy .cargo/config.toml to common worktree parent"
 echo ""
 echo "Environment:"
-echo "  Defined by: .env.testing-artifacts"
-echo "  Affects:    RUST_VERSION, ZCASH_VERSION, ZEBRA_VERSION"
+echo "  ZCASH_VERSION, ZEBRA_VERSION  Defined by: .env.testing-artifacts"
+echo "  RUST_VERSION                  Derived from rust-toolchain.toml"
+echo "                                via tools/scripts/get-rust-version.sh"
 echo ""
 echo "Build Context:"
 echo "  integration-tests/test_environment/   Directory containing the container build environment"
@@ -128,12 +133,27 @@ script.post = ""
 [tasks.init-podman-volumes]
 description = "Initialize named podman volumes for container builds"
 script = '''
-for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry zaino-rustup; do
+for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry; do
     if ! podman volume inspect "$vol" >/dev/null 2>&1; then
         podman volume create "$vol"
         echo "Created podman volume: $vol"
     fi
 done
+
+# Pre-create host-side target/ owned by the current user. The container-test
+# podman invocation bind-mounts $PWD into the container and then overlays the
+# zaino-container-target volume on /.../zaino/target. If host-side target/
+# does not exist when that mount layer is applied, some podman/runc/buildah
+# combinations create it under a uidmap-escaped UID (e.g. UID 100000), which
+# then breaks host-side `cargo` with EACCES. Pre-creating it as the current
+# user avoids that. If target/ already exists but is unwritable (a previous
+# leak), recreate it: rm -rf works because the parent directory is owned by
+# the current user even if target/ itself is not.
+if [[ -e target && ! -w target ]]; then
+    echo "target/ exists but is not writable; recreating to recover from uidmap leak..."
+    rm -rf target
+fi
+mkdir -p target
 '''
 
 # -------------------------------------------------------------------
@@ -267,7 +287,6 @@ podman run --rm \
   -v zaino-container-target:/home/container_user/zaino/target:U \
   -v zaino-cargo-git:/usr/local/cargo/git:U \
   -v zaino-cargo-registry:/usr/local/cargo/registry:U \
-  -v zaino-rustup:/usr/local/rustup:U \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "ZAINOLOG_FORMAT=${ZAINOLOG_FORMAT:-stream}" \
@@ -384,7 +403,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-v", "zaino-container-target:/home/container_user/zaino/target:U",
             "-v", "zaino-cargo-git:/usr/local/cargo/git:U",
             "-v", "zaino-cargo-registry:/usr/local/cargo/registry:U",
-            "-v", "zaino-rustup:/usr/local/rustup:U",
             "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/integration-tests/test_binaries/bins",
             "-w", "/home/container_user/zaino",
             "-u", "container_user",
