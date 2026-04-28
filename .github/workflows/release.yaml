@@ -6,13 +6,19 @@ on:
       - '[0-9]+.[0-9]+.[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
   workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push the built image to DockerHub. Set false to verify build on a feature branch without publishing.'
+        type: boolean
+        default: true
 
 jobs:
   docker:
     name: Docker images (build+push)
     runs-on: ubuntu-latest
     env:
-      PUSH_IMAGES: true
+      # Push only on tag-push events, or when workflow_dispatch with input.push=true.
+      PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +31,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
+      - name: Determine Rust version from rust-toolchain.toml
+        run: |
+          echo "RUST_VERSION=$(./tools/scripts/get-rust-version.sh)" >> $GITHUB_ENV
+
       - name: Extract metadata for Docker (default image)
         id: meta-default
         uses: docker/metadata-action@v5
@@ -32,6 +42,8 @@ jobs:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}
           tags: |
             type=semver,pattern={{version}}
+            type=ref,event=branch
+            type=sha,prefix=,format=short
 
       - name: Build and Push Default Image
         uses: docker/build-push-action@v5
@@ -41,6 +53,8 @@ jobs:
           push: ${{ env.PUSH_IMAGES }}
           tags: ${{ steps.meta-default.outputs.tags }}
           labels: ${{ steps.meta-default.outputs.labels }}
+          build-args: |
+            RUST_VERSION=${{ env.RUST_VERSION }}
           cache-from: |
             type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKER_RELEASE_REPO || 'zaino' }}:buildcache
             type=gha
@@ -57,11 +71,15 @@ jobs:
             suffix=-no-tls
           tags: |
             type=semver,pattern={{version}}
+            type=ref,event=branch
+            type=sha,prefix=,format=short
 
       - name: Build and Push No-TLS Image
         uses: docker/build-push-action@v5
         with:
-          build-args: NO_TLS=true
+          build-args: |
+            NO_TLS=true
+            RUST_VERSION=${{ env.RUST_VERSION }}
           context: .
           platforms: linux/amd64
           push: ${{ env.PUSH_IMAGES }}
@@ -78,6 +96,9 @@ jobs:
     needs: docker
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    # Only create a GitHub release when triggered by a real semver tag push.
+    # workflow_dispatch (e.g. for verification on a feature branch) skips this.
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
         with:

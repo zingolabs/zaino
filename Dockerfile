@@ -3,7 +3,11 @@
 ############################
 # Global build args
 ############################
-ARG RUST_VERSION=1.86.0
+# RUST_VERSION must be supplied via --build-arg. Canonical source is
+# rust-toolchain.toml's `channel`, surfaced by tools/scripts/get-rust-version.sh
+# — no default is set so a stale literal cannot drift from the workspace's
+# pinned toolchain. See README for the recommended build invocation.
+ARG RUST_VERSION
 ARG UID=1000
 ARG GID=1000
 ARG USER=container_user

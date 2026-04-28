@@ -178,27 +178,27 @@ impl ZcashService for StateService {
     type Config = StateServiceConfig;
 
     /// Initializes a new StateService instance and starts sync process.
-    #[instrument(name = "StateService::spawn", skip(config), fields(network = %config.network))]
+    #[instrument(name = "StateService::spawn", skip(config), fields(network = %config.common.network))]
     async fn spawn(config: StateServiceConfig) -> Result<Self, StateServiceError> {
         info!(
-            rpc_address = %config.validator_rpc_address,
-            network = %config.network,
+            rpc_address = %config.common.validator_rpc_address,
+            network = %config.common.network,
             "Spawning State Service"
         );
 
         let rpc_client = JsonRpSeeConnector::new_from_config_parts(
-            &config.validator_rpc_address,
-            config.validator_rpc_user.clone(),
-            config.validator_rpc_password.clone(),
-            config.validator_cookie_path.clone(),
+            &config.common.validator_rpc_address,
+            config.common.validator_rpc_user.clone(),
+            config.common.validator_rpc_password.clone(),
+            config.common.validator_cookie_path.clone(),
         )
         .await?;
 
         let zebra_build_data = rpc_client.get_info().await?;
 
         let data = ServiceMetadata::new(
-            get_build_info(),
-            config.network.to_zebra_network(),
+            get_build_info(config.common.indexer_version.clone()),
+            config.common.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -211,7 +211,7 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_state_config.clone(),
-                &config.network.to_zebra_network(),
+                &config.common.network.to_zebra_network(),
                 config.validator_grpc_address,
             )
             .await??;
@@ -250,7 +250,7 @@ impl ZcashService for StateService {
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
             read_state_service: read_state_service.clone(),
             mempool_fetcher: rpc_client.clone(),
-            network: config.network,
+            network: config.common.network,
         });
 
         let mempool = Mempool::spawn(mempool_source, None).await?;
@@ -259,7 +259,7 @@ impl ZcashService for StateService {
             ValidatorConnector::State(State {
                 read_state_service: read_state_service.clone(),
                 mempool_fetcher: rpc_client.clone(),
-                network: config.network,
+                network: config.common.network,
             }),
             config.clone().into(),
         )
@@ -557,8 +557,9 @@ impl StateServiceSubscriber {
         let end = validated_request.end() as u32;
 
         let state_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = state_service_clone
             .indexer
             .snapshot_nonfinalized_state()
@@ -873,7 +874,7 @@ impl StateServiceSubscriber {
     /// Returns the network type running.
     #[allow(deprecated)]
     pub fn network(&self) -> zaino_common::Network {
-        self.config.network
+        self.config.common.network
     }
 
     /// Returns the median time of the last 11 blocks.
@@ -997,7 +998,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         chain_tip_difficulty(
-            self.config.network.to_zebra_network(),
+            self.config.common.network.to_zebra_network(),
             self.read_state_service.clone(),
             false,
         )
@@ -1054,9 +1055,12 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let now = Utc::now();
-        let zebra_estimated_height =
-            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.network.into())
-                .estimate_height_at(now);
+        let zebra_estimated_height = NetworkChainTipHeightEstimator::new(
+            header.time,
+            height,
+            &self.config.common.network.into(),
+        )
+        .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
         } else {
@@ -1065,6 +1069,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let upgrades = IndexMap::from_iter(
             self.config
+                .common
                 .network
                 .to_zebra_network()
                 .full_activation_list()
@@ -1100,14 +1105,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             (height + 1).expect("valid chain tips are a lot less than Height::MAX");
         let consensus = TipConsensusBranch::from_parts(
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network.into(), height)
+                NetworkUpgrade::current(&self.config.common.network.into(), height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
             )
             .inner(),
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.network.into(), next_block_height)
+                NetworkUpgrade::current(&self.config.common.network.into(), next_block_height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
@@ -1117,7 +1122,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         // TODO: Remove unwrap()
         let difficulty = chain_tip_difficulty(
-            self.config.network.to_zebra_network(),
+            self.config.common.network.to_zebra_network(),
             self.read_state_service.clone(),
             false,
         )
@@ -1127,7 +1132,11 @@ impl ZcashIndexer for StateServiceSubscriber {
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockchainInfoResponse::new(
-            self.config.network.to_zebra_network().bip70_network_name(),
+            self.config
+                .common
+                .network
+                .to_zebra_network()
+                .bip70_network_name(),
             height,
             hash,
             estimated_height,
@@ -1479,7 +1488,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let address = match address.convert_if_network::<Address>(
-            match self.config.network.to_zebra_network().kind() {
+            match self.config.common.network.to_zebra_network().kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
                 NetworkKind::Regtest => NetworkType::Regtest,
@@ -1516,7 +1525,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let converted_address = match parsed_address.convert_if_network::<Address>(
-            match self.config.network.to_zebra_network().kind() {
+            match self.config.common.network.to_zebra_network().kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
                 NetworkKind::Regtest => NetworkType::Regtest,
@@ -1692,7 +1701,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                 height,
                 confirmations,
                 #[allow(deprecated)]
-                &self.config.network.to_zebra_network(),
+                &self.config.common.network.to_zebra_network(),
                 None,
                 block_hash,
                 in_best_chain,
@@ -1998,8 +2007,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let chain_height = self.chain_height().await?;
         let txids = self.get_taddress_txids_helper(request).await?;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (transmitter, receiver) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -2073,9 +2083,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
         mut request: AddressStream,
     ) -> Result<zaino_proto::proto::service::Balance, Self::Error> {
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
+        let service_timeout = self.config.common.service.timeout;
         let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.service.channel_size as usize);
+            mpsc::channel::<String>(self.config.common.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -2221,8 +2231,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
         };
 
         let mempool = self.mempool.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -2311,8 +2322,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let mut mempool = self.mempool.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
             // TODO: This probably shouldn't be an error.
@@ -2406,7 +2418,12 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.network.to_zebra_network().bip70_network_name(),
+            network: self
+                .config
+                .common
+                .network
+                .to_zebra_network()
+                .bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,
@@ -2427,8 +2444,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
-            self.config.service.timeout,
-            self.config.service.channel_size,
+            self.config.common.service.timeout,
+            self.config.common.service.channel_size,
         )
     }
 
@@ -2496,8 +2513,9 @@ impl LightWalletIndexer for StateServiceSubscriber {
     ) -> Result<UtxoReplyStream, Self::Error> {
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -2616,6 +2634,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             zcashd_subversion: self.data.zebra_subversion(),
             donation_address: self
                 .config
+                .common
                 .donation_address
                 .as_ref()
                 .map(DonationAddress::encode)
