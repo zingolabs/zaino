@@ -14,12 +14,11 @@ use zebra_chain::{
 use zebra_rpc::{
     client::{
         GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse,
-        ValidateAddressResponse,
+        TransactionObject, ValidateAddressResponse,
     },
     methods::{
         AddressBalance, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHashResponse,
         GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
-        ValidateAddresses as _,
     },
 };
 
@@ -267,7 +266,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         params: GetAddressDeltasParams,
     ) -> Result<GetAddressDeltasResponse, Self::Error> {
-        Ok(self.fetcher.get_address_deltas(params).await?)
+        Ok(self.indexer.get_address_deltas(params).await?)
     }
 
     /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
@@ -367,25 +366,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_address_balance(
-                address_strings
-                    .valid_addresses()
-                    .map_err(|error| {
-                        #[allow(deprecated)]
-                        FetchServiceError::RpcError(RpcError {
-                            code: error.code() as i64,
-                            message: "Invalid address provided".to_string(),
-                            data: None,
-                        })
-                    })?
-                    .into_iter()
-                    .map(|address| address.to_string())
-                    .collect(),
-            )
-            .await?
-            .into())
+        Ok(self.indexer.get_address_balance(address_strings).await?)
     }
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
@@ -695,11 +676,78 @@ impl ZcashIndexer for FetchServiceSubscriber {
         txid_hex: String,
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_raw_transaction(txid_hex, verbose)
-            .await?
-            .into())
+        #[allow(deprecated)]
+        let txid = types::TransactionHash::from_hex(&txid_hex).map_err(|error| {
+            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+                error.to_string(),
+            ))
+        })?;
+
+        #[allow(deprecated)]
+        let not_found_error = || {
+            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+                "No such mempool or main chain transaction",
+            ))
+        };
+
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+
+        let Some((serialized_transaction, _consensus_branch_id)) =
+            self.indexer.get_raw_transaction(&snapshot, &txid).await?
+        else {
+            return Err(not_found_error());
+        };
+
+        if verbose.is_none() {
+            return Ok(GetRawTransaction::Raw(
+                zebra_chain::transaction::SerializedTransaction::from(serialized_transaction),
+            ));
+        }
+
+        let transaction = zebra_chain::transaction::Transaction::zcash_deserialize(
+            serialized_transaction.as_slice(),
+        )
+        .map_err(|_| not_found_error())?;
+
+        let (best_chain_location, _non_best_chain_locations) = self
+            .indexer
+            .get_transaction_status(&snapshot, &txid)
+            .await?;
+
+        let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
+            Some(types::BestChainLocation::Block(block_hash, height)) => {
+                let confirmations = snapshot
+                    .max_serviceable_height()
+                    .0
+                    .saturating_sub(height.0)
+                    .saturating_add(1);
+
+                (
+                    Some(zebra_chain::block::Height::from(height)),
+                    Some(confirmations),
+                    Some(zebra_chain::block::Hash::from(block_hash)),
+                    Some(true),
+                )
+            }
+            Some(types::BestChainLocation::Mempool(_height)) => (None, Some(0), None, Some(false)),
+            None => (None, None, None, Some(false)),
+        };
+
+        Ok(GetRawTransaction::Object(Box::new(
+            TransactionObject::from_transaction(
+                transaction.into(),
+                height,
+                confirmations,
+                #[allow(deprecated)]
+                &self.config.network.to_zebra_network(),
+                None,
+                block_hash,
+                in_best_chain,
+                zebra_chain::transaction::Hash::from(txid),
+            ),
+        )))
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
@@ -732,12 +780,13 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<String>, Self::Error> {
-        let (addresses, start, end) = request.into_parts();
         Ok(self
-            .fetcher
-            .get_address_txids(addresses, start, end)
+            .indexer
+            .get_address_txids(request)
             .await?
-            .transactions)
+            .into_iter()
+            .map(|transaction_hash| transaction_hash.to_rpc_hex())
+            .collect())
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -758,27 +807,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         addresses: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_address_utxos(
-                addresses
-                    .valid_addresses()
-                    .map_err(|error| {
-                        #[allow(deprecated)]
-                        FetchServiceError::RpcError(RpcError {
-                            code: error.code() as i64,
-                            message: "Invalid address provided".to_string(),
-                            data: None,
-                        })
-                    })?
-                    .into_iter()
-                    .map(|address| address.to_string())
-                    .collect(),
-            )
-            .await?
-            .into_iter()
-            .map(|utxos| utxos.into())
-            .collect())
+        Ok(self.indexer.get_address_utxos(addresses).await?)
     }
 
     /// Returns the estimated network solutions per second based on the last n blocks.
