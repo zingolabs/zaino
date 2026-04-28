@@ -34,6 +34,7 @@ echo ""
 echo "Available commands:"
 echo ""
 echo "  container-test             Run integration tests using the local image"
+echo "  integration-test           Run integration-tests sub-workspace (forwards flags to nextest)"
 echo "  container-test-save-failures    Run tests, save failures to .failed-tests"
 echo "  container-test-retry-failures   Rerun only the previously failed tests"
 echo "  build-image                Build the container image with current artifact versions"
@@ -283,6 +284,21 @@ PODMAN_PID=$!
 wait $PODMAN_PID
 '''
 script.post = "makers notify"
+
+# -------------------------------------------------------------------
+
+[tasks.integration-test]
+description = "Run the integration-tests sub-workspace inside the CI container (forwards extra args to `cargo nextest run`)"
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+info "Running integration-tests sub-workspace via container-test"
+info "-- manifest: integration-tests/Cargo.toml"
+
+exec makers container-test --manifest-path integration-tests/Cargo.toml "${@}"
+'''
 
 # -------------------------------------------------------------------
 
