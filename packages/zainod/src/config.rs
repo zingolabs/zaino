@@ -16,7 +16,9 @@ use zaino_common::{
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 #[allow(deprecated)]
-use zaino_state::{BackendType, DonationAddress, FetchServiceConfig, StateServiceConfig};
+use zaino_state::{
+    BackendType, CommonBackendConfig, DonationAddress, FetchServiceConfig, StateServiceConfig,
+};
 
 /// Header for generated configuration files.
 pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
@@ -349,35 +351,22 @@ impl TryFrom<ZainodConfig> for StateServiceConfig {
                 ))
             })?;
 
+        let validator_state_config = zebra_state::Config {
+            cache_dir: cfg.zebra_db_path.clone(),
+            ephemeral: false,
+            delete_old_database: true,
+            debug_stop_at_height: None,
+            debug_validity_check_interval: None,
+            should_backup_non_finalized_state: true,
+            debug_skip_non_finalized_state_backup_task: false,
+        };
+        let validator_cookie_auth = cfg.validator_settings.validator_cookie_path.is_some();
+
         Ok(StateServiceConfig {
-            validator_state_config: zebra_state::Config {
-                cache_dir: cfg.zebra_db_path.clone(),
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-                should_backup_non_finalized_state: true,
-                debug_skip_non_finalized_state_backup_task: false,
-            },
-            validator_rpc_address: cfg
-                .validator_settings
-                .validator_jsonrpc_listen_address
-                .clone(),
+            common: build_common(cfg),
+            validator_state_config,
             validator_grpc_address,
-            validator_cookie_auth: cfg.validator_settings.validator_cookie_path.is_some(),
-            validator_cookie_path: cfg.validator_settings.validator_cookie_path,
-            validator_rpc_user: cfg
-                .validator_settings
-                .validator_user
-                .unwrap_or_else(|| "xxxxxx".to_string()),
-            validator_rpc_password: cfg
-                .validator_settings
-                .validator_password
-                .unwrap_or_else(|| "xxxxxx".to_string()),
-            service: cfg.service,
-            storage: cfg.storage,
-            network: cfg.network,
-            donation_address: cfg.donation_address,
+            validator_cookie_auth,
         })
     }
 }
@@ -388,21 +377,28 @@ impl TryFrom<ZainodConfig> for FetchServiceConfig {
 
     fn try_from(cfg: ZainodConfig) -> Result<Self, Self::Error> {
         Ok(FetchServiceConfig {
-            validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
-            validator_cookie_path: cfg.validator_settings.validator_cookie_path,
-            validator_rpc_user: cfg
-                .validator_settings
-                .validator_user
-                .unwrap_or_else(|| "xxxxxx".to_string()),
-            validator_rpc_password: cfg
-                .validator_settings
-                .validator_password
-                .unwrap_or_else(|| "xxxxxx".to_string()),
-            service: cfg.service,
-            storage: cfg.storage,
-            network: cfg.network,
-            donation_address: cfg.donation_address,
+            common: build_common(cfg),
         })
+    }
+}
+
+fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
+    CommonBackendConfig {
+        validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
+        validator_cookie_path: cfg.validator_settings.validator_cookie_path,
+        validator_rpc_user: cfg
+            .validator_settings
+            .validator_user
+            .unwrap_or_else(|| "xxxxxx".to_string()),
+        validator_rpc_password: cfg
+            .validator_settings
+            .validator_password
+            .unwrap_or_else(|| "xxxxxx".to_string()),
+        service: cfg.service,
+        storage: cfg.storage,
+        network: cfg.network,
+        donation_address: cfg.donation_address,
+        indexer_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
 
@@ -1039,5 +1035,54 @@ listen_address = "127.0.0.1:8137"
              listen_address = \"127.0.0.1:8232\"\n";
         let path = create_test_config_file(&dir, content, "invalid_donation.toml");
         assert!(load_config(&path).is_err());
+    }
+
+    /// `LightdInfo.version` (issue #1057) is sourced from
+    /// `*ServiceConfig.indexer_version`. This must be set to `zainod`'s
+    /// `CARGO_PKG_VERSION` at the boundary so the wire reflects the
+    /// deployed binary, not zaino-state's library version.
+    #[test]
+    #[allow(deprecated)]
+    fn indexer_version_is_zainod_pkg_version() {
+        let _guard = EnvGuard::new();
+
+        let cfg = ZainodConfig::default();
+
+        let state_cfg = StateServiceConfig::try_from(cfg.clone())
+            .expect("StateServiceConfig conversion should succeed for default ZainodConfig");
+        assert_eq!(state_cfg.common.indexer_version, env!("CARGO_PKG_VERSION"));
+
+        let fetch_cfg = FetchServiceConfig::try_from(cfg)
+            .expect("FetchServiceConfig conversion should succeed for default ZainodConfig");
+        assert_eq!(fetch_cfg.common.indexer_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// `StateServiceConfig::try_from` and `FetchServiceConfig::try_from`
+    /// share a single `build_common` helper, so the two backends can
+    /// never quietly disagree on the common payload they hand to a
+    /// service. Locks that property in across every field: a future
+    /// hand-rolled divergence (e.g. one path stops applying the
+    /// missing-credentials sentinel, or a new common field gets
+    /// populated on only one side) makes this fail. Pretty-Debug
+    /// equality is used because not every constituent of
+    /// `CommonBackendConfig` derives `PartialEq`, and a single
+    /// stringified compare future-proofs the test against fields added
+    /// later.
+    #[test]
+    #[allow(deprecated)]
+    fn state_and_fetch_common_payloads_agree() {
+        let _guard = EnvGuard::new();
+
+        let cfg = ZainodConfig::default();
+
+        let state_cfg = StateServiceConfig::try_from(cfg.clone())
+            .expect("StateServiceConfig conversion should succeed for default ZainodConfig");
+        let fetch_cfg = FetchServiceConfig::try_from(cfg)
+            .expect("FetchServiceConfig conversion should succeed for default ZainodConfig");
+
+        assert_eq!(
+            format!("{:#?}", state_cfg.common),
+            format!("{:#?}", fetch_cfg.common),
+        );
     }
 }
