@@ -9,14 +9,13 @@ use std::sync::{
 };
 use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo;
+use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
 use zebra_chain::{
-    amount::{Amount, NonNegative},
     block::Height,
     parameters::NetworkKind,
     serialization::BytesInDisplayOrder as _,
     transparent::{Address, OutPoint, Output, OutputIndex},
 };
-use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
 use zebra_rpc::{client::TransactionObject, methods::ValidateAddresses as _};
 use zebra_state::HashOrHeight;
 
@@ -128,11 +127,6 @@ fn normalize_requested_addresses_for_network(
 /// `NetworkKind::Testnet`.
 fn mockchain_network() -> zebra_chain::parameters::Network {
     zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network()
-}
-
-/// Converts a non-negative Zcash amount to zatoshis as `u64`.
-fn amount_to_u64(amount: Amount<NonNegative>) -> u64 {
-    u64::from(amount)
 }
 
 /// A test-only mock implementation of BlockchainReader using ordered lists by height.
@@ -759,7 +753,7 @@ impl BlockchainSource for MockchainSource {
         let mut received = 0_u64;
 
         for (outpoint, matching_output) in matching_outputs {
-            let value = amount_to_u64(matching_output.output.value());
+            let value = u64::from(matching_output.output.value());
 
             received = received.checked_add(value).ok_or_else(|| {
                 BlockchainSourceError::Unrecoverable(
@@ -867,7 +861,7 @@ impl BlockchainSource for MockchainSource {
                     matching_output.transaction_hash,
                     OutputIndex::from_index(matching_output.output_index),
                     matching_output.output.lock_script.clone(),
-                    amount_to_u64(matching_output.output.value()),
+                    u64::from(matching_output.output.value()),
                     matching_output.height,
                 )
             })
