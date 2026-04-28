@@ -1233,6 +1233,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         match zblock {
             GetBlock::Object(boxed_block) => {
+                #[allow(clippy::result_large_err)]
                 let deltas = boxed_block
                     .tx()
                     .iter()
@@ -1975,6 +1976,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let hex = hash.encode_hex();
 
         // explicit over method call syntax to make it clear where this method is coming from
+        #[allow(clippy::result_large_err)]
         <Self as ZcashIndexer>::get_raw_transaction(self, hex, Some(1))
             .await
             .and_then(|grt| match grt {
