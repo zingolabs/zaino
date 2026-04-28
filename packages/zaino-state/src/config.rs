@@ -69,19 +69,15 @@ pub enum BackendConfig {
     Fetch(FetchServiceConfig),
 }
 
-/// Holds config data for [crate::StateService].
+/// Configuration shared by every backend variant.
+///
+/// Carries the validator-RPC connection bits plus the runtime indexer
+/// settings that are independent of how blockchain data is fetched.
 #[derive(Debug, Clone)]
-// #[deprecated]
-pub struct StateServiceConfig {
-    /// Zebra [`zebra_state::ReadStateService`] config data
-    pub validator_state_config: zebra_state::Config,
+pub struct CommonBackendConfig {
     /// Validator JsonRPC address (supports hostname:port or ip:port format).
     pub validator_rpc_address: String,
-    /// Validator gRPC address (requires ip:port format for Zebra state sync).
-    pub validator_grpc_address: std::net::SocketAddr,
-    /// Validator cookie auth.
-    pub validator_cookie_auth: bool,
-    /// Enable validator rpc cookie authentification with Some: Path to the validator cookie file.
+    /// Enable validator rpc cookie authentication with Some: path to the validator cookie file.
     pub validator_cookie_path: Option<PathBuf>,
     /// Validator JsonRPC user.
     pub validator_rpc_user: String,
@@ -95,13 +91,34 @@ pub struct StateServiceConfig {
     pub network: Network,
     /// Zcash donation UA address
     pub donation_address: Option<DonationAddress>,
+    /// Version of the indexer binary embedding this service.
+    ///
+    /// Reported on the wire via `LightdInfo.version`. Defaults to this
+    /// crate's `CARGO_PKG_VERSION` when constructed via the parent
+    /// service's `new`; the embedding binary should overwrite it with
+    /// its own `CARGO_PKG_VERSION` so the wire reflects the deployed
+    /// indexer rather than the library crate.
+    pub indexer_version: String,
+}
+
+/// Holds config data for [crate::StateService].
+#[derive(Debug, Clone)]
+// #[deprecated]
+pub struct StateServiceConfig {
+    /// Settings shared with [`FetchServiceConfig`].
+    pub common: CommonBackendConfig,
+    /// Zebra [`zebra_state::ReadStateService`] config data
+    pub validator_state_config: zebra_state::Config,
+    /// Validator gRPC address (requires ip:port format for Zebra state sync).
+    pub validator_grpc_address: std::net::SocketAddr,
+    /// Validator cookie auth.
+    pub validator_cookie_auth: bool,
 }
 
 #[allow(deprecated)]
 impl StateServiceConfig {
     /// Returns a new instance of [`StateServiceConfig`].
     #[allow(clippy::too_many_arguments)]
-    // TODO: replace with struct-literal init only?
     pub fn new(
         validator_state_config: zebra_state::Config,
         validator_rpc_address: String,
@@ -120,17 +137,20 @@ impl StateServiceConfig {
             network.to_zebra_network().full_activation_list()
         );
         StateServiceConfig {
+            common: CommonBackendConfig {
+                validator_rpc_address,
+                validator_cookie_path,
+                validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
+                validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
+                service,
+                storage,
+                network,
+                donation_address,
+                indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
             validator_state_config,
-            validator_rpc_address,
             validator_grpc_address,
             validator_cookie_auth,
-            validator_cookie_path,
-            validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
-            validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
-            service,
-            storage,
-            network,
-            donation_address,
         }
     }
 }
@@ -139,22 +159,8 @@ impl StateServiceConfig {
 #[derive(Debug, Clone)]
 #[deprecated]
 pub struct FetchServiceConfig {
-    /// Validator JsonRPC address (supports hostname:port or ip:port format).
-    pub validator_rpc_address: String,
-    /// Enable validator rpc cookie authentification with Some: path to the validator cookie file.
-    pub validator_cookie_path: Option<PathBuf>,
-    /// Validator JsonRPC user.
-    pub validator_rpc_user: String,
-    /// Validator JsonRPC password.
-    pub validator_rpc_password: String,
-    /// Service-level configuration (timeout, channel size)
-    pub service: ServiceConfig,
-    /// Storage configuration (cache and database)
-    pub storage: StorageConfig,
-    /// Network type.
-    pub network: Network,
-    /// Zcash donation UA address
-    pub donation_address: Option<DonationAddress>,
+    /// Settings shared with [`StateServiceConfig`].
+    pub common: CommonBackendConfig,
 }
 
 #[allow(deprecated)]
@@ -172,14 +178,17 @@ impl FetchServiceConfig {
         donation_address: Option<DonationAddress>,
     ) -> Self {
         FetchServiceConfig {
-            validator_rpc_address,
-            validator_cookie_path,
-            validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
-            validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
-            service,
-            storage,
-            network,
-            donation_address,
+            common: CommonBackendConfig {
+                validator_rpc_address,
+                validator_cookie_path,
+                validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
+                validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
+                service,
+                storage,
+                network,
+                donation_address,
+                indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
         }
     }
 }
@@ -208,9 +217,8 @@ impl BlockCacheConfig {
     }
 }
 
-#[allow(deprecated)]
-impl From<StateServiceConfig> for BlockCacheConfig {
-    fn from(value: StateServiceConfig) -> Self {
+impl From<CommonBackendConfig> for BlockCacheConfig {
+    fn from(value: CommonBackendConfig) -> Self {
         Self {
             storage: value.storage,
             // TODO: update zaino configs to include db version.
@@ -221,14 +229,16 @@ impl From<StateServiceConfig> for BlockCacheConfig {
 }
 
 #[allow(deprecated)]
+impl From<StateServiceConfig> for BlockCacheConfig {
+    fn from(value: StateServiceConfig) -> Self {
+        value.common.into()
+    }
+}
+
+#[allow(deprecated)]
 impl From<FetchServiceConfig> for BlockCacheConfig {
     fn from(value: FetchServiceConfig) -> Self {
-        Self {
-            storage: value.storage,
-            // TODO: update zaino configs to include db version.
-            db_version: 1,
-            network: value.network,
-        }
+        value.common.into()
     }
 }
 
