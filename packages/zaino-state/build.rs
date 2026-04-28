@@ -14,12 +14,25 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    println!("cargo:rerun-if-env-changed=GIT_COMMIT");
+    println!("cargo:rerun-if-env-changed=BRANCH");
 
-    println!("cargo:rustc-env=GIT_COMMIT={}", git(&["rev-parse", "HEAD"]));
-    println!(
-        "cargo:rustc-env=BRANCH={}",
-        git(&["rev-parse", "--abbrev-ref", "HEAD"])
-    );
+    // Prefer caller-supplied values: the makers container-test task computes
+    // these on the host and passes them via `-e`, so the in-container build
+    // does not depend on a working git inside the bind-mounted workspace
+    // (which is broken across worktree gitdir indirection). Fall back to
+    // shelling out for direct host invocations of `cargo build`.
+    let git_commit = env::var("GIT_COMMIT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| git(&["rev-parse", "HEAD"]));
+    println!("cargo:rustc-env=GIT_COMMIT={git_commit}");
+
+    let branch = env::var("BRANCH")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| git(&["rev-parse", "--abbrev-ref", "HEAD"]));
+    println!("cargo:rustc-env=BRANCH={branch}");
 
     // BUILD_DATE: SOURCE_DATE_EPOCH if set
     // (https://reproducible-builds.org/docs/source-date-epoch/), otherwise
