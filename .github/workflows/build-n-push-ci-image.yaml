@@ -2,6 +2,11 @@ name: Docker Image CI/CD
 
 on:
   workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push the built image to DockerHub. Set false to verify a build on a feature branch without publishing.'
+        type: boolean
+        default: true
   push:
     branches:
       - '**'
@@ -68,7 +73,7 @@ jobs:
           zingodevops/zaino-ci:latest
           zingodevops/zaino-ci:${{ steps.versions.outputs.sha_short }}
           zingodevops/zaino-ci:${{ steps.taggen.outputs.tag }}
-        push: true
+        push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
         build-args: |
           RUST_VERSION=${{ env.RUST_VERSION }}
           ZCASH_VERSION=${{ env.ZCASH_VERSION }}
