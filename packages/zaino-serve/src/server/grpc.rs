@@ -97,3 +97,6 @@ impl Drop for TonicServer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
