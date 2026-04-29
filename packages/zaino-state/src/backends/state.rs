@@ -1,6 +1,5 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
-use crate::chain_index::NonFinalizedSnapshot;
 #[allow(deprecated)]
 use crate::{
     chain_index::{
@@ -9,7 +8,6 @@ use crate::{
         types as chain_types, ChainIndex,
     },
     config::{DonationAddress, StateServiceConfig},
-    error::ChainIndexError,
     error::{BlockCacheError, StateServiceError},
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
@@ -20,7 +18,11 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{get_build_info, ServiceMetadata},
-    BackendType, MempoolKey, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State,
+    BackendType, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State,
+};
+use crate::{
+    chain_index::{types::BestChainLocation, NonFinalizedSnapshot},
+    TransactionHash,
 };
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
@@ -28,7 +30,7 @@ use zaino_fetch::{
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
         response::{
-            address_deltas::{BlockInfo, GetAddressDeltasParams, GetAddressDeltasResponse},
+            address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
@@ -63,7 +65,7 @@ use zebra_chain::{
     block::{Header, Height, SerializedBlock},
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
-    serialization::{BytesInDisplayOrder as _, ZcashSerialize},
+    serialization::{BytesInDisplayOrder as _, ZcashDeserialize as _, ZcashSerialize},
     subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
@@ -77,21 +79,18 @@ use zebra_rpc::{
         GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader as GetBlockHeaderZebra,
         GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
         GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
-        TipConsensusBranch, ValidateAddresses as _,
+        TipConsensusBranch,
     },
     server::error::LegacyCode,
     sync::init_read_state_with_syncer,
 };
-use zebra_state::{
-    FromDisk, HashOrHeight, OutputLocation, ReadRequest, ReadResponse, ReadStateService,
-    TransactionLocation,
-};
+use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
 
 use chrono::{DateTime, Utc};
-use futures::{TryFutureExt as _, TryStreamExt as _};
+use futures::TryFutureExt as _;
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashSet, error::Error, fmt, str::FromStr, sync::Arc};
+use std::{error::Error, fmt, str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -559,7 +558,8 @@ impl StateServiceSubscriber {
 
         let state_service_clone = self.clone();
         let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = state_service_clone
             .indexer
             .snapshot_nonfinalized_state()
@@ -871,82 +871,6 @@ impl StateServiceSubscriber {
         }
     }
 
-    /// Fetches transaction objects for addresses within a given block range.
-    /// This method takes addresses and a block range and returns full transaction objects.
-    /// Uses parallel async calls for efficient transaction fetching.
-    ///
-    /// If `fail_fast` is true, fails immediately when any transaction fetch fails.
-    /// Otherwise, it continues and returns partial results, filtering out failed fetches.
-    async fn get_taddress_txs(
-        &self,
-        addresses: Vec<String>,
-        start: u32,
-        end: u32,
-        fail_fast: bool,
-    ) -> Result<Vec<Box<TransactionObject>>, StateServiceError> {
-        // Convert to GetAddressTxIdsRequest for compatibility with existing helper
-        let tx_ids_request = GetAddressTxIdsRequest::new(addresses, Some(start), Some(end));
-
-        // Get transaction IDs using existing method
-        let txids = self.get_address_tx_ids(tx_ids_request).await?;
-
-        // Fetch all transactions in parallel
-        let results = futures::future::join_all(
-            txids
-                .into_iter()
-                .map(|txid| async { self.clone().get_raw_transaction(txid, Some(1)).await }),
-        )
-        .await;
-
-        let transactions = results
-            .into_iter()
-            .filter_map(|result| {
-                match (fail_fast, result) {
-                    // Fail-fast mode: propagate errors
-                    (true, Err(e)) => Some(Err(e)),
-                    (true, Ok(tx)) => Some(Ok(tx)),
-                    // Filter mode: skip errors
-                    (false, Err(_)) => None,
-                    (false, Ok(tx)) => Some(Ok(tx)),
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(|tx| match tx {
-                GetRawTransaction::Object(transaction_obj) => Some(transaction_obj),
-                GetRawTransaction::Raw(_) => None,
-            })
-            .collect();
-
-        Ok(transactions)
-    }
-
-    /// Creates a BlockInfo from a block height using direct state service calls.
-    async fn block_info_from_height(&self, height: Height) -> Result<BlockInfo, StateServiceError> {
-        use zebra_state::{HashOrHeight, ReadRequest};
-
-        let hash_or_height = HashOrHeight::Height(height);
-
-        let response = self
-            .read_state_service
-            .clone()
-            .ready()
-            .await?
-            .call(ReadRequest::BlockHeader(hash_or_height))
-            .await?;
-
-        match response {
-            ReadResponse::BlockHeader { hash, .. } => Ok(BlockInfo::new(
-                hex::encode(hash.bytes_in_display_order()),
-                height.0,
-            )),
-            _ => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                LegacyCode::InvalidParameter,
-                format!("Block not found at height {}", height.0),
-            ))),
-        }
-    }
-
     /// Returns the network type running.
     #[allow(deprecated)]
     pub fn network(&self) -> zaino_common::Network {
@@ -1069,47 +993,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         params: GetAddressDeltasParams,
     ) -> Result<GetAddressDeltasResponse, Self::Error> {
-        let (addresses, start_raw, end_raw, chain_info) = match &params {
-            GetAddressDeltasParams::Filtered {
-                addresses,
-                start,
-                end,
-                chain_info,
-            } => (addresses.clone(), *start, *end, *chain_info),
-            GetAddressDeltasParams::Address(a) => (vec![a.clone()], 0, 0, false),
-        };
-
-        let tip = self.chain_height().await?;
-        let mut start = Height(start_raw);
-        let mut end = Height(end_raw);
-        if end == Height(0) || end > tip {
-            end = tip;
-        }
-        if start > tip {
-            start = tip;
-        }
-
-        let transactions = self
-            .get_taddress_txs(addresses.clone(), start.0, end.0, true)
-            .await?;
-
-        // Ordered deltas
-        let deltas =
-            GetAddressDeltasResponse::process_transactions_to_deltas(&transactions, &addresses);
-
-        if chain_info && start > Height(0) && end > Height(0) {
-            let start_info = self.block_info_from_height(start).await?;
-            let end_info = self.block_info_from_height(end).await?;
-
-            Ok(GetAddressDeltasResponse::WithChainInfo {
-                deltas,
-                start: start_info,
-                end: end_info,
-            })
-        } else {
-            // Otherwise return the array form
-            Ok(GetAddressDeltasResponse::Simple(deltas))
-        }
+        Ok(self.indexer.get_address_deltas(params).await?)
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
@@ -1171,9 +1055,12 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let now = Utc::now();
-        let zebra_estimated_height =
-            NetworkChainTipHeightEstimator::new(header.time, height, &self.config.common.network.into())
-                .estimate_height_at(now);
+        let zebra_estimated_height = NetworkChainTipHeightEstimator::new(
+            header.time,
+            height,
+            &self.config.common.network.into(),
+        )
+        .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
         } else {
@@ -1245,7 +1132,11 @@ impl ZcashIndexer for StateServiceSubscriber {
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockchainInfoResponse::new(
-            self.config.common.network.to_zebra_network().bip70_network_name(),
+            self.config
+                .common
+                .network
+                .to_zebra_network()
+                .bip70_network_name(),
             height,
             hash,
             estimated_height,
@@ -1293,23 +1184,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, Self::Error> {
-        let mut state = self.read_state_service.clone();
-
-        let strings_set = address_strings
-            .valid_addresses()
-            .map_err(|e| RpcError::new_from_errorobject(e, "invalid taddrs provided"))?;
-        let response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::AddressBalance(strings_set)))
-            .await?;
-        let (balance, received) = match response {
-            ReadResponse::AddressBalance { balance, received } => (balance, received),
-            unexpected => {
-                unreachable!("Unexpected response from state service: {unexpected:?}")
-            }
-        };
-
-        Ok(AddressBalance::new(balance.into(), received))
+        Ok(self.indexer.get_address_balance(address_strings).await?)
     }
 
     async fn send_raw_transaction(
@@ -1358,6 +1233,7 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         match zblock {
             GetBlock::Object(boxed_block) => {
+                #[allow(clippy::result_large_err)]
                 let deltas = boxed_block
                     .tx()
                     .iter()
@@ -1761,178 +1637,90 @@ impl ZcashIndexer for StateServiceSubscriber {
         txid_hex: String,
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, Self::Error> {
-        let mut state = self.read_state_service.clone();
-
-        let txid = zebra_chain::transaction::Hash::from_hex(txid_hex).map_err(|e| {
-            RpcError::new_from_legacycode(LegacyCode::InvalidAddressOrKey, e.to_string())
+        #[allow(deprecated)]
+        let txid = TransactionHash::from_hex(&txid_hex).map_err(|error| {
+            StateServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+                error.to_string(),
+            ))
         })?;
 
+        #[allow(deprecated)]
         let not_found_error = || {
             StateServiceError::RpcError(RpcError::new_from_legacycode(
-                LegacyCode::InvalidAddressOrKey,
+                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
                 "No such mempool or main chain transaction",
             ))
         };
 
-        // First check if transaction is in mempool as this is quick.
-        match self
-            .mempool
-            .contains_txid(&MempoolKey {
-                txid: txid.to_string(),
-            })
-            .await
-        {
-            // Fetch trasaction from mempool.
-            true => {
-                match self
-                    .mempool
-                    .get_transaction(&MempoolKey {
-                        txid: txid.to_string(),
-                    })
-                    .await
-                {
-                    Some(tx) => {
-                        let serialized = tx.as_ref().serialized_tx.as_ref().clone();
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
-                        match verbose {
-                            // Return an object view, matching the chain path semantics.
-                            Some(_verbosity) => {
-                                let parsed_tx: zebra_chain::transaction::Transaction =
-                            zebra_chain::serialization::ZcashDeserialize::zcash_deserialize(
-                                serialized.as_ref(),
-                            )
-                            .map_err(|_| not_found_error())?;
+        let Some((serialized_transaction, _consensus_branch_id)) =
+            self.indexer.get_raw_transaction(&snapshot, &txid).await?
+        else {
+            return Err(not_found_error());
+        };
 
-                                Ok(GetRawTransaction::Object(Box::new(
-                                    TransactionObject::from_transaction(
-                                        parsed_tx.into(),
-                                        None,                        // best_chain_height
-                                        Some(0),                     // confirmations
-                                        &self.config.common.network.into(), // network
-                                        None,                        // block_time
-                                        None,                        // block_hash
-                                        Some(false),                 // in_best_chain
-                                        txid,                        // txid
-                                    ),
-                                )))
-                            }
-                            // Return raw bytes when not verbose.
-                            None => Ok(GetRawTransaction::Raw(serialized)),
-                        }
-                    }
-                    None => Err(not_found_error()),
-                }
-            }
-            // Fetch transaction from state.
-            false => {
-                //
-                match state
-                    .ready()
-                    .and_then(|service| service.call(zebra_state::ReadRequest::Transaction(txid)))
-                    .await
-                    .map_err(|_| not_found_error())?
-                {
-                    zebra_state::ReadResponse::Transaction(Some(tx)) => Ok(match verbose {
-                        Some(_verbosity) => {
-                            // This should be None for sidechain transactions,
-                            // which currently aren't returned by ReadResponse::Transaction
-                            let best_chain_height = Some(tx.height);
-                            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-                            let compact_block = self
-                                .indexer
-                                .get_compact_block(
-                                    &snapshot,
-                                    chain_types::Height(tx.height.0),
-                                    PoolTypeFilter::includes_all(),
-                                )
-                                .await?
-                                .ok_or_else(|| ChainIndexError::database_hole(tx.height.0, None))?;
-                            let tx_object = TransactionObject::from_transaction(
-                                tx.tx.clone(),
-                                best_chain_height,
-                                Some(tx.confirmations),
-                                &self.config.common.network.into(),
-                                Some(tx.block_time),
-                                Some(zebra_chain::block::Hash::from_bytes(compact_block.hash)),
-                                Some(best_chain_height.is_some()),
-                                tx.tx.hash(),
-                            );
-                            GetRawTransaction::Object(Box::new(tx_object))
-                        }
-                        None => GetRawTransaction::Raw(tx.tx.into()),
-                    }),
-                    zebra_state::ReadResponse::Transaction(None) => Err(not_found_error()),
-
-                    _ => unreachable!("unmatched response to a `Transaction` read request"),
-                }
-            }
+        if verbose.is_none() {
+            return Ok(GetRawTransaction::Raw(
+                zebra_chain::transaction::SerializedTransaction::from(serialized_transaction),
+            ));
         }
+
+        let transaction = zebra_chain::transaction::Transaction::zcash_deserialize(
+            serialized_transaction.as_slice(),
+        )
+        .map_err(|_| not_found_error())?;
+
+        let (best_chain_location, _non_best_chain_locations) = self
+            .indexer
+            .get_transaction_status(&snapshot, &txid)
+            .await?;
+
+        let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
+            Some(BestChainLocation::Block(block_hash, height)) => {
+                let confirmations = snapshot
+                    .max_serviceable_height()
+                    .0
+                    .saturating_sub(height.0)
+                    .saturating_add(1);
+
+                (
+                    Some(zebra_chain::block::Height::from(height)),
+                    Some(confirmations),
+                    Some(zebra_chain::block::Hash::from(block_hash)),
+                    Some(true),
+                )
+            }
+            Some(BestChainLocation::Mempool(_height)) => (None, Some(0), None, Some(false)),
+            None => (None, None, None, Some(false)),
+        };
+
+        Ok(GetRawTransaction::Object(Box::new(
+            TransactionObject::from_transaction(
+                transaction.into(),
+                height,
+                confirmations,
+                #[allow(deprecated)]
+                &self.config.common.network.to_zebra_network(),
+                None,
+                block_hash,
+                in_best_chain,
+                zebra_chain::transaction::Hash::from(txid),
+            ),
+        )))
     }
 
     async fn get_address_tx_ids(
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<String>, Self::Error> {
-        let mut state = self.read_state_service.clone();
-
-        let (addresses, start, end) = request.into_parts();
-        let response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::Tip))
-            .await?;
-        let (chain_height, _chain_hash) = expected_read_response!(response, Tip).ok_or(
-            RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
-        )?;
-
-        let mut error_string = None;
-        if start > end {
-            error_string = Some(format!(
-                "start {start:?} must be less than or equal to end {end:?}"
-            ));
-        }
-        if Height(start) > chain_height || Height(end) > chain_height {
-            error_string = Some(format!(
-                "start {start:?} and end {end:?} must both be less than or \
-            equal to the chain tip {chain_height:?}"
-            ));
-        }
-        if let Some(e) = error_string {
-            return Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                LegacyCode::InvalidParameter,
-                e,
-            )));
-        }
-
-        let request = ReadRequest::TransactionIdsByAddresses {
-            addresses: GetAddressBalanceRequest::new(addresses)
-                .valid_addresses()
-                .map_err(|e| RpcError::new_from_errorobject(e, "invalid adddress"))?,
-
-            height_range: Height(start)..=Height(end),
-        };
-        let response = state
-            .ready()
-            .and_then(|service| service.call(request))
-            .await?;
-        let hashes = expected_read_response!(response, AddressesTransactionIds);
-
-        let mut last_tx_location = TransactionLocation::from_usize(Height(0), 0);
-
-        Ok(hashes
-            .iter()
-            .map(|(tx_loc, tx_id)| {
-                // Check that the returned transactions are in chain order.
-                assert!(
-                    *tx_loc > last_tx_location,
-                    "Transactions were not in chain order:\n\
-                                 {tx_loc:?} {tx_id:?} was after:\n\
-                                 {last_tx_location:?}",
-                );
-
-                last_tx_location = *tx_loc;
-
-                tx_id.to_string()
-            })
+        Ok(self
+            .indexer
+            .get_address_txids(request)
+            .await?
+            .into_iter()
+            .map(|transaction_hash| transaction_hash.to_rpc_hex())
             .collect())
     }
 
@@ -1940,36 +1728,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
-        let mut state = self.read_state_service.clone();
-
-        let valid_addresses = address_strings
-            .valid_addresses()
-            .map_err(|e| RpcError::new_from_errorobject(e, "invalid address"))?;
-        let request = ReadRequest::UtxosByAddresses(valid_addresses);
-        let response = state
-            .ready()
-            .and_then(|service| service.call(request))
-            .await?;
-        let utxos = expected_read_response!(response, AddressUtxos);
-        let mut last_output_location = OutputLocation::from_usize(Height(0), 0, 0);
-
-        Ok(utxos
-            .utxos()
-            .map(
-                |(utxo_address, utxo_hash, utxo_output_location, utxo_transparent_output)| {
-                    assert!(utxo_output_location > &last_output_location);
-                    last_output_location = *utxo_output_location;
-                    GetAddressUtxos::new(
-                        utxo_address,
-                        *utxo_hash,
-                        utxo_output_location.output_index(),
-                        utxo_transparent_output.lock_script.clone(),
-                        u64::from(utxo_transparent_output.value()),
-                        utxo_output_location.height(),
-                    )
-                },
-            )
-            .collect())
+        Ok(self.indexer.get_address_utxos(address_strings).await?)
     }
 
     /// Returns the estimated network solutions per second based on the last n blocks.
@@ -2007,6 +1766,64 @@ impl ZcashIndexer for StateServiceSubscriber {
             RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
         )?;
         Ok(chain_height)
+    }
+
+    /// Helper function, to get the list of taddresses that have sends or reciepts
+    /// within a given block range
+    async fn get_taddress_txids_helper(
+        &self,
+        request: TransparentAddressBlockFilter,
+    ) -> Result<Vec<String>, Self::Error> {
+        let chain_height = self.chain_height().await?;
+        let (start, end) = match request.range {
+            Some(range) => {
+                let start = if let Some(start) = range.start {
+                    match u32::try_from(start.height) {
+                        Ok(height) => Some(height.min(chain_height.0)),
+                        Err(_) => {
+                            return Err(Self::Error::from(tonic::Status::invalid_argument(
+                                "Error: Start height out of range. Failed to convert to u32.",
+                            )))
+                        }
+                    }
+                } else {
+                    None
+                };
+                let end = if let Some(end) = range.end {
+                    match u32::try_from(end.height) {
+                        Ok(height) => Some(height.min(chain_height.0)),
+                        Err(_) => {
+                            return Err(Self::Error::from(tonic::Status::invalid_argument(
+                                "Error: End height out of range. Failed to convert to u32.",
+                            )))
+                        }
+                    }
+                } else {
+                    None
+                };
+                match (start, end) {
+                    (Some(start), Some(end)) => {
+                        if start > end {
+                            (Some(end), Some(start))
+                        } else {
+                            (Some(start), Some(end))
+                        }
+                    }
+                    _ => (start, end),
+                }
+            }
+            None => {
+                return Err(Self::Error::from(tonic::Status::invalid_argument(
+                    "Error: No block range given.",
+                )))
+            }
+        };
+        self.get_address_tx_ids(GetAddressTxIdsRequest::new(
+            vec![request.address],
+            start,
+            end,
+        ))
+        .await
     }
 }
 
@@ -2159,6 +1976,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let hex = hash.encode_hex();
 
         // explicit over method call syntax to make it clear where this method is coming from
+        #[allow(clippy::result_large_err)]
         <Self as ZcashIndexer>::get_raw_transaction(self, hex, Some(1))
             .await
             .and_then(|grt| match grt {
@@ -2188,17 +2006,19 @@ impl LightWalletIndexer for StateServiceSubscriber {
         &self,
         request: TransparentAddressBlockFilter,
     ) -> Result<RawTransactionStream, Self::Error> {
-        let txids = self.get_taddress_txids_helper(request).await?;
         let chain_height = self.chain_height().await?;
-        let (transmitter, receiver) = mpsc::channel(self.config.common.service.channel_size as usize);
+        let txids = self.get_taddress_txids_helper(request).await?;
+        let fetch_service_clone = self.clone();
         let service_timeout = self.config.common.service.timeout;
-        let service_clone = self.clone();
+        let (transmitter, receiver) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
-                std::time::Duration::from_secs((service_timeout * 4) as u64),
+                time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     for txid in txids {
-                        let transaction = service_clone.get_raw_transaction(txid, Some(1)).await;
+                        let transaction =
+                            fetch_service_clone.get_raw_transaction(txid, Some(1)).await;
                         if handle_raw_transaction::<Self>(
                             chain_height.0 as u64,
                             transaction,
@@ -2217,8 +2037,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 Ok(_) => {}
                 Err(_) => {
                     transmitter
-                        .send(Err(tonic::Status::deadline_exceeded(
-                            "Error: get_taddredd_txids_stream gRPC request timed out",
+                        .send(Err(tonic::Status::internal(
+                            "Error: get_taddress_txids gRPC request timed out",
                         )))
                         .await
                         .ok();
@@ -2247,15 +2067,16 @@ impl LightWalletIndexer for StateServiceSubscriber {
         let checked_balance: i64 = match i64::try_from(balance.balance()) {
             Ok(balance) => balance,
             Err(_) => {
-                return Err(Self::Error::TonicStatusError(tonic::Status::unknown(
+                return Err(StateServiceError::TonicStatusError(tonic::Status::unknown(
                     "Error: Error converting balance from u64 to i64.",
                 )));
             }
         };
-        Ok(zaino_proto::proto::service::Balance {
+        Ok(Balance {
             value_zat: checked_balance,
         })
     }
+
     /// Returns the total balance for a list of taddrs
     ///
     /// TODO: This is taken from fetch.rs, we could / probably should reconfigure into a trait implementation.
@@ -2295,18 +2116,22 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 )),
             }
         });
-        // NOTE: This timeout is so slow due to the blockcache not being implemented. This should be reduced to 30s once functionality is in place.
-        // TODO: Make [rpc_timout] a configurable system variable with [default = 30s] and [mempool_rpc_timout = 4*rpc_timeout]
+        // NOTE: This timeout is so slow due to the blockcache not
+        // being implemented. This should be reduced to 30s once functionality is in place.
+        // TODO: Make [rpc_timout] a configurable system variable
+        // with [default = 30s] and [mempool_rpc_timout = 4*rpc_timeout]
         let addr_recv_timeout = timeout(
             time::Duration::from_secs((service_timeout * 4) as u64),
             async {
                 while let Some(address_result) = request.next().await {
-                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                    // TODO: Hide server error from clients before release.
+                    // Currently useful for dev purposes.
                     let address = address_result.map_err(|e| {
                         tonic::Status::unknown(format!("Failed to read from stream: {e}"))
                     })?;
                     if channel_tx.send(address.address).await.is_err() {
-                        // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                        // TODO: Hide server error from clients before release.
+                        // Currently useful for dev purposes.
                         return Err(tonic::Status::unknown(
                             "Error: Failed to send address to balance task.",
                         ));
@@ -2337,7 +2162,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 let checked_balance: i64 = match i64::try_from(total_balance) {
                     Ok(balance) => balance,
                     Err(_) => {
-                        // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                        // TODO: Hide server error from clients before release.
+                        // Currently useful for dev purposes.
                         return Err(StateServiceError::TonicStatusError(tonic::Status::unknown(
                             "Error: Error converting balance from u64 to i64.",
                         )));
@@ -2348,7 +2174,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 })
             }
             Ok(Err(e)) => Err(StateServiceError::TonicStatusError(e)),
-            // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+            // TODO: Hide server error from clients before release.
+            // Currently useful for dev purposes.
             Err(e) => Err(StateServiceError::TonicStatusError(tonic::Status::unknown(
                 format!("Fetcher Task failed: {e}"),
             ))),
@@ -2407,7 +2234,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
         let mempool = self.mempool.clone();
         let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -2497,7 +2325,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let mut mempool = self.mempool.clone();
         let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
             // TODO: This probably shouldn't be an error.
@@ -2591,7 +2420,12 @@ impl LightWalletIndexer for StateServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.common.network.to_zebra_network().bip70_network_name(),
+            network: self
+                .config
+                .common
+                .network
+                .to_zebra_network()
+                .bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,
@@ -2627,12 +2461,46 @@ impl LightWalletIndexer for StateServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
-        self.get_address_utxos_stream(request)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await
-            .map(|address_utxos| GetAddressUtxosReplyList { address_utxos })
-            .map_err(Self::Error::from)
+        let taddrs = GetAddressBalanceRequest::new(request.addresses);
+        let utxos = self.z_get_address_utxos(taddrs).await?;
+        let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
+        let mut entries: u32 = 0;
+        for utxo in utxos {
+            let (address, tx_hash, output_index, script, satoshis, height) = utxo.into_parts();
+            if (height.0 as u64) < request.start_height {
+                continue;
+            }
+            entries += 1;
+            if request.max_entries > 0 && entries > request.max_entries {
+                break;
+            }
+            let checked_index = match i32::try_from(output_index.index()) {
+                Ok(index) => index,
+                Err(_) => {
+                    return Err(StateServiceError::TonicStatusError(tonic::Status::unknown(
+                        "Error: Index out of range. Failed to convert to i32.",
+                    )));
+                }
+            };
+            let checked_satoshis = match i64::try_from(satoshis) {
+                Ok(satoshis) => satoshis,
+                Err(_) => {
+                    return Err(StateServiceError::TonicStatusError(tonic::Status::unknown(
+                        "Error: Satoshis out of range. Failed to convert to i64.",
+                    )));
+                }
+            };
+            let utxo_reply = GetAddressUtxosReply {
+                address: address.to_string(),
+                txid: tx_hash.0.to_vec(),
+                index: checked_index,
+                script: script.as_raw_bytes().to_vec(),
+                value_zat: checked_satoshis,
+                height: height.0 as u64,
+            };
+            address_utxos.push(utxo_reply)
+        }
+        Ok(GetAddressUtxosReplyList { address_utxos })
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -2645,44 +2513,72 @@ impl LightWalletIndexer for StateServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<UtxoReplyStream, Self::Error> {
-        let mut state = self.read_state_service.clone();
-        let mut address_set = HashSet::new();
-        for address in request.addresses {
-            address_set.insert(zebra_chain::transparent::Address::from_str(
-                address.as_ref(),
-            )?);
-        }
-
-        let address_utxos_response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::UtxosByAddresses(address_set)))
-            .await?;
-        let utxos = expected_read_response!(address_utxos_response, AddressUtxos);
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.common.service.channel_size as usize);
+        let taddrs = GetAddressBalanceRequest::new(request.addresses);
+        let utxos = self.z_get_address_utxos(taddrs).await?;
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
-            for utxo in utxos
-                .utxos()
-                .filter_map(|(address, hash, location, output)| {
-                    if location.height().0 as u64 >= request.start_height {
-                        Some(GetAddressUtxosReply {
+            let timeout = timeout(
+                time::Duration::from_secs((service_timeout * 4) as u64),
+                async {
+                    let mut entries: u32 = 0;
+                    for utxo in utxos {
+                        let (address, tx_hash, output_index, script, satoshis, height) =
+                            utxo.into_parts();
+                        if (height.0 as u64) < request.start_height {
+                            continue;
+                        }
+                        entries += 1;
+                        if request.max_entries > 0 && entries > request.max_entries {
+                            break;
+                        }
+                        let checked_index = match i32::try_from(output_index.index()) {
+                            Ok(index) => index,
+                            Err(_) => {
+                                let _ = channel_tx
+                                    .send(Err(tonic::Status::unknown(
+                                        "Error: Index out of range. Failed to convert to i32.",
+                                    )))
+                                    .await;
+                                return;
+                            }
+                        };
+                        let checked_satoshis = match i64::try_from(satoshis) {
+                            Ok(satoshis) => satoshis,
+                            Err(_) => {
+                                let _ = channel_tx
+                                    .send(Err(tonic::Status::unknown(
+                                        "Error: Satoshis out of range. Failed to convert to i64.",
+                                    )))
+                                    .await;
+                                return;
+                            }
+                        };
+                        let utxo_reply = GetAddressUtxosReply {
                             address: address.to_string(),
-                            txid: hash.0.to_vec(),
-                            index: location.output_index().index() as i32,
-                            script: output.lock_script.as_raw_bytes().to_vec(),
-                            value_zat: output.value.zatoshis(),
-                            height: location.height().0 as u64,
-                        })
-                    } else {
-                        None
+                            txid: tx_hash.0.to_vec(),
+                            index: checked_index,
+                            script: script.as_raw_bytes().to_vec(),
+                            value_zat: checked_satoshis,
+                            height: height.0 as u64,
+                        };
+                        if channel_tx.send(Ok(utxo_reply)).await.is_err() {
+                            return;
+                        }
                     }
-                })
-                .take(match usize::try_from(request.max_entries) {
-                    Ok(0) | Err(_) => usize::MAX,
-                    Ok(non_zero) => non_zero,
-                })
-            {
-                if channel_tx.send(Ok(utxo)).await.is_err() {
-                    return;
+                },
+            )
+            .await;
+            match timeout {
+                Ok(_) => {}
+                Err(_) => {
+                    channel_tx
+                        .send(Err(tonic::Status::deadline_exceeded(
+                            "Error: get_mempool_stream gRPC request timed out",
+                        )))
+                        .await
+                        .ok();
                 }
             }
         });

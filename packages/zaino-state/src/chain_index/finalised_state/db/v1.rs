@@ -54,6 +54,8 @@ use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 use zebra_chain::parameters::NetworkKind;
 use zebra_state::HashOrHeight;
 
+use super::LmdbLifecycle;
+
 use async_trait::async_trait;
 use corez::io::{self, Read};
 use dashmap::DashSet;
@@ -70,10 +72,8 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{
-    sync::Notify,
-    time::{interval, MissedTickBehavior},
-};
+use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -147,46 +147,29 @@ pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
 #[async_trait]
 impl DbCore for DbV1 {
     fn status(&self) -> StatusType {
-        self.status()
+        LmdbLifecycle::status(self)
     }
 
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Closing);
-        // `notify_one` stores a permit if no waiter is currently registered,
-        // so the task consumes the signal on its next `notified().await` even
-        // if shutdown fires before the task has entered the select.
-        // `notify_waiters` would be lost in that window (no stored permit).
-        self.shutdown_notify.notify_one();
+        LmdbLifecycle::shutdown(self).await
+    }
+}
 
-        let taken = self
-            .db_handler
-            .lock()
-            .expect("db_handler mutex poisoned")
-            .take();
-        if let Some(mut handle) = taken {
-            let timeout = tokio::time::sleep(Duration::from_secs(5));
-            tokio::pin!(timeout);
+impl LmdbLifecycle for DbV1 {
+    fn env(&self) -> &Arc<Environment> {
+        &self.env
+    }
 
-            tokio::select! {
-                res = &mut handle => {
-                    match res {
-                        Ok(_) => {}
-                        Err(e) if e.is_cancelled() => {}
-                        Err(e) => warn!("background task ended with error: {e:?}"),
-                    }
-                }
-                _ = &mut timeout => {
-                    warn!("background task didn’t exit in time – aborting");
-                    handle.abort();
-                }
-            }
-        }
+    fn db_handler_slot(&self) -> &std::sync::Mutex<Option<tokio::task::JoinHandle<()>>> {
+        &self.db_handler
+    }
 
-        let _ = self.clean_trailing().await;
-        if let Err(e) = self.env.sync(true) {
-            warn!("LMDB fsync before close failed: {e}");
-        }
-        Ok(())
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
+    }
+
+    fn status_atomic(&self) -> &NamedAtomicStatus {
+        &self.status
     }
 }
 
@@ -276,10 +259,11 @@ pub(crate) struct DbV1 {
     /// `Option`; no `.await` happens while it's held.
     db_handler: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
-    /// Wakes the background task out of `zaino_db_handler_sleep` when shutdown
-    /// is requested, so it observes `StatusType::Closing` without waiting for
-    /// the next idle-sleep or maintenance-tick boundary.
-    shutdown_notify: Arc<Notify>,
+    /// Cancels the background task so it observes shutdown without waiting for
+    /// the next idle-sleep or maintenance-tick boundary. Cloning the token
+    /// shares cancellation state with every clone, so all background tasks
+    /// (current and future) wake on a single `cancel()` call.
+    cancel_token: CancellationToken,
 
     /// ZainoDB status.
     status: NamedAtomicStatus,
@@ -341,20 +325,20 @@ impl DbV1 {
 
         // Open individual LMDB DBs.
         let headers =
-            Self::open_or_create_db(&env, "headers_1_0_0", DatabaseFlags::empty()).await?;
-        let txids = Self::open_or_create_db(&env, "txids_1_0_0", DatabaseFlags::empty()).await?;
+            super::open_or_create_db(&env, "headers_1_0_0", DatabaseFlags::empty()).await?;
+        let txids = super::open_or_create_db(&env, "txids_1_0_0", DatabaseFlags::empty()).await?;
         let transparent =
-            Self::open_or_create_db(&env, "transparent_1_0_0", DatabaseFlags::empty()).await?;
+            super::open_or_create_db(&env, "transparent_1_0_0", DatabaseFlags::empty()).await?;
         let sapling =
-            Self::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
+            super::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
         let orchard =
-            Self::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
+            super::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
         let commitment_tree_data =
-            Self::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
+            super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
                 .await?;
-        let hashes = Self::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
+        let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
 
-        let metadata = Self::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
+        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
 
         // Create the DbV1 instance. We declare the variable in the outer scope and
         // initialise it in the two cfg arms so `zaino_db` is available afterwards.
@@ -363,9 +347,9 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         {
             let spent =
-                Self::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
+                super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
 
-            let address_history = Self::open_or_create_db(
+            let address_history = super::open_or_create_db(
                 &env,
                 "address_history_1_0_0",
                 DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
@@ -387,7 +371,7 @@ impl DbV1 {
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
-                shutdown_notify: Arc::new(Notify::new()),
+                cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
                 config: config.clone(),
             };
@@ -408,7 +392,7 @@ impl DbV1 {
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
-                shutdown_notify: Arc::new(Notify::new()),
+                cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
                 config: config.clone(),
             };
@@ -421,28 +405,6 @@ impl DbV1 {
         zaino_db.spawn_handler().await?;
 
         Ok(zaino_db)
-    }
-
-    /// Returns the status of ZainoDB.
-    pub(crate) fn status(&self) -> StatusType {
-        self.status.load()
-    }
-
-    /// Waits until the DB reaches [`StatusType::Ready`].
-    ///
-    /// NOTE: This does not currently backpressure on LMDB reader availability.
-    ///
-    /// TODO: check db for free readers and wait if busy.
-    pub(crate) async fn wait_until_ready(&self) {
-        let mut ticker = interval(Duration::from_millis(100));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        loop {
-            ticker.tick().await;
-            if self.status.load() == StatusType::Ready {
-                break;
-            }
-        }
     }
 
     // *** Internal Control Methods ***
@@ -473,7 +435,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -573,19 +535,6 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Helper method to wait for the next loop iteration or perform maintenance.
-    async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {},
-            _ = maintenance.tick() => {
-                if let Err(e) = self.clean_trailing().await {
-                    warn!("clean_trailing failed: {}", e);
-                }
-            }
-            _ = self.shutdown_notify.notified() => {},
-        }
-    }
-
     /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
     #[cfg(feature = "transparent_address_history_experimental")]
     async fn initial_spent_scan(&self) -> Result<(), FinalisedStateError> {
@@ -662,7 +611,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -684,28 +633,6 @@ impl DbV1 {
         })
         .await
         .map_err(|e| FinalisedStateError::Custom(format!("spawn_blocking failed: {e}")))?
-    }
-
-    /// Clears stale reader slots by opening and closing a read transaction.
-    async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
-        let txn = self.env.begin_ro_txn()?;
-        drop(txn);
-        Ok(())
-    }
-
-    /// Opens an lmdb database if present else creates a new one.
-    async fn open_or_create_db(
-        env: &Environment,
-        name: &str,
-        flags: DatabaseFlags,
-    ) -> Result<Database, FinalisedStateError> {
-        match env.open_db(Some(name)) {
-            Ok(db) => Ok(db),
-            Err(lmdb::Error::NotFound) => env
-                .create_db(Some(name), flags)
-                .map_err(FinalisedStateError::LmdbError),
-            Err(e) => Err(FinalisedStateError::LmdbError(e)),
-        }
     }
 }
 

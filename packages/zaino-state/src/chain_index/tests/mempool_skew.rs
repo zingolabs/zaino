@@ -10,7 +10,9 @@ use tokio::time::{timeout, Duration};
 
 use super::{load_test_vectors_and_sync_chain_index, mockchain_tests::wait_for_indexer_tip};
 use crate::{
-    chain_index::{source::test::MockchainSource, ChainIndex, NodeBackedChainIndexSubscriber},
+    chain_index::{
+        source::mockchain_source::MockchainSource, ChainIndex, NodeBackedChainIndexSubscriber,
+    },
     BlockHash,
 };
 

@@ -55,6 +55,7 @@ zebra-rpc = "6.0.2"
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
 tokio-stream = "0.1"
+tokio-util = "0.7"
 
 # CLI
 clap = "4.0"

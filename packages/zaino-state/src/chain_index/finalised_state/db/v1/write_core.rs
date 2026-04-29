@@ -286,7 +286,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: std::sync::Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -849,7 +849,7 @@ impl DbV1 {
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: std::sync::Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };

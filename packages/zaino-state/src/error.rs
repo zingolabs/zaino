@@ -13,6 +13,7 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 /// Errors related to the `StateService`.
 // #[deprecated]
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::result_large_err)]
 pub enum StateServiceError {
     /// Critical Errors, Restart Zaino.
     #[error("Critical error: {0}")]
