@@ -51,7 +51,6 @@ zingolib_testutils.workspace = true
 # Miscellaneous
 http = { workspace = true }
 once_cell = { workspace = true }
-portpicker = { workspace = true }
 tokio = { workspace = true }
 tonic.workspace = true
 tempfile = { workspace = true }
