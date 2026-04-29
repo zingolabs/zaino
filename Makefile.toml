@@ -276,8 +276,11 @@ info "-- IMAGE             = ${IMAGE_NAME}"
 info "-- TAG               = $TAG"
 # info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
-# Set container name for cleanup
-CONTAINER_NAME="zaino-testing"
+# Set container name for cleanup. Suffix with $$ (script PID) so concurrent
+# `makers container-test` invocations on the same host don't collide on the
+# `zaino-testing` name. The base-script cleanup trap reads CONTAINER_NAME
+# from script scope and stops the right container on EXIT/INT/TERM.
+CONTAINER_NAME="zaino-testing-$$"
 
 # Run podman in foreground with proper signal handling
 podman run --rm \
