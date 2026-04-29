@@ -111,18 +111,10 @@ impl ZcashIndexer for StubSubscriber {
     async fn send_raw_transaction(&self, _: String) -> Result<SentTransactionHash, Self::Error> {
         stub!()
     }
-    async fn get_block_header(
-        &self,
-        _: String,
-        _: bool,
-    ) -> Result<GetBlockHeader, Self::Error> {
+    async fn get_block_header(&self, _: String, _: bool) -> Result<GetBlockHeader, Self::Error> {
         stub!()
     }
-    async fn z_get_block(
-        &self,
-        _: String,
-        _: Option<u8>,
-    ) -> Result<GetBlock, Self::Error> {
+    async fn z_get_block(&self, _: String, _: Option<u8>) -> Result<GetBlock, Self::Error> {
         stub!()
     }
     async fn get_block_deltas(&self, _: String) -> Result<BlockDeltas, Self::Error> {
@@ -131,17 +123,11 @@ impl ZcashIndexer for StubSubscriber {
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
         stub!()
     }
-    async fn validate_address(
-        &self,
-        _: String,
-    ) -> Result<ValidateAddressResponse, Self::Error> {
+    async fn validate_address(&self, _: String) -> Result<ValidateAddressResponse, Self::Error> {
         stub!()
     }
     #[allow(deprecated)]
-    async fn z_validate_address(
-        &self,
-        _: String,
-    ) -> Result<ZValidateAddressResponse, Self::Error> {
+    async fn z_validate_address(&self, _: String) -> Result<ZValidateAddressResponse, Self::Error> {
         stub!()
     }
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error> {
@@ -206,10 +192,7 @@ impl LightWalletIndexer for StubSubscriber {
     async fn get_block_nullifiers(&self, _: BlockId) -> Result<CompactBlock, Self::Error> {
         stub!()
     }
-    async fn get_block_range(
-        &self,
-        _: BlockRange,
-    ) -> Result<CompactBlockStream, Self::Error> {
+    async fn get_block_range(&self, _: BlockRange) -> Result<CompactBlockStream, Self::Error> {
         stub!()
     }
     async fn get_block_range_nullifiers(
@@ -239,10 +222,7 @@ impl LightWalletIndexer for StubSubscriber {
     async fn get_taddress_balance(&self, _: AddressList) -> Result<Balance, Self::Error> {
         stub!()
     }
-    async fn get_taddress_balance_stream(
-        &self,
-        _: AddressStream,
-    ) -> Result<Balance, Self::Error> {
+    async fn get_taddress_balance_stream(&self, _: AddressStream) -> Result<Balance, Self::Error> {
         stub!()
     }
     async fn get_mempool_tx(

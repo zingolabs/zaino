@@ -97,11 +97,7 @@ impl TonicServer {
     /// keep the indexer's critical-error check from firing. See
     /// zingolabs/zaino#1081.
     pub fn status(&self) -> StatusType {
-        if self
-            .server_handle
-            .as_ref()
-            .is_some_and(|h| h.is_finished())
-        {
+        if self.server_handle.as_ref().is_some_and(|h| h.is_finished()) {
             return StatusType::Offline;
         }
         self.status.load()
