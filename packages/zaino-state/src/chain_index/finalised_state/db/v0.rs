@@ -64,16 +64,16 @@ use zebra_chain::{
     parameters::NetworkKind,
 };
 
+use super::LmdbLifecycle;
+
 use async_trait::async_trait;
 use lmdb::{Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::{fs, sync::Arc, time::Duration};
-use tokio::{
-    sync::Notify,
-    time::{interval, MissedTickBehavior},
-};
-use tracing::{info, warn};
+use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 // ───────────────────────── ZainoDb v0 Capabilities ─────────────────────────
 
@@ -176,51 +176,30 @@ impl DbWrite for DbV0 {
 impl DbCore for DbV0 {
     /// Returns the current runtime status published by this backend.
     fn status(&self) -> StatusType {
-        self.status.load()
+        LmdbLifecycle::status(self)
     }
 
     /// Requests shutdown of background tasks and syncs the LMDB environment before returning.
-    ///
-    /// Signals the background task via `shutdown_notify` so it wakes out of
-    /// `zaino_db_handler_sleep` immediately, then awaits its join handle with
-    /// a 5 s timeout (aborting only if the handle fails to exit in time).
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Closing);
-        // `notify_one` stores a permit if no waiter is currently registered,
-        // so the task consumes the signal on its next `notified().await` even
-        // if shutdown fires before the task has entered the select.
-        // `notify_waiters` would be lost in that window (no stored permit).
-        self.shutdown_notify.notify_one();
+        LmdbLifecycle::shutdown(self).await
+    }
+}
 
-        let taken = self
-            .db_handler
-            .lock()
-            .expect("db_handler mutex poisoned")
-            .take();
-        if let Some(mut handle) = taken {
-            let timeout = tokio::time::sleep(Duration::from_secs(5));
-            tokio::pin!(timeout);
+impl LmdbLifecycle for DbV0 {
+    fn env(&self) -> &Arc<Environment> {
+        &self.env
+    }
 
-            tokio::select! {
-                res = &mut handle => {
-                    match res {
-                        Ok(_) => {}
-                        Err(e) if e.is_cancelled() => {}
-                        Err(e) => warn!("background task ended with error: {e:?}"),
-                    }
-                }
-                _ = &mut timeout => {
-                    warn!("background task didn’t exit in time – aborting");
-                    handle.abort();
-                }
-            }
-        }
+    fn db_handler_slot(&self) -> &std::sync::Mutex<Option<tokio::task::JoinHandle<()>>> {
+        &self.db_handler
+    }
 
-        let _ = self.clean_trailing().await;
-        if let Err(e) = self.env.sync(true) {
-            warn!("LMDB fsync before close failed: {e}");
-        }
-        Ok(())
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
+    }
+
+    fn status_atomic(&self) -> &NamedAtomicStatus {
+        &self.status
     }
 }
 
@@ -283,10 +262,11 @@ pub struct DbV0 {
     /// `Option`; no `.await` happens while it's held.
     db_handler: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
-    /// Wakes the background task out of `zaino_db_handler_sleep` when shutdown
-    /// is requested, so it observes `StatusType::Closing` without waiting for
-    /// the next idle-sleep or maintenance-tick boundary.
-    shutdown_notify: Arc<Notify>,
+    /// Cancels the background task so it observes shutdown without waiting for
+    /// the next idle-sleep or maintenance-tick boundary. Cloning the token
+    /// shares cancellation state with every clone, so all background tasks
+    /// (current and future) wake on a single `cancel()` call.
+    cancel_token: CancellationToken,
 
     /// Backend lifecycle status.
     status: NamedAtomicStatus,
@@ -343,9 +323,9 @@ impl DbV0 {
 
         // Open individual LMDB DBs.
         let heights_to_hashes =
-            Self::open_or_create_db(&env, "heights_to_hashes", DatabaseFlags::empty()).await?;
+            super::open_or_create_db(&env, "heights_to_hashes", DatabaseFlags::empty()).await?;
         let hashes_to_blocks =
-            Self::open_or_create_db(&env, "hashes_to_blocks", DatabaseFlags::empty()).await?;
+            super::open_or_create_db(&env, "hashes_to_blocks", DatabaseFlags::empty()).await?;
 
         // Create ZainoDB
         let mut zaino_db = Self {
@@ -353,7 +333,7 @@ impl DbV0 {
             heights_to_hashes,
             hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::new(Notify::new()),
+            cancel_token: CancellationToken::new(),
             status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
             config: config.clone(),
         };
@@ -362,27 +342,6 @@ impl DbV0 {
         zaino_db.spawn_handler().await?;
 
         Ok(zaino_db)
-    }
-
-    /// Returns the current backend status.
-    pub(crate) fn status(&self) -> StatusType {
-        self.status.load()
-    }
-
-    /// Blocks until the backend reports `StatusType::Ready`.
-    ///
-    /// This is primarily used during startup sequencing so callers do not issue reads before the
-    /// backend is ready to serve queries.
-    pub(crate) async fn wait_until_ready(&self) {
-        let mut ticker = interval(Duration::from_millis(100));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        loop {
-            ticker.tick().await;
-            if self.status.load() == StatusType::Ready {
-                break;
-            }
-        }
     }
 
     // *** Internal Control Methods ***
@@ -403,7 +362,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -429,50 +388,6 @@ impl DbV0 {
 
         *self.db_handler.lock().expect("db_handler mutex poisoned") = Some(handle);
         Ok(())
-    }
-
-    /// Helper method to wait for the next loop iteration or perform maintenance.
-    ///
-    /// This selects between:
-    /// - a short sleep (steady-state pacing), and
-    /// - the maintenance tick (currently reader-slot cleanup).
-    async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {},
-            _ = maintenance.tick() => {
-                if let Err(e) = self.clean_trailing().await {
-                    warn!("clean_trailing failed: {}", e);
-                }
-            }
-            _ = self.shutdown_notify.notified() => {},
-        }
-    }
-
-    /// Clears stale LMDB reader slots by opening and closing a read transaction.
-    ///
-    /// LMDB only reclaims reader slots when transactions are closed; this method is a cheap and safe
-    /// way to encourage reclamation in long-running services.
-    async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
-        let txn = self.env.begin_ro_txn()?;
-        drop(txn);
-        Ok(())
-    }
-
-    /// Opens an LMDB database if present, otherwise creates it.
-    ///
-    /// v0 uses this helper for all tables to make environment creation idempotent across restarts.
-    async fn open_or_create_db(
-        env: &Environment,
-        name: &str,
-        flags: DatabaseFlags,
-    ) -> Result<Database, FinalisedStateError> {
-        match env.open_db(Some(name)) {
-            Ok(db) => Ok(db),
-            Err(lmdb::Error::NotFound) => env
-                .create_db(Some(name), flags)
-                .map_err(FinalisedStateError::LmdbError),
-            Err(e) => Err(FinalisedStateError::LmdbError(e)),
-        }
     }
 
     // *** DB write / delete methods ***
@@ -547,7 +462,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -656,7 +571,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
@@ -707,7 +622,7 @@ impl DbV0 {
             heights_to_hashes: self.heights_to_hashes,
             hashes_to_blocks: self.hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
-            shutdown_notify: Arc::clone(&self.shutdown_notify),
+            cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
         };
