@@ -30,10 +30,17 @@ use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tracing::{info, instrument};
+use zaino_fetch::jsonrpsee::response::address_deltas::{
+    GetAddressDeltasParams, GetAddressDeltasResponse,
+};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
+use zebra_rpc::{
+    client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
+    methods::{AddressBalance, GetAddressUtxos},
+};
 use zebra_state::HashOrHeight;
 
 pub mod encoding;
@@ -180,12 +187,16 @@ pub trait ChainIndex {
     /// How it can fail
     type Error;
 
+    // ********** Utility methods **********
+
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
     fn snapshot_nonfinalized_state(
         &self,
     ) -> impl std::future::Future<Output = Result<Self::Snapshot, Self::Error>>;
+
+    // ********** Block methods **********
 
     /// Returns Some(Height) for the given block hash *if* it is currently in the best chain.
     ///
@@ -285,32 +296,7 @@ pub trait ChainIndex {
         pool_types: PoolTypeFilter,
     ) -> impl std::future::Future<Output = Result<Option<CompactBlockStream>, Self::Error>>;
 
-    /// Finds the newest ancestor of the given block on the main
-    /// chain, or the block itself if it is on the main chain.
-    fn find_fork_point(
-        &self,
-        snapshot: &Self::Snapshot,
-        hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
-
-    /// Returns the block commitment tree data by hash
-    #[allow(clippy::type_complexity)]
-    fn get_treestate(
-        &self,
-        // snapshot: &Self::Snapshot,
-        // currently not implemented internally, fetches data from validator.
-        //
-        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
-        hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
-
-    /// Returns the subtree roots
-    fn get_subtree_roots(
-        &self,
-        pool: ShieldedPool,
-        start_index: u16,
-        max_entries: Option<u16>,
-    ) -> impl std::future::Future<Output = Result<Vec<([u8; 32], u32)>, Self::Error>>;
+    // ********** Transaction methods **********
 
     /// given a transaction id, returns the transaction, along with
     /// its consensus branch ID if available
@@ -358,17 +344,74 @@ pub trait ChainIndex {
         snapshot: Option<&Self::Snapshot>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
 
-    /// Returns Information about the mempool state:
-    /// - size: Current tx count
-    /// - bytes: Sum of all tx sizes
-    /// - usage: Total memory usage for the mempool
-    fn get_mempool_info(&self) -> impl std::future::Future<Output = MempoolInfo>;
+    // ********** Chain methods **********
 
     /// Get the tip of the best chain, according to the snapshot
     fn best_chaintip(
         &self,
         nonfinalized_snapshot: &Self::Snapshot,
     ) -> impl std::future::Future<Output = Result<BlockIndex, Self::Error>>;
+
+    /// Finds the newest ancestor of the given block on the main
+    /// chain, or the block itself if it is on the main chain.
+    fn find_fork_point(
+        &self,
+        snapshot: &Self::Snapshot,
+        hash: &types::BlockHash,
+    ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
+
+    /// Returns the block commitment tree data by hash
+    #[allow(clippy::type_complexity)]
+    fn get_treestate(
+        &self,
+        // snapshot: &Self::Snapshot,
+        // currently not implemented internally, fetches data from validator.
+        //
+        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
+        hash: &types::BlockHash,
+    ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
+
+    /// Returns the subtree roots
+    fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> impl std::future::Future<Output = Result<Vec<([u8; 32], u32)>, Self::Error>>;
+
+    // ********** Transparent address history methods **********
+
+    /// Returns all changes for the given transparent addresses.
+    fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> impl std::future::Future<Output = Result<GetAddressDeltasResponse, Self::Error>>;
+
+    /// Returns the total transparent balance for the given addresses.
+    fn get_address_balance(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+    ) -> impl std::future::Future<Output = Result<AddressBalance, Self::Error>>;
+
+    /// Returns the transaction ids made by the given transparent addresses.
+    fn get_address_txids(
+        &self,
+        request: GetAddressTxIdsRequest,
+    ) -> impl std::future::Future<Output = Result<Vec<types::TransactionHash>, Self::Error>>;
+
+    /// Returns all unspent transparent outputs for the given addresses.
+    fn get_address_utxos(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+    ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
+
+    // ********** Metadata methods **********
+
+    /// Returns Information about the mempool state:
+    /// - size: Current tx count
+    /// - bytes: Sum of all tx sizes
+    /// - usage: Total memory usage for the mempool
+    fn get_mempool_info(&self) -> impl std::future::Future<Output = MempoolInfo>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -931,6 +974,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     type Snapshot = ChainIndexSnapshot;
     type Error = ChainIndexError;
 
+    // ********** Utility methods **********
+
     /// Takes a snapshot of the non_finalized state. All NFS-interfacing query
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
@@ -956,6 +1001,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             }
         }
     }
+
+    // ********** Block methods **********
 
     /// Returns Some(Height) for the given block hash *if* it is currently in the best chain.
     ///
@@ -1397,126 +1444,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         Ok(Some(CompactBlockStream::new(channel_receiver)))
     }
 
-    /// For a given block,
-    /// find its newest main-chain ancestor,
-    /// or the block itself if it is on the main-chain.
-    /// Returns Ok(None) if no fork point found. This is not an error,
-    /// as zaino does not guarentee knowledge of all sidechain data.
-    async fn find_fork_point(
-        &self,
-        snapshot: &Self::Snapshot,
-        hash: &types::BlockHash,
-    ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
-        // ChainIndex step 1: Skip
-        // mempool blocks have no canon height, guaranteed to return None
-        // todo: possible efficiency boost by checking mempool for a negative?
-
-        match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => {
-                match non_finalized_snapshot.get_chainblock_by_hash(hash) {
-                    Some(block) => {
-                        // At this point, we know that
-                        // The block is non-FINALIZED in the INDEXER
-                        // ChainIndex step 3:
-                        if non_finalized_snapshot
-                            .heights_to_hashes
-                            .get(&block.height())
-                            == Some(block.hash())
-                        {
-                            // The block is in the best chain.
-                            Ok(Some((*block.hash(), block.height())))
-                        } else {
-                            // Otherwise, it's non-best chain! Grab its parent, and recurse
-                            Box::pin(self.find_fork_point(snapshot, &block.context.parent_hash))
-                                .await
-                            // gotta pin recursive async functions to prevent infinite-sized
-                            // Future-implementing types
-                        }
-                    }
-                    None => {
-                        // At this point, we know that
-                        // the block is NOT non-FINALIZED in the INDEXER.
-                        // as the non finalzed state is known to be populated,
-                        // we now check the finalized state
-                        match self.finalized_state.get_block_height(*hash).await {
-                            Ok(Some(height)) => {
-                                // the block is FINALIZED in the INDEXER
-                                Ok(Some((*hash, height)))
-                            }
-                            Err(e) => Err(ChainIndexError::database_hole(hash, Some(Box::new(e)))),
-                            Ok(None) => Ok(None),
-                        }
-                    }
-                }
-            }
-            ChainIndexSnapshot::StillSyncingFinalizedState {
-                validator_finalized_height,
-            } => {
-                // We're not fully synced, so we pass through.
-                // Now, we ask the VALIDATOR.
-                // ChainIndex step 5
-                match self
-                    .source()
-                    .get_block(HashOrHeight::Hash(zebra_chain::block::Hash::from(*hash)))
-                    .await
-                {
-                    Ok(Some(block)) => {
-                        // At this point, we know that
-                        // the block is in the VALIDATOR.
-                        match block.coinbase_height() {
-                            None => {
-                                // the block is in the VALIDATOR. but doesnt have a height. That would imply a bug.
-                                Err(ChainIndexError::validator_data_error_block_coinbase_height_missing())
-                            }
-                            Some(height) => {
-                                // The VALIDATOR returned a block with a height.
-                                // However, there is as of yet no guaranteed the Block is FINALIZED
-                                if height <= *validator_finalized_height {
-                                    Ok(Some((
-                                        types::BlockHash::from(block.hash()),
-                                        types::Height::from(height),
-                                    )))
-                                } else {
-                                    // non-finalized block
-                                    // no passthrough
-                                    Ok(None)
-                                }
-                            }
-                        }
-                    }
-
-                    Ok(None) => {
-                        // At this point, we know that
-                        // the block is NOT FINALIZED in the VALIDATOR.
-                        // Return Ok(None) = no block found.
-                        Ok(None)
-                    }
-                    Err(e) => Err(ChainIndexError::backing_validator(e)),
-                }
-            }
-        }
-    }
-
-    /// Returns the block commitment tree data by hash
-    async fn get_treestate(
-        &self,
-        // currently not implemented internally, fetches data from validator.
-        // as this looks up the block by hash, and cares not if the
-        // block is on the main chain or not, this is safe to pass through
-        // even if the target block is non-finalized
-        hash: &types::BlockHash,
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
-        match self.source().get_treestate(*hash).await {
-            Ok(resp) => Ok(resp),
-            Err(e) => Err(ChainIndexError {
-                kind: ChainIndexErrorKind::InternalServerError,
-                message: "failed to fetch treestate from validator".to_string(),
-                source: Some(Box::new(e)),
-            }),
-        }
-    }
+    // ********** Transaction methods **********
 
     /// given a transaction id, returns the transaction
     /// and the consensus branch ID for the block the transaction
@@ -1817,6 +1745,191 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
+    // ********** Chain methods **********
+
+    /// For a given block,
+    /// find its newest main-chain ancestor,
+    /// or the block itself if it is on the main-chain.
+    /// Returns Ok(None) if no fork point found. This is not an error,
+    /// as zaino does not guarentee knowledge of all sidechain data.
+    async fn find_fork_point(
+        &self,
+        snapshot: &Self::Snapshot,
+        hash: &types::BlockHash,
+    ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
+        // ChainIndex step 1: Skip
+        // mempool blocks have no canon height, guaranteed to return None
+        // todo: possible efficiency boost by checking mempool for a negative?
+
+        match snapshot {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                match non_finalized_snapshot.get_chainblock_by_hash(hash) {
+                    Some(block) => {
+                        // At this point, we know that
+                        // The block is non-FINALIZED in the INDEXER
+                        // ChainIndex step 3:
+                        if non_finalized_snapshot
+                            .heights_to_hashes
+                            .get(&block.height())
+                            == Some(block.hash())
+                        {
+                            // The block is in the best chain.
+                            Ok(Some((*block.hash(), block.height())))
+                        } else {
+                            // Otherwise, it's non-best chain! Grab its parent, and recurse
+                            Box::pin(self.find_fork_point(snapshot, &block.context.parent_hash))
+                                .await
+                            // gotta pin recursive async functions to prevent infinite-sized
+                            // Future-implementing types
+                        }
+                    }
+                    None => {
+                        // At this point, we know that
+                        // the block is NOT non-FINALIZED in the INDEXER.
+                        // as the non finalzed state is known to be populated,
+                        // we now check the finalized state
+                        match self.finalized_state.get_block_height(*hash).await {
+                            Ok(Some(height)) => {
+                                // the block is FINALIZED in the INDEXER
+                                Ok(Some((*hash, height)))
+                            }
+                            Err(e) => Err(ChainIndexError::database_hole(hash, Some(Box::new(e)))),
+                            Ok(None) => Ok(None),
+                        }
+                    }
+                }
+            }
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => {
+                // We're not fully synced, so we pass through.
+                // Now, we ask the VALIDATOR.
+                // ChainIndex step 5
+                match self
+                    .source()
+                    .get_block(HashOrHeight::Hash(zebra_chain::block::Hash::from(*hash)))
+                    .await
+                {
+                    Ok(Some(block)) => {
+                        // At this point, we know that
+                        // the block is in the VALIDATOR.
+                        match block.coinbase_height() {
+                            None => {
+                                // the block is in the VALIDATOR. but doesnt have a height. That would imply a bug.
+                                Err(ChainIndexError::validator_data_error_block_coinbase_height_missing())
+                            }
+                            Some(height) => {
+                                // The VALIDATOR returned a block with a height.
+                                // However, there is as of yet no guaranteed the Block is FINALIZED
+                                if height <= *validator_finalized_height {
+                                    Ok(Some((
+                                        types::BlockHash::from(block.hash()),
+                                        types::Height::from(height),
+                                    )))
+                                } else {
+                                    // non-finalized block
+                                    // no passthrough
+                                    Ok(None)
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(None) => {
+                        // At this point, we know that
+                        // the block is NOT FINALIZED in the VALIDATOR.
+                        // Return Ok(None) = no block found.
+                        Ok(None)
+                    }
+                    Err(e) => Err(ChainIndexError::backing_validator(e)),
+                }
+            }
+        }
+    }
+
+    /// Returns the block commitment tree data by hash
+    async fn get_treestate(
+        &self,
+        // currently not implemented internally, fetches data from validator.
+        // as this looks up the block by hash, and cares not if the
+        // block is on the main chain or not, this is safe to pass through
+        // even if the target block is non-finalized
+        hash: &types::BlockHash,
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+        match self.source().get_treestate(*hash).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => Err(ChainIndexError {
+                kind: ChainIndexErrorKind::InternalServerError,
+                message: "failed to fetch treestate from validator".to_string(),
+                source: Some(Box::new(e)),
+            }),
+        }
+    }
+
+    /// Gets the subtree roots of a given pool and the end heights of each root,
+    /// starting at the provided index, up to an optional maximum number of roots.
+    async fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        max_entries: Option<u16>,
+    ) -> Result<Vec<([u8; 32], u32)>, Self::Error> {
+        self.source()
+            .get_subtree_roots(pool, start_index, max_entries)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    // ********** Transparent address history methods **********
+
+    /// Returns all changes for the given transparent addresses.
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        self.source()
+            .get_address_deltas(params)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    /// Returns the total transparent balance for the given addresses.
+    async fn get_address_balance(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+    ) -> Result<AddressBalance, Self::Error> {
+        self.source()
+            .get_address_balance(address_strings)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    /// Returns the transaction ids made by the given transparent addresses.
+    async fn get_address_txids(
+        &self,
+        request: GetAddressTxIdsRequest,
+    ) -> Result<Vec<types::TransactionHash>, Self::Error> {
+        self.source()
+            .get_address_txids(request)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    /// Returns all unspent transparent outputs for the given addresses.
+    async fn get_address_utxos(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+    ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
+        self.source()
+            .get_address_utxos(address_strings)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    // ********** Metadata methods **********
+
     /// Returns Information about the mempool state:
     /// - size: Current tx count
     /// - bytes: Sum of all tx sizes
@@ -1856,20 +1969,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
             }
         })
-    }
-
-    /// Gets the subtree roots of a given pool and the end heights of each root,
-    /// starting at the provided index, up to an optional maximum number of roots.
-    async fn get_subtree_roots(
-        &self,
-        pool: ShieldedPool,
-        start_index: u16,
-        max_entries: Option<u16>,
-    ) -> Result<Vec<([u8; 32], u32)>, Self::Error> {
-        self.source()
-            .get_subtree_roots(pool, start_index, max_entries)
-            .await
-            .map_err(ChainIndexError::backing_validator)
     }
 }
 

@@ -32,6 +32,18 @@ and this library adheres to Rust's notion of
       - `BlockIndex::try_from_wire(proto::BlockId) -> Result<Self, WireBlockIdError>`
       - new error enum `WireBlockIdError` (`HashWrongLength`, `HeightOverflow`)
 - `local_cache::compact_block_with_pool_types`
+- `source::BlockchainSource` and implementors now expose transparent-address
+  methods:
+  - `get_address_deltas`
+  - `get_address_balance`
+  - `get_address_txids`
+  - `get_address_utxos`
+- `ChainIndex` and `NodeBackedChainIndexSubscriber` now expose transparent-address
+  query methods:
+  - `get_address_deltas`
+  - `get_address_balance`
+  - `get_address_txids`
+  - `get_address_utxos`
 ### Changed
 - `get_mempool_tx` now takes `GetMempoolTxRequest` as parameter
 - `chain_index::finalised_state`
@@ -54,6 +66,10 @@ and this library adheres to Rust's notion of
     `chain_index::types::BlockIndex` (was briefly `non_finalized_state::BlockIdent`
     earlier in the same unreleased cycle); its inner field is now named `hash`
     (previously `blockhash`), and it gains `Eq`/`Hash` derives.
+- `FetchService` and `StateService` now serve the get_raw_transaction RPC through
+  `ChainIndex`.
+- `FetchService` and `StateService` now serve the transparent-address RPCs through
+  `ChainIndex`.
 
 ### Deprecated
 - `GetTaddressTxids` is replaced by `GetTaddressTransactions`
