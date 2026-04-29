@@ -28,7 +28,7 @@ use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageC
 
 use crate::{
     chain_index::{
-        source::test::MockchainSource,
+        source::mockchain_source::MockchainSource,
         tests::vectors::{
             build_active_mockchain_source, build_mockchain_source, load_test_vectors,
         },

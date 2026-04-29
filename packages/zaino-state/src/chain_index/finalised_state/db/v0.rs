@@ -64,7 +64,7 @@ use zebra_chain::{
     parameters::NetworkKind,
 };
 
-use super::DbLifecycle;
+use super::LmdbLifecycle;
 
 use async_trait::async_trait;
 use lmdb::{Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction};
@@ -176,16 +176,16 @@ impl DbWrite for DbV0 {
 impl DbCore for DbV0 {
     /// Returns the current runtime status published by this backend.
     fn status(&self) -> StatusType {
-        DbLifecycle::status(self)
+        LmdbLifecycle::status(self)
     }
 
     /// Requests shutdown of background tasks and syncs the LMDB environment before returning.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        DbLifecycle::shutdown(self).await
+        LmdbLifecycle::shutdown(self).await
     }
 }
 
-impl DbLifecycle for DbV0 {
+impl LmdbLifecycle for DbV0 {
     fn env(&self) -> &Arc<Environment> {
         &self.env
     }

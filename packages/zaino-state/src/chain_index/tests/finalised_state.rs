@@ -7,7 +7,7 @@ use std::future::Future;
 use tempfile::TempDir;
 
 use crate::chain_index::finalised_state::ZainoDB;
-use crate::chain_index::source::test::MockchainSource;
+use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::error::FinalisedStateError;

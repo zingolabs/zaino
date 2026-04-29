@@ -88,4 +88,3 @@ rand = "0.9.4"
 
 [build-dependencies]
 whoami = { workspace = true }
-cargo-lock = { workspace = true }

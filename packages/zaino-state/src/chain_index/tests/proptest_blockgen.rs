@@ -9,12 +9,19 @@ use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
 use tonic::async_trait;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
+use zaino_fetch::jsonrpsee::response::address_deltas::{
+    GetAddressDeltasParams, GetAddressDeltasResponse,
+};
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
     fmt::SummaryDebug,
     serialization::ZcashSerialize,
     transaction::SerializedTransaction,
     LedgerState,
+};
+use zebra_rpc::{
+    client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
+    methods::{AddressBalance, GetAddressUtxos},
 };
 use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
@@ -744,6 +751,40 @@ impl BlockchainSource for ProptestMockchain {
         _start_index: u16,
         _max_entries: Option<u16>,
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
+        todo!()
+    }
+
+    // ********** Transparent address methods **********
+
+    async fn get_address_deltas(
+        &self,
+        _params: GetAddressDeltasParams,
+    ) -> BlockchainSourceResult<GetAddressDeltasResponse> {
+        //
+        todo!()
+    }
+
+    async fn get_address_balance(
+        &self,
+        _address_strings: GetAddressBalanceRequest,
+    ) -> BlockchainSourceResult<AddressBalance> {
+        //
+        todo!()
+    }
+
+    async fn get_address_txids(
+        &self,
+        _request: GetAddressTxIdsRequest,
+    ) -> BlockchainSourceResult<Vec<TransactionHash>> {
+        //
+        todo!()
+    }
+
+    async fn get_address_utxos(
+        &self,
+        _address_strings: GetAddressBalanceRequest,
+    ) -> BlockchainSourceResult<Vec<GetAddressUtxos>> {
+        //
         todo!()
     }
 }

@@ -1,14 +1,23 @@
 use super::load_test_vectors_and_sync_chain_index;
+use crate::{
+    chain_index::{
+        source::mockchain_source::MockchainSource,
+        tests::{
+            poll::poll_until,
+            vectors::{load_test_vectors, TestVectorBlockData},
+        },
+        types::{BestChainLocation, TransactionHash},
+        ChainIndex, NodeBackedChainIndexSubscriber,
+    },
+    BlockchainSource as _,
+};
 use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt as _;
-use zebra_chain::serialization::ZcashDeserializeInto;
-
-use crate::chain_index::{
-    source::test::MockchainSource,
-    tests::{poll::poll_until, vectors::TestVectorBlockData},
-    types::{BestChainLocation, TransactionHash},
-    ChainIndex, NodeBackedChainIndexSubscriber,
+use zaino_fetch::jsonrpsee::response::address_deltas::{
+    GetAddressDeltasParams, GetAddressDeltasResponse,
 };
+use zebra_chain::serialization::ZcashDeserializeInto;
+use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
 /// Polls the indexer's nonfinalized-state snapshot until its best-tip height
 /// equals `expected`, or panics after a 10 s budget.
@@ -38,6 +47,15 @@ async fn wait_for_indexer_tip(
         },
     )
     .await;
+}
+
+fn faucet_transparent_address() -> String {
+    let vector_data = load_test_vectors().unwrap();
+
+    let (transparent_address, _transaction_hash, _output_index, _script, _value, _height) =
+        vector_data.faucet.utxos[0].clone().into_parts();
+
+    transparent_address.to_string()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -573,4 +591,184 @@ async fn get_treestate() {
             Some(orchard_tree_state.as_slice())
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_address_deltas() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(false).await;
+
+    let transparent_address = faucet_transparent_address();
+    let active_height = mockchain.active_height();
+
+    let expected_response = mockchain
+        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+            vec![transparent_address.clone()],
+            0,
+            active_height,
+            true,
+        ))
+        .await
+        .unwrap();
+
+    let indexer_response = index_reader
+        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+            vec![transparent_address.clone()],
+            0,
+            active_height,
+            true,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(indexer_response, expected_response);
+
+    match indexer_response {
+        GetAddressDeltasResponse::WithChainInfo { deltas, start, end } => {
+            assert!(!deltas.is_empty());
+            assert_eq!(start.height, 0);
+            assert_eq!(end.height, active_height);
+        }
+        GetAddressDeltasResponse::Simple(_) => {
+            panic!("expected get_address_deltas response with chain info")
+        }
+    }
+
+    let invalid_address_result = index_reader
+        .get_address_deltas(GetAddressDeltasParams::new_address(
+            "not_a_valid_transparent_address",
+        ))
+        .await;
+
+    assert!(invalid_address_result.is_err());
+
+    assert!(
+        active_height > 0,
+        "test requires a chain height greater than zero"
+    );
+
+    let invalid_range_result = index_reader
+        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+            vec![transparent_address],
+            active_height,
+            active_height - 1,
+            false,
+        ))
+        .await;
+
+    assert!(invalid_range_result.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_address_balance() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(false).await;
+
+    let transparent_address = faucet_transparent_address();
+
+    let expected_balance = mockchain
+        .get_address_balance(GetAddressBalanceRequest::new(vec![
+            transparent_address.clone()
+        ]))
+        .await
+        .unwrap();
+
+    let indexer_balance = index_reader
+        .get_address_balance(GetAddressBalanceRequest::new(vec![transparent_address]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(indexer_balance).unwrap(),
+        serde_json::to_value(expected_balance).unwrap()
+    );
+
+    let invalid_address_result = index_reader
+        .get_address_balance(GetAddressBalanceRequest::new(vec![
+            "not_a_valid_transparent_address".to_string(),
+        ]))
+        .await;
+
+    assert!(invalid_address_result.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_address_txids() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(false).await;
+
+    let transparent_address = faucet_transparent_address();
+    let active_height = mockchain.active_height();
+
+    let expected_txids = mockchain
+        .get_address_txids(GetAddressTxIdsRequest::new(
+            vec![transparent_address.clone()],
+            Some(0),
+            Some(active_height),
+        ))
+        .await
+        .unwrap();
+
+    let indexer_txids = index_reader
+        .get_address_txids(GetAddressTxIdsRequest::new(
+            vec![transparent_address],
+            Some(0),
+            Some(active_height),
+        ))
+        .await
+        .unwrap();
+
+    assert!(!indexer_txids.is_empty());
+    assert_eq!(indexer_txids, expected_txids);
+
+    let invalid_address_result = index_reader
+        .get_address_txids(GetAddressTxIdsRequest::new(
+            vec!["not_a_valid_transparent_address".to_string()],
+            Some(0),
+            Some(active_height),
+        ))
+        .await;
+
+    assert!(invalid_address_result.is_err());
+
+    let invalid_range_result = index_reader
+        .get_address_txids(GetAddressTxIdsRequest::new(
+            vec![faucet_transparent_address()],
+            Some(active_height),
+            Some(0),
+        ))
+        .await;
+
+    assert!(invalid_range_result.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_address_utxos() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(false).await;
+
+    let transparent_address = faucet_transparent_address();
+
+    let expected_utxos = mockchain
+        .get_address_utxos(GetAddressBalanceRequest::new(vec![
+            transparent_address.clone()
+        ]))
+        .await
+        .unwrap();
+
+    let indexer_utxos = index_reader
+        .get_address_utxos(GetAddressBalanceRequest::new(vec![transparent_address]))
+        .await
+        .unwrap();
+
+    assert!(!indexer_utxos.is_empty());
+    assert_eq!(indexer_utxos, expected_utxos);
+
+    let invalid_address_result = index_reader
+        .get_address_utxos(GetAddressBalanceRequest::new(vec![
+            "not_a_valid_transparent_address".to_string(),
+        ]))
+        .await;
+
+    assert!(invalid_address_result.is_err());
 }
