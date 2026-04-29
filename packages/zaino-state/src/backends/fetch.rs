@@ -14,12 +14,11 @@ use zebra_chain::{
 use zebra_rpc::{
     client::{
         GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse,
-        ValidateAddressResponse,
+        TransactionObject, ValidateAddressResponse,
     },
     methods::{
         AddressBalance, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHashResponse,
         GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
-        ValidateAddresses as _,
     },
 };
 
@@ -118,26 +117,26 @@ impl ZcashService for FetchService {
     type Config = FetchServiceConfig;
 
     /// Initializes a new FetchService instance and starts sync process.
-    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.network))]
+    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.common.network))]
     async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
         info!(
-            rpc_address = %config.validator_rpc_address,
-            network = %config.network,
+            rpc_address = %config.common.validator_rpc_address,
+            network = %config.common.network,
             "Launching Fetch Service"
         );
 
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
-            &config.validator_rpc_address,
-            config.validator_rpc_user.clone(),
-            config.validator_rpc_password.clone(),
-            config.validator_cookie_path.clone(),
+            &config.common.validator_rpc_address,
+            config.common.validator_rpc_user.clone(),
+            config.common.validator_rpc_password.clone(),
+            config.common.validator_cookie_path.clone(),
         )
         .await?;
 
         let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(
-            get_build_info(),
-            config.network.to_zebra_network(),
+            get_build_info(config.common.indexer_version.clone()),
+            config.common.network.to_zebra_network(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -235,7 +234,7 @@ impl FetchServiceSubscriber {
     /// Returns the network type running.
     #[allow(deprecated)]
     pub fn network(&self) -> zaino_common::Network {
-        self.config.network
+        self.config.common.network
     }
 }
 
@@ -267,7 +266,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         params: GetAddressDeltasParams,
     ) -> Result<GetAddressDeltasResponse, Self::Error> {
-        Ok(self.fetcher.get_address_deltas(params).await?)
+        Ok(self.indexer.get_address_deltas(params).await?)
     }
 
     /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
@@ -367,25 +366,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<AddressBalance, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_address_balance(
-                address_strings
-                    .valid_addresses()
-                    .map_err(|error| {
-                        #[allow(deprecated)]
-                        FetchServiceError::RpcError(RpcError {
-                            code: error.code() as i64,
-                            message: "Invalid address provided".to_string(),
-                            data: None,
-                        })
-                    })?
-                    .into_iter()
-                    .map(|address| address.to_string())
-                    .collect(),
-            )
-            .await?
-            .into())
+        Ok(self.indexer.get_address_balance(address_strings).await?)
     }
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
@@ -695,11 +676,78 @@ impl ZcashIndexer for FetchServiceSubscriber {
         txid_hex: String,
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_raw_transaction(txid_hex, verbose)
-            .await?
-            .into())
+        #[allow(deprecated)]
+        let txid = types::TransactionHash::from_hex(&txid_hex).map_err(|error| {
+            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+                error.to_string(),
+            ))
+        })?;
+
+        #[allow(deprecated)]
+        let not_found_error = || {
+            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+                "No such mempool or main chain transaction",
+            ))
+        };
+
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+
+        let Some((serialized_transaction, _consensus_branch_id)) =
+            self.indexer.get_raw_transaction(&snapshot, &txid).await?
+        else {
+            return Err(not_found_error());
+        };
+
+        if verbose.is_none() {
+            return Ok(GetRawTransaction::Raw(
+                zebra_chain::transaction::SerializedTransaction::from(serialized_transaction),
+            ));
+        }
+
+        let transaction = zebra_chain::transaction::Transaction::zcash_deserialize(
+            serialized_transaction.as_slice(),
+        )
+        .map_err(|_| not_found_error())?;
+
+        let (best_chain_location, _non_best_chain_locations) = self
+            .indexer
+            .get_transaction_status(&snapshot, &txid)
+            .await?;
+
+        let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
+            Some(types::BestChainLocation::Block(block_hash, height)) => {
+                let confirmations = snapshot
+                    .max_serviceable_height()
+                    .0
+                    .saturating_sub(height.0)
+                    .saturating_add(1);
+
+                (
+                    Some(zebra_chain::block::Height::from(height)),
+                    Some(confirmations),
+                    Some(zebra_chain::block::Hash::from(block_hash)),
+                    Some(true),
+                )
+            }
+            Some(types::BestChainLocation::Mempool(_height)) => (None, Some(0), None, Some(false)),
+            None => (None, None, None, Some(false)),
+        };
+
+        Ok(GetRawTransaction::Object(Box::new(
+            TransactionObject::from_transaction(
+                transaction.into(),
+                height,
+                confirmations,
+                #[allow(deprecated)]
+                &self.config.common.network.to_zebra_network(),
+                None,
+                block_hash,
+                in_best_chain,
+                zebra_chain::transaction::Hash::from(txid),
+            ),
+        )))
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
@@ -732,12 +780,13 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<String>, Self::Error> {
-        let (addresses, start, end) = request.into_parts();
         Ok(self
-            .fetcher
-            .get_address_txids(addresses, start, end)
+            .indexer
+            .get_address_txids(request)
             .await?
-            .transactions)
+            .into_iter()
+            .map(|transaction_hash| transaction_hash.to_rpc_hex())
+            .collect())
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -758,27 +807,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         addresses: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_address_utxos(
-                addresses
-                    .valid_addresses()
-                    .map_err(|error| {
-                        #[allow(deprecated)]
-                        FetchServiceError::RpcError(RpcError {
-                            code: error.code() as i64,
-                            message: "Invalid address provided".to_string(),
-                            data: None,
-                        })
-                    })?
-                    .into_iter()
-                    .map(|address| address.to_string())
-                    .collect(),
-            )
-            .await?
-            .into_iter()
-            .map(|utxos| utxos.into())
-            .collect())
+        Ok(self.indexer.get_address_utxos(addresses).await?)
     }
 
     /// Returns the estimated network solutions per second based on the last n blocks.
@@ -1011,8 +1040,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let end = validated_request.end() as u32;
 
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = fetch_service_clone
             .indexer
             .snapshot_nonfinalized_state()
@@ -1143,8 +1173,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let end = validated_request.end() as u32;
 
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = fetch_service_clone
             .indexer
             .snapshot_nonfinalized_state()
@@ -1331,8 +1362,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let chain_height = self.chain_height().await?;
         let txids = self.get_taddress_txids_helper(request).await?;
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (transmitter, receiver) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1403,9 +1435,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         mut request: AddressStream,
     ) -> Result<Balance, Self::Error> {
         let fetch_service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
+        let service_timeout = self.config.common.service.timeout;
         let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.service.channel_size as usize);
+            mpsc::channel::<String>(self.config.common.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1537,8 +1569,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         }
 
         let mempool = self.indexer.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
 
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1637,8 +1670,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let indexer = self.indexer.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         let snapshot = indexer.snapshot_nonfinalized_state().await?;
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1733,7 +1767,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             .await?
             .into_parts();
         Ok(TreeState {
-            network: self.config.network.to_zebra_network().bip70_network_name(),
+            network: self
+                .config
+                .common
+                .network
+                .to_zebra_network()
+                .bip70_network_name(),
             height: height.0 as u64,
             hash: hash.to_string(),
             time,
@@ -1755,8 +1794,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
-            self.config.service.timeout,
-            self.config.service.channel_size,
+            self.config.common.service.timeout,
+            self.config.common.service.channel_size,
         )
     }
 
@@ -1825,8 +1864,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     ) -> Result<UtxoReplyStream, Self::Error> {
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let service_timeout = self.config.common.service.timeout;
+        let (channel_tx, channel_rx) =
+            mpsc::channel(self.config.common.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1944,6 +1984,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             zcashd_subversion: self.data.zebra_subversion(),
             donation_address: self
                 .config
+                .common
                 .donation_address
                 .as_ref()
                 .map(DonationAddress::encode)

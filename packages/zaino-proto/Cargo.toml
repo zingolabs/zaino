@@ -26,6 +26,4 @@ tonic-prost = "0.14"
 
 [build-dependencies]
 which = { workspace = true, optional = true }
-tonic-build = { workspace = true }
 tonic-prost-build = "0.14"
-prost-build = "0.14"

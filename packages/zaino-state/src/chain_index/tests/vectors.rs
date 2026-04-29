@@ -9,7 +9,7 @@ use zebra_chain::serialization::ZcashDeserialize as _;
 
 use zebra_rpc::methods::GetAddressUtxos;
 
-use crate::chain_index::source::test::MockchainSource;
+use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::{
     read_u32_le, read_u64_le, BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, CompactSize,
     IndexedBlock,
