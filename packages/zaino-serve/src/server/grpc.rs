@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use tokio::time::interval;
-use tonic::transport::Server;
+use tonic::transport::{server::TcpIncoming, Server};
 use tracing::warn;
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 use zaino_state::{
@@ -46,6 +46,12 @@ impl TonicServer {
             })?;
         }
 
+        // Bind synchronously so EADDRINUSE / EACCES propagate to the caller
+        // instead of being swallowed inside the spawned serve task. See
+        // zingolabs/zaino#1081.
+        let tcp_incoming = TcpIncoming::bind(server_config.listen_address)
+            .map_err(|e| ServerError::ServerConfigError(format!("gRPC bind failed: {e}")))?;
+
         let shutdown_check_status = status.clone();
         let mut shutdown_check_interval = interval(Duration::from_millis(100));
         let shutdown_signal = async move {
@@ -58,7 +64,7 @@ impl TonicServer {
         };
         let server_future = server_builder
             .add_service(svc)
-            .serve_with_shutdown(server_config.listen_address, shutdown_signal);
+            .serve_with_incoming_shutdown(tcp_incoming, shutdown_signal);
 
         let task_status = status.clone();
         let server_handle = tokio::task::spawn(async move {
@@ -84,7 +90,20 @@ impl TonicServer {
     }
 
     /// Returns the servers current status.
+    ///
+    /// If the spawned serve task has finished (panic, tonic-internal
+    /// error, etc.), reports `Offline` regardless of the cached status —
+    /// otherwise a serve task that died after reporting `Ready` would
+    /// keep the indexer's critical-error check from firing. See
+    /// zingolabs/zaino#1081.
     pub fn status(&self) -> StatusType {
+        if self
+            .server_handle
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+        {
+            return StatusType::Offline;
+        }
         self.status.load()
     }
 }
