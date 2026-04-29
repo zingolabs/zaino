@@ -20,9 +20,15 @@ fn protoc_available() -> bool {
 }
 
 /// Copy a generated file into the source tree and force non-executable
-/// permissions so the working tree doesn't drift on build.
+/// permissions so the working tree doesn't drift on build. Skip the write
+/// when the destination is already byte-identical, so its mtime is
+/// preserved and cargo doesn't re-invalidate this crate on the next build.
 fn copy_generated(src: &Path, dst: &str) -> io::Result<()> {
-    fs::copy(src, dst)?;
+    let new = fs::read(src)?;
+    if fs::read(dst).ok().as_deref() == Some(new.as_slice()) {
+        return Ok(());
+    }
+    fs::write(dst, &new)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -34,6 +40,14 @@ fn copy_generated(src: &Path, dst: &str) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // Without these, cargo's default is "rerun if any file in the package
+    // changes" — including the generated src/proto/*.rs files this script
+    // writes, which produces a self-perpetuating recompile loop.
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={COMPACT_FORMATS_PROTO}");
+    println!("cargo:rerun-if-changed={PROPOSAL_PROTO}");
+    println!("cargo:rerun-if-changed={SERVICE_PROTO}");
+
     // Check and compile proto files if needed
     if Path::new(COMPACT_FORMATS_PROTO).exists() && protoc_available() {
         build()?;

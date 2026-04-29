@@ -2,11 +2,18 @@ name: Docker Image CI/CD
 
 on:
   workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push the built image to DockerHub. Set false to verify a build on a feature branch without publishing.'
+        type: boolean
+        default: true
   push:
     branches:
       - '**'
     paths:
       - '.env.testing-artifacts'
+      - 'rust-toolchain.toml'
+      - 'tools/scripts/get-rust-version.sh'
       - 'integration-tests/test_environment/*'
 
 jobs:
@@ -30,6 +37,7 @@ jobs:
       id: taggen
       run: |
         source .env.testing-artifacts
+        RUST_VERSION=$(./tools/scripts/get-rust-version.sh)
         export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION
         TAG=$(./tools/scripts/get-ci-image-tag.sh)
         echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -40,6 +48,7 @@ jobs:
         set -a
         source .env.testing-artifacts
         set +a
+        RUST_VERSION=$(./tools/scripts/get-rust-version.sh)
         echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
         echo "RUST_VERSION=$RUST_VERSION" >> "$GITHUB_ENV"
         echo "ZCASH_VERSION=$ZCASH_VERSION" >> "$GITHUB_ENV"
@@ -64,7 +73,7 @@ jobs:
           zingodevops/zaino-ci:latest
           zingodevops/zaino-ci:${{ steps.versions.outputs.sha_short }}
           zingodevops/zaino-ci:${{ steps.taggen.outputs.tag }}
-        push: true
+        push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
         build-args: |
           RUST_VERSION=${{ env.RUST_VERSION }}
           ZCASH_VERSION=${{ env.ZCASH_VERSION }}

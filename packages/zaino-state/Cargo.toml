@@ -57,6 +57,7 @@ chrono = { workspace = true }
 indexmap = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 futures = { workspace = true }
 tonic = { workspace = true }
 dashmap = { workspace = true }
@@ -87,4 +88,3 @@ rand = "0.9.4"
 
 [build-dependencies]
 whoami = { workspace = true }
-cargo-lock = { workspace = true }
