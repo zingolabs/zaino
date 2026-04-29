@@ -99,8 +99,12 @@ use super::capability::Capability;
 /// provided methods cover the duplicated `status()`, `wait_until_ready()`,
 /// `shutdown()`, `clean_trailing()`, and the background task's per-iteration
 /// `zaino_db_handler_sleep()`.
+///
+/// Note: This trait ties any DB version that uses it to Lmdb.
+/// In the future we may want to support alternative DB backends.
+/// When this happens, we will have to lean away from this trait to some extent.
 #[async_trait]
-pub(super) trait DbLifecycle: Sync {
+pub(super) trait LmdbLifecycle: Sync {
     fn env(&self) -> &Arc<Environment>;
     fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>>;
     fn cancel_token(&self) -> &CancellationToken;
@@ -746,7 +750,7 @@ mod shutdown {
         status: NamedAtomicStatus,
     }
 
-    impl DbLifecycle for FakeDb {
+    impl LmdbLifecycle for FakeDb {
         fn env(&self) -> &Arc<Environment> {
             &self.env
         }
@@ -798,7 +802,7 @@ mod shutdown {
         }
         barrier.wait().await;
 
-        DbLifecycle::shutdown(db.as_ref()).await.unwrap();
+        LmdbLifecycle::shutdown(db.as_ref()).await.unwrap();
 
         for (i, w) in waiters.into_iter().enumerate() {
             timeout(Duration::from_millis(200), w)

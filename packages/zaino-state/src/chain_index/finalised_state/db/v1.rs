@@ -54,7 +54,7 @@ use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 use zebra_chain::parameters::NetworkKind;
 use zebra_state::HashOrHeight;
 
-use super::DbLifecycle;
+use super::LmdbLifecycle;
 
 use async_trait::async_trait;
 use corez::io::{self, Read};
@@ -147,15 +147,15 @@ pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
 #[async_trait]
 impl DbCore for DbV1 {
     fn status(&self) -> StatusType {
-        DbLifecycle::status(self)
+        LmdbLifecycle::status(self)
     }
 
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        DbLifecycle::shutdown(self).await
+        LmdbLifecycle::shutdown(self).await
     }
 }
 
-impl DbLifecycle for DbV1 {
+impl LmdbLifecycle for DbV1 {
     fn env(&self) -> &Arc<Environment> {
         &self.env
     }
