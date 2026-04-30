@@ -172,6 +172,30 @@ pub struct AddressDelta {
 }
 
 impl AddressDelta {
+    /// Creates a transparent address delta from already-indexed address-history data.
+    ///
+    /// This is used by backing stores and test sources that already know the
+    /// address, value, transaction location, and input/output index. It avoids
+    /// forcing those implementations to build partial `TransactionObject`
+    /// values solely to immediately decompose them again.
+    pub fn new(
+        satoshis: i64,
+        txid: String,
+        index: u32,
+        height: u32,
+        address: String,
+        block_index: Option<u32>,
+    ) -> Self {
+        Self {
+            satoshis,
+            txid,
+            index,
+            height,
+            address,
+            block_index,
+        }
+    }
+
     /// Create a delta from a transaction input (spend - negative value)
     pub fn from_input(
         input: &Input,

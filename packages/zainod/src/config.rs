@@ -93,9 +93,7 @@ impl ZainodConfig {
     /// Performs checks on config data.
     pub(crate) fn check_config(&self) -> Result<(), IndexerError> {
         // Check TLS settings.
-        if self.grpc_settings.tls.is_some() {
-            let tls = self.grpc_settings.tls.as_ref().expect("to be Some");
-
+        if let Some(ref tls) = self.grpc_settings.tls {
             if !std::path::Path::new(&tls.cert_path).exists() {
                 return Err(IndexerError::ConfigError(format!(
                     "TLS is enabled, but certificate path {:?} does not exist.",

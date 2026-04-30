@@ -7,8 +7,12 @@ and this library adheres to Rust's notion of
 
 ## Unreleased
 - [943] Zallet regtest fixes
+- [1065] Move functionality to BlockChainSource: t-address rpcs
 
-### Added 
+### Added
+- `zaino-state::chain_index::source::BlockchainSource` and
+  `zaino-state::chain_index::ChainIndex` now expose transparent-address query
+  methods for deltas, balances, txids, and UTXOs.
 ### Changed
 - `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`
   whose `sapling` and `orchard` fields are optional. In regtest mode, these

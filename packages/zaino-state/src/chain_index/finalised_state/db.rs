@@ -71,18 +71,128 @@ use crate::{
     config::BlockCacheConfig,
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+    NamedAtomicStatus, OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::finalised_state::capability::TransparentHistExt, AddrScript, Outpoint};
 
 use async_trait::async_trait;
-use std::time::Duration;
-use tokio::time::{interval, MissedTickBehavior};
+use lmdb::{Database, DatabaseFlags, Environment};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::{
+    task::JoinHandle,
+    time::{interval, sleep, MissedTickBehavior},
+};
+use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use super::capability::Capability;
+
+/// Lifecycle scaffolding shared by every `DbVx` finalised-state backend.
+///
+/// Implementors expose the four shared struct fields via required getters;
+/// provided methods cover the duplicated `status()`, `wait_until_ready()`,
+/// `shutdown()`, `clean_trailing()`, and the background task's per-iteration
+/// `zaino_db_handler_sleep()`.
+///
+/// Note: This trait ties any DB version that uses it to Lmdb.
+/// In the future we may want to support alternative DB backends.
+/// When this happens, we will have to lean away from this trait to some extent.
+#[async_trait]
+pub(super) trait LmdbLifecycle: Sync {
+    fn env(&self) -> &Arc<Environment>;
+    fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>>;
+    fn cancel_token(&self) -> &CancellationToken;
+    fn status_atomic(&self) -> &NamedAtomicStatus;
+
+    fn status(&self) -> StatusType {
+        self.status_atomic().load()
+    }
+
+    async fn wait_until_ready(&self) {
+        let mut ticker = interval(Duration::from_millis(100));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            if self.status_atomic().load() == StatusType::Ready {
+                break;
+            }
+        }
+    }
+
+    async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
+        let txn = self.env().begin_ro_txn()?;
+        drop(txn);
+        Ok(())
+    }
+
+    async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
+        tokio::select! {
+            _ = sleep(Duration::from_secs(5)) => {},
+            _ = maintenance.tick() => {
+                if let Err(e) = self.clean_trailing().await {
+                    warn!("clean_trailing failed: {}", e);
+                }
+            }
+            _ = self.cancel_token().cancelled() => {},
+        }
+    }
+
+    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+        self.status_atomic().store(StatusType::Closing);
+        self.cancel_token().cancel();
+
+        let taken = self
+            .db_handler_slot()
+            .lock()
+            .expect("db_handler mutex poisoned")
+            .take();
+        if let Some(mut handle) = taken {
+            let timeout = sleep(Duration::from_secs(5));
+            tokio::pin!(timeout);
+
+            tokio::select! {
+                res = &mut handle => {
+                    match res {
+                        Ok(_) => {}
+                        Err(e) if e.is_cancelled() => {}
+                        Err(e) => warn!("background task ended with error: {e:?}"),
+                    }
+                }
+                _ = &mut timeout => {
+                    warn!("background task didn't exit in time – aborting");
+                    handle.abort();
+                }
+            }
+        }
+
+        let _ = self.clean_trailing().await;
+        if let Err(e) = self.env().sync(true) {
+            warn!("LMDB fsync before close failed: {e}");
+        }
+        Ok(())
+    }
+}
+
+/// Open an LMDB database if present, otherwise create it.
+pub(super) async fn open_or_create_db(
+    env: &Environment,
+    name: &str,
+    flags: DatabaseFlags,
+) -> Result<Database, FinalisedStateError> {
+    match env.open_db(Some(name)) {
+        Ok(db) => Ok(db),
+        Err(lmdb::Error::NotFound) => env
+            .create_db(Some(name), flags)
+            .map_err(FinalisedStateError::LmdbError),
+        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+    }
+}
 
 /// Version subdirectory names for versioned on-disk layouts.
 ///
@@ -190,8 +300,8 @@ impl DbCore for DbBackend {
     /// This is a thin delegation wrapper over the concrete implementation.
     fn status(&self) -> StatusType {
         match self {
-            Self::V0(db) => db.status(),
-            Self::V1(db) => db.status(),
+            Self::V0(db) => DbCore::status(db),
+            Self::V1(db) => DbCore::status(db),
         }
     }
 
@@ -200,8 +310,8 @@ impl DbCore for DbBackend {
     /// This is a thin delegation wrapper over the concrete implementation.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => db.shutdown().await,
-            Self::V1(db) => db.shutdown().await,
+            Self::V0(db) => DbCore::shutdown(db).await,
+            Self::V1(db) => DbCore::shutdown(db).await,
         }
     }
 }
@@ -624,5 +734,82 @@ impl TransparentHistExt for DbBackend {
                 "transparent_history",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod shutdown {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::{sync::Barrier, time::timeout};
+
+    struct FakeDb {
+        env: Arc<Environment>,
+        db_handler: Mutex<Option<JoinHandle<()>>>,
+        cancel_token: CancellationToken,
+        status: NamedAtomicStatus,
+    }
+
+    impl LmdbLifecycle for FakeDb {
+        fn env(&self) -> &Arc<Environment> {
+            &self.env
+        }
+        fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>> {
+            &self.db_handler
+        }
+        fn cancel_token(&self) -> &CancellationToken {
+            &self.cancel_token
+        }
+        fn status_atomic(&self) -> &NamedAtomicStatus {
+            &self.status
+        }
+    }
+
+    /// Regression for #1033 — every task awaiting cancellation must observe shutdown,
+    /// not just one. Originally written against the `Notify::notify_one` implementation
+    /// (which strands N-1 waiters); now passes against `CancellationToken::cancel`,
+    /// which wakes all current waiters and persists state for late subscribers.
+    #[tokio::test]
+    async fn wakes_every_shutdown_waiter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = Arc::new(
+            lmdb::Environment::new()
+                .set_map_size(1 << 20)
+                .open(tmp.path())
+                .unwrap(),
+        );
+        let db = Arc::new(FakeDb {
+            env,
+            db_handler: Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+            status: NamedAtomicStatus::new("test", StatusType::Ready),
+        });
+
+        const N: usize = 3;
+        let woke = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(N + 1));
+
+        let mut waiters = Vec::with_capacity(N);
+        for _ in 0..N {
+            let token = db.cancel_token.clone();
+            let woke = Arc::clone(&woke);
+            let barrier = Arc::clone(&barrier);
+            waiters.push(tokio::spawn(async move {
+                barrier.wait().await;
+                token.cancelled().await;
+                woke.fetch_add(1, Ordering::Relaxed);
+            }));
+        }
+        barrier.wait().await;
+
+        LmdbLifecycle::shutdown(db.as_ref()).await.unwrap();
+
+        for (i, w) in waiters.into_iter().enumerate() {
+            timeout(Duration::from_millis(200), w)
+                .await
+                .unwrap_or_else(|_| panic!("waiter {i} stranded: cancel_token woke only a subset"))
+                .unwrap();
+        }
+        assert_eq!(woke.load(Ordering::Relaxed), N);
     }
 }

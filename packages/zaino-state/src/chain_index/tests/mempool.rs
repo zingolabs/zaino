@@ -11,7 +11,7 @@ use zebra_chain::serialization::ZcashDeserialize as _;
 use crate::{
     chain_index::{
         mempool::MempoolSubscriber,
-        source::test::MockchainSource,
+        source::mockchain_source::MockchainSource,
         tests::{
             poll::poll_until,
             vectors::{build_active_mockchain_source, load_test_vectors, TestVectorBlockData},

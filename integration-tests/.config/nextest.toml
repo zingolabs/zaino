@@ -155,7 +155,6 @@ default-filter = """
         test(/^zcashd::get::lightd_info$/) |
         test(/^zcashd::get::mining_info$/) |
         test(/^zcashd::get::peer_info$/) |
-        test(/^zcashd::get::subtree_roots$/) |
         test(/^zcashd::validation::validate_address$/) |
         test(/^zcashd::zcash_indexer::get_best_blockhash$/) |
         test(/^zcashd::zcash_indexer::get_block_count$/) |
@@ -180,9 +179,7 @@ default-filter = """
         test(/^zebrad::fetch_service::connect_to_node_get_info$/) |
         test(/^zebrad::get::best_blockhash$/) |
         test(/^zebrad::get::block_count$/) |
-        test(/^zebrad::get::block_object$/) |
         test(/^zebrad::get::block_range_nullifiers$/) |
-        test(/^zebrad::get::difficulty$/) |
         test(/^zebrad::get::get_network_sol_ps$/) |
         test(/^zebrad::get::latest_block$/) |
         test(/^zebrad::get::subtree_roots$/) |
