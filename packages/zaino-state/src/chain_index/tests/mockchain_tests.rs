@@ -5,12 +5,18 @@ use zebra_chain::serialization::ZcashDeserializeInto;
 
 use crate::{
     chain_index::{
-        source::mockchain_source::MockchainSource,
+        source::{
+            mockchain_source::MockchainSource,
+            BlockchainSource,
+        },
         tests::vectors::{load_test_vectors, TestVectorBlockData},
         types::{BestChainLocation, TransactionHash},
         ChainIndex, NodeBackedChainIndexSubscriber,
     },
     StatusType,
+};
+use zaino_fetch::jsonrpsee::response::address_deltas::{
+    GetAddressDeltasParams, GetAddressDeltasResponse,
 };
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 

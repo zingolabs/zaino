@@ -148,6 +148,14 @@ pub(crate) struct MockchainSource {
     >,
     active_chain_height: Arc<AtomicU32>,
     force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
+    /// Pings every subscriber registered via
+    /// [`BlockchainSource::change_subscribe`] when [`Self::mine_blocks`]
+    /// advances the active height, so each can wake from its interval
+    /// timer immediately. `broadcast` (over `Notify`) gives every
+    /// subscriber its own buffered receiver, so a `mine_blocks` that
+    /// fires while one subsystem is mid-iteration is preserved on its
+    /// receiver and consumed on the next `recv().await`.
+    change_broadcast: tokio::sync::broadcast::Sender<()>,
 }
 
 impl MockchainSource {
@@ -184,6 +192,7 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
+            change_broadcast: tokio::sync::broadcast::channel(16).0,
         }
     }
 
@@ -232,6 +241,7 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
+            change_broadcast: tokio::sync::broadcast::channel(16).0,
         }
     }
 
@@ -245,16 +255,40 @@ impl MockchainSource {
     pub(crate) fn mine_blocks(&self, blocks: u32) {
         // len() returns one-indexed length, height is zero-indexed.
         let max_height = self.max_chain_height();
-        let _ =
-            self.active_chain_height
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    let target = current.saturating_add(blocks).min(max_height);
-                    if target == current {
-                        None
-                    } else {
-                        Some(target)
-                    }
-                });
+        let advanced = self
+            .active_chain_height
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                let target = current.saturating_add(blocks).min(max_height);
+                if target == current {
+                    None
+                } else {
+                    Some(target)
+                }
+            })
+            .is_ok();
+        if advanced {
+            let _ = self.change_broadcast.send(());
+        }
+    }
+
+    /// Like [`Self::mine_blocks`] but does *not* fire the source's
+    /// change-notify. Lets the chain-index sync loop fall through to its
+    /// timer instead of waking immediately — the only way to put the
+    /// chain-index *behind* the mempool in tests, since the mempool's
+    /// serve loop polls `get_best_block_hash` directly and always
+    /// notices, notify or not.
+    pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
+        let max_height = self.max_chain_height();
+        let _ = self
+            .active_chain_height
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                let target = current.saturating_add(blocks).min(max_height);
+                if target == current {
+                    None
+                } else {
+                    Some(target)
+                }
+            });
     }
 
     pub(crate) fn max_chain_height(&self) -> u32 {
@@ -264,6 +298,15 @@ impl MockchainSource {
 
     pub(crate) fn active_height(&self) -> u32 {
         self.active_chain_height.load(Ordering::SeqCst)
+    }
+
+    /// Returns the hash of the currently-active block (the tip the source
+    /// is reporting, which may be lower than `max_chain_height` when
+    /// `mine_blocks*` has not yet advanced through every block). Used by
+    /// tip-skew tests to compare the mempool's tracked tip against the
+    /// expected post-mining hash.
+    pub(crate) fn active_block_hash(&self) -> BlockHash {
+        self.hashes[self.active_height() as usize]
     }
 
     fn valid_height(&self, height: u32) -> Option<usize> {
@@ -881,5 +924,65 @@ impl BlockchainSource for MockchainSource {
         Box<dyn Error + Send + Sync>,
     > {
         Ok(None)
+    }
+
+    fn change_subscribe(&self) -> Option<tokio::sync::broadcast::Receiver<()>> {
+        Some(self.change_broadcast.subscribe())
+    }
+}
+
+#[cfg(test)]
+mod mine_blocks {
+    use crate::chain_index::source::BlockchainSource;
+    use crate::chain_index::tests::vectors::{build_active_mockchain_source, load_test_vectors};
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    /// `mine_blocks` must fire `change_broadcast`; `mine_blocks_silent`
+    /// must not. The two methods are *defined* by that distinction —
+    /// `mine_blocks_silent` exists solely to advance the active height
+    /// without waking subscribers, and the skew tests rely on that.
+    ///
+    /// Regression: the broadcast wiring was previously dropped in a
+    /// `source.rs` → `source/` split refactor, leaving both methods
+    /// behaviourally identical (both no-op on the broadcast). Compile
+    /// passed and trait dispatch still found the default `change_subscribe
+    /// → None`, so the silent test setups degenerated silently. This
+    /// test pins the contract at the source so any future drift of the
+    /// same shape (field removed, override removed, `send` call dropped)
+    /// fails here instead of leaking into the higher-level skew tests.
+    #[test]
+    fn mine_blocks_fires_broadcast_silent_does_not() {
+        let vectors = load_test_vectors().expect("test vectors load");
+        // active_height = 0 leaves room for both mine calls to advance.
+        let mockchain = build_active_mockchain_source(0, vectors.blocks);
+
+        let mut rx = mockchain
+            .change_subscribe()
+            .expect("MockchainSource must override change_subscribe to return Some");
+
+        assert!(
+            matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+            "subscriber should start with an empty buffer"
+        );
+
+        mockchain.mine_blocks(1);
+        rx.try_recv().expect(
+            "mine_blocks must fire change_broadcast — \
+             if this fails, the broadcast wiring on MockchainSource has \
+             regressed (likely a missing field, missing send, or missing \
+             change_subscribe override)",
+        );
+
+        while rx.try_recv().is_ok() {}
+
+        mockchain.mine_blocks_silent(1);
+        match rx.try_recv() {
+            Err(TryRecvError::Empty) => {}
+            other => panic!(
+                "mine_blocks_silent must NOT fire change_broadcast \
+                 (the only behavioural difference from mine_blocks); \
+                 got {other:?}"
+            ),
+        }
     }
 }
