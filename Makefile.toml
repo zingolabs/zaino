@@ -132,6 +132,7 @@ script.post = ""
 
 [tasks.init-podman-volumes]
 description = "Initialize named podman volumes for container builds"
+script_runner = "bash"
 script = '''
 for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry; do
     if ! podman volume inspect "$vol" >/dev/null 2>&1; then
@@ -178,6 +179,7 @@ echo "CONTAINER_DIR_HASH=$HASH"
 [tasks.ensure-image-exists]
 description = "Ensure the image exists locally, building if needed"
 dependencies = ["init-podman-volumes"]
+script_runner = "bash"
 extend = "base-script"
 script.main = '''
 if ! podman image inspect ${IMAGE_NAME}:${TAG} > /dev/null 2>&1; then

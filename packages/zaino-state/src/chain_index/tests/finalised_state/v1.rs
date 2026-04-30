@@ -2,7 +2,8 @@
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use hex::ToHex;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
@@ -26,6 +27,22 @@ use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Heigh
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{AddrScript, Outpoint};
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
 
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockchainSource,
@@ -216,12 +233,16 @@ async fn save_db_to_file_and_reload() {
 async fn load_db_backend_from_file() {
     init_tracing();
 
-    let db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let fixture_db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("chain_index")
         .join("tests")
         .join("vectors")
         .join("v1_test_db");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("v1_test_db");
+    copy_dir_recursive(&fixture_db_path, &db_path).unwrap();
+
     let config = BlockCacheConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
