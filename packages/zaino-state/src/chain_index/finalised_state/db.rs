@@ -277,6 +277,42 @@ impl DbBackend {
             Self::V1(_) => Capability::LATEST,
         }
     }
+
+    /// Applies a full block to the native V1 txoutset index.
+    pub(crate) async fn apply_txoutset_block(
+        &self,
+        block: Arc<zebra_chain::block::Block>,
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("TXOUTSET_EXT")),
+            Self::V1(db) => db.apply_txoutset_block(block).await,
+        }
+    }
+
+    /// Returns the highest block height already applied to the native V1 txoutset index.
+    pub(crate) async fn txoutset_built_to_height(
+        &self,
+    ) -> Result<Option<Height>, FinalisedStateError> {
+        match self {
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("TXOUTSET_EXT")),
+            Self::V1(db) => db.txoutset_built_to_height().await,
+        }
+    }
+
+    /// Runs txoutset migration sanity checks and marks the native V1 txoutset index complete.
+    pub(crate) async fn finalize_txoutset_migration(
+        &self,
+        expected_height: Height,
+        expected_hash: BlockHash,
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("TXOUTSET_EXT")),
+            Self::V1(db) => {
+                db.finalize_txoutset_migration(expected_height, expected_hash)
+                    .await
+            }
+        }
+    }
 }
 
 impl From<DbV0> for DbBackend {

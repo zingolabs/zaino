@@ -6,6 +6,138 @@ const TXOUTSET_META_KEY: &[u8] = b"txoutset_meta";
 const TXOUTSET_NOT_STARTED_HEIGHT: u32 = u32::MAX;
 
 impl DbV1 {
+    /// Applies a full Zebra block to the native txoutset tables and commits it atomically.
+    pub(crate) async fn apply_txoutset_block(
+        &self,
+        block: Arc<zebra_chain::block::Block>,
+    ) -> Result<(), FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let mut txn = self.env.begin_rw_txn()?;
+            self.apply_txoutset_block_blocking(&mut txn, block.as_ref())?;
+            txn.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Returns the highest height already applied to the txoutset index, if any.
+    pub(crate) async fn txoutset_built_to_height(
+        &self,
+    ) -> Result<Option<Height>, FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            let meta = self.read_txoutset_meta_from_txn(&txn)?;
+            if meta.built_to_height() == TXOUTSET_NOT_STARTED_HEIGHT {
+                Ok(None)
+            } else {
+                Ok(Some(Height(meta.built_to_height())))
+            }
+        })
+    }
+
+    /// Verifies the txoutset tables and marks migration complete.
+    pub(crate) async fn finalize_txoutset_migration(
+        &self,
+        expected_height: Height,
+        expected_hash: BlockHash,
+    ) -> Result<(), FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let mut txn = self.env.begin_rw_txn()?;
+            let meta = self.read_txoutset_meta_from_txn(&txn)?;
+
+            if meta.built_to_height() != expected_height.0 {
+                return Err(FinalisedStateError::Custom(format!(
+                    "txoutset migration sanity check failed: built height {}, expected {}",
+                    meta.built_to_height(),
+                    expected_height.0
+                )));
+            }
+            if meta.best_block_hash() != &expected_hash.0 {
+                return Err(FinalisedStateError::Custom(
+                    "txoutset migration sanity check failed: best block hash mismatch".into(),
+                ));
+            }
+
+            let mut txouts = 0u64;
+            let mut total_amount_zat = 0u64;
+            {
+                let mut utxo_cursor = txn.open_ro_cursor(self.txoutset_utxos)?;
+                for (outpoint_key, utxo_bytes) in utxo_cursor.iter() {
+                    let entry =
+                        StoredEntryVar::<TxOutSetUtxo>::from_bytes(utxo_bytes).map_err(|e| {
+                            FinalisedStateError::Custom(format!("corrupt txoutset UTXO entry: {e}"))
+                        })?;
+                    if !entry.verify(outpoint_key) {
+                        return Err(FinalisedStateError::Custom(
+                            "txoutset migration sanity check failed: UTXO checksum mismatch".into(),
+                        ));
+                    }
+                    txouts = txouts.checked_add(1).ok_or_else(|| {
+                        FinalisedStateError::Custom("txoutset txout counter overflow".into())
+                    })?;
+                    total_amount_zat = total_amount_zat
+                        .checked_add(entry.inner().value_zat())
+                        .ok_or_else(|| {
+                            FinalisedStateError::Custom(
+                                "txoutset total amount counter overflow".into(),
+                            )
+                        })?;
+                }
+            }
+
+            if txouts != meta.txouts() || total_amount_zat != meta.total_amount_zat() {
+                return Err(FinalisedStateError::Custom(format!(
+                    "txoutset migration sanity check failed: aggregate mismatch \
+                     (txouts {txouts}/{}, total {total_amount_zat}/{})",
+                    meta.txouts(),
+                    meta.total_amount_zat()
+                )));
+            }
+
+            let mut txout_count_sum = 0u64;
+            {
+                let mut tx_count_cursor = txn.open_ro_cursor(self.txoutset_tx_counts)?;
+                for (txid_key, count_bytes) in tx_count_cursor.iter() {
+                    let entry = StoredEntryFixed::<TxOutSetTxCount>::from_bytes(count_bytes)
+                        .map_err(|e| {
+                            FinalisedStateError::Custom(format!(
+                                "corrupt txoutset tx count entry: {e}"
+                            ))
+                        })?;
+                    if !entry.verify(txid_key) {
+                        return Err(FinalisedStateError::Custom(
+                            "txoutset migration sanity check failed: tx count checksum mismatch"
+                                .into(),
+                        ));
+                    }
+                    txout_count_sum = txout_count_sum
+                        .checked_add(u64::from(entry.inner().count()))
+                        .ok_or_else(|| {
+                            FinalisedStateError::Custom(
+                                "txoutset tx count aggregate overflow".into(),
+                            )
+                        })?;
+                }
+            }
+
+            if txout_count_sum != txouts {
+                return Err(FinalisedStateError::Custom(format!(
+                    "txoutset migration sanity check failed: tx-count sum {txout_count_sum}, txouts {txouts}"
+                )));
+            }
+
+            let complete_meta = TxOutSetMeta::new(
+                meta.built_to_height(),
+                *meta.best_block_hash(),
+                true,
+                meta.txouts(),
+                meta.total_amount_zat(),
+            );
+            self.write_txoutset_meta_to_txn(&mut txn, complete_meta)?;
+            txn.commit()?;
+            Ok(())
+        })
+    }
+
     /// Applies a full Zebra block to the native txoutset tables inside an existing write transaction.
     ///
     /// This path intentionally consumes the full block, not Zaino's compact transparent records,

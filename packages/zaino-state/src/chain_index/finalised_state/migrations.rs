@@ -294,6 +294,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
         ) {
             (0, 0, 0) => Ok(MigrationStep::Migration0_0_0To1_0_0(Migration0_0_0To1_0_0)),
             (1, 0, 0) => Ok(MigrationStep::Migration1_0_0To1_1_0(Migration1_0_0To1_1_0)),
+            (1, 1, 0) => Ok(MigrationStep::Migration1_1_0To1_2_0(Migration1_1_0To1_2_0)),
             (_, _, _) => Err(FinalisedStateError::Custom(format!(
                 "Missing migration from version {}",
                 self.current_version
@@ -310,6 +311,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
 enum MigrationStep {
     Migration0_0_0To1_0_0(Migration0_0_0To1_0_0),
     Migration1_0_0To1_1_0(Migration1_0_0To1_1_0),
+    Migration1_1_0To1_2_0(Migration1_1_0To1_2_0),
 }
 
 impl MigrationStep {
@@ -320,6 +322,9 @@ impl MigrationStep {
             }
             MigrationStep::Migration1_0_0To1_1_0(_step) => {
                 <Migration1_0_0To1_1_0 as Migration<T>>::TO_VERSION
+            }
+            MigrationStep::Migration1_1_0To1_2_0(_step) => {
+                <Migration1_1_0To1_2_0 as Migration<T>>::TO_VERSION
             }
         }
     }
@@ -333,6 +338,7 @@ impl MigrationStep {
         match self {
             MigrationStep::Migration0_0_0To1_0_0(step) => step.migrate(router, cfg, source).await,
             MigrationStep::Migration1_0_0To1_1_0(step) => step.migrate(router, cfg, source).await,
+            MigrationStep::Migration1_1_0To1_2_0(step) => step.migrate(router, cfg, source).await,
         }
     }
 }
@@ -589,6 +595,109 @@ impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
         router.update_metadata(metadata).await?;
 
         info!("v1.0.0 to v1.1.0 migration complete.");
+        Ok(())
+    }
+}
+
+/// Minor migration: v1.1.0 → v1.2.0.
+///
+/// Builds the native transparent UTXO-set tables needed by `gettxoutsetinfo` without rebuilding
+/// the existing block, txid, compact-block, or transparent-history tables. The migration is
+/// validator-assisted because older Zaino records intentionally do not preserve full transparent
+/// `scriptPubKey` bytes, which are required for zcashd-compatible `hash_serialized` output.
+struct Migration1_1_0To1_2_0;
+
+#[async_trait]
+impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
+    const CURRENT_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 1,
+        patch: 0,
+    };
+
+    const TO_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 2,
+        patch: 0,
+    };
+
+    async fn migrate(
+        &self,
+        router: Arc<Router>,
+        _cfg: BlockCacheConfig,
+        source: T,
+    ) -> Result<(), FinalisedStateError> {
+        info!("Starting v1.1.0 → v1.2.0 migration (native txoutset backfill).");
+
+        let backend = router.backend(super::capability::CapabilityRequest::WriteCore)?;
+        let mut metadata = router.get_metadata().await?;
+        metadata.migration_status = MigrationStatus::FinalBuildInProgress;
+        router.update_metadata(metadata).await?;
+
+        let Some(db_height) = router.db_height().await? else {
+            metadata.version = <Self as Migration<T>>::TO_VERSION;
+            metadata.schema_hash = crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
+            metadata.migration_status = MigrationStatus::Empty;
+            router.update_metadata(metadata).await?;
+            info!("v1.1.0 to v1.2.0 migration complete for empty database.");
+            return Ok(());
+        };
+
+        let next_height = match backend.txoutset_built_to_height().await? {
+            Some(height) if height >= db_height => None,
+            Some(height) => Some(height + 1),
+            None => Some(GENESIS_HEIGHT),
+        };
+
+        if let Some(next_height) = next_height {
+            for height in next_height.0..=db_height.0 {
+                let height = Height(height);
+                let expected_hash = router.get_block_hash(height).await?.ok_or_else(|| {
+                    FinalisedStateError::Custom(format!(
+                        "missing stored block hash while backfilling txoutset at height {}",
+                        height.0
+                    ))
+                })?;
+
+                let block = source
+                    .get_block(zebra_state::HashOrHeight::Height(
+                        zebra_chain::block::Height(height.0),
+                    ))
+                    .await?
+                    .ok_or_else(|| {
+                        FinalisedStateError::Custom(format!(
+                            "validator did not return block {} for txoutset migration",
+                            height.0
+                        ))
+                    })?;
+                let actual_hash = BlockHash::from(block.hash().0);
+                if actual_hash != expected_hash {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "validator block hash mismatch during txoutset migration at height {}",
+                        height.0
+                    )));
+                }
+
+                backend.apply_txoutset_block(block).await?;
+            }
+        }
+
+        let best_hash = router.get_block_hash(db_height).await?.ok_or_else(|| {
+            FinalisedStateError::Custom(format!(
+                "missing stored best block hash while finalizing txoutset migration at height {}",
+                db_height.0
+            ))
+        })?;
+        backend
+            .finalize_txoutset_migration(db_height, best_hash)
+            .await?;
+
+        metadata.version = <Self as Migration<T>>::TO_VERSION;
+        metadata.schema_hash = crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
+        metadata.migration_status = MigrationStatus::Empty;
+        router.update_metadata(metadata).await?;
+
+        info!("v1.1.0 to v1.2.0 migration complete.");
         Ok(())
     }
 }

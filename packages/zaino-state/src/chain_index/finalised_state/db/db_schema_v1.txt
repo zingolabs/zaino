@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────────────
-#  Zaino – Finalised State Database, on-disk layout (Schema v1, 2025-08-05)
+#  Zaino – Finalised State Database, on-disk layout (Schema v1, 2026-05-01)
 # ────────────────────────────────────────────────────────────────────────────────
 #
 #  Any change to this file is a **breaking** change.  Bump the schema version,
@@ -94,7 +94,32 @@
 #           AddrScript = [20] hash  u8 script_type
 #    Val : 0x01 + CS len + raw event bytes  (multiple entries may share the key)
 #
-# 10. metadata  ―  "metadata" (ASCII)  ->  StoredEntryFixed<DbMetadata>  (singleton)
+# 10. txoutset_utxos  ―  Outpoint  ->  StoredEntryVar<TxOutSetUtxo>
+#    Key : 0x01 + Outpoint
+#           Outpoint = B prev_txid  LE(u32) prev_index
+#    Val : 0x01 + TxOutSetUtxo V1 body + [32] checksum
+#           TxOutSetUtxo =
+#              LE(u64) value_zat
+#              CS script_len + script_len × u8 script_pubkey
+#              LE(u32) height
+#              u8 is_coinbase
+#              LE(u32) tx_index
+#
+# 11. txoutset_tx_counts  ―  TransactionHash  ->  StoredEntryFixed<TxOutSetTxCount>
+#    Key : 0x01 + B txid
+#    Val : 0x01 + TxOutSetTxCount V1 body + [32] checksum
+#           TxOutSetTxCount = LE(u32) unspent_output_count
+#
+# 12. txoutset_meta  ―  "txoutset_meta" (ASCII)  ->  StoredEntryFixed<TxOutSetMeta>  (singleton)
+#    Val : 0x01 + TxOutSetMeta V1 body + [32] checksum
+#           TxOutSetMeta =
+#              LE(u32) built_to_height
+#              B best_block_hash
+#              u8 migration_complete
+#              LE(u64) txouts
+#              LE(u64) total_amount_zat
+#
+# 13. metadata  ―  "metadata" (ASCII)  ->  StoredEntryFixed<DbMetadata>  (singleton)
 #    Val : 0x01 + DbMetadata V1 body + [32] checksum
 #    DbMetadata V1 body =
 #        DbVersion version
@@ -106,7 +131,7 @@
 #
 # ─────────────────────────── Environment settings ─────────────────────────────
 #   LMDB page-size:         platform default
-#   max_dbs:                10 (see list above)
+#   max_dbs:                15 (see list above)
 #   Flags:                  MDB_NOTLS | MDB_NORDAHEAD
 #
 #   All Databases are append-only and indexed by height -> LMDB default
