@@ -36,7 +36,7 @@ use zaino_fetch::{
             z_validate_address::{
                 ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
-            GetMempoolInfoResponse, GetNetworkSolPsResponse,
+            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetTxOutSetInfoResponse,
         },
     },
 };
@@ -452,6 +452,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
         Ok(self.fetcher.get_mining_info().await?)
+    }
+
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+        Ok(self.fetcher.get_tx_out_set_info().await?)
     }
 
     /// Returns the hash of the best block (tip) of the longest chain.
