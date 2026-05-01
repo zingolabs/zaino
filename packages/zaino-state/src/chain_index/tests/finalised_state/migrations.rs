@@ -7,7 +7,8 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::{
-    BlockCoreExt as _, DbCore as _, DbRead as _, DbVersion, DbWrite as _, MigrationStatus,
+    BlockCoreExt as _, CapabilityRequest, DbCore as _, DbRead as _, DbVersion, DbWrite as _,
+    MigrationStatus,
 };
 use crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
 use crate::chain_index::finalised_state::db::DbBackend;
@@ -276,8 +277,8 @@ async fn v1_0_to_v1_1_metadata_migration() {
     // Let the filesystem settle (tests elsewhere do a brief sleep)
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // 3) Spawn ZainoDB which should detect current_version == 1.0.0 < target 1.1.0 and run the metadata
-    //    migration. We await until ready so migration completes.
+    // 3) Spawn ZainoDB which should detect current_version == 1.0.0 < latest v1 and run the
+    //    stepwise metadata and txoutset migrations. We await until ready so migration completes.
     let zaino_db = ZainoDB::spawn(v1_config, source).await.unwrap();
     zaino_db.wait_until_ready().await;
 
@@ -287,12 +288,20 @@ async fn v1_0_to_v1_1_metadata_migration() {
         post_meta.version,
         DbVersion {
             major: 1,
-            minor: 1,
+            minor: 2,
             patch: 0
         }
     );
     assert_eq!(post_meta.migration_status, MigrationStatus::Empty);
     assert_eq!(post_meta.schema_hash, DB_SCHEMA_V1_HASH);
+    let backend = zaino_db
+        .router()
+        .backend(CapabilityRequest::WriteCore)
+        .unwrap();
+    assert_eq!(
+        backend.txoutset_built_to_height().await.unwrap(),
+        Some(Height(200))
+    );
 
     zaino_db.shutdown().await.unwrap();
 }
@@ -434,11 +443,11 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // ── Phase 3: reopen at v1.1.0 – migration runs; write second half (V2) ──
+    // ── Phase 3: reopen at latest v1 – migrations run; write second half (V2) ──
     //
-    // ZainoDB detects current_version 1.0.0 < target 1.1.0 and runs
-    // Migration1_0_0To1_1_0, which is metadata-only and leaves the headers table
-    // (including our freshly-written V1 entries) untouched.
+    // ZainoDB detects current_version 1.0.0 < latest v1 and runs stepwise migrations. The
+    // 1.0.0->1.1.0 step is metadata-only and leaves the headers table (including our
+    // freshly-written V1 entries) untouched; the 1.1.0->1.2.0 step backfills txoutset data.
     let zaino_db = ZainoDB::spawn(v1_config.clone(), source.clone())
         .await
         .unwrap();
@@ -450,10 +459,10 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         post_meta.version,
         DbVersion {
             major: 1,
-            minor: 1,
+            minor: 2,
             patch: 0,
         },
-        "DB version should be 1.1.0 after migration"
+        "DB version should be latest v1 after migration"
     );
     assert_eq!(
         post_meta.migration_status,
@@ -463,6 +472,15 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
     assert_eq!(
         post_meta.schema_hash, DB_SCHEMA_V1_HASH,
         "Schema hash should be refreshed to the current value"
+    );
+    let backend = zaino_db
+        .router()
+        .backend(CapabilityRequest::WriteCore)
+        .unwrap();
+    assert_eq!(
+        backend.txoutset_built_to_height().await.unwrap(),
+        Some(Height((split - 1) as u32)),
+        "txoutset migration should backfill the existing first-half chain"
     );
 
     // Write the second half; these use the current (V2) BlockHeaderData format,

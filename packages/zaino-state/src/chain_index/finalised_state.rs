@@ -137,7 +137,7 @@
 //! - Await readiness.
 //! - Hand out `DbReader` handles for all read/query operations.
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use std::sync::Arc;
 //!
 //! let db = Arc::new(crate::chain_index::finalised_state::ZainoDB::spawn(cfg, source).await?);

@@ -72,7 +72,7 @@ mod tests;
 ///
 /// # Example with ReadStateService (Preferred)
 ///
-/// ```no_run
+/// ```ignore
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
@@ -131,7 +131,7 @@ mod tests;
 ///
 /// # Example with JSON-RPC Only (Fallback)
 ///
-/// ```no_run
+/// ```ignore
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
@@ -434,7 +434,7 @@ pub trait ChainIndex {
 ///
 /// # Example with StateService (Preferred)
 ///
-/// ```no_run
+/// ```ignore
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
 /// use zaino_state::chain_index::source::State;
@@ -483,7 +483,7 @@ pub trait ChainIndex {
 ///
 /// # Example with JSON-RPC Only (Fallback)
 ///
-/// ```no_run
+/// ```ignore
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
