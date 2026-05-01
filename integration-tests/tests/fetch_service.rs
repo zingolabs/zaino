@@ -720,6 +720,40 @@ async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator:
 }
 
 #[allow(deprecated)]
+async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
+    validator: &ValidatorKind,
+) {
+    let mut test_manager =
+        TestManager::<V, FetchService>::launch(validator, None, None, None, true, false, false)
+            .await
+            .unwrap();
+
+    let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
+
+    let fetch_service_txoutset_info = fetch_service_subscriber
+        .get_tx_out_set_info()
+        .await
+        .unwrap();
+
+    let jsonrpc_client = JsonRpSeeConnector::new_with_basic_auth(
+        test_node_and_return_url(
+            &test_manager.full_node_rpc_listen_address.to_string(),
+            None,
+            Some("xxxxxx".to_string()),
+            Some("xxxxxx".to_string()),
+        )
+        .await
+        .unwrap(),
+        "xxxxxx".to_string(),
+        "xxxxxx".to_string(),
+    )
+    .unwrap();
+
+    let rpc_txoutset_info = jsonrpc_client.get_tx_out_set_info().await.unwrap();
+    assert_eq!(fetch_service_txoutset_info, rpc_txoutset_info);
+}
+
+#[allow(deprecated)]
 async fn assert_fetch_service_peerinfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
     let mut test_manager =
         TestManager::<V, FetchService>::launch(validator, None, None, None, true, false, false)
@@ -2398,6 +2432,12 @@ mod zcashd {
         #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn get_network_sol_ps() {
             assert_fetch_service_getnetworksols_matches_rpc::<Zcashd>(&ValidatorKind::Zcashd).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        pub(crate) async fn get_tx_out_set_info() {
+            assert_fetch_service_gettxoutsetinfo_matches_rpc::<Zcashd>(&ValidatorKind::Zcashd)
+                .await;
         }
     }
 }

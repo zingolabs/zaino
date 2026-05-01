@@ -487,6 +487,26 @@ async fn get_mempool_info_inner() {
     test_manager.close().await;
 }
 
+async fn get_tx_out_set_info_inner() {
+    let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
+        create_zcashd_test_manager_and_fetch_services(false).await;
+
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
+
+    let zcashd_txoutset_info = zcashd_subscriber.get_tx_out_set_info().await.unwrap();
+    let zaino_txoutset_info = zaino_subscriber.get_tx_out_set_info().await.unwrap();
+
+    assert_eq!(zcashd_txoutset_info, zaino_txoutset_info);
+
+    test_manager.close().await;
+}
+
 async fn z_get_treestate_inner() {
     let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
         create_zcashd_test_manager_and_fetch_services(true).await;
@@ -853,6 +873,11 @@ mod zcashd {
             }
 
             test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_tx_out_set_info() {
+            get_tx_out_set_info_inner().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
