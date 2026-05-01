@@ -252,6 +252,30 @@ impl ResponseToError for GetNetworkSolPsResponse {
     type RpcError = Infallible;
 }
 
+/// Response to a `gettxoutsetinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetTxOutSetInfoResponse {
+    /// The current block height.
+    pub height: u64,
+    /// The best block hash.
+    #[serde(rename = "bestblock")]
+    pub best_block: String,
+    /// The number of transactions with unspent transparent outputs.
+    pub transactions: u64,
+    /// The number of unspent transparent outputs.
+    pub txouts: u64,
+    /// The serialized size of the UTXO set.
+    pub bytes_serialized: u64,
+    /// The serialized UTXO set hash.
+    pub hash_serialized: String,
+    /// The total transparent UTXO amount in ZEC.
+    pub total_amount: f64,
+}
+
+impl ResponseToError for GetTxOutSetInfoResponse {
+    type RpcError = Infallible;
+}
+
 fn default_header() -> Height {
     Height(0)
 }

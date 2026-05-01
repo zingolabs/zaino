@@ -36,8 +36,8 @@ use crate::jsonrpsee::{
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
         GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        GetTreestateResponse, GetTxOutSetInfoResponse, GetUtxosError, GetUtxosResponse,
+        SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
@@ -812,6 +812,17 @@ impl JsonRpSeeConnector {
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
     pub async fn get_mining_info(&self) -> Result<GetMiningInfoWire, RpcRequestError<Infallible>> {
         self.send_request("getmininginfo", ()).await
+    }
+
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_tx_out_set_info(
+        &self,
+    ) -> Result<GetTxOutSetInfoResponse, RpcRequestError<Infallible>> {
+        self.send_request("gettxoutsetinfo", ()).await
     }
 
     /// Returns the estimated network solutions per second based on the last n blocks.
