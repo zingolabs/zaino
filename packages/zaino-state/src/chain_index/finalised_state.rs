@@ -650,6 +650,9 @@ impl ZainoDB {
                 parent_chainwork = chain_block.context.chainwork;
 
                 self.write_block(chain_block).await?;
+                if self.db.get_metadata().await?.version() >= DB_VERSION_V1 {
+                    self.db.apply_txoutset_block(Arc::clone(&block)).await?;
+                }
             }
 
             Ok(())

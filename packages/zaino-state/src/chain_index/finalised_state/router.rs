@@ -293,6 +293,16 @@ impl Router {
     pub(crate) fn set_primary_mask(&self, new_mask: Capability) {
         self.primary_mask.store(new_mask.bits(), Ordering::Release);
     }
+
+    /// Applies a full block to the backend currently serving writes for native txoutset upkeep.
+    pub(crate) async fn apply_txoutset_block(
+        &self,
+        block: Arc<zebra_chain::block::Block>,
+    ) -> Result<(), FinalisedStateError> {
+        self.backend(CapabilityRequest::WriteCore)?
+            .apply_txoutset_block(block)
+            .await
+    }
 }
 
 // ***** Core DB functionality *****

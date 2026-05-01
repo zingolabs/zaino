@@ -256,7 +256,13 @@ impl DbV1 {
             }
         }
 
-        meta = TxOutSetMeta::new(height, block_hash.0, false, txouts, total_amount_zat);
+        meta = TxOutSetMeta::new(
+            height,
+            block_hash.0,
+            meta.migration_complete(),
+            txouts,
+            total_amount_zat,
+        );
         self.write_txoutset_meta_to_txn(txn, meta)
     }
 
