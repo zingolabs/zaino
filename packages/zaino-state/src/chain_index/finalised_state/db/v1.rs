@@ -33,7 +33,9 @@ use crate::{
             },
             entry::{StoredEntryFixed, StoredEntryVar},
         },
-        types::{TransactionHash, GENESIS_HEIGHT},
+        types::{
+            Outpoint, TransactionHash, TxOutSetMeta, TxOutSetTxCount, TxOutSetUtxo, GENESIS_HEIGHT,
+        },
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
@@ -47,7 +49,7 @@ use crate::{
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{
     chain_index::{finalised_state::capability::TransparentHistExt, types::AddrEventBytes},
-    AddrHistRecord, AddrScript, Outpoint,
+    AddrHistRecord, AddrScript,
 };
 
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
@@ -90,6 +92,7 @@ pub(crate) mod block_transparent;
 
 pub(crate) mod compact_block;
 pub(crate) mod indexed_block;
+pub(crate) mod txoutset;
 
 #[cfg(feature = "transparent_address_history_experimental")]
 pub(crate) mod transparent_address_history;
