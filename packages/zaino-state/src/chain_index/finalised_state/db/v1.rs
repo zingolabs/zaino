@@ -220,6 +220,22 @@ pub(crate) struct DbV1 {
     /// Used for hash based fetch of the best chain (and random access).
     heights: Database,
 
+    /// Native gettxoutsetinfo UTXOs: `Outpoint` -> `StoredEntryVar<TxOutSetUtxo>`
+    ///
+    /// Stores full transparent output scripts so zcashd-compatible serialized UTXO-set hashes can
+    /// be computed without lossy script reconstruction.
+    txoutset_utxos: Database,
+
+    /// Native gettxoutsetinfo tx counts: `TransactionHash` -> `StoredEntryFixed<TxOutSetTxCount>`
+    ///
+    /// Tracks how many unspent transparent outputs remain for each transaction.
+    txoutset_tx_counts: Database,
+
+    /// Native gettxoutsetinfo metadata: singleton entry -> `StoredEntryFixed<TxOutSetMeta>`
+    ///
+    /// Tracks migration/build status and aggregate counters for the transparent UTXO set.
+    txoutset_meta: Database,
+
     /// Spent outpoints: `Outpoint` -> `StoredEntryFixed<Vec<TxLocation>>`
     ///
     /// Used to check spent status of given outpoints, retuning spending tx.
@@ -317,7 +333,7 @@ impl DbV1 {
 
         // Open LMDB environment and set environmental details.
         let env = Environment::new()
-            .set_max_dbs(12)
+            .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
             .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
@@ -337,6 +353,13 @@ impl DbV1 {
             super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
                 .await?;
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
+        let txoutset_utxos =
+            super::open_or_create_db(&env, "txoutset_utxos_1_2_0", DatabaseFlags::empty()).await?;
+        let txoutset_tx_counts =
+            super::open_or_create_db(&env, "txoutset_tx_counts_1_2_0", DatabaseFlags::empty())
+                .await?;
+        let txoutset_meta =
+            super::open_or_create_db(&env, "txoutset_meta_1_2_0", DatabaseFlags::empty()).await?;
 
         let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
 
@@ -365,6 +388,9 @@ impl DbV1 {
                 orchard,
                 commitment_tree_data,
                 heights: hashes,
+                txoutset_utxos,
+                txoutset_tx_counts,
+                txoutset_meta,
                 spent,
                 address_history,
                 metadata,
@@ -388,6 +414,9 @@ impl DbV1 {
                 orchard,
                 commitment_tree_data,
                 heights: hashes,
+                txoutset_utxos,
+                txoutset_tx_counts,
+                txoutset_meta,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
@@ -427,6 +456,9 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
+            txoutset_utxos: self.txoutset_utxos,
+            txoutset_tx_counts: self.txoutset_tx_counts,
+            txoutset_meta: self.txoutset_meta,
             #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -603,6 +635,9 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
+            txoutset_utxos: self.txoutset_utxos,
+            txoutset_tx_counts: self.txoutset_tx_counts,
+            txoutset_meta: self.txoutset_meta,
             #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
             #[cfg(feature = "transparent_address_history_experimental")]

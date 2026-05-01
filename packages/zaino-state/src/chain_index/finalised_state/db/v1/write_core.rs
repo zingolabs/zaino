@@ -278,6 +278,9 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
+            txoutset_utxos: self.txoutset_utxos,
+            txoutset_tx_counts: self.txoutset_tx_counts,
+            txoutset_meta: self.txoutset_meta,
             #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -841,6 +844,9 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
+            txoutset_utxos: self.txoutset_utxos,
+            txoutset_tx_counts: self.txoutset_tx_counts,
+            txoutset_meta: self.txoutset_meta,
             #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
             #[cfg(feature = "transparent_address_history_experimental")]
