@@ -719,6 +719,279 @@ impl FixedEncodedLen for Outpoint {
     const ENCODED_LEN: usize = 32 + 4;
 }
 
+/// A transparent UTXO record for native `gettxoutsetinfo` support.
+///
+/// Unlike [`TxOutCompact`], this stores the full transparent `scriptPubKey` so Zaino can reproduce
+/// zcashd-compatible `hash_serialized` data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct TxOutSetUtxo {
+    /// Output value in zatoshis.
+    value_zat: u64,
+    /// Full transparent output script.
+    script_pubkey: Vec<u8>,
+    /// Height where this output was created.
+    height: u32,
+    /// Whether this output was created by a coinbase transaction.
+    is_coinbase: bool,
+    /// Transaction index within the creating block.
+    tx_index: u32,
+}
+
+impl TxOutSetUtxo {
+    /// Construct a new txoutset UTXO record.
+    pub fn new(
+        value_zat: u64,
+        script_pubkey: Vec<u8>,
+        height: u32,
+        is_coinbase: bool,
+        tx_index: u32,
+    ) -> Self {
+        Self {
+            value_zat,
+            script_pubkey,
+            height,
+            is_coinbase,
+            tx_index,
+        }
+    }
+
+    /// Returns the output value in zatoshis.
+    pub fn value_zat(&self) -> u64 {
+        self.value_zat
+    }
+
+    /// Returns the full transparent output script.
+    pub fn script_pubkey(&self) -> &[u8] {
+        &self.script_pubkey
+    }
+
+    /// Returns the creating block height.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Returns true if this output was created by a coinbase transaction.
+    pub fn is_coinbase(&self) -> bool {
+        self.is_coinbase
+    }
+
+    /// Returns the transaction index within the creating block.
+    pub fn tx_index(&self) -> u32 {
+        self.tx_index
+    }
+}
+
+impl ZainoVersionedSerde for TxOutSetUtxo {
+    const VERSION: u8 = version::V1;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_u64_le(&mut *w, self.value_zat)?;
+        write_vec(&mut *w, &self.script_pubkey, |w, byte| {
+            w.write_all(&[*byte])
+        })?;
+        write_u32_le(&mut *w, self.height)?;
+        w.write_all(&[u8::from(self.is_coinbase)])?;
+        write_u32_le(&mut *w, self.tx_index)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        let value_zat = read_u64_le(&mut *r)?;
+        let script_pubkey = read_vec(&mut *r, |r| {
+            let mut byte = [0u8; 1];
+            r.read_exact(&mut byte)?;
+            Ok(byte[0])
+        })?;
+        let height = read_u32_le(&mut *r)?;
+        let mut is_coinbase = [0u8; 1];
+        r.read_exact(&mut is_coinbase)?;
+        let is_coinbase = match is_coinbase[0] {
+            0 => false,
+            1 => true,
+            otherwise => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid TxOutSetUtxo is_coinbase value: {otherwise}"),
+                ))
+            }
+        };
+        let tx_index = read_u32_le(&mut *r)?;
+
+        Ok(TxOutSetUtxo::new(
+            value_zat,
+            script_pubkey,
+            height,
+            is_coinbase,
+            tx_index,
+        ))
+    }
+}
+
+/// Per-transaction count of currently unspent transparent outputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct TxOutSetTxCount {
+    /// Number of unspent outputs for this transaction.
+    count: u32,
+}
+
+impl TxOutSetTxCount {
+    /// Construct a new per-transaction UTXO count.
+    pub fn new(count: u32) -> Self {
+        Self { count }
+    }
+
+    /// Returns the count.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}
+
+impl ZainoVersionedSerde for TxOutSetTxCount {
+    const VERSION: u8 = version::V1;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_u32_le(w, self.count)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        Ok(TxOutSetTxCount::new(read_u32_le(r)?))
+    }
+}
+
+impl FixedEncodedLen for TxOutSetTxCount {
+    /// 4-byte LE count.
+    const ENCODED_LEN: usize = 4;
+}
+
+/// Native txoutset index build metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct TxOutSetMeta {
+    /// Highest height applied to the txoutset index.
+    built_to_height: u32,
+    /// Best block hash at `built_to_height`.
+    best_block_hash: [u8; 32],
+    /// Whether the validator-assisted backfill has completed.
+    migration_complete: bool,
+    /// Number of unspent transparent outputs.
+    txouts: u64,
+    /// Sum of unspent transparent output values in zatoshis.
+    total_amount_zat: u64,
+}
+
+impl TxOutSetMeta {
+    /// Construct new txoutset metadata.
+    pub fn new(
+        built_to_height: u32,
+        best_block_hash: [u8; 32],
+        migration_complete: bool,
+        txouts: u64,
+        total_amount_zat: u64,
+    ) -> Self {
+        Self {
+            built_to_height,
+            best_block_hash,
+            migration_complete,
+            txouts,
+            total_amount_zat,
+        }
+    }
+
+    /// Returns the highest height applied to the txoutset index.
+    pub fn built_to_height(&self) -> u32 {
+        self.built_to_height
+    }
+
+    /// Returns the best block hash at `built_to_height`.
+    pub fn best_block_hash(&self) -> &[u8; 32] {
+        &self.best_block_hash
+    }
+
+    /// Returns true when the validator-assisted backfill has completed.
+    pub fn migration_complete(&self) -> bool {
+        self.migration_complete
+    }
+
+    /// Returns the number of unspent transparent outputs.
+    pub fn txouts(&self) -> u64 {
+        self.txouts
+    }
+
+    /// Returns the total transparent UTXO value in zatoshis.
+    pub fn total_amount_zat(&self) -> u64 {
+        self.total_amount_zat
+    }
+}
+
+impl ZainoVersionedSerde for TxOutSetMeta {
+    const VERSION: u8 = version::V1;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_u32_le(&mut *w, self.built_to_height)?;
+        write_fixed_le::<32, _>(&mut *w, &self.best_block_hash)?;
+        w.write_all(&[u8::from(self.migration_complete)])?;
+        write_u64_le(&mut *w, self.txouts)?;
+        write_u64_le(&mut *w, self.total_amount_zat)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        let built_to_height = read_u32_le(&mut *r)?;
+        let best_block_hash = read_fixed_le::<32, _>(&mut *r)?;
+        let mut migration_complete = [0u8; 1];
+        r.read_exact(&mut migration_complete)?;
+        let migration_complete = match migration_complete[0] {
+            0 => false,
+            1 => true,
+            otherwise => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid TxOutSetMeta migration_complete value: {otherwise}"),
+                ))
+            }
+        };
+        let txouts = read_u64_le(&mut *r)?;
+        let total_amount_zat = read_u64_le(&mut *r)?;
+
+        Ok(TxOutSetMeta::new(
+            built_to_height,
+            best_block_hash,
+            migration_complete,
+            txouts,
+            total_amount_zat,
+        ))
+    }
+}
+
+impl FixedEncodedLen for TxOutSetMeta {
+    /// height + block hash + migration flag + txouts + total amount.
+    const ENCODED_LEN: usize = 4 + 32 + 1 + 8 + 8;
+}
+
 // *** Block Level Objects ***
 
 /// Cumulative proof-of-work of the chain,
@@ -3091,6 +3364,59 @@ impl ZainoVersionedSerde for OrchardTxList {
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let tx = read_vec(r, |r| read_option(r, |r| OrchardCompactTx::deserialize(r)))?;
         Ok(OrchardTxList::new(tx))
+    }
+}
+
+#[cfg(test)]
+mod txoutset_tests {
+    use super::{TxOutSetMeta, TxOutSetTxCount, TxOutSetUtxo};
+    use crate::ZainoVersionedSerde;
+    use std::io::Cursor;
+
+    #[test]
+    fn txoutset_utxo_preserves_full_script_pubkey() {
+        let script_pubkey = vec![
+            0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        ];
+        let utxo = TxOutSetUtxo::new(123_456, script_pubkey.clone(), 42, true, 7);
+
+        let mut bytes = Vec::new();
+        utxo.serialize_with_version(&mut bytes, 1).unwrap();
+        let decoded = TxOutSetUtxo::deserialize(&mut Cursor::new(bytes)).unwrap();
+
+        assert_eq!(decoded.value_zat(), 123_456);
+        assert_eq!(decoded.script_pubkey(), script_pubkey.as_slice());
+        assert_eq!(decoded.height(), 42);
+        assert!(decoded.is_coinbase());
+        assert_eq!(decoded.tx_index(), 7);
+    }
+
+    #[test]
+    fn txoutset_metadata_roundtrips() {
+        let meta = TxOutSetMeta::new(99, [0x42; 32], true, 11, 22);
+
+        let mut bytes = Vec::new();
+        meta.serialize_with_version(&mut bytes, 1).unwrap();
+        let decoded = TxOutSetMeta::deserialize(&mut Cursor::new(bytes)).unwrap();
+
+        assert_eq!(decoded, meta);
+        assert_eq!(decoded.built_to_height(), 99);
+        assert_eq!(decoded.best_block_hash(), &[0x42; 32]);
+        assert!(decoded.migration_complete());
+        assert_eq!(decoded.txouts(), 11);
+        assert_eq!(decoded.total_amount_zat(), 22);
+    }
+
+    #[test]
+    fn txoutset_tx_count_roundtrips() {
+        let count = TxOutSetTxCount::new(3);
+
+        let mut bytes = Vec::new();
+        count.serialize_with_version(&mut bytes, 1).unwrap();
+        let decoded = TxOutSetTxCount::deserialize(&mut Cursor::new(bytes)).unwrap();
+
+        assert_eq!(decoded.count(), 3);
     }
 }
 
