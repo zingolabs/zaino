@@ -464,6 +464,24 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, Self::Error>;
 
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    ///
+    /// # Parameters
+    ///
+    /// - `txid`: (string, required) The transaction ID that contains the output.
+    /// - `n`: (number, required) The output index number.
+    /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<zaino_fetch::jsonrpsee::response::GetTxOutResponse, Self::Error>;
+
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
     /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)

@@ -106,6 +106,19 @@ impl ResponseToError for GetDifficultyResponse {
     type RpcError = Infallible;
 }
 
+/// Response to a `gettxout` RPC request.
+///
+/// The result is either the validator's output object or `null` when the
+/// output is spent or missing. This intentionally preserves the passthrough
+/// JSON payload without exposing Zebra's Rust response type in Zaino's API.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct GetTxOutResponse(pub Option<serde_json::Value>);
+
+impl ResponseToError for GetTxOutResponse {
+    type RpcError = Infallible;
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 /// A wrapper to allow both types of error timestamp

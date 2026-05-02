@@ -40,7 +40,7 @@ use zaino_fetch::{
                 InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
                 DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
-            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse,
+            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse, GetTxOutResponse,
         },
     },
 };
@@ -1709,6 +1709,20 @@ impl ZcashIndexer for StateServiceSubscriber {
                 zebra_chain::transaction::Hash::from(txid),
             ),
         )))
+    }
+
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, Self::Error> {
+        Ok(self.rpc_client.get_tx_out(txid, n, include_mempool).await?)
     }
 
     async fn get_address_tx_ids(

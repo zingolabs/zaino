@@ -8,7 +8,9 @@ use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
 use zaino_fetch::jsonrpsee::response::z_validate_address::{
     ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
 };
-use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
+use zaino_fetch::jsonrpsee::response::{
+    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetTxOutResponse,
+};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
@@ -350,6 +352,25 @@ pub trait ZcashIndexerRpc {
         txid_hex: String,
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, ErrorObjectOwned>;
+
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    ///
+    /// # Parameters
+    ///
+    /// - `txid`: (string, required, example="mytxid") The transaction ID that contains the output.
+    /// - `n`: (number, required) The output index number.
+    /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
+    #[method(name = "gettxout")]
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, ErrorObjectOwned>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -719,6 +740,25 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_raw_transaction(txid_hex, verbose)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_tx_out(txid, n, include_mempool)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

@@ -36,8 +36,8 @@ use crate::jsonrpsee::{
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
         GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        GetTreestateResponse, GetTxOutResponse, GetUtxosError, GetUtxosResponse,
+        SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
@@ -761,6 +761,38 @@ impl JsonRpSeeConnector {
         };
 
         self.send_request("getrawtransaction", params).await
+    }
+
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    ///
+    /// # Parameters
+    ///
+    /// - `txid`: (string, required, example="mytxid") The transaction ID that contains the output.
+    /// - `n`: (number, required) The output index number.
+    /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
+    pub async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, RpcRequestError<Infallible>> {
+        let params = match include_mempool {
+            Some(include_mempool) => vec![
+                serde_json::to_value(txid).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(n).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(include_mempool).map_err(RpcRequestError::JsonRpc)?,
+            ],
+            None => vec![
+                serde_json::to_value(txid).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(n).map_err(RpcRequestError::JsonRpc)?,
+            ],
+        };
+
+        self.send_request("gettxout", params).await
     }
 
     /// Returns the transaction ids made by the provided transparent addresses.
