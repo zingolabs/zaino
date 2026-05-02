@@ -127,3 +127,6 @@ zcash_local_net = { workspace = true }
 [profile.test]
 opt-level = 3
 debug = true
+
+[patch.crates-io]
+core2 = { path = "core2-compat" }
