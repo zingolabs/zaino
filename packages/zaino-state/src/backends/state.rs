@@ -58,8 +58,8 @@ use zaino_proto::proto::{
 };
 use zcash_keys::{address::Address, encoding::AddressCodec};
 
-use zcash_primitives::legacy::TransparentAddress;
 use zcash_protocol::consensus::NetworkType;
+use zcash_transparent::address::TransparentAddress;
 use zebra_chain::{
     amount::{Amount, NonNegative},
     block::{Header, Height, SerializedBlock},
@@ -838,6 +838,7 @@ impl StateServiceSubscriber {
                     GetBlockchainInfoBalance::chain_supply(*block_info.value_pools()),
                     GetBlockchainInfoBalance::value_pools(*block_info.value_pools(), None),
                 );
+                let transaction_count = transactions_response.len();
 
                 Ok(GetBlock::Object(Box::new(
                     zebra_rpc::client::BlockObject::new(
@@ -850,6 +851,7 @@ impl StateServiceSubscriber {
                         Some(header_obj.block_commitments()),
                         Some(header_obj.final_sapling_root()),
                         final_orchard_root,
+                        transaction_count,
                         transactions_response,
                         Some(header_obj.time()),
                         Some(header_obj.nonce()),

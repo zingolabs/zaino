@@ -864,7 +864,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                 Ok(zebra_rpc::methods::GetBlock::Raw(serialized_block.0))
             }
             GetBlockResponse::Object(block) => {
-                let tx_ids: Result<Vec<_>, _> = block
+                let tx: Result<Vec<_>, _> = block
                     .tx
                     .into_iter()
                     .map(|txid| {
@@ -872,6 +872,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                             .map(zebra_rpc::methods::GetBlockTransaction::Hash)
                     })
                     .collect();
+                let tx = tx?;
 
                 Ok(zebra_rpc::methods::GetBlock::Object(Box::new(
                     zebra_rpc::client::BlockObject::new(
@@ -884,10 +885,11 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.block_commitments,
                         block.final_sapling_root,
                         block.final_orchard_root,
-                        tx_ids?,
+                        tx.len(),
+                        tx,
                         block.time,
                         block.nonce,
-                        block.solution.map(Into::into),
+                        block.solution.map(|solution| solution.0),
                         block.bits,
                         block.difficulty,
                         block.chain_supply.map(|supply| supply.0),

@@ -14,6 +14,10 @@ and this library adheres to Rust's notion of
   `zaino-state::chain_index::ChainIndex` now expose transparent-address query
   methods for deltas, balances, txids, and UTXOs.
 ### Changed
+- Integration tests now use `corez`, with Zcash and Zebra dependencies updated
+  to releases that no longer depend on the yanked `core2` crate. Remaining
+  legacy transitive `core2` users are patched to a local `corez` compatibility
+  shim.
 - `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`
   whose `sapling` and `orchard` fields are optional. In regtest mode, these
   fields may be omitted when the corresponding network upgrade activation

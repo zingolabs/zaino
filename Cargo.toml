@@ -40,17 +40,17 @@ zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev
 
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.10"
-zcash_keys = "0.12"
-zcash_protocol = "0.7.2"
-zcash_primitives = "0.26.0"
-zcash_transparent = "0.6.3"
-zcash_client_backend = "0.21.0"
+zcash_address = "0.11"
+zcash_keys = "0.13"
+zcash_protocol = "0.8"
+zcash_primitives = "0.27"
+zcash_transparent = "0.7"
+zcash_client_backend = "0.22"
 
 # Zebra
-zebra-chain = "6.0.2"
-zebra-state = "5.0.0"
-zebra-rpc = "6.0.2"
+zebra-chain = "7.0.0"
+zebra-state = "6.0.0"
+zebra-rpc = "7.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -148,6 +148,7 @@ derive_more = "2.0.1"
 lazy_static = "1.5.0"
 
 [patch.crates-io]
+core2 = { path = "compat/core2" }
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
