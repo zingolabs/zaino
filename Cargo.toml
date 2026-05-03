@@ -29,13 +29,13 @@ license = "Apache-2.0"
 # Zingo
 
 zingo_common_components =  "0.3.0"
-zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
+zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", branch = "fix-corez-deps", features = ["back_compatible"] }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "fix-corez-deps", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "fix-corez-deps" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", branch = "fix-corez-deps" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", branch = "fix-corez-deps" }
 
 
 # Librustzcash
@@ -147,8 +147,6 @@ cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"
 
-[patch.crates-io]
-core2 = { path = "compat/core2" }
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
