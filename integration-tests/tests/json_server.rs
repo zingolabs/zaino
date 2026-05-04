@@ -56,7 +56,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("zcashd-fetch-service-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -72,7 +72,10 @@ async fn create_zcashd_test_manager_and_fetch_services(
 
     println!("Launching zaino fetch service..");
     let zaino_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.full_node_rpc_listen_address.to_string(),
+        test_manager
+            .zaino_json_rpc_listen_address
+            .expect("zaino jsonrpc address must be active for these tests")
+            .to_string(),
         test_manager.json_server_cookie_dir.clone(),
         None,
         None,
@@ -84,7 +87,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("zaino-fetch-service-zaino"),
                 ..Default::default()
             },
             ..Default::default()

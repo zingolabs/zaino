@@ -2048,12 +2048,24 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
 }
 
 impl NonFinalizedSnapshot for ChainIndexSnapshot {
-    fn get_chainblock_by_hash(&self, _target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
-        None
+    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
+        match self {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => non_finalized_snapshot.get_chainblock_by_hash(target_hash),
+
+            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
+        }
     }
 
-    fn get_chainblock_by_height(&self, _target_height: &types::Height) -> Option<&IndexedBlock> {
-        None
+    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
+        match self {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => non_finalized_snapshot.get_chainblock_by_height(target_height),
+
+            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
+        }
     }
 
     fn max_serviceable_height(&self) -> &types::Height {
@@ -2061,6 +2073,7 @@ impl NonFinalizedSnapshot for ChainIndexSnapshot {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
             } => non_finalized_snapshot.max_serviceable_height(),
+
             ChainIndexSnapshot::StillSyncingFinalizedState {
                 validator_finalized_height,
             } => validator_finalized_height,

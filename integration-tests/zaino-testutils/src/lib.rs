@@ -350,7 +350,11 @@ where
 
         let mut config = C::Config::default();
         config.set_test_parameters(
-            PoolType::Transparent,
+            if validator == &ValidatorKind::Zebrad {
+                PoolType::Transparent
+            } else {
+                PoolType::ORCHARD
+            },
             activation_heights.into(),
             chain_cache.clone(),
         );

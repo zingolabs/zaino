@@ -52,10 +52,9 @@ where
 #[allow(deprecated)]
 mod chain_query_interface {
 
-    use std::{path::PathBuf, time::Duration};
+    use std::time::Duration;
 
     use futures::TryStreamExt as _;
-    use tempfile::TempDir;
     use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
     use zaino_state::{
         chain_index::{
@@ -158,7 +157,11 @@ mod chain_query_interface {
                     StorageConfig {
                         cache: CacheConfig::default(),
                         database: DatabaseConfig {
-                            path: test_manager.data_dir.as_path().to_path_buf().join("zaino"),
+                            path: test_manager
+                                .data_dir
+                                .as_path()
+                                .to_path_buf()
+                                .join("state-service-zaino"),
                             ..Default::default()
                         },
                     },
@@ -167,12 +170,14 @@ mod chain_query_interface {
                 ))
                 .await
                 .unwrap();
-                let temp_dir: TempDir = tempfile::tempdir().unwrap();
-                let db_path: PathBuf = temp_dir.path().to_path_buf();
                 let config = BlockCacheConfig {
                     storage: StorageConfig {
                         database: DatabaseConfig {
-                            path: db_path,
+                            path: test_manager
+                                .data_dir
+                                .as_path()
+                                .to_path_buf()
+                                .join("chain-index-zaino"),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -207,12 +212,14 @@ mod chain_query_interface {
                 )
             }
             ValidatorKind::Zcashd => {
-                let temp_dir: TempDir = tempfile::tempdir().unwrap();
-                let db_path: PathBuf = temp_dir.path().to_path_buf();
                 let config = BlockCacheConfig {
                     storage: StorageConfig {
                         database: DatabaseConfig {
-                            path: db_path,
+                            path: test_manager
+                                .data_dir
+                                .as_path()
+                                .to_path_buf()
+                                .join("chain-index-zaino"),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -500,9 +507,7 @@ mod chain_query_interface {
                 indexer
                     .get_mempool_stream(Some(&snapshot))
                     .unwrap_or_else(|| {
-                        panic!(
-                            "fresh snapshot unexpectedly returned None on iteration {iteration}"
-                        )
+                        panic!("fresh snapshot unexpectedly returned None on iteration {iteration}")
                     });
 
             test_manager
@@ -542,7 +547,6 @@ mod chain_query_interface {
     {
         use futures::{StreamExt as _, TryStreamExt as _};
         use tokio::time::{timeout, Duration};
-        use zaino_state::Height;
 
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
@@ -580,18 +584,17 @@ mod chain_query_interface {
             );
 
             if fork_point.1 < current_tip.height {
-                let start_height = Height::from(fork_point.1 + 1);
+                let start_height = fork_point.1 + 1;
                 let end_height = Some(current_tip.height);
 
                 let blocks_to_apply = indexer
-                .get_block_range(&snapshot, start_height, end_height)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "expected block range on iteration {iteration}: start={:?} end={:?}",
-                        start_height,
-                        end_height,
-                    )
-                });
+                    .get_block_range(&snapshot, start_height, end_height)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "expected block range on iteration {iteration}: start={:?} end={:?}",
+                            start_height, end_height,
+                        )
+                    });
 
                 let applied_blocks = blocks_to_apply.try_collect::<Vec<_>>().await.unwrap();
 
@@ -612,10 +615,7 @@ mod chain_query_interface {
                             "fresh snapshot unexpectedly returned None on iteration {iteration}: \
                      current tip height={:?} hash={:?}, \
                      prev_tip height={:?} hash={:?}",
-                            current_tip.height,
-                            current_tip.hash,
-                            prev_tip.height,
-                            prev_tip.hash,
+                            current_tip.height, current_tip.hash, prev_tip.height, prev_tip.hash,
                         )
                     });
 

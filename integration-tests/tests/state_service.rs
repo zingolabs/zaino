@@ -93,7 +93,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("fetch-service-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -135,7 +135,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("state-srvice-zaino"),
                 ..Default::default()
             },
             ..Default::default()
