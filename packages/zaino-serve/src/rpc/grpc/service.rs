@@ -109,15 +109,9 @@ macro_rules! implement_client_methods {
                 'life: 'async_trait,
                 Self: 'async_trait,
             {
-                #[cfg(feature = "dev_peer_logging")]
                 info!(
                     method = stringify!($method_name),
                     peer = ?__input.remote_addr(),
-                    "received gRPC request"
-                );
-                #[cfg(not(feature = "dev_peer_logging"))]
-                info!(
-                    method = stringify!($method_name),
                     "received gRPC request"
                 );
                 Box::pin(async {
@@ -239,15 +233,9 @@ where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        #[cfg(feature = "dev_peer_logging")]
         info!(
             method = "get_taddress_balance_stream",
             peer = ?request.remote_addr(),
-            "received gRPC request"
-        );
-        #[cfg(not(feature = "dev_peer_logging"))]
-        info!(
-            method = "get_taddress_balance_stream",
             "received gRPC request"
         );
         Box::pin(async {
