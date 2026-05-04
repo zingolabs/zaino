@@ -109,7 +109,17 @@ macro_rules! implement_client_methods {
                 'life: 'async_trait,
                 Self: 'async_trait,
             {
-                info!("[TEST] Received call of {}.", stringify!($method_name));
+                #[cfg(feature = "dev_peer_logging")]
+                info!(
+                    method = stringify!($method_name),
+                    peer = ?__input.remote_addr(),
+                    "received gRPC request"
+                );
+                #[cfg(not(feature = "dev_peer_logging"))]
+                info!(
+                    method = stringify!($method_name),
+                    "received gRPC request"
+                );
                 Box::pin(async {
                     Ok(
                         // here we pass in pinbox, to optionally add
@@ -229,7 +239,17 @@ where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        info!("[TEST] Received call of get_taddress_balance_stream.");
+        #[cfg(feature = "dev_peer_logging")]
+        info!(
+            method = "get_taddress_balance_stream",
+            peer = ?request.remote_addr(),
+            "received gRPC request"
+        );
+        #[cfg(not(feature = "dev_peer_logging"))]
+        info!(
+            method = "get_taddress_balance_stream",
+            "received gRPC request"
+        );
         Box::pin(async {
             let (channel_tx, channel_rx) =
                 tokio::sync::mpsc::channel::<Result<Address, tonic::Status>>(32);
