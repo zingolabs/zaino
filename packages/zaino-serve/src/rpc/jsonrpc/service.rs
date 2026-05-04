@@ -411,6 +411,41 @@ pub trait ZcashIndexerRpc {
         height: Option<i32>,
     ) -> Result<GetNetworkSolPsResponse, ErrorObjectOwned>;
 }
+
+// Currently all errors are hidden from downstream client, a full fix should be implemented. this is a temporary fix to
+// get zaino working, propagating a 500 error code to "block not found". This is still not the full correct behaviour
+// but fixes the current bugs in zaino and gets tests running.
+fn getblock_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
+where
+    Error: std::error::Error + 'static,
+{
+    let mut current_error: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+
+    while let Some(error_source) = current_error {
+        if let Some(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) =
+            error_source.downcast_ref::<zaino_fetch::jsonrpsee::error::TransportError>()
+        {
+            return ErrorObjectOwned::owned(
+                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "block not found",
+                )
+                .code as i32,
+                "block not found",
+                None::<()>,
+            );
+        }
+
+        current_error = error_source.source();
+    }
+
+    ErrorObjectOwned::owned(
+        ErrorCode::InternalError.code(),
+        "Internal server error",
+        Some(error.to_string()),
+    )
+}
+
 /// Uses ErrorCode::InvalidParams as this is converted to zcash legacy "minsc" ErrorCode in RPC middleware.
 #[jsonrpsee::core::async_trait]
 impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonRpcClient<Indexer> {
@@ -634,13 +669,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_block(hash_or_height, verbosity)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(getblock_error_object_from_indexer_error)
     }
 
     async fn get_block_header(
