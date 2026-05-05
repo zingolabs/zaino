@@ -45,6 +45,9 @@ zebra-rpc = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Metrics
+metrics = { workspace = true }
+
 # Documentation
 simple-mermaid = "0.2.0"
 

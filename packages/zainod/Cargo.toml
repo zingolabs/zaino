@@ -56,6 +56,10 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time"
 http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
+# Metrics
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
 # Utility
 thiserror = { workspace = true }
 

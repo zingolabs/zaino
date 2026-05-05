@@ -14,6 +14,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod indexer;
+pub mod metrics;
 
 /// Run the Zaino indexer.
 ///
@@ -25,6 +26,10 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
 
     info!("zainod v{}", env!("CARGO_PKG_VERSION"));
     let config = load_config(&config_path)?;
+
+    if let Some(endpoint) = config.metrics_endpoint {
+        crate::metrics::init(endpoint)?;
+    }
 
     loop {
         match start_indexer(config.clone()).await {

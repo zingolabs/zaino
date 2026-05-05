@@ -720,6 +720,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
+                    metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
 
                     fs.sync_to_height(finalised_height, &source)
