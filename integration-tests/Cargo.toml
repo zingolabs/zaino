@@ -31,8 +31,8 @@ zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "fix-co
     "testutils",
 ] }
 zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "fix-corez-deps" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", branch = "fix-corez-deps" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", branch = "fix-corez-deps" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
 
 # Librustzcash
 zcash_protocol = { version = "0.8", features = ["local-consensus"] }
