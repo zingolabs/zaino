@@ -9,6 +9,7 @@ use zaino_fetch::jsonrpsee::response::{
     block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
+    chain_tips::GetChainTipsResponse,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
     z_validate_address::ZValidateAddressResponse,
@@ -343,6 +344,17 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error>;
+
+    /// Returns information about all known tips in the block tree.
+    ///
+    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// zcashd builds the response from all block-index leaves, always includes the active
+    /// tip, sorts by descending height, and classifies leaves as `invalid`, `headers-only`,
+    /// `valid-headers`, `valid-fork`, `active`, or `unknown`.
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error>;
 
     /// Return information about the given Zcash address.
     ///

@@ -31,6 +31,7 @@ use zaino_fetch::{
             block_deltas::BlockDeltas,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
+            chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             z_validate_address::{
@@ -55,12 +56,9 @@ use zaino_proto::proto::{
     },
 };
 
-use crate::{
-    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
-    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-};
 #[allow(deprecated)]
 use crate::{
+    chain_index::chain_tips_from_nonfinalized_snapshot,
     chain_index::{source::ValidatorConnector, types},
     config::{DonationAddress, FetchServiceConfig},
     error::FetchServiceError,
@@ -74,6 +72,10 @@ use crate::{
     },
     utils::{get_build_info, ServiceMetadata},
     BackendType,
+};
+use crate::{
+    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
+    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -484,6 +486,17 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
         Ok(self.fetcher.get_block_count().await?.into())
+    }
+
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            return Ok(self.fetcher.get_chain_tips().await?);
+        };
+
+        Ok(chain_tips_from_nonfinalized_snapshot(
+            non_finalized_snapshot,
+        ))
     }
 
     /// Return information about the given Zcash address.

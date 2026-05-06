@@ -34,6 +34,7 @@ use zaino_fetch::{
             block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
+            chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             z_validate_address::{
@@ -1478,6 +1479,17 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
         let h = non_finalized_snapshot.best_tip.height;
         Ok(h.into())
+    }
+
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            return Ok(self.rpc_client.get_chain_tips().await?);
+        };
+
+        Ok(crate::chain_index::chain_tips_from_nonfinalized_snapshot(
+            non_finalized_snapshot,
+        ))
     }
 
     async fn validate_address(

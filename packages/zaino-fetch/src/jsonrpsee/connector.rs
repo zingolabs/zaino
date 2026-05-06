@@ -30,6 +30,7 @@ use crate::jsonrpsee::{
         block_deltas::{BlockDeltas, BlockDeltasError},
         block_header::{GetBlockHeader, GetBlockHeaderError},
         block_subsidy::GetBlockSubsidy,
+        chain_tips::GetChainTipsResponse,
         mining_info::GetMiningInfoWire,
         peer_info::GetPeerInfo,
         z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
@@ -635,6 +636,18 @@ impl JsonRpSeeConnector {
         &self,
     ) -> Result<GetBlockCountResponse, RpcRequestError<Infallible>> {
         self.send_request::<(), GetBlockCountResponse>("getblockcount", ())
+            .await
+    }
+
+    /// Returns information about all known tips in the block tree.
+    ///
+    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_chain_tips(
+        &self,
+    ) -> Result<GetChainTipsResponse, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetChainTipsResponse>("getchaintips", ())
             .await
     }
 
