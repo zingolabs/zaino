@@ -26,11 +26,11 @@ zaino-fetch = { path = "../packages/zaino-fetch" }
 zainod = { path = "../packages/zainod" }
 
 # Zingo
-zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", branch = "fix-corez-deps", features = ["back_compatible"] }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", branch = "fix-corez-deps", features = [
+zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "63bf5d9171d36e180acbeb6d9182d9c7a93c57b6", features = ["back_compatible"] }
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "f9331a62bcb54efb0ce4375d372f111ee2369ef9", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", branch = "fix-corez-deps" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "f9331a62bcb54efb0ce4375d372f111ee2369ef9" }
 zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
 zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
 
