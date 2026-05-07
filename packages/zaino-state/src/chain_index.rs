@@ -30,8 +30,9 @@ use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tracing::{info, instrument};
-use zaino_fetch::jsonrpsee::response::address_deltas::{
-    GetAddressDeltasParams, GetAddressDeltasResponse,
+use zaino_fetch::jsonrpsee::response::{
+    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
 };
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -57,6 +58,85 @@ pub mod types;
 
 #[cfg(test)]
 mod tests;
+
+/// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
+///
+/// zcashd enumerates block-tree leaves, always includes the active tip, and reports
+/// inactive fully-known branches as `valid-fork`. Zaino's non-finalized cache stores
+/// full blocks, not headers-only or invalid candidates, so those are the only statuses
+/// this conversion can currently emit.
+pub(crate) fn chain_tips_from_nonfinalized_snapshot(
+    snapshot: &NonfinalizedBlockCacheSnapshot,
+) -> GetChainTipsResponse {
+    let parent_hashes = snapshot
+        .blocks
+        .values()
+        .map(|block| *block.context.parent_hash())
+        .collect::<HashSet<_>>();
+
+    let mut tip_hashes = snapshot
+        .blocks
+        .keys()
+        .filter(|hash| !parent_hashes.contains(hash))
+        .copied()
+        .collect::<HashSet<_>>();
+    tip_hashes.insert(snapshot.best_tip.hash);
+
+    let mut tips = tip_hashes
+        .into_iter()
+        .filter_map(|hash| snapshot.blocks.get(&hash))
+        .map(|block| {
+            let is_active_tip = block.hash() == &snapshot.best_tip.hash;
+            let status = if is_active_tip {
+                ChainTipStatus::Active
+            } else {
+                ChainTipStatus::ValidFork
+            };
+            let branchlen = if is_active_tip {
+                0
+            } else {
+                branch_len_to_active_chain(snapshot, block)
+            };
+
+            ChainTip::new(
+                u32::from(block.height()),
+                block.hash().to_rpc_hex(),
+                branchlen,
+                status,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    tips.sort_by(|left, right| {
+        right
+            .height
+            .cmp(&left.height)
+            .then_with(|| left.hash.cmp(&right.hash))
+    });
+    tips
+}
+
+fn branch_len_to_active_chain(
+    snapshot: &NonfinalizedBlockCacheSnapshot,
+    block: &IndexedBlock,
+) -> u32 {
+    let mut branch_len = 0;
+    let mut current = block;
+
+    loop {
+        if snapshot.heights_to_hashes.get(&current.height()) == Some(current.hash()) {
+            return branch_len;
+        }
+
+        branch_len += 1;
+
+        let parent_hash = current.context.parent_hash();
+        let Some(parent) = snapshot.blocks.get(parent_hash) else {
+            return branch_len;
+        };
+        current = parent;
+    }
+}
 
 /// The interface to the chain index.
 ///

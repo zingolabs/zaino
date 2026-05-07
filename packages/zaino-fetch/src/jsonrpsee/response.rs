@@ -7,6 +7,7 @@ pub mod address_deltas;
 pub mod block_deltas;
 pub mod block_header;
 pub mod block_subsidy;
+pub mod chain_tips;
 pub mod common;
 pub mod mining_info;
 pub mod peer_info;
@@ -103,6 +104,19 @@ impl ResponseToError for GetInfoResponse {
 }
 
 impl ResponseToError for GetDifficultyResponse {
+    type RpcError = Infallible;
+}
+
+/// Response to a `gettxout` RPC request.
+///
+/// The result is either the validator's output object or `null` when the
+/// output is spent or missing. This intentionally preserves the passthrough
+/// JSON payload without exposing Zebra's Rust response type in Zaino's API.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct GetTxOutResponse(pub Option<serde_json::Value>);
+
+impl ResponseToError for GetTxOutResponse {
     type RpcError = Infallible;
 }
 
