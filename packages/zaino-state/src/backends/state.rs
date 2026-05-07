@@ -42,7 +42,8 @@ use zaino_fetch::{
                 DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
             GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse,
-            GetNetworkSolPsResponse, GetSubtreesResponse, GetTxOutResponse,
+            GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesResponse,
+            GetTxOutResponse,
         },
     },
 };
@@ -1760,6 +1761,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             )
             .await?)
     }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        Ok(self.rpc_client.get_spent_info(request).await?)
+    }
+
 
     async fn get_address_tx_ids(
         &self,

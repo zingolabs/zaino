@@ -36,10 +36,11 @@ use crate::jsonrpsee::{
         z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockHashesError, GetBlockHashesOptions, GetBlockHashesResponse, GetBlockResponse,
-        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
-        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
-        GetTxOutResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSpentInfoError,
+        GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesError, GetSubtreesResponse,
+        GetTransactionResponse, GetTreestateError, GetTreestateResponse, GetTxOutResponse,
+        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse,
+        TxidsError, TxidsResponse,
     },
 };
 
@@ -831,6 +832,23 @@ impl JsonRpSeeConnector {
 
         self.send_request("getblockhashes", params).await
     }
+
+    /// Returns the transaction id, input index, and block height where an output is spent.
+    ///
+    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// zcashd 6.12.2 also returns an undocumented `height` field.
+    pub async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, RpcRequestError<GetSpentInfoError>> {
+        let params = vec![serde_json::to_value(request).map_err(RpcRequestError::JsonRpc)?];
+
+        self.send_request("getspentinfo", params).await
+    }
+
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///

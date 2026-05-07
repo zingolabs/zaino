@@ -11,7 +11,7 @@ use zaino_fetch::jsonrpsee::response::z_validate_address::{
 };
 use zaino_fetch::jsonrpsee::response::{
     GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse, GetNetworkSolPsResponse,
-    GetTxOutResponse,
+    GetSpentInfoRequest, GetSpentInfoResponse, GetTxOutResponse,
 };
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -405,6 +405,27 @@ pub trait ZcashIndexerRpc {
         low: u32,
         options: Option<GetBlockHashesOptions>,
     ) -> Result<GetBlockHashesResponse, ErrorObjectOwned>;
+
+    /// Returns the txid, input index, and block height where an output is spent.
+    ///
+    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `request`: (object, required) with `txid` and `index`.
+    ///
+    /// # Notes
+    ///
+    /// zcashd 6.12.2 returns an undocumented `height` field in addition to
+    /// the documented `txid` and `index` fields.
+    #[method(name = "getspentinfo")]
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, ErrorObjectOwned>;
+
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -864,6 +885,24 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
                 )
             })
     }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_spent_info(request)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
 
     async fn get_address_tx_ids(
         &self,

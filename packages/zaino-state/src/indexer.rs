@@ -14,6 +14,7 @@ use zaino_fetch::jsonrpsee::response::{
     peer_info::GetPeerInfo,
     z_validate_address::ZValidateAddressResponse,
     GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    GetSpentInfoRequest, GetSpentInfoResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -511,6 +512,26 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         low: u32,
         options: Option<GetBlockHashesOptions>,
     ) -> Result<GetBlockHashesResponse, Self::Error>;
+
+    /// Returns the txid, input index, and block height where an output is spent.
+    ///
+    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `request`: (object, required) with `txid` and `index`.
+    ///
+    /// # Notes
+    ///
+    /// zcashd 6.12.2 returns an undocumented `height` field in addition to
+    /// the documented `txid` and `index` fields.
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error>;
+
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
