@@ -120,6 +120,74 @@ impl ResponseToError for GetTxOutResponse {
     type RpcError = Infallible;
 }
 
+/// Request parameters for the `getspentinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetSpentInfoRequest {
+    /// The hex string of the transaction id containing the output.
+    pub txid: String,
+    /// The output index in the previous transaction's `vout` array.
+    pub index: u32,
+}
+
+impl GetSpentInfoRequest {
+    /// Creates a new `getspentinfo` request.
+    pub fn new(txid: String, index: u32) -> Self {
+        Self { txid, index }
+    }
+}
+
+/// Response to a `getspentinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetSpentInfoResponse {
+    /// Transaction id of the transaction that spent the requested output.
+    pub txid: String,
+    /// Input index in the spending transaction's `vin` array.
+    pub index: u32,
+    /// Height of the block containing the spending transaction.
+    ///
+    /// This field is returned by zcashd 6.12.2 but omitted from the public 6.2.0 RPC page.
+    pub height: u32,
+}
+
+impl GetSpentInfoResponse {
+    /// Creates a new `getspentinfo` response.
+    pub fn new(txid: String, index: u32, height: u32) -> Self {
+        Self {
+            txid,
+            index,
+            height,
+        }
+    }
+}
+
+/// Error type for the `getspentinfo` RPC request.
+#[derive(Debug, thiserror::Error)]
+pub enum GetSpentInfoError {
+    /// The requested output is not known as spent.
+    #[error("{0}")]
+    UnableToGetSpentInfo(String),
+
+    /// The request parameters were invalid.
+    #[error("{0}")]
+    InvalidParameter(String),
+}
+
+impl ResponseToError for GetSpentInfoResponse {
+    type RpcError = GetSpentInfoError;
+}
+
+impl TryFrom<super::connector::RpcError> for GetSpentInfoError {
+    type Error = super::connector::RpcError;
+
+    fn try_from(value: super::connector::RpcError) -> Result<Self, Self::Error> {
+        match value.code {
+            -5 => Ok(Self::UnableToGetSpentInfo(value.message)),
+            -8 => Ok(Self::InvalidParameter(value.message)),
+            _ => Err(value),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 /// A wrapper to allow both types of error timestamp

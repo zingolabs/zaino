@@ -37,7 +37,8 @@ use zaino_fetch::{
             z_validate_address::{
                 ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
-            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetTxOutResponse,
+            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
+            GetSpentInfoResponse, GetTxOutResponse,
         },
     },
 };
@@ -775,6 +776,13 @@ impl ZcashIndexer for FetchServiceSubscriber {
         include_mempool: Option<bool>,
     ) -> Result<GetTxOutResponse, Self::Error> {
         Ok(self.fetcher.get_tx_out(txid, n, include_mempool).await?)
+    }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        Ok(self.fetcher.get_spent_info(request).await?)
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
