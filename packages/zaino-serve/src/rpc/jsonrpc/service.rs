@@ -10,7 +10,8 @@ use zaino_fetch::jsonrpsee::response::z_validate_address::{
     ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
 };
 use zaino_fetch::jsonrpsee::response::{
-    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetTxOutResponse,
+    GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse,
+    GetNetworkSolPsResponse, GetTxOutResponse,
 };
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -385,6 +386,25 @@ pub trait ZcashIndexerRpc {
         n: u32,
         include_mempool: Option<bool>,
     ) -> Result<GetTxOutResponse, ErrorObjectOwned>;
+
+    /// Returns hashes of blocks within the provided logical timestamp range.
+    ///
+    /// zcashd reference: [`getblockhashes`](https://zcash.github.io/rpc/getblockhashes.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `high`: newer logical timestamp, exclusive
+    /// - `low`: older logical timestamp, inclusive
+    /// - `options`: optional `noOrphans` and `logicalTimes` flags
+    #[method(name = "getblockhashes")]
+    async fn get_block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, ErrorObjectOwned>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -816,6 +836,25 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_tx_out(txid, n, include_mempool)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_block_hashes(high, low, options)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

@@ -120,6 +120,84 @@ impl ResponseToError for GetTxOutResponse {
     type RpcError = Infallible;
 }
 
+/// Options for the `getblockhashes` RPC request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct GetBlockHashesOptions {
+    /// Only include blocks on the main chain.
+    #[serde(default, rename = "noOrphans")]
+    pub no_orphans: bool,
+    /// Return logical timestamps alongside block hashes.
+    #[serde(default, rename = "logicalTimes")]
+    pub logical_times: bool,
+}
+
+/// Response to a `getblockhashes` RPC request.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum GetBlockHashesResponse {
+    /// Response returned when `logicalTimes` is false.
+    Hashes(Vec<String>),
+    /// Response returned when `logicalTimes` is true.
+    WithLogicalTimestamps(Vec<GetBlockHashesLogicalEntry>),
+}
+
+impl GetBlockHashesResponse {
+    /// Build a response from hash/logical timestamp pairs.
+    pub fn from_hashes(entries: Vec<(String, u32)>, logical_times: bool) -> Self {
+        if logical_times {
+            GetBlockHashesResponse::WithLogicalTimestamps(
+                entries
+                    .into_iter()
+                    .map(|(blockhash, logicalts)| GetBlockHashesLogicalEntry {
+                        blockhash,
+                        logicalts,
+                    })
+                    .collect(),
+            )
+        } else {
+            GetBlockHashesResponse::Hashes(
+                entries
+                    .into_iter()
+                    .map(|(blockhash, _logicalts)| blockhash)
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// Block hash plus logical timestamp entry returned by `getblockhashes`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct GetBlockHashesLogicalEntry {
+    /// The block hash.
+    pub blockhash: String,
+    /// The monotonic logical timestamp used by zcashd's timestamp index.
+    pub logicalts: u32,
+}
+
+impl ResponseToError for GetBlockHashesResponse {
+    type RpcError = GetBlockHashesError;
+}
+
+/// Error type for the `getblockhashes` RPC request.
+#[derive(Debug, thiserror::Error)]
+pub enum GetBlockHashesError {
+    /// The timestamp index had no data for the request.
+    #[error("{0}")]
+    NoInformationAvailable(String),
+}
+
+impl TryFrom<super::connector::RpcError> for GetBlockHashesError {
+    type Error = super::connector::RpcError;
+
+    fn try_from(value: super::connector::RpcError) -> Result<Self, Self::Error> {
+        if value.code == -5 {
+            Ok(Self::NoInformationAvailable(value.message))
+        } else {
+            Err(value)
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 /// A wrapper to allow both types of error timestamp

@@ -20,7 +20,7 @@ use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
 use crate::{CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError};
 use crate::{IndexedBlock, TransactionHash};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::{sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
@@ -33,6 +33,7 @@ use tracing::{info, instrument};
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
     chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
+    GetBlockHashesResponse,
 };
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -135,6 +136,17 @@ fn branch_len_to_active_chain(
             return branch_len;
         };
         current = parent;
+    }
+}
+
+fn next_logical_timestamp(block_time: i64, previous_logical_ts: Option<u32>) -> u32 {
+    let block_time = u32::try_from(block_time).unwrap_or(0);
+
+    match previous_logical_ts {
+        Some(previous_logical_ts) if block_time <= previous_logical_ts => {
+            previous_logical_ts.saturating_add(1)
+        }
+        _ => block_time,
     }
 }
 
@@ -295,6 +307,16 @@ pub trait ChainIndex {
         snapshot: &Self::Snapshot,
         hash: types::Height,
     ) -> impl std::future::Future<Output = Result<Option<types::BlockHash>, Self::Error>>;
+
+    /// Returns hashes of blocks whose logical timestamps are in `[low, high)`.
+    fn get_block_hashes(
+        &self,
+        snapshot: &Self::Snapshot,
+        high: u32,
+        low: u32,
+        no_orphans: bool,
+        logical_times: bool,
+    ) -> impl std::future::Future<Output = Result<GetBlockHashesResponse, Self::Error>>;
 
     /// Returns Some(IndexedBlock) for the given block hash.
     ///
@@ -1164,6 +1186,97 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
             }
         }
+    }
+
+    /// Returns hashes of blocks whose logical timestamps are in `[low, high)`.
+    async fn get_block_hashes(
+        &self,
+        snapshot: &Self::Snapshot,
+        high: u32,
+        low: u32,
+        no_orphans: bool,
+        logical_times: bool,
+    ) -> Result<GetBlockHashesResponse, Self::Error> {
+        let mut entries = Vec::new();
+        let mut seen_hashes = HashSet::new();
+        let mut logical_by_hash = HashMap::new();
+        let mut previous_logical_ts = None;
+
+        if low >= high {
+            return Ok(GetBlockHashesResponse::from_hashes(entries, logical_times));
+        }
+
+        if let Some(finalized_tip) = self.finalized_state.db_height().await? {
+            let headers = self
+                .finalized_state
+                .get_block_range_headers(types::Height(0), finalized_tip)
+                .await?;
+
+            for header in headers {
+                let logical_ts = next_logical_timestamp(header.data().time(), previous_logical_ts);
+                previous_logical_ts = Some(logical_ts);
+                logical_by_hash.insert(header.context.index.hash, logical_ts);
+
+                if logical_ts >= low && logical_ts < high {
+                    entries.push((header.context.index.hash.to_rpc_hex(), logical_ts));
+                    seen_hashes.insert(header.context.index.hash);
+                }
+            }
+        }
+
+        if let ChainIndexSnapshot::NonFinalizedStateExists {
+            non_finalized_snapshot,
+        } = snapshot
+        {
+            let mut active_heights = non_finalized_snapshot
+                .heights_to_hashes
+                .iter()
+                .collect::<Vec<_>>();
+            active_heights.sort_by_key(|(height, _hash)| **height);
+
+            for (_height, hash) in active_heights {
+                if logical_by_hash.contains_key(hash) {
+                    continue;
+                }
+
+                let Some(block) = non_finalized_snapshot.blocks.get(hash) else {
+                    continue;
+                };
+                let logical_ts = next_logical_timestamp(block.data().time(), previous_logical_ts);
+                previous_logical_ts = Some(logical_ts);
+                logical_by_hash.insert(*hash, logical_ts);
+
+                if logical_ts >= low && logical_ts < high {
+                    entries.push((hash.to_rpc_hex(), logical_ts));
+                    seen_hashes.insert(*hash);
+                }
+            }
+
+            if !no_orphans {
+                for block in non_finalized_snapshot.blocks.values() {
+                    if non_finalized_snapshot
+                        .heights_to_hashes
+                        .get(&block.height())
+                        == Some(block.hash())
+                        || seen_hashes.contains(block.hash())
+                    {
+                        continue;
+                    }
+
+                    let parent_logical_ts = logical_by_hash.get(block.context.parent_hash()).copied();
+                    let logical_ts = next_logical_timestamp(block.data().time(), parent_logical_ts);
+                    logical_by_hash.insert(*block.hash(), logical_ts);
+
+                    if logical_ts >= low && logical_ts < high {
+                        entries.push((block.hash().to_rpc_hex(), logical_ts));
+                    }
+                }
+            }
+        }
+
+        entries.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+
+        Ok(GetBlockHashesResponse::from_hashes(entries, logical_times))
     }
 
     /// Returns Some(IndexedBlock) for the given block hash.

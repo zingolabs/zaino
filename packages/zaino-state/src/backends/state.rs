@@ -41,7 +41,8 @@ use zaino_fetch::{
                 InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
                 DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
-            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSubtreesResponse, GetTxOutResponse,
+            GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse,
+            GetNetworkSolPsResponse, GetSubtreesResponse, GetTxOutResponse,
         },
     },
 };
@@ -1737,6 +1738,27 @@ impl ZcashIndexer for StateServiceSubscriber {
         include_mempool: Option<bool>,
     ) -> Result<GetTxOutResponse, Self::Error> {
         Ok(self.rpc_client.get_tx_out(txid, n, include_mempool).await?)
+    }
+
+    async fn get_block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, Self::Error> {
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let options = options.unwrap_or_default();
+
+        Ok(self
+            .indexer
+            .get_block_hashes(
+                &snapshot,
+                high,
+                low,
+                options.no_orphans,
+                options.logical_times,
+            )
+            .await?)
     }
 
     async fn get_address_tx_ids(

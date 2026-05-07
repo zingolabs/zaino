@@ -13,7 +13,8 @@ use zaino_fetch::jsonrpsee::response::{
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
     z_validate_address::ZValidateAddressResponse,
-    GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse,
+    GetNetworkSolPsResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -493,6 +494,24 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         n: u32,
         include_mempool: Option<bool>,
     ) -> Result<zaino_fetch::jsonrpsee::response::GetTxOutResponse, Self::Error>;
+
+    /// Returns hashes of blocks within the provided logical timestamp range.
+    ///
+    /// zcashd reference: [`getblockhashes`](https://zcash.github.io/rpc/getblockhashes.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `high`: newer logical timestamp, exclusive
+    /// - `low`: older logical timestamp, inclusive
+    /// - `options`: optional `noOrphans` and `logicalTimes` flags
+    async fn get_block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, Self::Error>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///

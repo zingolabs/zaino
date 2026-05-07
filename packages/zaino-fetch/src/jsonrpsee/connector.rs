@@ -35,10 +35,11 @@ use crate::jsonrpsee::{
         peer_info::GetPeerInfo,
         z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
-        GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetTxOutResponse, GetUtxosError, GetUtxosResponse,
-        SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
+        GetBlockHashesError, GetBlockHashesOptions, GetBlockHashesResponse, GetBlockResponse,
+        GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSubtreesError,
+        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
+        GetTxOutResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
+        SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
 
@@ -806,6 +807,29 @@ impl JsonRpSeeConnector {
         };
 
         self.send_request("gettxout", params).await
+    }
+
+    /// Returns hashes of blocks within the provided logical timestamp range.
+    ///
+    /// zcashd reference: [`getblockhashes`](https://zcash.github.io/rpc/getblockhashes.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, RpcRequestError<GetBlockHashesError>> {
+        let mut params = vec![
+            serde_json::to_value(high).map_err(RpcRequestError::JsonRpc)?,
+            serde_json::to_value(low).map_err(RpcRequestError::JsonRpc)?,
+        ];
+
+        if let Some(options) = options {
+            params.push(serde_json::to_value(options).map_err(RpcRequestError::JsonRpc)?);
+        }
+
+        self.send_request("getblockhashes", params).await
     }
 
     /// Returns the transaction ids made by the provided transparent addresses.
