@@ -13,8 +13,7 @@ use zaino_fetch::jsonrpsee::response::{
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
     z_validate_address::ZValidateAddressResponse,
-    GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse,
-    GetNetworkSolPsResponse,
+    GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse, GetNetworkSolPsResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,

@@ -10,8 +10,8 @@ use zaino_fetch::jsonrpsee::response::z_validate_address::{
     ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
 };
 use zaino_fetch::jsonrpsee::response::{
-    GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse,
-    GetNetworkSolPsResponse, GetTxOutResponse,
+    GetBlockHashesOptions, GetBlockHashesResponse, GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    GetTxOutResponse,
 };
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 

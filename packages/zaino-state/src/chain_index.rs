@@ -1263,7 +1263,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         continue;
                     }
 
-                    let parent_logical_ts = logical_by_hash.get(block.context.parent_hash()).copied();
+                    let parent_logical_ts =
+                        logical_by_hash.get(block.context.parent_hash()).copied();
                     let logical_ts = next_logical_timestamp(block.data().time(), parent_logical_ts);
                     logical_by_hash.insert(*block.hash(), logical_ts);
 
