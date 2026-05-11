@@ -1046,6 +1046,41 @@ impl DbV1 {
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             }
 
+            // Clean up the logical_ts indices. The forward
+            // (`hash_by_logical_ts`) is keyed by the block's logical_ts,
+            // so we look that up via the reverse index first. NotFound
+            // on the reverse means this block was never indexed (e.g.
+            // it was written before the index write-hook landed, or via
+            // a code path that skipped the hook); the cleanup is then a
+            // no-op rather than an error.
+            match txn.get(zaino_db.logical_ts_by_hash, &block_hash_bytes) {
+                Ok(raw) => {
+                    let entry = StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw)
+                        .map_err(|e| {
+                            FinalisedStateError::Custom(format!(
+                                "logical_ts_by_hash decode error: {e}"
+                            ))
+                        })?;
+                    if !entry.verify(&block_hash_bytes) {
+                        return Err(FinalisedStateError::Custom(
+                            "logical_ts_by_hash entry checksum mismatch".to_string(),
+                        ));
+                    }
+                    let logical_ts_bytes = entry.inner().to_bytes()?;
+
+                    match txn.del(zaino_db.hash_by_logical_ts, &logical_ts_bytes, None) {
+                        Ok(()) | Err(lmdb::Error::NotFound) => {}
+                        Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    }
+                    match txn.del(zaino_db.logical_ts_by_hash, &block_hash_bytes, None) {
+                        Ok(()) | Err(lmdb::Error::NotFound) => {}
+                        Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    }
+                }
+                Err(lmdb::Error::NotFound) => {}
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            }
+
             let _ = txn.commit();
 
             zaino_db

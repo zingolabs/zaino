@@ -194,6 +194,56 @@ async fn write_block_populates_logical_ts_index() {
     }
 }
 
+/// Deleting finalised blocks tears down both `logical_ts` index tables
+/// in lockstep with the rest of the per-block storage. Walking the tip
+/// back from height 200 to height 1 should leave the forward index
+/// holding exactly one entry — the genesis block.
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_block_clears_logical_ts_index() {
+    init_tracing();
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = build_mockchain_source(blocks.clone());
+
+    let (_db_dir, zaino_db) = spawn_v1_zaino_db(source.clone()).await.unwrap();
+    zaino_db.sync_to_height(Height(200), &source).await.unwrap();
+
+    // Tear down every finalised block above genesis, in reverse order
+    // (the only deletion order `delete_block_at_height` accepts —
+    // tip-only).
+    for h in (1..=200).rev() {
+        zaino_db
+            .delete_block_at_height(Height(h))
+            .await
+            .unwrap();
+    }
+
+    let zaino_db = std::sync::Arc::new(zaino_db);
+    zaino_db.wait_until_ready().await;
+    let reader = zaino_db.to_reader();
+
+    let entries = reader
+        .hashes_by_logical_ts_range(
+            LogicalTimestamp::from_u32(0),
+            LogicalTimestamp::from_u32(u32::MAX),
+        )
+        .await
+        .expect("hashes_by_logical_ts_range");
+
+    assert_eq!(
+        entries.len(),
+        1,
+        "only the genesis index entry should remain after deleting heights 1..=200",
+    );
+
+    // The lone remaining entry must be the genesis block.
+    let genesis = reader
+        .get_block_header(Height(0))
+        .await
+        .expect("genesis header still present");
+    assert_eq!(entries[0].1, genesis.context.index.hash);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn add_blocks_to_db_and_verify() {
     init_tracing();
