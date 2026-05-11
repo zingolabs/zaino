@@ -47,10 +47,84 @@ impl BlockCoreExt for DbV1 {
     ) -> Result<Option<TxLocation>, FinalisedStateError> {
         self.get_tx_location(txid).await
     }
+
+    async fn hashes_by_logical_ts_range(
+        &self,
+        low: LogicalTimestamp,
+        high: LogicalTimestamp,
+    ) -> Result<Vec<(LogicalTimestamp, BlockHash)>, FinalisedStateError> {
+        self.hashes_by_logical_ts_range(low, high).await
+    }
 }
 
 impl DbV1 {
     // *** Public fetcher methods - Used by DbReader ***
+
+    /// Returns `(logical_ts, block_hash)` pairs from the
+    /// `hash_by_logical_ts` index whose key falls in `[low, high)`.
+    ///
+    /// See the [`BlockCoreExt::hashes_by_logical_ts_range`] trait docs for
+    /// semantics. The implementation is a single LMDB cursor scan: seek
+    /// to the encoded `low` key, iterate while the key is less than the
+    /// encoded `high`, decode each `(key, value)` pair via
+    /// `ZainoVersionedSerde`. On an empty table the cursor yields
+    /// nothing and the result is an empty `Vec`.
+    pub(super) async fn hashes_by_logical_ts_range(
+        &self,
+        low: LogicalTimestamp,
+        high: LogicalTimestamp,
+    ) -> Result<Vec<(LogicalTimestamp, BlockHash)>, FinalisedStateError> {
+        if low >= high {
+            return Ok(Vec::new());
+        }
+
+        let low_bytes = low.to_bytes()?;
+        let high_bytes = high.to_bytes()?;
+
+        let raw_entries = tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            let mut cursor = txn.open_ro_cursor(self.hash_by_logical_ts)?;
+            let mut raw_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+            // NOTE: `cursor.iter_from(low_bytes)` would be more efficient (O(matches)
+            // via an LMDB seek), but in `lmdb-0.8.0` it panics on `NotFound`, which
+            // we hit on every query while the index is still empty. Until the
+            // write-path hook lands and the table is populated this loop is
+            // visiting zero rows, so the inline filter has no measurable cost; when
+            // writes land, revisit and switch to a safe seek-then-walk via the
+            // lower-level `MDB_SET_RANGE` op.
+            for (k, v) in cursor.iter() {
+                if k < &low_bytes[..] {
+                    continue;
+                }
+                if k >= &high_bytes[..] {
+                    break;
+                }
+                raw_entries.push((k.to_vec(), v.to_vec()));
+            }
+            Ok::<_, FinalisedStateError>(raw_entries)
+        })?;
+
+        raw_entries
+            .into_iter()
+            .map(|(k, v)| {
+                let logical_ts = LogicalTimestamp::from_bytes(&k).map_err(|e| {
+                    FinalisedStateError::Custom(format!("logical_ts key decode error: {e}"))
+                })?;
+                let hash_entry =
+                    StoredEntryFixed::<BlockHash>::from_bytes(&v).map_err(|e| {
+                        FinalisedStateError::Custom(format!(
+                            "hash_by_logical_ts value decode error: {e}"
+                        ))
+                    })?;
+                if !hash_entry.verify(&k) {
+                    return Err(FinalisedStateError::Custom(
+                        "hash_by_logical_ts entry checksum mismatch".to_string(),
+                    ));
+                }
+                Ok((logical_ts, *hash_entry.inner()))
+            })
+            .collect()
+    }
 
     /// Fetch block header data by height.
     pub(super) async fn get_block_header_data(

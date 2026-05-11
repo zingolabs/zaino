@@ -66,7 +66,7 @@ use crate::{
             BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
             DbMetadata, DbRead, DbWrite, IndexedBlockExt,
         },
-        types::TransactionHash,
+        types::{LogicalTimestamp, TransactionHash},
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
@@ -474,6 +474,17 @@ impl BlockCoreExt for DbBackend {
     ) -> Result<Option<TxLocation>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_tx_location(txid).await,
+            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+        }
+    }
+
+    async fn hashes_by_logical_ts_range(
+        &self,
+        low: LogicalTimestamp,
+        high: LogicalTimestamp,
+    ) -> Result<Vec<(LogicalTimestamp, BlockHash)>, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.hashes_by_logical_ts_range(low, high).await,
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }

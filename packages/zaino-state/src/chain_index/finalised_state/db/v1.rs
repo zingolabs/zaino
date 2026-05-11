@@ -33,7 +33,7 @@ use crate::{
             },
             entry::{StoredEntryFixed, StoredEntryVar},
         },
-        types::{TransactionHash, GENESIS_HEIGHT},
+        types::{LogicalTimestamp, TransactionHash, GENESIS_HEIGHT},
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
@@ -714,6 +714,62 @@ mod logical_ts_index_slots {
             db_version: 1,
             network: Network::Regtest(ActivationHeights::default()),
         }
+    }
+
+    /// `hashes_by_logical_ts_range` returns an empty result on a fresh
+    /// DB across every input we can reasonably throw at it, and the
+    /// `low >= high` guard short-circuits without touching the database.
+    /// Until the write-path hook lands (zingolabs/zaino#1101), this is
+    /// the entire observable contract of the method.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hashes_by_logical_ts_range_is_empty_on_fresh_db() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = fresh_config(&temp_dir);
+
+        let db = DbV1::spawn(&config).await.expect("DbV1::spawn");
+        LmdbLifecycle::wait_until_ready(&db).await;
+
+        // Full-range scan: empty table → empty result.
+        let full = BlockCoreExt::hashes_by_logical_ts_range(
+            &db,
+            LogicalTimestamp::from_u32(0),
+            LogicalTimestamp::from_u32(u32::MAX),
+        )
+        .await
+        .expect("full-range scan");
+        assert!(full.is_empty());
+
+        // Narrow window: same.
+        let narrow = BlockCoreExt::hashes_by_logical_ts_range(
+            &db,
+            LogicalTimestamp::from_u32(1_558_141_697),
+            LogicalTimestamp::from_u32(1_558_141_700),
+        )
+        .await
+        .expect("narrow-range scan");
+        assert!(narrow.is_empty());
+
+        // `low == high` short-circuits (empty half-open range).
+        let same = BlockCoreExt::hashes_by_logical_ts_range(
+            &db,
+            LogicalTimestamp::from_u32(1_000),
+            LogicalTimestamp::from_u32(1_000),
+        )
+        .await
+        .expect("equal-bounds short-circuit");
+        assert!(same.is_empty());
+
+        // `low > high` short-circuits (invalid but defined: returns empty).
+        let inverted = BlockCoreExt::hashes_by_logical_ts_range(
+            &db,
+            LogicalTimestamp::from_u32(2_000),
+            LogicalTimestamp::from_u32(1_000),
+        )
+        .await
+        .expect("inverted-bounds short-circuit");
+        assert!(inverted.is_empty());
+
+        DbCore::shutdown(&db).await.expect("shutdown");
     }
 
     /// Both new tables open as part of `DbV1::spawn`, are reachable via a

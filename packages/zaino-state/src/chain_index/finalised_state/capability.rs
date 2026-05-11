@@ -78,10 +78,11 @@
 use core::fmt;
 
 use crate::{
-    chain_index::types::TransactionHash, error::FinalisedStateError, read_fixed_le, read_u32_le,
-    read_u8, version, write_fixed_le, write_u32_le, write_u8, BlockHash, BlockHeaderData,
-    CommitmentTreeData, CompactBlockStream, FixedEncodedLen, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
+    chain_index::types::{LogicalTimestamp, TransactionHash},
+    error::FinalisedStateError,
+    read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, FixedEncodedLen, Height,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
     TransparentCompactTx, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerde,
 };
 
@@ -787,6 +788,23 @@ pub trait BlockCoreExt: Send + Sync {
         &self,
         txid: &TransactionHash,
     ) -> Result<Option<TxLocation>, FinalisedStateError>;
+
+    /// Returns `(logical_ts, block_hash)` pairs from the `hash_by_logical_ts`
+    /// index whose `logical_ts` falls in the half-open range `[low, high)`.
+    ///
+    /// Matches the `[low, high)` semantics of zcashd's `getblockhashes` RPC.
+    /// Results are returned in ascending `logical_ts` order. If `low >= high`
+    /// the result is empty without touching the database.
+    ///
+    /// The index is currently a structural slot — no writes yet (see
+    /// zingolabs/zaino#1101) — so on a freshly-built v1 DB this method
+    /// returns `Ok(vec![])` for any input. Once the write-path hook lands
+    /// the same method body serves real results without API changes.
+    async fn hashes_by_logical_ts_range(
+        &self,
+        low: LogicalTimestamp,
+        high: LogicalTimestamp,
+    ) -> Result<Vec<(LogicalTimestamp, BlockHash)>, FinalisedStateError>;
 }
 
 /// Transparent transaction indexing extension.
