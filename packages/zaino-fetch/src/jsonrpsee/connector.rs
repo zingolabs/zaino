@@ -39,8 +39,8 @@ use crate::jsonrpsee::{
         GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse, GetSpentInfoError,
         GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesError, GetSubtreesResponse,
         GetTransactionResponse, GetTreestateError, GetTreestateResponse, GetTxOutResponse,
-        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse,
-        TxidsError, TxidsResponse,
+        GetUtxosError, GetUtxosResponse, SendTransactionError, SendTransactionResponse, TxidsError,
+        TxidsResponse,
     },
 };
 
@@ -848,7 +848,6 @@ impl JsonRpSeeConnector {
 
         self.send_request("getspentinfo", params).await
     }
-
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///

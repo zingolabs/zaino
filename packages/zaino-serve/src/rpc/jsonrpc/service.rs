@@ -426,7 +426,6 @@ pub trait ZcashIndexerRpc {
         request: GetSpentInfoRequest,
     ) -> Result<GetSpentInfoResponse, ErrorObjectOwned>;
 
-
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
     /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
@@ -902,7 +901,6 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
                 )
             })
     }
-
 
     async fn get_address_tx_ids(
         &self,

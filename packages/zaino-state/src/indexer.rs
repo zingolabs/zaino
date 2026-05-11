@@ -532,7 +532,6 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         request: GetSpentInfoRequest,
     ) -> Result<GetSpentInfoResponse, Self::Error>;
 
-
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
     /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)

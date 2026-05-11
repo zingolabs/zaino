@@ -806,7 +806,6 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.get_spent_info(request).await?)
     }
 
-
     async fn chain_height(&self) -> Result<Height, Self::Error> {
         Ok(Height(
             self.indexer
