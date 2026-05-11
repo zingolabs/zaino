@@ -120,6 +120,154 @@ impl ResponseToError for GetTxOutResponse {
     type RpcError = Infallible;
 }
 
+/// Request parameters for the `getspentinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetSpentInfoRequest {
+    /// The hex string of the transaction id containing the output.
+    pub txid: String,
+    /// The output index in the previous transaction's `vout` array.
+    pub index: u32,
+}
+
+/// Response to a `getspentinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetSpentInfoResponse {
+    /// Transaction id of the transaction that spent the requested output.
+    pub txid: String,
+    /// Input index in the spending transaction's `vin` array.
+    pub index: u32,
+    /// Height of the block containing the spending transaction.
+    ///
+    /// This field is returned by zcashd 6.12.2 but omitted from the public 6.2.0 RPC page.
+    pub height: u32,
+}
+
+/// Error type for the `getspentinfo` RPC request.
+#[derive(Debug, thiserror::Error)]
+pub enum GetSpentInfoError {
+    /// The requested output is not known as spent.
+    #[error("{0}")]
+    UnableToGetSpentInfo(String),
+
+    /// The request parameters were invalid.
+    #[error("{0}")]
+    InvalidParameter(String),
+}
+
+impl ResponseToError for GetSpentInfoResponse {
+    type RpcError = GetSpentInfoError;
+}
+
+impl TryFrom<super::connector::RpcError> for GetSpentInfoError {
+    type Error = super::connector::RpcError;
+
+    fn try_from(value: super::connector::RpcError) -> Result<Self, Self::Error> {
+        match value.code {
+            -5 => Ok(Self::UnableToGetSpentInfo(value.message)),
+            -8 => Ok(Self::InvalidParameter(value.message)),
+            _ => Err(value),
+        }
+    }
+}
+
+#[cfg(test)]
+mod get_spent_info {
+    use super::{GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse};
+    use crate::jsonrpsee::connector::RpcError;
+    use serde_json::json;
+
+    fn rpc_error(code: i64, message: &str) -> RpcError {
+        RpcError {
+            code,
+            message: message.to_string(),
+            data: None,
+        }
+    }
+
+    #[test]
+    fn request_serializes_as_single_object_with_txid_and_index() {
+        let request = GetSpentInfoRequest {
+            txid: "deadbeef".to_string(),
+            index: 7,
+        };
+        let json_value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(json_value, json!({ "txid": "deadbeef", "index": 7 }));
+    }
+
+    #[test]
+    fn request_round_trips_through_json() {
+        let request = GetSpentInfoRequest {
+            txid: "abcd1234".to_string(),
+            index: 0,
+        };
+        let json_value = serde_json::to_value(&request).expect("serialize request");
+        let round_tripped: GetSpentInfoRequest =
+            serde_json::from_value(json_value).expect("deserialize request");
+        assert_eq!(round_tripped, request);
+    }
+
+    // zcashd 6.12.2 returns the undocumented `height` field alongside txid/index.
+    // This test pins that wire shape so a regression breaks loudly.
+    #[test]
+    fn response_deserializes_zcashd_payload_with_height() {
+        let json_value = json!({
+            "txid": "feed1234",
+            "index": 3,
+            "height": 1_234_567,
+        });
+        let response: GetSpentInfoResponse =
+            serde_json::from_value(json_value).expect("deserialize response");
+        assert_eq!(response.txid, "feed1234");
+        assert_eq!(response.index, 3);
+        assert_eq!(response.height, 1_234_567);
+    }
+
+    #[test]
+    fn response_round_trips_through_json() {
+        let response = GetSpentInfoResponse {
+            txid: "cafebabe".to_string(),
+            index: 1,
+            height: 42,
+        };
+        let json_value = serde_json::to_value(&response).expect("serialize response");
+        let round_tripped: GetSpentInfoResponse =
+            serde_json::from_value(json_value).expect("deserialize response");
+        assert_eq!(round_tripped, response);
+    }
+
+    #[test]
+    fn error_maps_minus_five_to_unable_to_get_spent_info() {
+        let mapped = GetSpentInfoError::try_from(rpc_error(-5, "Unable to get spent info"))
+            .expect("expected UnableToGetSpentInfo");
+        match mapped {
+            GetSpentInfoError::UnableToGetSpentInfo(message) => {
+                assert_eq!(message, "Unable to get spent info");
+            }
+            other => panic!("expected UnableToGetSpentInfo, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn error_maps_minus_eight_to_invalid_parameter() {
+        let mapped = GetSpentInfoError::try_from(rpc_error(-8, "Invalid parameter"))
+            .expect("expected InvalidParameter");
+        match mapped {
+            GetSpentInfoError::InvalidParameter(message) => {
+                assert_eq!(message, "Invalid parameter");
+            }
+            other => panic!("expected InvalidParameter, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn error_returns_original_rpc_error_for_unknown_code() {
+        let returned = GetSpentInfoError::try_from(rpc_error(-32603, "Internal error"))
+            .expect_err("unknown code must Err with the original RpcError");
+        assert_eq!(returned.code, -32603);
+        assert_eq!(returned.message, "Internal error");
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 /// A wrapper to allow both types of error timestamp
