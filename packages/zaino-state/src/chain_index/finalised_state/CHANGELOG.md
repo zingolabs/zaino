@@ -171,5 +171,89 @@ On-disk schema
   - No changes.
 
 --------------------------------------------------------------------------------
+DB VERSION v1.2.0 (from v1.1.0)
+Date: 2026-05-11
+--------------------------------------------------------------------------------
+
+Summary
+- Add two new LMDB tables to the v1 schema for the logical-timestamp
+  index that backs zcashd-parity `getblockhashes` (zingolabs/zaino#1101):
+  - `hash_by_logical_ts_1_0_0`  — `LogicalTimestamp -> BlockHash`
+    (forward; one cursor scan answers a `getblockhashes` range query).
+  - `logical_ts_by_hash_1_0_0`  — `BlockHash -> LogicalTimestamp`
+    (reverse; needed for `delete_block` cleanup and for cheap
+    parent-lookup when `write_block` extends the chain).
+- Backfill the new tables over every header already in `headers` by
+  replaying `LogicalTimestamp::next` in height order.
+
+On-disk schema
+- Layout:
+  - No layout/directory changes; the new tables live in the existing
+    `<network>/v1/` LMDB environment.
+- Tables:
+  - Added: `hash_by_logical_ts_1_0_0`, `logical_ts_by_hash_1_0_0`.
+  - Removed: None.
+  - Renamed: None.
+- Encoding:
+  - Keys for `hash_by_logical_ts_1_0_0`: 5 bytes —
+    `version_tag(0x01) + BE u32 logical_ts`. Big-endian so cursor
+    iteration is in ascending numeric order.
+  - Values for `hash_by_logical_ts_1_0_0`: `StoredEntryFixed<BlockHash>`.
+  - Keys for `logical_ts_by_hash_1_0_0`: 32-byte block hash.
+  - Values for `logical_ts_by_hash_1_0_0`:
+    `StoredEntryFixed<LogicalTimestamp>`.
+  - Checksums / validation: both tables use the standard
+    `StoredEntryFixed` checksum scheme keyed by the LMDB key bytes.
+- Invariants:
+  - Forward and reverse indices stay consistent: every entry in one
+    has a matching entry in the other. Enforced by `write_block`
+    (writes both atomically) and `delete_block` (deletes both
+    atomically).
+  - `logical_ts` is strictly monotonic across finalised height order.
+  - LMDB `max_dbs` raised from 12 to 14 to leave margin above the
+    active table count under both `transparent_address_history_experimental`
+    feature configurations.
+
+API / capabilities
+- Capability changes:
+  - Added: None (the new tables ride on the existing
+    `BLOCK_CORE_EXT` capability).
+  - Removed: None.
+  - Changed: None.
+- Public surface changes:
+  - Added (on `BlockCoreExt`, dispatched by `DbBackend` to V1):
+    - `hashes_by_logical_ts_range(low, high)` — returns
+      `Vec<(LogicalTimestamp, BlockHash)>` from the forward index over
+      the half-open range `[low, high)`. Matches zcashd's
+      `getblockhashes` semantics.
+  - Removed: None.
+  - Changed: None.
+
+Migration
+- Strategy: in-place backfill within the existing v1 LMDB environment.
+- Backfill: walk every header already in `headers` in height order,
+  replay `LogicalTimestamp::next`, populate both index tables in one
+  rw transaction. After the populate step commits, advance
+  `DbMetadata.version` to `1.2.0` and refresh `DbMetadata.schema_hash`
+  to the BLAKE2b-256 of the updated `db_schema_v1.txt`.
+- Completion criteria:
+  - `DbMetadata.version == {1, 2, 0}`,
+  - `DbMetadata.schema_hash == DB_SCHEMA_V1_HASH`,
+  - both index tables have one entry per finalised block.
+- Failure handling: the populate step runs in a single LMDB rw
+  transaction so a crash either fully populates the indices or leaves
+  them empty. On retry, the next launch detects current_version ==
+  1.1.0 and re-runs the migration; `txn.put` uses
+  `WriteFlags::empty` (overwriting allowed) so any committed-then-
+  aborted prior attempt re-writes with the same deterministic value.
+
+Bug Fixes / Optimisations
+- New `BlockCoreExt::hashes_by_logical_ts_range` lets `getblockhashes`
+  answer range queries via one O(matches) cursor scan instead of the
+  O(N) genesis walk previously required. The actual consumer in
+  `chain_index.rs::get_block_hashes` is wired up in a follow-up
+  commit that ships once this migration is in place.
+
+--------------------------------------------------------------------------------
 (append new entries below)
 --------------------------------------------------------------------------------

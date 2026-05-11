@@ -277,6 +277,32 @@ impl DbBackend {
             Self::V1(_) => Capability::LATEST,
         }
     }
+
+    /// Backfill the logical_ts index tables over every header already in
+    /// the finalised state.
+    ///
+    /// Used by the v1.1.0 → v1.2.0 migration. Only supported on V1; V0
+    /// returns `FeatureUnavailable("block_core")` since it has no
+    /// logical_ts index tables to populate.
+    pub(crate) async fn backfill_logical_ts_index(&self) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.backfill_logical_ts_index().await,
+            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+        }
+    }
+
+    /// Test-only helper: empties the logical_ts index tables so the
+    /// v1.1.0 → v1.2.0 migration test can simulate the pre-backfill
+    /// state of a freshly-upgraded v1.1.0 database.
+    #[cfg(test)]
+    pub(crate) async fn clear_logical_ts_index_for_test(
+        &self,
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.clear_logical_ts_index_for_test().await,
+            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+        }
+    }
 }
 
 impl From<DbV0> for DbBackend {

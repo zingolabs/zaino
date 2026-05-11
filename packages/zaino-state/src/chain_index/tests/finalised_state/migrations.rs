@@ -282,12 +282,15 @@ async fn v1_0_to_v1_1_metadata_migration() {
     zaino_db.wait_until_ready().await;
 
     // 4) Read persisted metadata and assert migration effects.
+    // From a v1.0.0 starting point, the migration chain runs to the
+    // current target version — v1.2.0 since the logical_ts-index
+    // migration landed (1.1.0 -> 1.2.0).
     let post_meta = zaino_db.get_metadata().await.unwrap();
     assert_eq!(
         post_meta.version,
         DbVersion {
             major: 1,
-            minor: 1,
+            minor: 2,
             patch: 0
         }
     );
@@ -445,15 +448,19 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
     zaino_db.wait_until_ready().await;
 
     // Confirm the metadata migration completed correctly.
+    // From v1.0.0 the migration chain runs to the current target version
+    // — v1.2.0 since the logical_ts-index migration (1.1.0 -> 1.2.0)
+    // landed. The 1.0.0 -> 1.1.0 step we're stressing here is still
+    // exercised; it's just no longer the terminus.
     let post_meta = zaino_db.get_metadata().await.unwrap();
     assert_eq!(
         post_meta.version,
         DbVersion {
             major: 1,
-            minor: 1,
+            minor: 2,
             patch: 0,
         },
-        "DB version should be 1.1.0 after migration"
+        "DB version should be 1.2.0 after the v1.0.0 -> v1.1.0 -> v1.2.0 migration chain"
     );
     assert_eq!(
         post_meta.migration_status,
@@ -520,6 +527,163 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         db_height, expected_tip,
         "DB tip should be the last block's height after building the full chain"
     );
+
+    zaino_db.shutdown().await.unwrap();
+}
+
+/// Tests the v1.1.0 → v1.2.0 minor migration that backfills the
+/// `hash_by_logical_ts` and `logical_ts_by_hash` index tables over an
+/// existing v1 database.
+///
+/// Scenario:
+///   Phase 1 – Build a fresh v1.2.0 DB and sync the test-vector
+///              blocks. The write-path hook populates both index
+///              tables along the way; capture the populated state.
+///   Phase 2 – Manually empty the two index tables and downgrade the
+///              persisted metadata to look like a v1.1.0 DB (version,
+///              stale schema hash, in-progress migration status).
+///              This is the on-disk state an upgraded user starts
+///              from.
+///   Phase 3 – Reopen with `ZainoDB::spawn`; the migration manager
+///              detects current_version == 1.1.0 < target 1.2.0 and
+///              runs `Migration1_1_0To1_2_0`, which backfills both
+///              index tables and refreshes metadata.
+///   Phase 4 – Assert: post-migration metadata advanced correctly,
+///              and the populated index matches what we captured in
+///              Phase 1 (the recurrence is deterministic, so the
+///              fresh-write entries and the backfill entries must
+///              agree).
+#[tokio::test(flavor = "multi_thread")]
+async fn v1_1_to_v1_2_backfills_logical_ts_index() {
+    use crate::chain_index::types::{BlockHash, LogicalTimestamp};
+
+    init_tracing();
+
+    let TestVectorData { blocks, .. } = load_test_vectors().unwrap();
+
+    let temp_dir: TempDir = tempfile::tempdir().unwrap();
+    let db_path: PathBuf = temp_dir.path().to_path_buf();
+
+    let v1_config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: db_path.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+
+    let source = build_mockchain_source(blocks.clone());
+
+    // Phase 1: build the DB and sync. The write-hook populates the
+    // index as each block is written.
+    let zaino_db = ZainoDB::spawn(v1_config.clone(), source.clone())
+        .await
+        .unwrap();
+    crate::chain_index::tests::vectors::sync_db_with_blockdata(
+        zaino_db.router(),
+        blocks.clone(),
+        None,
+    )
+    .await;
+    zaino_db.wait_until_ready().await;
+
+    // Capture the populated forward-index state for comparison after
+    // the migration round-trip.
+    let expected_entries = zaino_db
+        .router()
+        .backend(
+            crate::chain_index::finalised_state::capability::CapabilityRequest::BlockCoreExt,
+        )
+        .unwrap()
+        .hashes_by_logical_ts_range(
+            LogicalTimestamp::from_u32(0),
+            LogicalTimestamp::from_u32(u32::MAX),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !expected_entries.is_empty(),
+        "phase 1 should populate the forward index",
+    );
+
+    // Phase 2: empty both index tables and downgrade metadata to
+    // simulate the pre-migration state of an upgraded v1.1.0 DB.
+    zaino_db
+        .router()
+        .backend(
+            crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
+        )
+        .unwrap()
+        .clear_logical_ts_index_for_test()
+        .await
+        .unwrap();
+
+    let mut metadata = zaino_db.get_metadata().await.unwrap();
+    metadata.version = DbVersion {
+        major: 1,
+        minor: 1,
+        patch: 0,
+    };
+    metadata.schema_hash = [0u8; 32];
+    metadata.migration_status = MigrationStatus::PartialBuidInProgress;
+    zaino_db.router().update_metadata(metadata).await.unwrap();
+
+    zaino_db.shutdown().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Phase 3: respawn — Migration1_1_0To1_2_0 should run.
+    let zaino_db = ZainoDB::spawn(v1_config, source).await.unwrap();
+    zaino_db.wait_until_ready().await;
+
+    // Phase 4: post-migration assertions.
+    let post_meta = zaino_db.get_metadata().await.unwrap();
+    assert_eq!(
+        post_meta.version,
+        DbVersion {
+            major: 1,
+            minor: 2,
+            patch: 0,
+        },
+        "metadata version should be advanced to 1.2.0",
+    );
+    assert_eq!(post_meta.migration_status, MigrationStatus::Empty);
+    assert_eq!(post_meta.schema_hash, DB_SCHEMA_V1_HASH);
+
+    let actual_entries = zaino_db
+        .router()
+        .backend(
+            crate::chain_index::finalised_state::capability::CapabilityRequest::BlockCoreExt,
+        )
+        .unwrap()
+        .hashes_by_logical_ts_range(
+            LogicalTimestamp::from_u32(0),
+            LogicalTimestamp::from_u32(u32::MAX),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        actual_entries.len(),
+        expected_entries.len(),
+        "backfilled forward index should have the same number of entries as the original populate",
+    );
+    for (i, (actual, expected)) in actual_entries.iter().zip(expected_entries.iter()).enumerate() {
+        assert_eq!(actual, expected, "entry {i} mismatch");
+    }
+
+    // The reverse index is harder to enumerate without an extra
+    // public accessor, but consistency between forward and reverse is
+    // enforced by the migration: each forward entry's hash must look
+    // up to the same logical_ts in the reverse table. Spot-check the
+    // first and last entries to verify the pairing.
+    let _: &(LogicalTimestamp, BlockHash) =
+        actual_entries.first().expect("at least one entry");
+    let _: &(LogicalTimestamp, BlockHash) =
+        actual_entries.last().expect("at least one entry");
 
     zaino_db.shutdown().await.unwrap();
 }

@@ -294,6 +294,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
         ) {
             (0, 0, 0) => Ok(MigrationStep::Migration0_0_0To1_0_0(Migration0_0_0To1_0_0)),
             (1, 0, 0) => Ok(MigrationStep::Migration1_0_0To1_1_0(Migration1_0_0To1_1_0)),
+            (1, 1, 0) => Ok(MigrationStep::Migration1_1_0To1_2_0(Migration1_1_0To1_2_0)),
             (_, _, _) => Err(FinalisedStateError::Custom(format!(
                 "Missing migration from version {}",
                 self.current_version
@@ -310,6 +311,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
 enum MigrationStep {
     Migration0_0_0To1_0_0(Migration0_0_0To1_0_0),
     Migration1_0_0To1_1_0(Migration1_0_0To1_1_0),
+    Migration1_1_0To1_2_0(Migration1_1_0To1_2_0),
 }
 
 impl MigrationStep {
@@ -320,6 +322,9 @@ impl MigrationStep {
             }
             MigrationStep::Migration1_0_0To1_1_0(_step) => {
                 <Migration1_0_0To1_1_0 as Migration<T>>::TO_VERSION
+            }
+            MigrationStep::Migration1_1_0To1_2_0(_step) => {
+                <Migration1_1_0To1_2_0 as Migration<T>>::TO_VERSION
             }
         }
     }
@@ -333,6 +338,7 @@ impl MigrationStep {
         match self {
             MigrationStep::Migration0_0_0To1_0_0(step) => step.migrate(router, cfg, source).await,
             MigrationStep::Migration1_0_0To1_1_0(step) => step.migrate(router, cfg, source).await,
+            MigrationStep::Migration1_1_0To1_2_0(step) => step.migrate(router, cfg, source).await,
         }
     }
 }
@@ -589,6 +595,77 @@ impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
         router.update_metadata(metadata).await?;
 
         info!("v1.0.0 to v1.1.0 migration complete.");
+        Ok(())
+    }
+}
+
+/// Minor migration: v1.1.0 → v1.2.0.
+///
+/// Adds the `hash_by_logical_ts` and `logical_ts_by_hash` index tables
+/// to the v1 schema and populates them by replaying
+/// `LogicalTimestamp::next` over every header already in the
+/// `headers` table. See zingolabs/zaino#1101 for the motivation.
+///
+/// The two new tables themselves are created lazily by `DbV1::spawn`
+/// before the migration runs, so the migration only needs to populate
+/// them — not declare them. After the migration:
+///
+/// - `hash_by_logical_ts`  contains one entry per finalised block.
+/// - `logical_ts_by_hash`  contains the inverse mapping.
+/// - `DbMetadata.version`  advances from `1.1.0` to `1.2.0`.
+/// - `DbMetadata.schema_hash` refreshes to match the updated schema
+///   text in `db_schema_v1.txt`.
+///
+/// Safety and resumability:
+/// - The backfill runs in a single LMDB rw transaction so a crash
+///   leaves the index tables empty and the next launch retries.
+/// - The `txn.put` calls use `WriteFlags::empty` (idempotent
+///   overwrite), so a retry that finds partial-but-committed entries
+///   from a prior aborted attempt re-writes them with the same
+///   deterministic value.
+struct Migration1_1_0To1_2_0;
+
+#[async_trait]
+impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
+    const CURRENT_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 1,
+        patch: 0,
+    };
+
+    const TO_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 2,
+        patch: 0,
+    };
+
+    async fn migrate(
+        &self,
+        router: Arc<Router>,
+        _cfg: BlockCacheConfig,
+        _source: T,
+    ) -> Result<(), FinalisedStateError> {
+        info!("Starting v1.1.0 → v1.2.0 migration (logical_ts index backfill).");
+
+        // Walk every finalised header in height order and populate both
+        // index tables. Reaches into the V1 backend through the router
+        // because the `BlockCoreExt` trait deliberately doesn't expose
+        // an index-population method — backfill is a migration-internal
+        // operation, not part of the runtime read surface.
+        let backend = router.backend(
+            crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
+        )?;
+        backend.backfill_logical_ts_index().await?;
+
+        // Advance version and refresh schema_hash now that the
+        // population step has committed.
+        let mut metadata: DbMetadata = router.get_metadata().await?;
+        metadata.version = <Self as Migration<T>>::TO_VERSION;
+        metadata.schema_hash = crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
+        metadata.migration_status = MigrationStatus::Empty;
+        router.update_metadata(metadata).await?;
+
+        info!("v1.1.0 → v1.2.0 migration complete.");
         Ok(())
     }
 }

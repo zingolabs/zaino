@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────────────
-#  Zaino – Finalised State Database, on-disk layout (Schema v1, 2025-08-05)
+#  Zaino – Finalised State Database, on-disk layout (Schema v1, 2026-05-11)
 # ────────────────────────────────────────────────────────────────────────────────
 #
 #  Any change to this file is a **breaking** change.  Bump the schema version,
@@ -83,6 +83,19 @@
 #    Key : 32-byte block hash (internal byte order)
 #    Val : 0x01 + BE height
 #
+# 7a. hash_by_logical_ts  ―  LogicalTimestamp  ->  StoredEntryFixed<BlockHash>
+#    Key : 0x01 + BE u32 logical_ts
+#    Val : 0x01 + 32-byte block hash + [32] checksum
+#    Used by `getblockhashes` for [low, high) range queries via a single
+#    cursor scan. BE encoding makes lex order match numeric order.
+#
+# 7b. logical_ts_by_hash  ―  BlockHash  ->  StoredEntryFixed<LogicalTimestamp>
+#    Key : 32-byte block hash
+#    Val : 0x01 + 0x01 + BE u32 logical_ts + [32] checksum
+#    Reverse of `hash_by_logical_ts`; lets `delete_block` find the
+#    forward-index entry to remove, and lets `write_block` seed the
+#    `LogicalTimestamp::next` recurrence with the parent's logical_ts.
+#
 # 8. spent  ―  Outpoint  ->  StoredEntryFixed<Vec<TxLocation>>
 #    Key : 0x01 + Outpoint
 #           Outpoint = B prev_txid  LE(u32) prev_index
@@ -106,7 +119,7 @@
 #
 # ─────────────────────────── Environment settings ─────────────────────────────
 #   LMDB page-size:         platform default
-#   max_dbs:                10 (see list above)
+#   max_dbs:                14 (see list above; 8 core + 2 logical_ts + 2 transparent-experimental + metadata + headroom)
 #   Flags:                  MDB_NOTLS | MDB_NORDAHEAD
 #
 #   All Databases are append-only and indexed by height -> LMDB default

@@ -1095,6 +1095,105 @@ impl DbV1 {
         Ok(())
     }
 
+    /// Backfills `hash_by_logical_ts` and `logical_ts_by_hash` for every
+    /// finalised block currently in the `headers` table.
+    ///
+    /// Used by the v1.1.0 → v1.2.0 migration to populate the
+    /// logical-timestamp index over an existing v1 database. The
+    /// computation is the same `LogicalTimestamp::next` recurrence the
+    /// write-path hook uses for new blocks — walked here in height order
+    /// over already-stored headers.
+    ///
+    /// The whole pass runs in a single LMDB rw transaction so the index
+    /// is either fully populated or untouched after a crash. With ~3M
+    /// blocks each contributing ~80 bytes (two entries * (5-byte key +
+    /// 32-byte hash + checksum overhead)) the working-set cost is
+    /// proportional to the chain height; well within LMDB's working
+    /// envelope for the configured `map_size`.
+    pub(crate) async fn backfill_logical_ts_index(&self) -> Result<(), FinalisedStateError> {
+        let tip = match self.tip_height().await? {
+            Some(h) => h,
+            None => return Ok(()), // empty DB — nothing to backfill
+        };
+
+        // Read all headers in height order in one pass before opening
+        // the rw_txn. Keeping the read out of the rw_txn lets the
+        // checksum-verifying decode happen without LMDB ro+rw borrow
+        // entanglement. We go through the `BlockCoreExt` trait method
+        // because the inherent equivalent is private to `block_core`.
+        let headers =
+            BlockCoreExt::get_block_range_headers(self, GENESIS_HEIGHT, tip).await?;
+
+        let env = Arc::clone(&self.env);
+        let hash_by_logical_ts = self.hash_by_logical_ts;
+        let logical_ts_by_hash = self.logical_ts_by_hash;
+        tokio::task::spawn_blocking(move || -> Result<(), FinalisedStateError> {
+            let mut txn = env.begin_rw_txn()?;
+            let mut previous_logical_ts: Option<LogicalTimestamp> = None;
+
+            for header in headers {
+                let hash = header.context.index.hash;
+                let n_time = header.data().time();
+                let logical_ts = LogicalTimestamp::next(previous_logical_ts, n_time);
+                previous_logical_ts = Some(logical_ts);
+
+                let hash_bytes = hash.to_bytes()?;
+                let logical_ts_bytes = logical_ts.to_bytes()?;
+
+                // `WriteFlags::empty` (not NO_OVERWRITE) so a partial
+                // prior run — or a retry after a crash that committed
+                // some but not all entries — re-writes idempotently.
+                // The values are deterministic; re-writing the same
+                // entry produces identical bytes.
+                txn.put(
+                    hash_by_logical_ts,
+                    &logical_ts_bytes,
+                    &StoredEntryFixed::new(&logical_ts_bytes, hash).to_bytes()?,
+                    WriteFlags::empty(),
+                )?;
+                txn.put(
+                    logical_ts_by_hash,
+                    &hash_bytes,
+                    &StoredEntryFixed::new(&hash_bytes, logical_ts).to_bytes()?,
+                    WriteFlags::empty(),
+                )?;
+            }
+
+            txn.commit()?;
+            env.sync(true)
+                .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))??;
+
+        Ok(())
+    }
+
+    /// Test-only helper: empties the two logical_ts index tables in a
+    /// single rw transaction. Used by the v1.1.0 → v1.2.0 migration
+    /// test to simulate the on-disk state of a freshly-upgraded v1.1.0
+    /// database (where the tables exist as structural slots but contain
+    /// no entries).
+    #[cfg(test)]
+    pub(crate) async fn clear_logical_ts_index_for_test(
+        &self,
+    ) -> Result<(), FinalisedStateError> {
+        let env = Arc::clone(&self.env);
+        let hash_by_logical_ts = self.hash_by_logical_ts;
+        let logical_ts_by_hash = self.logical_ts_by_hash;
+        tokio::task::spawn_blocking(move || -> Result<(), FinalisedStateError> {
+            let mut txn = env.begin_rw_txn()?;
+            txn.clear_db(hash_by_logical_ts)?;
+            txn.clear_db(logical_ts_by_hash)?;
+            txn.commit()?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))??;
+        Ok(())
+    }
+
     /// Updates the metadata hed by the database.
     pub(crate) async fn update_metadata(
         &self,
