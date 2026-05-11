@@ -15,6 +15,7 @@ use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::BlockIndex;
+use crate::chain_index::types::LogicalTimestamp;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
@@ -139,15 +140,16 @@ fn branch_len_to_active_chain(
     }
 }
 
-fn next_logical_timestamp(block_time: i64, previous_logical_ts: Option<u32>) -> u32 {
-    let block_time = u32::try_from(block_time).unwrap_or(0);
-
-    match previous_logical_ts {
-        Some(previous_logical_ts) if block_time <= previous_logical_ts => {
-            previous_logical_ts.saturating_add(1)
-        }
-        _ => block_time,
-    }
+/// Translate zebra's `i64` `nTime` representation into the protocol `u32`
+/// expected by [`LogicalTimestamp::next`].
+///
+/// The on-chain `nTime` field is `u32`; the `i64` is a chrono artifact from
+/// `BlockData::time()`. See zingolabs/zaino#1102 for the plan to narrow the
+/// accessor itself. Until then, an out-of-`u32`-range value indicates DB
+/// corruption or an upstream bug — we preserve the pre-existing
+/// `unwrap_or(0)` fallback rather than tightening behavior in this refactor.
+fn n_time_to_u32(block_time: i64) -> u32 {
+    u32::try_from(block_time).unwrap_or(0)
 }
 
 /// The interface to the chain index.
@@ -1199,12 +1201,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ) -> Result<GetBlockHashesResponse, Self::Error> {
         let mut entries = Vec::new();
         let mut seen_hashes = HashSet::new();
-        let mut logical_by_hash = HashMap::new();
-        let mut previous_logical_ts = None;
+        let mut logical_by_hash: HashMap<types::BlockHash, LogicalTimestamp> = HashMap::new();
+        let mut previous_logical_ts: Option<LogicalTimestamp> = None;
 
         if low >= high {
             return Ok(GetBlockHashesResponse::from_hashes(entries, logical_times));
         }
+
+        let low_ts = LogicalTimestamp::from_u32(low);
+        let high_ts = LogicalTimestamp::from_u32(high);
 
         if let Some(finalized_tip) = self.finalized_state.db_height().await? {
             let headers = self
@@ -1213,12 +1218,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 .await?;
 
             for header in headers {
-                let logical_ts = next_logical_timestamp(header.data().time(), previous_logical_ts);
+                let logical_ts = LogicalTimestamp::next(
+                    previous_logical_ts,
+                    n_time_to_u32(header.data().time()),
+                );
                 previous_logical_ts = Some(logical_ts);
                 logical_by_hash.insert(header.context.index.hash, logical_ts);
 
-                if logical_ts >= low && logical_ts < high {
-                    entries.push((header.context.index.hash.to_rpc_hex(), logical_ts));
+                if logical_ts >= low_ts && logical_ts < high_ts {
+                    entries.push((header.context.index.hash.to_rpc_hex(), logical_ts.as_u32()));
                     seen_hashes.insert(header.context.index.hash);
                 }
             }
@@ -1242,12 +1250,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 let Some(block) = non_finalized_snapshot.blocks.get(hash) else {
                     continue;
                 };
-                let logical_ts = next_logical_timestamp(block.data().time(), previous_logical_ts);
+                let logical_ts =
+                    LogicalTimestamp::next(previous_logical_ts, n_time_to_u32(block.data().time()));
                 previous_logical_ts = Some(logical_ts);
                 logical_by_hash.insert(*hash, logical_ts);
 
-                if logical_ts >= low && logical_ts < high {
-                    entries.push((hash.to_rpc_hex(), logical_ts));
+                if logical_ts >= low_ts && logical_ts < high_ts {
+                    entries.push((hash.to_rpc_hex(), logical_ts.as_u32()));
                     seen_hashes.insert(*hash);
                 }
             }
@@ -1265,11 +1274,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
                     let parent_logical_ts =
                         logical_by_hash.get(block.context.parent_hash()).copied();
-                    let logical_ts = next_logical_timestamp(block.data().time(), parent_logical_ts);
+                    let logical_ts = LogicalTimestamp::next(
+                        parent_logical_ts,
+                        n_time_to_u32(block.data().time()),
+                    );
                     logical_by_hash.insert(*block.hash(), logical_ts);
 
-                    if logical_ts >= low && logical_ts < high {
-                        entries.push((block.hash().to_rpc_hex(), logical_ts));
+                    if logical_ts >= low_ts && logical_ts < high_ts {
+                        entries.push((block.hash().to_rpc_hex(), logical_ts.as_u32()));
                     }
                 }
             }
