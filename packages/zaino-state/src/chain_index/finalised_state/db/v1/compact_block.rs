@@ -330,6 +330,8 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
+            hash_by_logical_ts: self.hash_by_logical_ts,
+            logical_ts_by_hash: self.logical_ts_by_hash,
             #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
             #[cfg(feature = "transparent_address_history_experimental")]

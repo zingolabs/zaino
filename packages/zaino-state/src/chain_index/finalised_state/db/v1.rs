@@ -220,6 +220,26 @@ pub(crate) struct DbV1 {
     /// Used for hash based fetch of the best chain (and random access).
     heights: Database,
 
+    /// Hash by logical timestamp: `LogicalTimestamp` -> `StoredEntryFixed<BlockHash>`
+    ///
+    /// Forward index used by `getblockhashes` to answer logical-ts range
+    /// queries via a single LMDB cursor scan. The key is the 4-byte
+    /// big-endian encoding of the logical timestamp so lex order matches
+    /// numeric order.
+    ///
+    /// **Currently a structural slot** — no writes, no reads, no migration
+    /// yet. Tracked in zingolabs/zaino#1101.
+    hash_by_logical_ts: Database,
+
+    /// Logical timestamp by hash: `BlockHash` -> `StoredEntryFixed<LogicalTimestamp>`
+    ///
+    /// Reverse index of [`hash_by_logical_ts`]. Needed so `delete_block`
+    /// can find which forward-index entry to remove without recomputing
+    /// `logical_ts` from genesis.
+    ///
+    /// **Currently a structural slot** — see zingolabs/zaino#1101.
+    logical_ts_by_hash: Database,
+
     /// Spent outpoints: `Outpoint` -> `StoredEntryFixed<Vec<TxLocation>>`
     ///
     /// Used to check spent status of given outpoints, retuning spending tx.
@@ -317,7 +337,7 @@ impl DbV1 {
 
         // Open LMDB environment and set environmental details.
         let env = Environment::new()
-            .set_max_dbs(12)
+            .set_max_dbs(14)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
             .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
@@ -337,6 +357,12 @@ impl DbV1 {
             super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
                 .await?;
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
+        let hash_by_logical_ts =
+            super::open_or_create_db(&env, "hash_by_logical_ts_1_0_0", DatabaseFlags::empty())
+                .await?;
+        let logical_ts_by_hash =
+            super::open_or_create_db(&env, "logical_ts_by_hash_1_0_0", DatabaseFlags::empty())
+                .await?;
 
         let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
 
@@ -365,6 +391,8 @@ impl DbV1 {
                 orchard,
                 commitment_tree_data,
                 heights: hashes,
+                hash_by_logical_ts,
+                logical_ts_by_hash,
                 spent,
                 address_history,
                 metadata,
@@ -388,6 +416,8 @@ impl DbV1 {
                 orchard,
                 commitment_tree_data,
                 heights: hashes,
+                hash_by_logical_ts,
+                logical_ts_by_hash,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
@@ -427,6 +457,8 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
+            hash_by_logical_ts: self.hash_by_logical_ts,
+            logical_ts_by_hash: self.logical_ts_by_hash,
             #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -603,6 +635,8 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
+            hash_by_logical_ts: self.hash_by_logical_ts,
+            logical_ts_by_hash: self.logical_ts_by_hash,
             #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -646,5 +680,78 @@ impl Drop for DbV1 {
         {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod logical_ts_index_slots {
+    //! Smoke test for the two structural slots that will hold the
+    //! `getblockhashes` index — see zingolabs/zaino#1101.
+    //!
+    //! No writes, no reads, no migration yet. This test exists so that
+    //! the slots are exercised end-to-end: spawn opens both tables, a
+    //! read transaction sees them, and a cursor on each one returns an
+    //! empty iterator on a fresh DB. If a future change forgets to wire
+    //! one of the tables into `spawn` or accidentally renames it, this
+    //! test fails immediately rather than waiting for the write-path
+    //! hook to be added.
+    use super::*;
+
+    use crate::chain_index::finalised_state::capability::DbCore;
+    use tempfile::TempDir;
+    use zaino_common::network::ActivationHeights;
+    use zaino_common::{DatabaseConfig, Network, StorageConfig};
+
+    fn fresh_config(temp_dir: &TempDir) -> BlockCacheConfig {
+        BlockCacheConfig {
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path: temp_dir.path().to_path_buf(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            db_version: 1,
+            network: Network::Regtest(ActivationHeights::default()),
+        }
+    }
+
+    /// Both new tables open as part of `DbV1::spawn`, are reachable via a
+    /// read transaction, and start empty.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fresh_db_has_empty_logical_ts_tables() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = fresh_config(&temp_dir);
+
+        let db = DbV1::spawn(&config).await.expect("DbV1::spawn");
+
+        // Wait for the background handler to finish its initial scan and
+        // reach the steady-state sleep — same pattern as
+        // `assert_shutdown_returns_promptly`. Without this, a shutdown
+        // call below races with the initial scan and the handler does
+        // not observe cancellation until the scan completes.
+        LmdbLifecycle::wait_until_ready(&db).await;
+
+        tokio::task::block_in_place(|| {
+            let txn = db.env.begin_ro_txn().expect("ro_txn");
+
+            // Both tables are reachable via a cursor and contain no entries
+            // — exactly the post-`spawn` state we expect before any
+            // write-path hook is wired up.
+            for (label, table) in [
+                ("hash_by_logical_ts", db.hash_by_logical_ts),
+                ("logical_ts_by_hash", db.logical_ts_by_hash),
+            ] {
+                let mut cur = txn
+                    .open_ro_cursor(table)
+                    .unwrap_or_else(|e| panic!("open_ro_cursor({label}): {e}"));
+                assert!(
+                    cur.iter().next().is_none(),
+                    "{label} should be empty on a fresh DB",
+                );
+            }
+        });
+
+        DbCore::shutdown(&db).await.expect("shutdown");
     }
 }
