@@ -48,6 +48,7 @@ tokio = { version = "1.38", features = ["full"] }
 
 # Network
 http = "1.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tonic = "0.14"
 tower = { version = "0.4", features = ["buffer", "util"] }
 
@@ -112,6 +113,7 @@ zebra-rpc = { workspace = true }
 zip32 = { workspace = true }
 
 corez = { workspace = true }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 tempfile = { workspace = true }

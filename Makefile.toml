@@ -39,6 +39,7 @@ echo "Available commands:"
 echo ""
 echo "  container-test             Run integration tests using the local image"
 echo "  integration-test           Run integration-tests sub-workspace (forwards flags to nextest)"
+echo "  parity-test                Run getblockhashes_algorithm_parity_with_zcashd against a host zcashd"
 echo "  container-test-save-failures    Run tests, save failures to .failed-tests"
 echo "  container-test-retry-failures   Rerun only the previously failed tests"
 echo "  build-image                Build the container image with current artifact versions"
@@ -319,6 +320,48 @@ info "Running integration-tests sub-workspace via container-test"
 info "-- manifest: integration-tests/Cargo.toml"
 
 exec makers container-test --manifest-path integration-tests/Cargo.toml "${@}"
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.parity-test]
+description = "Run the getblockhashes algorithm-parity test against a host-side zcashd (set ZCASHD_RPC_URL/USER/PASSWORD)"
+script_runner = "bash"
+extend = "base-script"
+script.main = '''
+set -euo pipefail
+
+# This task deliberately runs OUTSIDE the container so the test process
+# can reach a zcashd listening on the host's loopback (the
+# `container-test` task lives in a network namespace where 127.0.0.1
+# points at the container, not the host). The trade-off is that the
+# host needs a working rust toolchain — which any zaino developer
+# already has.
+
+if [[ -z "${ZCASHD_RPC_URL:-}" || -z "${ZCASHD_RPC_USER:-}" || -z "${ZCASHD_RPC_PASSWORD:-}" ]]; then
+  err "ZCASHD_RPC_URL, ZCASHD_RPC_USER, and ZCASHD_RPC_PASSWORD must be set."
+  err ""
+  err "Example invocation:"
+  err "  ZCASHD_RPC_URL=http://127.0.0.1:8232 \\"
+  err "  ZCASHD_RPC_USER=<rpcuser-from-zcash.conf> \\"
+  err "  ZCASHD_RPC_PASSWORD=<rpcpassword-from-zcash.conf> \\"
+  err "  makers parity-test"
+  err ""
+  err "Optional: ZCASHD_PARITY_HEIGHTS=<N> to choose how many heights from"
+  err "genesis to compare (default 1000; clamped to tip)."
+  err ""
+  err "zcashd must be running with -timestampindex=1."
+  exit 1
+fi
+
+info "Parity-testing against ${ZCASHD_RPC_URL}"
+info "Heights to compare: ${ZCASHD_PARITY_HEIGHTS:-1000} (or fewer if chain is shorter)"
+
+exec cargo nextest run \
+  --manifest-path integration-tests/Cargo.toml \
+  --no-fail-fast \
+  getblockhashes_algorithm_parity_with_zcashd \
+  "${@}"
 '''
 
 # -------------------------------------------------------------------
