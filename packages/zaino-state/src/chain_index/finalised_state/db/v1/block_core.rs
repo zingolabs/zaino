@@ -55,6 +55,13 @@ impl BlockCoreExt for DbV1 {
     ) -> Result<Vec<(LogicalTimestamp, BlockHash)>, FinalisedStateError> {
         self.hashes_by_logical_ts_range(low, high).await
     }
+
+    async fn logical_ts_for_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<LogicalTimestamp>, FinalisedStateError> {
+        self.logical_ts_for_hash(hash).await
+    }
 }
 
 impl DbV1 {
@@ -124,6 +131,38 @@ impl DbV1 {
                 Ok((logical_ts, *hash_entry.inner()))
             })
             .collect()
+    }
+
+    /// Looks up the logical timestamp stored in `logical_ts_by_hash` for
+    /// the given block hash. `None` if the hash has no entry — either it
+    /// pre-dates the index write-hook or the block simply is not in the
+    /// finalised state.
+    pub(super) async fn logical_ts_for_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<LogicalTimestamp>, FinalisedStateError> {
+        let hash_bytes = hash.to_bytes()?;
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            match txn.get(self.logical_ts_by_hash, &hash_bytes) {
+                Ok(raw) => {
+                    let entry = StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw)
+                        .map_err(|e| {
+                            FinalisedStateError::Custom(format!(
+                                "logical_ts_by_hash decode error: {e}"
+                            ))
+                        })?;
+                    if !entry.verify(&hash_bytes) {
+                        return Err(FinalisedStateError::Custom(
+                            "logical_ts_by_hash entry checksum mismatch".to_string(),
+                        ));
+                    }
+                    Ok(Some(*entry.inner()))
+                }
+                Err(lmdb::Error::NotFound) => Ok(None),
+                Err(e) => Err(FinalisedStateError::LmdbError(e)),
+            }
+        })
     }
 
     /// Fetch block header data by height.

@@ -1179,6 +1179,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     }
 
     /// Returns hashes of blocks whose logical timestamps are in `[low, high)`.
+    ///
+    /// The finalized portion of the answer comes from a single cursor scan
+    /// over the persistent `hash_by_logical_ts` index — O(matches). The
+    /// non-finalized portion (top ≤ 100 blocks of the best chain, plus
+    /// orphans when `no_orphans=false`) is computed on the fly via
+    /// `LogicalTimestamp::next`, seeded with the finalized tip's
+    /// logical_ts so the recurrence stays continuous across the boundary.
     async fn get_block_hashes(
         &self,
         snapshot: &Self::Snapshot,
@@ -1190,7 +1197,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let mut entries = Vec::new();
         let mut seen_hashes = HashSet::new();
         let mut logical_by_hash: HashMap<types::BlockHash, LogicalTimestamp> = HashMap::new();
-        let mut previous_logical_ts: Option<LogicalTimestamp> = None;
 
         if low >= high {
             return Ok(GetBlockHashesResponse::from_hashes(entries, logical_times));
@@ -1199,24 +1205,35 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let low_ts = LogicalTimestamp::from_u32(low);
         let high_ts = LogicalTimestamp::from_u32(high);
 
-        if let Some(finalized_tip) = self.finalized_state.db_height().await? {
-            let headers = self
-                .finalized_state
-                .get_block_range_headers(types::Height(0), finalized_tip)
-                .await?;
-
-            for header in headers {
-                let logical_ts = LogicalTimestamp::next(previous_logical_ts, header.data().time());
-                previous_logical_ts = Some(logical_ts);
-                logical_by_hash.insert(header.context.index.hash, logical_ts);
-
-                if logical_ts >= low_ts && logical_ts < high_ts {
-                    entries.push((header.context.index.hash.to_rpc_hex(), logical_ts.as_u32()));
-                    seen_hashes.insert(header.context.index.hash);
-                }
-            }
+        // *** Finalized side ***
+        // One cursor scan over the persistent index instead of walking
+        // every header from genesis to compute logical_ts on the fly.
+        let finalized_entries = self
+            .finalized_state
+            .hashes_by_logical_ts_range(low_ts, high_ts)
+            .await?;
+        for (logical_ts, hash) in finalized_entries {
+            entries.push((hash.to_rpc_hex(), logical_ts.as_u32()));
+            seen_hashes.insert(hash);
         }
 
+        // *** Boundary seed ***
+        // The first non-finalized block's parent is the finalized tip,
+        // and the recurrence needs that parent's logical_ts to produce
+        // a correct result. We no longer walk finalized blocks, so look
+        // up the tip's logical_ts directly.
+        let mut previous_logical_ts: Option<LogicalTimestamp> =
+            if let Some(finalized_tip) = self.finalized_state.db_height().await? {
+                if let Some(tip_hash) = self.finalized_state.get_block_hash(finalized_tip).await? {
+                    self.finalized_state.logical_ts_for_hash(tip_hash).await?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        // *** Non-finalized side ***
         if let ChainIndexSnapshot::NonFinalizedStateExists {
             non_finalized_snapshot,
         } = snapshot
@@ -1228,7 +1245,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             active_heights.sort_by_key(|(height, _hash)| **height);
 
             for (_height, hash) in active_heights {
-                if logical_by_hash.contains_key(hash) {
+                // Skip if the finalized side already emitted this block.
+                // At the finalization seam a block can briefly appear in
+                // both `hash_by_logical_ts` (just written by the
+                // write-hook) and `non_finalized_snapshot.heights_to_hashes`
+                // (not yet evicted), and without this guard the
+                // get_block_hashes response double-counts it.
+                if seen_hashes.contains(hash) || logical_by_hash.contains_key(hash) {
                     continue;
                 }
 
@@ -1256,8 +1279,21 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         continue;
                     }
 
-                    let parent_logical_ts =
-                        logical_by_hash.get(block.context.parent_hash()).copied();
+                    // Orphan parents are usually other non-finalized
+                    // blocks (already in `logical_by_hash`); when an
+                    // orphan branches off a finalized block we fall
+                    // back to the reverse index. Finalized state
+                    // doesn't reorg, so the fallback is unusual in
+                    // practice but kept for correctness.
+                    let parent_hash = block.context.parent_hash();
+                    let parent_logical_ts = match logical_by_hash.get(parent_hash).copied() {
+                        Some(ts) => Some(ts),
+                        None => {
+                            self.finalized_state
+                                .logical_ts_for_hash(*parent_hash)
+                                .await?
+                        }
+                    };
                     let logical_ts = LogicalTimestamp::next(parent_logical_ts, block.data().time());
                     logical_by_hash.insert(*block.hash(), logical_ts);
 

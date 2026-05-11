@@ -805,6 +805,20 @@ pub trait BlockCoreExt: Send + Sync {
         low: LogicalTimestamp,
         high: LogicalTimestamp,
     ) -> Result<Vec<(LogicalTimestamp, BlockHash)>, FinalisedStateError>;
+
+    /// Returns the logical timestamp stored for `hash` in the
+    /// `logical_ts_by_hash` reverse index, or `None` if the hash has no
+    /// entry (block was written before the index hook landed, or simply
+    /// does not exist in the finalised state).
+    ///
+    /// Used to seed `LogicalTimestamp::next` at the finalized →
+    /// non-finalized boundary: the first non-finalized block's parent is
+    /// the finalized tip, and the recurrence needs that parent's
+    /// logical_ts to produce a correct result.
+    async fn logical_ts_for_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<LogicalTimestamp>, FinalisedStateError>;
 }
 
 /// Transparent transaction indexing extension.

@@ -192,6 +192,17 @@ impl DbReader {
             .await
     }
 
+    /// Looks up the logical timestamp for `hash` in the
+    /// `logical_ts_by_hash` reverse index.
+    pub(crate) async fn logical_ts_for_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<LogicalTimestamp>, FinalisedStateError> {
+        self.db(CapabilityRequest::BlockCoreExt)?
+            .logical_ts_for_hash(hash)
+            .await
+    }
+
     /// Fetch the txid bytes for a given TxLocation.
     pub(crate) async fn get_txid(
         &self,

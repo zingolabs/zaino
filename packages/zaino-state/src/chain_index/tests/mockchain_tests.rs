@@ -6,11 +6,12 @@ use crate::{
             poll::poll_until,
             vectors::{load_test_vectors, TestVectorBlockData},
         },
-        types::{BestChainLocation, TransactionHash},
+        types::{BestChainLocation, LogicalTimestamp, MinerTime, TransactionHash},
         ChainIndex, NodeBackedChainIndexSubscriber,
     },
     BlockchainSource as _,
 };
+use zaino_fetch::jsonrpsee::response::GetBlockHashesResponse;
 use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt as _;
 use zaino_fetch::jsonrpsee::response::address_deltas::{
@@ -771,4 +772,73 @@ async fn get_address_utxos() {
         .await;
 
     assert!(invalid_address_result.is_err());
+}
+
+/// End-to-end test of `ChainIndex::get_block_hashes` against the
+/// recurrence over the same test-vector data the chain index was
+/// synced with. After the rewrite that routes through the persistent
+/// `hash_by_logical_ts` index for the finalized side, the function
+/// must still produce results that match what `LogicalTimestamp::next`
+/// would compute when replayed in height order over every block —
+/// finalized *and* non-finalized.
+///
+/// The full-range query is the strongest test of correctness across
+/// the finalized/non-finalized boundary: any seam bug (e.g. a missing
+/// boundary seed, a wrong parent-lookup path) would surface as a
+/// mismatch at the first non-finalized height.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_block_hashes_matches_recurrence_over_full_range() {
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(false).await;
+    let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+
+    let response =
+        ChainIndex::get_block_hashes(&index_reader, &snapshot, u32::MAX, 0, false, true)
+            .await
+            .expect("get_block_hashes");
+
+    let actual = match response {
+        GetBlockHashesResponse::WithLogicalTimestamps(v) => v,
+        GetBlockHashesResponse::Hashes(_) => {
+            panic!("expected WithLogicalTimestamps response with logical_times=true")
+        }
+    };
+
+    // Replay the recurrence in height order over the test-vector
+    // blocks to build the expected (logical_ts, hash) sequence.
+    let mut expected: Vec<(LogicalTimestamp, String)> = Vec::with_capacity(blocks.len());
+    let mut prev: Option<LogicalTimestamp> = None;
+    let mut sorted_blocks: Vec<&TestVectorBlockData> = blocks.iter().collect();
+    sorted_blocks.sort_by_key(|b| b.height);
+    for block in sorted_blocks {
+        let n_time = MinerTime::try_from(block.zebra_block.header.time.timestamp())
+            .expect("test-vector header time fits in u32");
+        let ts = LogicalTimestamp::next(prev, n_time);
+        let hash = format!("{}", block.zebra_block.hash());
+        expected.push((ts, hash));
+        prev = Some(ts);
+    }
+    expected.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "block count mismatch: indexer returned {}, recurrence produced {}",
+        actual.len(),
+        expected.len(),
+    );
+
+    for (i, (actual_entry, expected_entry)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            actual_entry.logicalts,
+            expected_entry.0.as_u32(),
+            "logical_ts mismatch at position {i}: indexer {}, recurrence {}",
+            actual_entry.logicalts,
+            expected_entry.0.as_u32(),
+        );
+        assert_eq!(
+            actual_entry.blockhash, expected_entry.1,
+            "blockhash mismatch at position {i}",
+        );
+    }
 }

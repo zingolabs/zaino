@@ -514,6 +514,16 @@ impl BlockCoreExt for DbBackend {
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
+
+    async fn logical_ts_for_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<LogicalTimestamp>, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.logical_ts_for_hash(hash).await,
+            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
+        }
+    }
 }
 
 #[async_trait]
