@@ -980,9 +980,8 @@ impl ZainoVersionedSerde for BlockData {
 
         let version = read_u32_le(&mut r)?;
         let raw_time = read_i64_le(&mut r)?;
-        let time = MinerTime::try_from(raw_time).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let time = MinerTime::try_from(raw_time)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
         let merkle_root = read_fixed_le::<32, _>(&mut r)?;
         let block_commitments = read_fixed_le::<32, _>(&mut r)?;

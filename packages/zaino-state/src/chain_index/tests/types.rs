@@ -22,7 +22,15 @@ pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let solution = EquihashSolution::Standard([6u8; 1344]);
 
     let bctx = BlockContext::new(hash, parent_hash, chainwork, height);
-    let bdata = BlockData::new(1, MinerTime::from(2u32), [3u8; 32], [4u8; 32], 3, [5u8; 32], solution);
+    let bdata = BlockData::new(
+        1,
+        MinerTime::from(2u32),
+        [3u8; 32],
+        [4u8; 32],
+        3,
+        [5u8; 32],
+        solution,
+    );
     BlockHeaderData::new(bctx, bdata)
 }
 

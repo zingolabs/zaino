@@ -1206,8 +1206,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 .await?;
 
             for header in headers {
-                let logical_ts =
-                    LogicalTimestamp::next(previous_logical_ts, header.data().time());
+                let logical_ts = LogicalTimestamp::next(previous_logical_ts, header.data().time());
                 previous_logical_ts = Some(logical_ts);
                 logical_by_hash.insert(header.context.index.hash, logical_ts);
 
@@ -1236,8 +1235,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 let Some(block) = non_finalized_snapshot.blocks.get(hash) else {
                     continue;
                 };
-                let logical_ts =
-                    LogicalTimestamp::next(previous_logical_ts, block.data().time());
+                let logical_ts = LogicalTimestamp::next(previous_logical_ts, block.data().time());
                 previous_logical_ts = Some(logical_ts);
                 logical_by_hash.insert(*hash, logical_ts);
 
@@ -1260,8 +1258,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
                     let parent_logical_ts =
                         logical_by_hash.get(block.context.parent_hash()).copied();
-                    let logical_ts =
-                        LogicalTimestamp::next(parent_logical_ts, block.data().time());
+                    let logical_ts = LogicalTimestamp::next(parent_logical_ts, block.data().time());
                     logical_by_hash.insert(*block.hash(), logical_ts);
 
                     if logical_ts >= low_ts && logical_ts < high_ts {

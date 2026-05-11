@@ -84,7 +84,9 @@ impl From<MinerTime> for u32 {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MinerTimeError {
     /// The chrono timestamp could not be narrowed to `u32`.
-    #[error("nTime value {0} is outside [0, u32::MAX] — consensus nTime is a 4-byte unsigned field")]
+    #[error(
+        "nTime value {0} is outside [0, u32::MAX] — consensus nTime is a 4-byte unsigned field"
+    )]
     OutOfU32Range(i64),
 }
 
