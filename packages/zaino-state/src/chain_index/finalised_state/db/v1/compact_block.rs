@@ -252,8 +252,7 @@ impl DbV1 {
                 height: header.context.height().0 as u64,
                 hash: header.context.hash().0.to_vec(),
                 prev_hash: header.context.parent_hash().0.to_vec(),
-                // Is this safe?
-                time: header.data().time() as u32,
+                time: header.data().time().as_u32(),
                 header: Vec::new(),
                 vtx,
                 chain_metadata: Some(chain_metadata),
@@ -1111,9 +1110,7 @@ impl DbV1 {
                         height: header.context.height().0 as u64,
                         hash: header.context.hash().0.to_vec(),
                         prev_hash: header.context.parent_hash().0.to_vec(),
-                        // NOTE: `time()` is stored in the DB as a wider integer; this cast assumes it is
-                        // always representable in `u32` for the protobuf.
-                        time: header.data().time() as u32,
+                        time: header.data().time().as_u32(),
                         header: Vec::new(),
                         vtx,
                         chain_metadata: Some(chain_metadata),

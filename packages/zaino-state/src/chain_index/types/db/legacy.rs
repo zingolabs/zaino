@@ -41,7 +41,7 @@ use crate::chain_index::encoding::{
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
     write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
 };
-use crate::chain_index::types::BlockContext;
+use crate::chain_index::types::{BlockContext, MinerTime};
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
@@ -806,12 +806,13 @@ impl FixedEncodedLen for ChainWork {
 /// - hashLightClientRoot (FlyClient proofs)
 /// - hashAuthDataRoot (ZIP-244 witness commitments)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockData {
     /// Version number of the block format (protocol upgrades).
     pub version: u32,
-    /// Unix timestamp of when the block was mined (seconds since epoch).
-    pub time: i64,
+    /// Unix timestamp of when the block was mined (seconds since epoch),
+    /// at the consensus-level `u32` width. See [`MinerTime`] for the
+    /// allowed value range.
+    pub(crate) time: MinerTime,
     /// Merkle root hash of all transaction IDs in the block (used for quick tx inclusion proofs).
     pub merkle_root: [u8; 32],
     /// Digest representing the block-commitments Merkle root (commitment to note states).
@@ -829,9 +830,9 @@ pub struct BlockData {
 impl BlockData {
     /// Creates a new  BlockData instance.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         version: u32,
-        time: i64,
+        time: MinerTime,
         merkle_root: [u8; 32],
         block_commitments: [u8; 32],
         bits: u32,
@@ -869,8 +870,10 @@ impl BlockData {
         self.version
     }
 
-    /// Returns block time.
-    pub fn time(&self) -> i64 {
+    /// Returns the block's miner-stamped time as the consensus-level
+    /// [`MinerTime`]. The value was validated at deserialize time; this
+    /// is a direct field accessor with no runtime cost.
+    pub(crate) fn time(&self) -> MinerTime {
         self.time
     }
 
@@ -958,7 +961,10 @@ impl ZainoVersionedSerde for BlockData {
         let mut w = w; // re-borrow
 
         write_u32_le(&mut w, self.version)?;
-        write_i64_le(&mut w, self.time)?;
+        // Disk format stays 8-byte LE i64 for backward compatibility with
+        // existing v1 records; narrowing the on-disk encoding is tracked
+        // in zingolabs/zaino#1102.
+        write_i64_le(&mut w, i64::from(self.time.as_u32()))?;
 
         write_fixed_le::<32, _>(&mut w, &self.merkle_root)?;
         write_fixed_le::<32, _>(&mut w, &self.block_commitments)?;
@@ -973,7 +979,10 @@ impl ZainoVersionedSerde for BlockData {
         let mut r = r;
 
         let version = read_u32_le(&mut r)?;
-        let time = read_i64_le(&mut r)?;
+        let raw_time = read_i64_le(&mut r)?;
+        let time = MinerTime::try_from(raw_time).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, e.to_string())
+        })?;
 
         let merkle_root = read_fixed_le::<32, _>(&mut r)?;
         let block_commitments = read_fixed_le::<32, _>(&mut r)?;
@@ -1198,7 +1207,7 @@ impl IndexedBlock {
             height,
             hash,
             prev_hash,
-            time: self.data().time() as u32,
+            time: self.data().time().as_u32(),
             header: vec![],
             vtx,
             chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
@@ -1355,7 +1364,7 @@ impl
         // --- Compute chainwork ---
         let block_data = BlockData::new(
             header.version() as u32,
-            header.time() as i64,
+            MinerTime::from(header.time()),
             merkle_root,
             block_commitments,
             bits,

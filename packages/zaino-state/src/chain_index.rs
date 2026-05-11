@@ -140,18 +140,6 @@ fn branch_len_to_active_chain(
     }
 }
 
-/// Translate zebra's `i64` `nTime` representation into the protocol `u32`
-/// expected by [`LogicalTimestamp::next`].
-///
-/// The on-chain `nTime` field is `u32`; the `i64` is a chrono artifact from
-/// `BlockData::time()`. See zingolabs/zaino#1102 for the plan to narrow the
-/// accessor itself. Until then, an out-of-`u32`-range value indicates DB
-/// corruption or an upstream bug — we preserve the pre-existing
-/// `unwrap_or(0)` fallback rather than tightening behavior in this refactor.
-fn n_time_to_u32(block_time: i64) -> u32 {
-    u32::try_from(block_time).unwrap_or(0)
-}
-
 /// The interface to the chain index.
 ///
 /// `ChainIndex` provides a unified interface for querying blockchain data from different
@@ -1218,10 +1206,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 .await?;
 
             for header in headers {
-                let logical_ts = LogicalTimestamp::next(
-                    previous_logical_ts,
-                    n_time_to_u32(header.data().time()),
-                );
+                let logical_ts =
+                    LogicalTimestamp::next(previous_logical_ts, header.data().time());
                 previous_logical_ts = Some(logical_ts);
                 logical_by_hash.insert(header.context.index.hash, logical_ts);
 
@@ -1251,7 +1237,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     continue;
                 };
                 let logical_ts =
-                    LogicalTimestamp::next(previous_logical_ts, n_time_to_u32(block.data().time()));
+                    LogicalTimestamp::next(previous_logical_ts, block.data().time());
                 previous_logical_ts = Some(logical_ts);
                 logical_by_hash.insert(*hash, logical_ts);
 
@@ -1274,10 +1260,8 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
                     let parent_logical_ts =
                         logical_by_hash.get(block.context.parent_hash()).copied();
-                    let logical_ts = LogicalTimestamp::next(
-                        parent_logical_ts,
-                        n_time_to_u32(block.data().time()),
-                    );
+                    let logical_ts =
+                        LogicalTimestamp::next(parent_logical_ts, block.data().time());
                     logical_by_hash.insert(*block.hash(), logical_ts);
 
                     if logical_ts >= low_ts && logical_ts < high_ts {

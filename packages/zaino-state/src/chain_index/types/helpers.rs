@@ -14,7 +14,7 @@
 use primitive_types::U256;
 
 use super::db::legacy::*;
-use crate::chain_index::types::BlockContext;
+use crate::chain_index::types::{BlockContext, MinerTime};
 use crate::ChainWork;
 
 /// The location of a transaction in the best chain
@@ -134,9 +134,15 @@ impl<'a> BlockWithMetadata<'a> {
         let block = self.block;
         let network = &self.metadata.network;
 
+        // The chrono boundary: `block.header.time.timestamp()` is the only
+        // legitimate `i64` source for an `nTime` in zaino. `TryFrom<i64>`
+        // narrows it to `MinerTime` and surfaces an out-of-range value as
+        // an error here, where the caller already returns `Result`.
+        let time = MinerTime::try_from(block.header.time.timestamp()).map_err(|e| e.to_string())?;
+
         Ok(BlockData {
             version: block.header.version,
-            time: block.header.time.timestamp(),
+            time,
             merkle_root: block.header.merkle_root.0,
             bits: u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order()),
             block_commitments: BlockData::commitment_to_bytes(

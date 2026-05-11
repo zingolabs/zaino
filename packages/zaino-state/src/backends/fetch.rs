@@ -617,13 +617,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     "Failed to fetch treestate.",
                 ))
             })?;
-        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
-            #[allow(deprecated)]
-            FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                "Block time is out of range for u32.",
-            ))
-        })?;
+        let time = block_data.data().time().as_u32();
 
         #[allow(deprecated)]
         Ok(GetTreestateResponse::from_parts(
