@@ -186,8 +186,7 @@ async fn write_block_populates_logical_ts_index() {
             "logical_ts mismatch at height {i}: stored {stored_ts}, expected {expected}",
         );
         assert_eq!(
-            stored_hash,
-            header.context.index.hash,
+            stored_hash, header.context.index.hash,
             "hash mismatch at height {i}",
         );
         prev = Some(stored_ts);
@@ -212,10 +211,7 @@ async fn delete_block_clears_logical_ts_index() {
     // (the only deletion order `delete_block_at_height` accepts —
     // tip-only).
     for h in (1..=200).rev() {
-        zaino_db
-            .delete_block_at_height(Height(h))
-            .await
-            .unwrap();
+        zaino_db.delete_block_at_height(Height(h)).await.unwrap();
     }
 
     let zaino_db = std::sync::Arc::new(zaino_db);

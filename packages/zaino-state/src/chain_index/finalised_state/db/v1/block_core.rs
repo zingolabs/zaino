@@ -117,12 +117,11 @@ impl DbV1 {
                 let logical_ts = LogicalTimestamp::from_bytes(&k).map_err(|e| {
                     FinalisedStateError::Custom(format!("logical_ts key decode error: {e}"))
                 })?;
-                let hash_entry =
-                    StoredEntryFixed::<BlockHash>::from_bytes(&v).map_err(|e| {
-                        FinalisedStateError::Custom(format!(
-                            "hash_by_logical_ts value decode error: {e}"
-                        ))
-                    })?;
+                let hash_entry = StoredEntryFixed::<BlockHash>::from_bytes(&v).map_err(|e| {
+                    FinalisedStateError::Custom(format!(
+                        "hash_by_logical_ts value decode error: {e}"
+                    ))
+                })?;
                 if !hash_entry.verify(&k) {
                     return Err(FinalisedStateError::Custom(
                         "hash_by_logical_ts entry checksum mismatch".to_string(),
@@ -146,8 +145,8 @@ impl DbV1 {
             let txn = self.env.begin_ro_txn()?;
             match txn.get(self.logical_ts_by_hash, &hash_bytes) {
                 Ok(raw) => {
-                    let entry = StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw)
-                        .map_err(|e| {
+                    let entry =
+                        StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw).map_err(|e| {
                             FinalisedStateError::Custom(format!(
                                 "logical_ts_by_hash decode error: {e}"
                             ))

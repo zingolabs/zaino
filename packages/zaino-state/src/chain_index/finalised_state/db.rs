@@ -295,9 +295,7 @@ impl DbBackend {
     /// v1.1.0 → v1.2.0 migration test can simulate the pre-backfill
     /// state of a freshly-upgraded v1.1.0 database.
     #[cfg(test)]
-    pub(crate) async fn clear_logical_ts_index_for_test(
-        &self,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn clear_logical_ts_index_for_test(&self) -> Result<(), FinalisedStateError> {
         match self {
             Self::V1(db) => db.clear_logical_ts_index_for_test().await,
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),

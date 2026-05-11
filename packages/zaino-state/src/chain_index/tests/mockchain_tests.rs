@@ -11,12 +11,12 @@ use crate::{
     },
     BlockchainSource as _,
 };
-use zaino_fetch::jsonrpsee::response::GetBlockHashesResponse;
 use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt as _;
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
 };
+use zaino_fetch::jsonrpsee::response::GetBlockHashesResponse;
 use zebra_chain::serialization::ZcashDeserializeInto;
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
@@ -792,10 +792,9 @@ async fn get_block_hashes_matches_recurrence_over_full_range() {
         load_test_vectors_and_sync_chain_index(false).await;
     let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
-    let response =
-        ChainIndex::get_block_hashes(&index_reader, &snapshot, u32::MAX, 0, false, true)
-            .await
-            .expect("get_block_hashes");
+    let response = ChainIndex::get_block_hashes(&index_reader, &snapshot, u32::MAX, 0, false, true)
+        .await
+        .expect("get_block_hashes");
 
     let actual = match response {
         GetBlockHashesResponse::WithLogicalTimestamps(v) => v,

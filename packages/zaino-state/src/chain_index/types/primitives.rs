@@ -166,4 +166,3 @@ mod miner_time {
         assert!(matches!(err, MinerTimeError::OutOfU32Range(i64::MAX)));
     }
 }
-

@@ -595,9 +595,7 @@ async fn v1_1_to_v1_2_backfills_logical_ts_index() {
     // the migration round-trip.
     let expected_entries = zaino_db
         .router()
-        .backend(
-            crate::chain_index::finalised_state::capability::CapabilityRequest::BlockCoreExt,
-        )
+        .backend(crate::chain_index::finalised_state::capability::CapabilityRequest::BlockCoreExt)
         .unwrap()
         .hashes_by_logical_ts_range(
             LogicalTimestamp::from_u32(0),
@@ -614,9 +612,7 @@ async fn v1_1_to_v1_2_backfills_logical_ts_index() {
     // simulate the pre-migration state of an upgraded v1.1.0 DB.
     zaino_db
         .router()
-        .backend(
-            crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
-        )
+        .backend(crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore)
         .unwrap()
         .clear_logical_ts_index_for_test()
         .await
@@ -655,9 +651,7 @@ async fn v1_1_to_v1_2_backfills_logical_ts_index() {
 
     let actual_entries = zaino_db
         .router()
-        .backend(
-            crate::chain_index::finalised_state::capability::CapabilityRequest::BlockCoreExt,
-        )
+        .backend(crate::chain_index::finalised_state::capability::CapabilityRequest::BlockCoreExt)
         .unwrap()
         .hashes_by_logical_ts_range(
             LogicalTimestamp::from_u32(0),
@@ -671,7 +665,11 @@ async fn v1_1_to_v1_2_backfills_logical_ts_index() {
         expected_entries.len(),
         "backfilled forward index should have the same number of entries as the original populate",
     );
-    for (i, (actual, expected)) in actual_entries.iter().zip(expected_entries.iter()).enumerate() {
+    for (i, (actual, expected)) in actual_entries
+        .iter()
+        .zip(expected_entries.iter())
+        .enumerate()
+    {
         assert_eq!(actual, expected, "entry {i} mismatch");
     }
 
@@ -680,10 +678,8 @@ async fn v1_1_to_v1_2_backfills_logical_ts_index() {
     // enforced by the migration: each forward entry's hash must look
     // up to the same logical_ts in the reverse table. Spot-check the
     // first and last entries to verify the pairing.
-    let _: &(LogicalTimestamp, BlockHash) =
-        actual_entries.first().expect("at least one entry");
-    let _: &(LogicalTimestamp, BlockHash) =
-        actual_entries.last().expect("at least one entry");
+    let _: &(LogicalTimestamp, BlockHash) = actual_entries.first().expect("at least one entry");
+    let _: &(LogicalTimestamp, BlockHash) = actual_entries.last().expect("at least one entry");
 
     zaino_db.shutdown().await.unwrap();
 }

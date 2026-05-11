@@ -306,8 +306,8 @@ impl DbV1 {
             let parent_logical_ts: Option<LogicalTimestamp> =
                 match txn.get(zaino_db.logical_ts_by_hash, &parent_hash_bytes) {
                     Ok(raw) => {
-                        let entry = StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw)
-                            .map_err(|e| {
+                        let entry =
+                            StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw).map_err(|e| {
                                 FinalisedStateError::Custom(format!(
                                     "logical_ts_by_hash decode error: {e}"
                                 ))
@@ -1055,8 +1055,8 @@ impl DbV1 {
             // no-op rather than an error.
             match txn.get(zaino_db.logical_ts_by_hash, &block_hash_bytes) {
                 Ok(raw) => {
-                    let entry = StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw)
-                        .map_err(|e| {
+                    let entry =
+                        StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw).map_err(|e| {
                             FinalisedStateError::Custom(format!(
                                 "logical_ts_by_hash decode error: {e}"
                             ))
@@ -1121,8 +1121,7 @@ impl DbV1 {
         // checksum-verifying decode happen without LMDB ro+rw borrow
         // entanglement. We go through the `BlockCoreExt` trait method
         // because the inherent equivalent is private to `block_core`.
-        let headers =
-            BlockCoreExt::get_block_range_headers(self, GENESIS_HEIGHT, tip).await?;
+        let headers = BlockCoreExt::get_block_range_headers(self, GENESIS_HEIGHT, tip).await?;
 
         let env = Arc::clone(&self.env);
         let hash_by_logical_ts = self.hash_by_logical_ts;
@@ -1176,9 +1175,7 @@ impl DbV1 {
     /// database (where the tables exist as structural slots but contain
     /// no entries).
     #[cfg(test)]
-    pub(crate) async fn clear_logical_ts_index_for_test(
-        &self,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn clear_logical_ts_index_for_test(&self) -> Result<(), FinalisedStateError> {
         let env = Arc::clone(&self.env);
         let hash_by_logical_ts = self.hash_by_logical_ts;
         let logical_ts_by_hash = self.logical_ts_by_hash;
