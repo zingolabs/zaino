@@ -45,7 +45,8 @@ pub use db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 // Re-export business-layer primitives and containers
 pub use block_context::BlockContext;
 pub use primitives::BlockIndex;
-pub(crate) use primitives::{LogicalTimestamp, MinerTime};
+pub(crate) use db::logical_timestamp::LogicalTimestamp;
+pub(crate) use primitives::MinerTime;
 
 // Re-export helper types
 pub use helpers::{
