@@ -38,6 +38,9 @@ impl DbV1 {
         let block_hash_bytes = block_hash.to_bytes()?;
         let block_height = block.context.index.height;
         let block_height_bytes = block_height.to_bytes()?;
+        let parent_hash = *block.context.parent_hash();
+        let parent_hash_bytes = parent_hash.to_bytes()?;
+        let n_time = block.data().time();
 
         // Check if this specific block already exists (idempotent write support for shared DB).
         // This handles the case where multiple processes share the same ZainoDB.
@@ -296,6 +299,33 @@ impl DbV1 {
             // Write block to ZainoDB
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
+            // Look up the parent's logical timestamp in the same rw_txn so
+            // the compute-and-store step is atomic with the rest of the
+            // block-write. Genesis (parent not in DB) maps to `None` and
+            // the recurrence resets to the block's own nTime.
+            let parent_logical_ts: Option<LogicalTimestamp> =
+                match txn.get(zaino_db.logical_ts_by_hash, &parent_hash_bytes) {
+                    Ok(raw) => {
+                        let entry = StoredEntryFixed::<LogicalTimestamp>::from_bytes(raw)
+                            .map_err(|e| {
+                                FinalisedStateError::Custom(format!(
+                                    "logical_ts_by_hash decode error: {e}"
+                                ))
+                            })?;
+                        if !entry.verify(&parent_hash_bytes) {
+                            return Err(FinalisedStateError::Custom(
+                                "logical_ts_by_hash entry checksum mismatch".to_string(),
+                            ));
+                        }
+                        Some(*entry.inner())
+                    }
+                    Err(lmdb::Error::NotFound) => None,
+                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                };
+
+            let logical_ts = LogicalTimestamp::next(parent_logical_ts, n_time);
+            let logical_ts_bytes = logical_ts.to_bytes()?;
+
             txn.put(
                 zaino_db.headers,
                 &block_height_bytes,
@@ -342,6 +372,24 @@ impl DbV1 {
                 zaino_db.commitment_tree_data,
                 &block_height_bytes,
                 &commitment_tree_entry.to_bytes()?,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+
+            // logical_ts -> block_hash (forward index).
+            txn.put(
+                zaino_db.hash_by_logical_ts,
+                &logical_ts_bytes,
+                &StoredEntryFixed::new(&logical_ts_bytes, block_hash).to_bytes()?,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+
+            // block_hash -> logical_ts (reverse index, needed for delete
+            // cleanup and for cheap predecessor lookup when the next
+            // block in the chain is written).
+            txn.put(
+                zaino_db.logical_ts_by_hash,
+                &block_hash_bytes,
+                &StoredEntryFixed::new(&block_hash_bytes, logical_ts).to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 

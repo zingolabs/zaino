@@ -22,6 +22,7 @@ use crate::chain_index::tests::vectors::{
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::chain_index::types::TransactionHash;
 
+use crate::chain_index::types::LogicalTimestamp;
 use crate::error::FinalisedStateError;
 use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
 
@@ -124,6 +125,73 @@ async fn sync_to_height() {
     let built_db_height = dbg!(zaino_db.db_height().await.unwrap()).unwrap();
 
     assert_eq!(built_db_height, Height(200));
+}
+
+/// After syncing a real test-vector chain, the `hash_by_logical_ts`
+/// index has exactly one entry per finalised block, each entry's
+/// `logical_ts` matches what the `LogicalTimestamp::next` recurrence
+/// would produce, and the sequence is strictly increasing. This is the
+/// integration-level test for the `write_block` hook that populates
+/// both index tables.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_block_populates_logical_ts_index() {
+    init_tracing();
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = build_mockchain_source(blocks.clone());
+
+    let (_db_dir, zaino_db) = spawn_v1_zaino_db(source.clone()).await.unwrap();
+    zaino_db.sync_to_height(Height(200), &source).await.unwrap();
+    let zaino_db = std::sync::Arc::new(zaino_db);
+    zaino_db.wait_until_ready().await;
+
+    let reader = zaino_db.to_reader();
+
+    // Full-range scan over the populated index.
+    let entries = reader
+        .hashes_by_logical_ts_range(
+            LogicalTimestamp::from_u32(0),
+            LogicalTimestamp::from_u32(u32::MAX),
+        )
+        .await
+        .expect("hashes_by_logical_ts_range");
+
+    // One entry per synced block (heights 0..=200 inclusive).
+    assert_eq!(entries.len(), 201, "expected one index entry per block");
+
+    // Strictly increasing logical_ts.
+    for window in entries.windows(2) {
+        let (a, b) = (window[0].0, window[1].0);
+        assert!(a < b, "logical_ts must be strictly increasing: {a} >= {b}");
+    }
+
+    // Each stored logical_ts matches what `LogicalTimestamp::next`
+    // would compute when replayed in height order over the same
+    // headers. The block_hash for each height comes from the stored
+    // header; the nTime comes from the same header. Mismatch here
+    // means the write-path hook computed a different logical_ts than
+    // the closed-form recurrence — most likely a parent-lookup bug.
+    let headers = reader
+        .get_block_range_headers(Height(0), Height(200))
+        .await
+        .expect("get_block_range_headers");
+    assert_eq!(headers.len(), 201);
+
+    let mut prev: Option<LogicalTimestamp> = None;
+    for (i, header) in headers.iter().enumerate() {
+        let expected = LogicalTimestamp::next(prev, header.data().time());
+        let (stored_ts, stored_hash) = entries[i];
+        assert_eq!(
+            stored_ts, expected,
+            "logical_ts mismatch at height {i}: stored {stored_ts}, expected {expected}",
+        );
+        assert_eq!(
+            stored_hash,
+            header.context.index.hash,
+            "hash mismatch at height {i}",
+        );
+        prev = Some(stored_ts);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

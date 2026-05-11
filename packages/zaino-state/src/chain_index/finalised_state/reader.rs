@@ -47,7 +47,10 @@
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::{
-    chain_index::{finalised_state::capability::CapabilityRequest, types::TransactionHash},
+    chain_index::{
+        finalised_state::capability::CapabilityRequest,
+        types::{LogicalTimestamp, TransactionHash},
+    },
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
     OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
@@ -174,6 +177,18 @@ impl DbReader {
     ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
         self.db(CapabilityRequest::BlockCoreExt)?
             .get_block_range_headers(start, end)
+            .await
+    }
+
+    /// Returns `(logical_ts, block_hash)` pairs from the
+    /// `hash_by_logical_ts` index whose key falls in `[low, high)`.
+    pub(crate) async fn hashes_by_logical_ts_range(
+        &self,
+        low: LogicalTimestamp,
+        high: LogicalTimestamp,
+    ) -> Result<Vec<(LogicalTimestamp, BlockHash)>, FinalisedStateError> {
+        self.db(CapabilityRequest::BlockCoreExt)?
+            .hashes_by_logical_ts_range(low, high)
             .await
     }
 
