@@ -26,7 +26,9 @@ pub struct TxOut {
     pub script_pub_key: ::prost::alloc::vec::Vec<u8>,
 }
 /// A BlockID message contains identifiers to select a block: a height or a
-/// hash. Specification by hash is not implemented, but may be in the future.
+/// hash. Support for specification by hash is not mandatory. (If `hash` is
+/// non-empty, the rpc may return an error.) This field is present to support
+/// a possible future upgrade.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BlockId {
     #[prost(uint64, tag = "1")]
@@ -39,7 +41,7 @@ pub struct BlockId {
 ///
 /// If no pool types are specified, the server should default to the legacy
 /// behavior of returning only data relevant to the shielded (Sapling and
-/// Orchard) pools; otherwise, the server should prune `CompactBlocks` returned
+/// Orchard) pools; otherwise, the server should prune `CompactBlock`s returned
 /// to include only data relevant to the requested pool types. Clients MUST
 /// verify that the version of the server they are connected to are capable
 /// of returning pruned and/or transparent data before setting `poolTypes`
@@ -314,6 +316,49 @@ pub struct GetAddressUtxosReplyList {
     #[prost(message, repeated, tag = "1")]
     pub address_utxos: ::prost::alloc::vec::Vec<GetAddressUtxosReply>,
 }
+/// A node in the MMR tree, identified by its position in the
+/// flat array representation of the tree (see ZIP-221).
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MmrNode {
+    /// Position in the MMR flat array representation
+    #[prost(uint32, tag = "1")]
+    pub position: u32,
+    /// Serialized zcash_history::Entry bytes for this node
+    #[prost(bytes = "vec", tag = "2")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+/// An MMR inclusion proof for a block in the chain history tree (ZIP-221).
+///
+/// Contains the MMR root and auth data root for a specific chain tip,
+/// plus the Merkle path proving the requested block is in the committed chain.
+/// The client can verify:
+/// hashBlockCommitments = BLAKE2b-256("ZcashBlockCommit" || mmr_root || auth_data_root || \[0u8;32\])
+/// against the block header at `tip_height` (obtainable via GetBlock) to
+/// authenticate the MMR root, then verify the inclusion proof against it.
+///
+/// Future optimization: a range variant could batch multiple proofs sharing
+/// common MMR subtree nodes.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BlockInclusionProof {
+    /// hashLightClientRoot: the MMR root committed in the block at tip_height (32 bytes).
+    #[prost(bytes = "vec", tag = "1")]
+    pub mmr_root: ::prost::alloc::vec::Vec<u8>,
+    /// hashAuthDataRoot: the transaction auth data commitment from ZIP-244
+    /// for the block at tip_height (32 bytes).
+    #[prost(bytes = "vec", tag = "2")]
+    pub auth_data_root: ::prost::alloc::vec::Vec<u8>,
+    /// The MMR leaf entry for the requested block.
+    #[prost(message, optional, tag = "3")]
+    pub leaf: ::core::option::Option<MmrNode>,
+    /// Sibling nodes along the path from leaf to root (bottom-up order).
+    #[prost(message, repeated, tag = "4")]
+    pub siblings: ::prost::alloc::vec::Vec<MmrNode>,
+    /// Height of the block whose header commits to mmr_root and auth_data_root.
+    /// The client should fetch this block's header (via GetBlock) and verify
+    /// hashBlockCommitments against the returned mmr_root and auth_data_root.
+    #[prost(uint32, tag = "5")]
+    pub tip_height: u32,
+}
 /// An identifier for a Zcash value pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -491,7 +536,18 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Return the compact block corresponding to the given block identifier
+        /// Return the compact block corresponding to the given block identifier.
+        ///
+        /// The returned `CompactBlock` includes transaction data for all value
+        /// pools, including transparent inputs (`vin`) and outputs (`vout`). This
+        /// differs from `GetBlockRange`, which supports filtering by pool type and
+        /// defaults to returning only shielded (Sapling and Orchard) data. Clients
+        /// that require only data for specific pools should use `GetBlockRange`
+        /// with the appropriate `poolTypes` set.
+        ///
+        /// Note: the single null-outpoint input for coinbase transactions is
+        /// omitted from the `vin` field of the corresponding `CompactTx`. See the
+        /// documentation of the `CompactTx` message for details.
         pub async fn get_block(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockId>,
@@ -521,11 +577,14 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Same as GetBlock except the returned CompactBlock value contains only
-        /// nullifiers.
+        /// Return a compact block containing only nullifier information for the
+        /// shielded pools (Sapling spend nullifiers and Orchard action nullifiers).
+        /// Transparent transaction data, Sapling outputs, full Orchard action data,
+        /// and commitment tree sizes are not included.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
+        #[deprecated]
         pub async fn get_block_nullifiers(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockId>,
@@ -591,11 +650,16 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
-        /// Same as GetBlockRange except the returned CompactBlock values contain
-        /// only nullifiers.
+        /// Return a stream of compact blocks for the specified range, where each
+        /// block contains only nullifier information for the shielded pools
+        /// (Sapling spend nullifiers and Orchard action nullifiers). Transparent
+        /// transaction data, Sapling outputs, full Orchard action data, and
+        /// commitment tree sizes are not included. Implementations MUST ignore any
+        /// `PoolType::TRANSPARENT` member of the `poolTypes` field of the request.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
+        #[deprecated]
         pub async fn get_block_range_nullifiers(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockRange>,
@@ -1067,6 +1131,48 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Get an MMR inclusion proof for a specific block (ZIP-221).
+        ///
+        /// Returns the MMR root, auth data root, and a Merkle path proving
+        /// the block is included in the current chain tip's committed history.
+        /// The client should:
+        ///
+        /// 1. Get the tip block header via GetBlock.
+        /// 1. Call this RPC to get the MMR root and inclusion proof.
+        /// 1. Verify hashBlockCommitments in the header against mmr_root + auth_data_root.
+        /// 1. Verify the Merkle path against the MMR root.
+        ///
+        /// For FlyClient verification, the client selects blocks to challenge
+        /// using the sampling distribution from https://eprint.iacr.org/2019/226.
+        pub async fn get_block_inclusion_proof(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BlockId>,
+        ) -> std::result::Result<
+            tonic::Response<super::BlockInclusionProof>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockInclusionProof",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cash.z.wallet.sdk.rpc.CompactTxStreamer",
+                        "GetBlockInclusionProof",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1087,7 +1193,18 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::ChainSpec>,
         ) -> std::result::Result<tonic::Response<super::BlockId>, tonic::Status>;
-        /// Return the compact block corresponding to the given block identifier
+        /// Return the compact block corresponding to the given block identifier.
+        ///
+        /// The returned `CompactBlock` includes transaction data for all value
+        /// pools, including transparent inputs (`vin`) and outputs (`vout`). This
+        /// differs from `GetBlockRange`, which supports filtering by pool type and
+        /// defaults to returning only shielded (Sapling and Orchard) data. Clients
+        /// that require only data for specific pools should use `GetBlockRange`
+        /// with the appropriate `poolTypes` set.
+        ///
+        /// Note: the single null-outpoint input for coinbase transactions is
+        /// omitted from the `vin` field of the corresponding `CompactTx`. See the
+        /// documentation of the `CompactTx` message for details.
         async fn get_block(
             &self,
             request: tonic::Request<super::BlockId>,
@@ -1095,11 +1212,13 @@ pub mod compact_tx_streamer_server {
             tonic::Response<crate::proto::compact_formats::CompactBlock>,
             tonic::Status,
         >;
-        /// Same as GetBlock except the returned CompactBlock value contains only
-        /// nullifiers.
+        /// Return a compact block containing only nullifier information for the
+        /// shielded pools (Sapling spend nullifiers and Orchard action nullifiers).
+        /// Transparent transaction data, Sapling outputs, full Orchard action data,
+        /// and commitment tree sizes are not included.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
         async fn get_block_nullifiers(
             &self,
             request: tonic::Request<super::BlockId>,
@@ -1137,11 +1256,15 @@ pub mod compact_tx_streamer_server {
             >
             + std::marker::Send
             + 'static;
-        /// Same as GetBlockRange except the returned CompactBlock values contain
-        /// only nullifiers.
+        /// Return a stream of compact blocks for the specified range, where each
+        /// block contains only nullifier information for the shielded pools
+        /// (Sapling spend nullifiers and Orchard action nullifiers). Transparent
+        /// transaction data, Sapling outputs, full Orchard action data, and
+        /// commitment tree sizes are not included. Implementations MUST ignore any
+        /// `PoolType::TRANSPARENT` member of the `poolTypes` field of the request.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
         async fn get_block_range_nullifiers(
             &self,
             request: tonic::Request<super::BlockRange>,
@@ -1299,6 +1422,26 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::Duration>,
         ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status>;
+        /// Get an MMR inclusion proof for a specific block (ZIP-221).
+        ///
+        /// Returns the MMR root, auth data root, and a Merkle path proving
+        /// the block is included in the current chain tip's committed history.
+        /// The client should:
+        ///
+        /// 1. Get the tip block header via GetBlock.
+        /// 1. Call this RPC to get the MMR root and inclusion proof.
+        /// 1. Verify hashBlockCommitments in the header against mmr_root + auth_data_root.
+        /// 1. Verify the Merkle path against the MMR root.
+        ///
+        /// For FlyClient verification, the client selects blocks to challenge
+        /// using the sampling distribution from https://eprint.iacr.org/2019/226.
+        async fn get_block_inclusion_proof(
+            &self,
+            request: tonic::Request<super::BlockId>,
+        ) -> std::result::Result<
+            tonic::Response<super::BlockInclusionProof>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct CompactTxStreamerServer<T> {
@@ -2310,6 +2453,55 @@ pub mod compact_tx_streamer_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = PingSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockInclusionProof" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetBlockInclusionProofSvc<T: CompactTxStreamer>(pub Arc<T>);
+                    impl<
+                        T: CompactTxStreamer,
+                    > tonic::server::UnaryService<super::BlockId>
+                    for GetBlockInclusionProofSvc<T> {
+                        type Response = super::BlockInclusionProof;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BlockId>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as CompactTxStreamer>::get_block_inclusion_proof(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetBlockInclusionProofSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

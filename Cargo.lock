@@ -5605,6 +5605,7 @@ dependencies = [
  "zaino-fetch",
  "zaino-proto",
  "zcash_address",
+ "zcash_history",
  "zcash_keys",
  "zcash_primitives",
  "zcash_protocol",

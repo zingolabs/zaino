@@ -8,9 +8,10 @@ use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
         compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
-        BlockRange, ChainSpec, Duration, Empty, GetAddressUtxosArg, GetAddressUtxosReplyList,
-        GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
+        BlockInclusionProof, BlockRange, ChainSpec, Duration, Empty, GetAddressUtxosArg,
+        GetAddressUtxosReplyList, GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo,
+        PingResponse, RawTransaction, SendResponse, TransparentAddressBlockFilter, TreeState,
+        TxFilter,
     },
 };
 use zaino_state::{
@@ -195,6 +196,8 @@ where
         (https://github.com/zingolabs/zaino)."
 
         ping(Duration) -> PingResponse,
+        "Get an MMR inclusion proof for a specific block (ZIP-221)."
+        get_block_inclusion_proof(BlockId) -> BlockInclusionProof,
     );
 
     /// Server streaming response type for the GetBlockRange method.

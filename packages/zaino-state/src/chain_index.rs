@@ -49,6 +49,8 @@ pub mod encoding;
 pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
+/// FlyClient MMR tree for chain history proofs (ZIP-221/ZIP-307)
+pub mod mmr;
 /// State less than 100 blocks old, stored separately as it may be reorged
 pub mod non_finalised_state;
 /// BlockchainSource
@@ -625,6 +627,8 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
+    /// In-memory MMR tree for FlyClient chain proofs (ZIP-221).
+    mmr: mmr::MmrHandle,
     network: ZebraNetwork,
     source: Source,
     sync_timings: SyncTimings,
@@ -715,6 +719,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
+            mmr: mmr::new_mmr_handle(),
             network: config.network.to_zebra_network(),
             source,
             sync_timings,
@@ -735,6 +740,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             network: self.network.clone(),
             source: self.source.clone(),
         }
+    }
+
+    /// Returns the in-memory MMR tree handle.
+    pub fn mmr(&self) -> &mmr::MmrHandle {
+        &self.mmr
     }
 
     /// Shut down the sync process, for a cleaner drop
@@ -769,6 +779,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let source = self.source.clone();
         let network = self.network.clone();
         let timings = self.sync_timings;
+        let mmr = self.mmr.clone();
 
         tokio::task::spawn(async move {
             let status = status.clone();
@@ -805,6 +816,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     fs.sync_to_height(finalised_height, &source)
                         .await
                         .map_err(source_error)?;
+
+                    // Update MMR after finalized DB sync.
+                    mmr::update_mmr_after_sync(&mmr, &fs.to_reader(), &network).await;
 
                     let intermediate_nfs_for_scoping = nfs.load();
                     let non_finalized_state = match *intermediate_nfs_for_scoping {

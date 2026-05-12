@@ -2042,4 +2042,13 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             ),
         ))
     }
+
+    async fn get_block_inclusion_proof(
+        &self,
+        _request: zaino_proto::proto::service::BlockId,
+    ) -> Result<zaino_proto::proto::service::BlockInclusionProof, Self::Error> {
+        Err(FetchServiceError::TonicStatusError(tonic::Status::unimplemented(
+            "GetBlockInclusionProof is not supported by the FetchService backend. Use StateService instead."
+        )))
+    }
 }
