@@ -119,8 +119,8 @@ ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/local/bin/zcashd /home/container_user/artifacts/
-COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/local/bin/zcash-cli /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcashd /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
 RUN cargo install cargo-nextest --locked --verbose --root ${CARGO_HOME} && \
     cargo install rust-script --locked --verbose --root ${CARGO_HOME}
@@ -147,8 +147,8 @@ ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/local/bin/zcashd /home/container_user/artifacts/
-COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/local/bin/zcash-cli /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcashd /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
 RUN cargo install cargo-nextest --locked --verbose --root ${CARGO_HOME} && \
     cargo install rust-script --locked --verbose --root ${CARGO_HOME}
