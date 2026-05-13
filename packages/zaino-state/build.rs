@@ -40,8 +40,7 @@ fn main() -> io::Result<()> {
     // Stable fallbacks when git is unreachable — the rustc fingerprint must
     // not differ between back-to-back invocations in the same context.
     let git_commit = git_ok(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    let branch =
-        git_ok(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let branch = git_ok(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=GIT_COMMIT={git_commit}");
     println!("cargo:rustc-env=BRANCH={branch}");
 

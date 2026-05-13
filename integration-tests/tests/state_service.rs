@@ -338,7 +338,10 @@ async fn state_service_get_address_balance<V: ValidatorExt>(validator: &Validato
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -564,7 +567,10 @@ async fn state_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKin
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             100,
             &test_manager,
@@ -573,7 +579,10 @@ async fn state_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKin
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -597,8 +606,18 @@ async fn state_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKin
         std::time::Duration::from_millis(50),
         std::time::Duration::from_secs(5),
         || async {
-            fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2
-                && state_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2
+            fetch_service_subscriber
+                .get_raw_mempool()
+                .await
+                .unwrap()
+                .len()
+                >= 2
+                && state_service_subscriber
+                    .get_raw_mempool()
+                    .await
+                    .unwrap()
+                    .len()
+                    >= 2
         },
     )
     .await
@@ -677,7 +696,10 @@ async fn state_service_get_block_range_returns_default_pools<V: ValidatorExt>(
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -824,7 +846,10 @@ async fn state_service_get_block_range_returns_all_pools<V: ValidatorExt>(
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
         for _ in 1..4 {
-            clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+            clients
+                .faucet
+                .quick_shield_after_batched_generate(AccountId::ZERO)
+                .await;
             generate_blocks_and_poll_all_chain_indexes(
                 1,
                 &test_manager,
@@ -1197,7 +1222,10 @@ async fn state_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKin
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -1297,7 +1325,10 @@ async fn state_service_z_get_subtrees_by_index<V: ValidatorExt>(validator: &Vali
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -1420,7 +1451,10 @@ async fn state_service_get_raw_transaction<V: ValidatorExt + LogsToStdoutAndStde
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -1598,7 +1632,10 @@ async fn state_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -1724,7 +1761,10 @@ async fn state_service_get_address_utxos<V: ValidatorExt>(validator: &ValidatorK
         )
         .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         generate_blocks_and_poll_all_chain_indexes(
             1,
             &test_manager,
@@ -2357,7 +2397,10 @@ mod zebra {
             )
             .await;
             clients.faucet.sync_and_await_after_batched_generate().await;
-            clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+            clients
+                .faucet
+                .quick_shield_after_batched_generate(AccountId::ZERO)
+                .await;
             generate_blocks_and_poll_all_chain_indexes(
                 1,
                 &test_manager,
@@ -2378,7 +2421,14 @@ mod zebra {
             zaino_testutils::poll_until(
                 std::time::Duration::from_millis(50),
                 std::time::Duration::from_secs(5),
-                || async { state_service_subscriber.get_raw_mempool().await.unwrap().len() >= 1 },
+                || async {
+                    state_service_subscriber
+                        .get_raw_mempool()
+                        .await
+                        .unwrap()
+                        .len()
+                        >= 1
+                },
             )
             .await
             .expect("mempool did not observe quick_send tx within 5s");
@@ -2879,7 +2929,10 @@ mod zebra {
                 .take()
                 .expect("Clients are not initialized");
             clients.faucet.sync_and_await_after_batched_generate().await;
-            clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+            clients
+                .faucet
+                .quick_shield_after_batched_generate(AccountId::ZERO)
+                .await;
 
             generate_blocks_and_poll_all_chain_indexes(
                 2,

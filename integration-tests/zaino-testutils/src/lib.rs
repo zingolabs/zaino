@@ -175,9 +175,7 @@ pub trait LightClientPostBatchedGenerate {
     /// Underlying race: zingolabs/zaino#1118 / ZcashFoundation/zebra#10582.
     /// Drop this wrapper once those land and switch call sites back to a
     /// plain `client.sync_and_await().await.unwrap()`.
-    fn sync_and_await_after_batched_generate(
-        &mut self,
-    ) -> impl std::future::Future<Output = ()>;
+    fn sync_and_await_after_batched_generate(&mut self) -> impl std::future::Future<Output = ()>;
 
     /// Retry-wrapped [`LightClient::quick_shield`]. Absorbs the transient
     /// `SendError::TransmissionError(TransmissionFailed { … })` that

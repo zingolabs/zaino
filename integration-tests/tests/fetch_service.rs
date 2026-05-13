@@ -83,7 +83,10 @@ async fn fetch_service_get_address_balance<V: ValidatorExt>(validator: &Validato
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -213,12 +216,18 @@ async fn fetch_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKin
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -243,7 +252,14 @@ async fn fetch_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKin
     zaino_testutils::poll_until(
         std::time::Duration::from_millis(50),
         std::time::Duration::from_secs(5),
-        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+        || async {
+            fetch_service_subscriber
+                .get_raw_mempool()
+                .await
+                .unwrap()
+                .len()
+                >= 2
+        },
     )
     .await
     .expect("mempool did not observe both quick_send txs within 5s");
@@ -286,13 +302,19 @@ pub async fn test_get_mempool_info<V: ValidatorExt>(validator: &ValidatorKind) {
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
@@ -321,7 +343,14 @@ pub async fn test_get_mempool_info<V: ValidatorExt>(validator: &ValidatorKind) {
     zaino_testutils::poll_until(
         std::time::Duration::from_millis(50),
         std::time::Duration::from_secs(5),
-        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+        || async {
+            fetch_service_subscriber
+                .get_raw_mempool()
+                .await
+                .unwrap()
+                .len()
+                >= 2
+        },
     )
     .await
     .expect("mempool did not observe both quick_send txs within 5s");
@@ -388,7 +417,10 @@ async fn fetch_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKin
             .generate_blocks_and_wait_for_tip(101, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -437,7 +469,10 @@ async fn fetch_service_z_get_subtrees_by_index<V: ValidatorExt>(validator: &Vali
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -485,7 +520,10 @@ async fn fetch_service_get_raw_transaction<V: ValidatorExt>(validator: &Validato
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -534,7 +572,10 @@ async fn fetch_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -595,7 +636,10 @@ async fn fetch_service_get_address_utxos<V: ValidatorExt>(validator: &ValidatorK
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -1102,7 +1146,10 @@ async fn fetch_service_get_block_range_returns_all_pools<V: ValidatorExt>(
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
         for _ in 1..4 {
-            clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+            clients
+                .faucet
+                .quick_shield_after_batched_generate(AccountId::ZERO)
+                .await;
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
@@ -1257,7 +1304,10 @@ async fn fetch_service_get_block_range_no_pools_returns_sapling_orchard<V: Valid
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
         for _ in 1..4 {
-            clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+            clients
+                .faucet
+                .quick_shield_after_batched_generate(AccountId::ZERO)
+                .await;
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
@@ -1449,7 +1499,10 @@ async fn fetch_service_get_transaction_mined<V: ValidatorExt>(validator: &Valida
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -1503,7 +1556,10 @@ async fn fetch_service_get_transaction_mempool<V: ValidatorExt>(validator: &Vali
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -1558,7 +1614,10 @@ async fn fetch_service_get_taddress_txids<V: ValidatorExt>(validator: &Validator
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -1639,7 +1698,10 @@ async fn fetch_service_get_taddress_balance<V: ValidatorExt>(validator: &Validat
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -1704,12 +1766,18 @@ async fn fetch_service_get_mempool_tx<V: ValidatorExt>(validator: &ValidatorKind
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -1734,7 +1802,14 @@ async fn fetch_service_get_mempool_tx<V: ValidatorExt>(validator: &ValidatorKind
     zaino_testutils::poll_until(
         std::time::Duration::from_millis(50),
         std::time::Duration::from_secs(5),
-        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+        || async {
+            fetch_service_subscriber
+                .get_raw_mempool()
+                .await
+                .unwrap()
+                .len()
+                >= 2
+        },
     )
     .await
     .expect("mempool did not observe both quick_send txs within 5s");
@@ -1818,12 +1893,18 @@ async fn fetch_service_get_mempool_stream<V: ValidatorExt>(validator: &Validator
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -1863,7 +1944,14 @@ async fn fetch_service_get_mempool_stream<V: ValidatorExt>(validator: &Validator
     zaino_testutils::poll_until(
         std::time::Duration::from_millis(50),
         std::time::Duration::from_secs(5),
-        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+        || async {
+            fetch_service_subscriber
+                .get_raw_mempool()
+                .await
+                .unwrap()
+                .len()
+                >= 2
+        },
     )
     .await
     .expect("mempool did not observe both quick_send txs within 5s");
@@ -1976,7 +2064,10 @@ async fn fetch_service_get_taddress_utxos<V: ValidatorExt>(validator: &Validator
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
@@ -2031,7 +2122,10 @@ async fn fetch_service_get_taddress_utxos_stream<V: ValidatorExt>(validator: &Va
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
         clients.faucet.sync_and_await_after_batched_generate().await;
-        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
+        clients
+            .faucet
+            .quick_shield_after_batched_generate(AccountId::ZERO)
+            .await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
