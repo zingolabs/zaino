@@ -1,4 +1,6 @@
-use super::load_test_vectors_and_sync_chain_index;
+use super::{
+    load_test_vectors_and_sync_chain_index, load_test_vectors_and_sync_chain_index_with_timings,
+};
 use crate::{
     chain_index::{
         source::mockchain_source::MockchainSource,
@@ -7,7 +9,7 @@ use crate::{
             vectors::{load_test_vectors, TestVectorBlockData},
         },
         types::{BestChainLocation, TransactionHash},
-        ChainIndex, NodeBackedChainIndexSubscriber,
+        ChainIndex, NodeBackedChainIndexSubscriber, SyncTimings,
     },
     BlockchainSource as _,
 };
@@ -168,8 +170,20 @@ async fn get_transaction_status() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn sync_blocks_after_startup() {
+    // Use `SyncTimings::fast` (50 ms inter-iteration sleep instead of 500 ms)
+    // and the matching test fixture that sets the setup poll-interval to
+    // 25 ms instead of 2 s. Matches the pattern used by
+    // `escalates_to_critical_after_persistent_failure` in `sync_loop`. Cuts
+    // the test from ~12 s to ~2 s by no longer waiting on production timings
+    // that aren't being exercised here. zingolabs/zaino#1039.
     let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(true).await;
+        load_test_vectors_and_sync_chain_index_with_timings(true, SyncTimings::fast()).await;
+
+    // `load_with_settings` only waits for the finalized state to reach
+    // `active_height - 100`; under fast timings the nonfinalized state can
+    // still be catching up when setup returns. Wait explicitly before
+    // checking best_tip.
+    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
 
     let indexer_tip = dbg!(
         &index_reader
