@@ -148,6 +148,43 @@ impl<Source: BlockchainSource> PollableTip for NodeBackedChainIndexSubscriber<So
     }
 }
 
+/// Marker trait bundling the `Self`-relative constraints every
+/// integration test needs on the `Service` type parameter of
+/// [`TestManager`].
+///
+/// Lets a generic test function write `Service: TestService` instead
+/// of restating these bounds in every `where`-clause:
+/// - [`LightWalletService`] + `Send + Sync + 'static`
+/// - `Service::Config: TryFrom<ZainodConfig, Error = IndexerError>`
+/// - `Service::Subscriber: PollableTip`
+///
+/// **Not** bundled: the reverse bound
+/// `IndexerError: From<Service::Subscriber::Error>`. Rust does not
+/// propagate non-`Self` bounds declared in a trait's `where`-clause
+/// through a `T: TestService` constraint, so call sites that touch
+/// `TestManager::launch` (or anything else exercising
+/// `Indexer::launch_inner`'s `?` propagation) must still restate that
+/// one bound explicitly. Everything else collapses to `TestService`.
+pub trait TestService:
+    LightWalletService<
+        Config: TryFrom<ZainodConfig, Error = IndexerError>,
+        Subscriber: PollableTip,
+    > + Send
+    + Sync
+    + 'static
+{
+}
+
+impl<T> TestService for T where
+    T: LightWalletService<
+            Config: TryFrom<ZainodConfig, Error = IndexerError>,
+            Subscriber: PollableTip,
+        > + Send
+        + Sync
+        + 'static
+{
+}
+
 // temporary until activation heights are unified to zebra-chain type.
 // from/into impls not added in zaino-common to avoid unecessary addition of zcash-protocol dep to non-test code
 /// Convert zaino activation heights into zcash protocol type.
@@ -339,10 +376,8 @@ impl ValidatorExt for Zcashd {
 impl<C, Service> TestManager<C, Service>
 where
     C: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    <Service as ZcashService>::Subscriber: PollableTip,
 {
     /// Returns the service subscriber, panicking if zaino wasn't enabled at launch.
     ///

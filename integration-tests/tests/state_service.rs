@@ -4,7 +4,7 @@ use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
 use zaino_proto::proto::service::{BlockId, BlockRange, PoolType, TransparentAddressBlockFilter};
 use zaino_state::ChainIndex as _;
-use zaino_state::{LightWalletService, ZcashService};
+use zaino_state::ZcashService;
 
 #[allow(deprecated)]
 use zaino_state::{
@@ -13,7 +13,6 @@ use zaino_state::{
 };
 use zaino_testutils::{from_inputs, ValidatorExt};
 use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
-use zainodlib::config::ZainodConfig;
 use zainodlib::error::IndexerError;
 use zcash_local_net::validator::{zebrad::Zebrad, Validator};
 use zebra_chain::parameters::NetworkKind;
@@ -167,10 +166,8 @@ async fn generate_blocks_and_poll_all_chain_indexes<V, Service>(
     state_service_subscriber: StateServiceSubscriber,
 ) where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     test_manager
         .generate_blocks_and_wait_for_tip(n, &fetch_service_subscriber)
