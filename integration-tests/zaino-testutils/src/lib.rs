@@ -166,10 +166,8 @@ impl<Source: BlockchainSource> PollableTip for NodeBackedChainIndexSubscriber<So
 /// `Indexer::launch_inner`'s `?` propagation) must still restate that
 /// one bound explicitly. Everything else collapses to `TestService`.
 pub trait TestService:
-    LightWalletService<
-        Config: TryFrom<ZainodConfig, Error = IndexerError>,
-        Subscriber: PollableTip,
-    > + Send
+    LightWalletService<Config: TryFrom<ZainodConfig, Error = IndexerError>, Subscriber: PollableTip>
+    + Send
     + Sync
     + 'static
 {
