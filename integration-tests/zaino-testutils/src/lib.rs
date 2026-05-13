@@ -632,46 +632,34 @@ where
     /// `NodeBackedChainIndexSubscriber`, or any future pollable) can be
     /// passed. Fails fast (panics) if `pollable` reports non-live status.
     pub async fn generate_blocks_and_wait_for_tip<P: PollableTip>(&self, n: u32, pollable: &P) {
-        fn assert_live<S: Status>(pollable: &S, waiting_for: Option<u64>) {
+        fn assert_live<S: Status>(pollable: &S) {
             if !pollable.is_live() {
                 let status = pollable.status();
-                match waiting_for {
-                    Some(h) => panic!(
-                        "Pollable is not live while waiting for block {h} (status: {status:?})."
-                    ),
-                    None => panic!(
-                        "Pollable is not live (status: {status:?}). \
-                         The backing validator may have crashed or become unreachable."
-                    ),
-                }
+                panic!(
+                    "Pollable is not live (status: {status:?}). \
+                     The backing validator may have crashed or become unreachable."
+                );
             }
         }
 
         let chain_height = u64::from(self.local_net.get_chain_height().await);
         let target_height = chain_height + n as u64;
-        let mut next_block_height = chain_height + 1;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
 
-        // NOTE: readstate service seems to not be functioning correctly when generate multiple blocks at once and polling the latest block.
-        // commented out a fall back to `get_block` to query the cache directly if needed in the future.
-        // while indexer.get_block(zaino_proto::proto::service::BlockId {
-        //     height: target_height,
-        //     hash: vec![],
-        // }).await.is_err()
+        // Issue a single batched generation call rather than n single-block
+        // calls — the per-block loop here used to be required because polling
+        // the readstate service after a multi-block generation appeared not
+        // to function correctly. Empirically re-tested when batching landed;
+        // see zingolabs/zaino#1110 acceptance criteria.
+        if n > 0 {
+            self.local_net.generate_blocks(n).await.unwrap();
+        }
+
         while pollable.tip_height().await < target_height {
-            assert_live(pollable, None);
-            if n == 0 {
-                interval.tick().await;
-            } else {
-                self.local_net.generate_blocks(1).await.unwrap();
-                while pollable.tip_height().await != next_block_height {
-                    assert_live(pollable, Some(next_block_height));
-                    interval.tick().await;
-                }
-                next_block_height += 1;
-            }
+            assert_live(pollable);
+            interval.tick().await;
         }
 
         // After height is reached, wait for readiness and measure if it adds time
