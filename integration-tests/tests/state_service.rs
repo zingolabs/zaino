@@ -170,13 +170,13 @@ async fn generate_blocks_and_poll_all_chain_indexes<V, Service>(
     Service: LightWalletService + Send + Sync + 'static,
     Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    test_manager.generate_blocks_and_poll(n).await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &fetch_service_subscriber)
+        .generate_blocks_and_wait_for_tip(n, &fetch_service_subscriber)
         .await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(0, &state_service_subscriber)
         .await;
 }
 async fn state_service_check_info<V: ValidatorExt>(

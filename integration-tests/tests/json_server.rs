@@ -118,12 +118,11 @@ async fn generate_blocks_and_poll_all_chain_indexes(
     zaino_subscriber: FetchServiceSubscriber,
     zcashd_subscriber: FetchServiceSubscriber,
 ) {
-    test_manager.generate_blocks_and_poll(n).await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &zaino_subscriber)
+        .generate_blocks_and_wait_for_tip(n, &zaino_subscriber)
         .await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &zcashd_subscriber)
+        .generate_blocks_and_wait_for_tip(0, &zcashd_subscriber)
         .await;
 }
 

@@ -66,12 +66,12 @@ async fn setup_chain<V: ValidatorExt>(
 
     // Generate blocks and perform transaction
     test_manager
-        .generate_blocks_and_poll_indexer(100, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(100, &state_service_subscriber)
         .await;
     clients.faucet.sync_and_await().await.unwrap();
     clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
     test_manager
-        .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
         .await;
     clients.faucet.sync_and_await().await.unwrap();
 
@@ -82,7 +82,7 @@ async fn setup_chain<V: ValidatorExt>(
     .await
     .unwrap();
     test_manager
-        .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
         .await;
 
     clients.recipient.sync_and_await().await.unwrap();
