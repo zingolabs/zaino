@@ -57,10 +57,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -68,7 +72,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -106,10 +112,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -117,7 +127,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -155,10 +167,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -167,7 +183,9 @@ where
         .await
         .unwrap();
 
-    test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
 
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
@@ -199,7 +217,9 @@ where
         .unwrap();
 
     dbg!(unfinalised_transactions.clone());
-    test_manager.generate_blocks_and_wait_for_tip(99, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(99, test_manager.subscriber())
+        .await;
 
     println!("\n\nFetching Tx From Finalized Chain!\n");
 
@@ -251,21 +271,31 @@ where
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.generate_blocks_and_wait_for_tip(2, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(2, test_manager.subscriber())
+        .await;
     clients.faucet.sync_and_await().await.unwrap();
 
     // "Create" 3 orchard notes in faucet.
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -281,7 +311,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -341,10 +373,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -352,7 +388,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -372,7 +410,9 @@ where
         .quick_shield(AccountId::ZERO)
         .await
         .unwrap();
-    test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -407,17 +447,25 @@ where
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -505,7 +553,9 @@ where
         250_000
     );
 
-    test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
 
     println!("\n\nFetching Mined Tx 1!\n");
     let _transaction_1 = dbg!(

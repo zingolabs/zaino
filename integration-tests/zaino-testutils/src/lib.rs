@@ -979,7 +979,9 @@ mod launch_testmanager {
                     .await
                     .unwrap());
 
-                test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1017,7 +1019,9 @@ mod launch_testmanager {
                     .take()
                     .expect("Clients are not initialized");
 
-                test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1048,7 +1052,9 @@ mod launch_testmanager {
 
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-                test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1071,7 +1077,9 @@ mod launch_testmanager {
                 .await
                 .unwrap();
 
-                test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+                    .await;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 clients.recipient.sync_and_await().await.unwrap();
                 dbg!(clients
@@ -1256,7 +1264,9 @@ mod launch_testmanager {
                     .await
                     .unwrap());
 
-                test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1295,7 +1305,9 @@ mod launch_testmanager {
                     .take()
                     .expect("Clients are not initialized");
 
-                test_manager.generate_blocks_and_wait_for_tip(100, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1326,7 +1338,9 @@ mod launch_testmanager {
 
                 // *Send all transparent funds to own orchard address.
                 clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-                test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+                    .await;
                 clients.faucet.sync_and_await().await.unwrap();
                 dbg!(clients
                     .faucet
@@ -1349,7 +1363,9 @@ mod launch_testmanager {
                 .await
                 .unwrap();
 
-                test_manager.generate_blocks_and_wait_for_tip(1, test_manager.subscriber()).await;
+                test_manager
+                    .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+                    .await;
                 clients.recipient.sync_and_await().await.unwrap();
                 dbg!(clients
                     .recipient
