@@ -40,10 +40,6 @@ default-filter = """
         test(/^chain_query_interface::repro_nfs_drain$/) |
         test(/^chain_query_interface::sync_large_chain_zcashd$/) |
         test(/^chain_query_interface::sync_large_chain_zebrad$/) |
-        test(/^zebrad::get::mempool_info$/) |
-        test(/^zebrad::get::mempool_stream$/) |
-        test(/^zebrad::get::mempool_tx$/) |
-        test(/^zebrad::get::raw_mempool$/) |
         test(/^zebrad::get::raw_transaction$/) |
         test(/^zebrad::get::taddress_balance$/) |
         test(/^zebrad::get::taddress_txids$/) |
@@ -91,8 +87,6 @@ default-filter = """
         test(/^zebrad::get::mining_info$/) |
         test(/^zebra::get::address_balance_regtest$/) |
         test(/^zebra::get::raw_transaction_regtest$/) |
-        test(/^zebra::get::get_mempool_info$/) |
-        test(/^zebra::get::raw_mempool_regtest$/) |
         test(/^zcashd::zcash_indexer::get_mining_info$/) |
         test(/^zebrad::process_200_blocks$/)
     )
@@ -109,10 +103,6 @@ default-filter = """
         test(/^zcashd::get::block_range$/) |
         test(/^zcashd::get::block_range_nullifiers$/) |
         test(/^zcashd::get::block_subsidy$/) |
-        test(/^zcashd::get::mempool_info$/) |
-        test(/^zcashd::get::mempool_stream$/) |
-        test(/^zcashd::get::mempool_tx$/) |
-        test(/^zcashd::get::raw_mempool$/) |
         test(/^zcashd::get::raw_transaction$/) |
         test(/^zcashd::get::taddress_balance$/) |
         test(/^zcashd::get::taddress_txids$/) |
@@ -153,8 +143,12 @@ default-filter = """
         test(/^zcashd::get::get_network_sol_ps$/) |
         test(/^zcashd::get::latest_block$/) |
         test(/^zcashd::get::lightd_info$/) |
+        test(/^zcashd::get::mempool_info$/) |
+        test(/^zcashd::get::mempool_stream$/) |
+        test(/^zcashd::get::mempool_tx$/) |
         test(/^zcashd::get::mining_info$/) |
         test(/^zcashd::get::peer_info$/) |
+        test(/^zcashd::get::raw_mempool$/) |
         test(/^zcashd::validation::validate_address$/) |
         test(/^zcashd::zcash_indexer::get_best_blockhash$/) |
         test(/^zcashd::zcash_indexer::get_block_count$/) |
@@ -168,9 +162,11 @@ default-filter = """
         test(/^zebra::get::block_object_regtest$/) |
         test(/^zebra::get::block_raw_regtest$/) |
         test(/^zebra::get::difficulty$/) |
+        test(/^zebra::get::get_mempool_info$/) |
         test(/^zebra::get::get_network_sol_ps$/) |
         test(/^zebra::get::mining_info$/) |
         test(/^zebra::get::peer_info$/) |
+        test(/^zebra::get::raw_mempool_regtest$/) |
         test(/^zebra::get::z::z_validate_address$/) |
         test(/^zebra::lightwallet_indexer::get_block_header$/) |
         test(/^zebra::lightwallet_indexer::get_latest_block$/) |
@@ -182,6 +178,10 @@ default-filter = """
         test(/^zebrad::get::block_range_nullifiers$/) |
         test(/^zebrad::get::get_network_sol_ps$/) |
         test(/^zebrad::get::latest_block$/) |
+        test(/^zebrad::get::mempool_info$/) |
+        test(/^zebrad::get::mempool_stream$/) |
+        test(/^zebrad::get::mempool_tx$/) |
+        test(/^zebrad::get::raw_mempool$/) |
         test(/^zebrad::get::subtree_roots$/) |
         test(/^zebrad::launch::regtest_no_cache$/) |
         test(/^zebrad::state_service::connect_to_node_get_info$/) |

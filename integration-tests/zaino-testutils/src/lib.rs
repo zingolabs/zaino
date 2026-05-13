@@ -64,6 +64,181 @@ pub fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
         .unwrap()
 }
 
+/// Polls `predicate` every `interval` until it returns `true`, or returns
+/// `Err(Elapsed)` once `timeout` elapses.
+///
+/// Replaces ad-hoc `tokio::time::sleep` waits that previously gave the system
+/// "enough time" to observe an event (a mempool transaction, a synced
+/// subscriber, etc.). The poll form returns as soon as the condition holds
+/// instead of always paying the worst-case wait.
+///
+/// Mirrors `poll_until` in `zcash_local_net::poll` (added there in
+/// zingolabs/infrastructure#251 as `pub(crate)`), reproduced here as `pub`
+/// because we need it across the integration-tests workspace.
+pub async fn poll_until<F, Fut>(
+    interval: std::time::Duration,
+    timeout: std::time::Duration,
+    mut predicate: F,
+) -> Result<(), tokio::time::error::Elapsed>
+where
+    F: FnMut() -> Fut + Send,
+    Fut: std::future::Future<Output = bool> + Send,
+{
+    tokio::time::timeout(timeout, async move {
+        loop {
+            if predicate().await {
+                return;
+            }
+            tokio::time::sleep(interval).await;
+        }
+    })
+    .await
+}
+
+/// Retries `op` while it returns `Err`, panicking after `max_attempts` with
+/// a message that names `description` and includes the last error.
+///
+/// Tightly-scoped workaround for a family of zebra-side races that
+/// [`TestManager::generate_blocks_and_wait_for_tip`] exposes when it batches
+/// the block-generation call. After `generate_blocks(n)` returns and the
+/// chain index reports `tip == target_height`, downstream subsystems inside
+/// the validator and the wallet are not always fully settled:
+///
+/// - the validator's mempool subsystem can transiently reject new tx
+///   submissions (`SendError::TransmissionError` on `quick_shield` or
+///   `quick_send`),
+/// - the wallet's gRPC sync can hit a block whose Orchard tree metadata is
+///   not yet internally consistent
+///   (`SyncError::ScanError(IncorrectTreeSize)`),
+/// - the read-state's `AddressBalance` view can lag the tip channel by one
+///   block — the originating race for this whole family; see
+///   zingolabs/zaino#1118.
+///
+/// All three manifest only after batched generation; serialised per-block
+/// generation gives zebra enough time between commits to settle them
+/// implicitly. Upstream tracking: ZcashFoundation/zebra#10582. Once that
+/// race is fixed, call sites that wrap fallible operations through this
+/// helper should drop back to a plain `.await.unwrap()` and the helper can
+/// be deleted.
+///
+/// Bounds `max_attempts * backoff` to keep test wall-time predictable when
+/// the failure is *not* transient — pick values so a real bug surfaces in
+/// seconds, not minutes.
+pub async fn retry_async<T, E, F, Fut>(
+    description: &str,
+    max_attempts: usize,
+    backoff: std::time::Duration,
+    mut op: F,
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Debug,
+{
+    assert!(max_attempts >= 1, "retry_async max_attempts must be >= 1");
+    let mut last_err: Option<E> = None;
+    for attempt in 1..=max_attempts {
+        match op().await {
+            Ok(value) => return value,
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < max_attempts {
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+    }
+    panic!(
+        "{description} failed after {max_attempts} attempts; last error: {:?}",
+        last_err.expect("loop ran at least once and only exits early via Ok"),
+    );
+}
+
+/// Test-only extensions on [`LightClient`] that absorb the transient
+/// `SendError`/`SyncError` failures observed after batched
+/// `generate_blocks(n)`. See [`retry_async`] for the full race summary and
+/// upstream tracking issues.
+///
+/// Two methods, used together at every test site that runs the zebra/zebrad
+/// coinbase-maturity prologue: `sync_and_await_after_batched_generate` and
+/// `quick_shield_after_batched_generate`. Each replaces a plain
+/// `.await.unwrap()` on the corresponding [`LightClient`] method.
+pub trait LightClientPostBatchedGenerate {
+    /// Retry-wrapped [`LightClient::sync_and_await`]. Absorbs the transient
+    /// `SyncError::ScanError(IncorrectTreeSize { … })` (wallet pepper-sync
+    /// scans a block whose Orchard tree metadata is not yet internally
+    /// consistent) and `SyncError::ServerError(RequestFailed { … })`
+    /// (server-side request fails before zebra's read-state has caught up to
+    /// the just-batched commit) that surface immediately after a batched
+    /// `generate_blocks(n)`.
+    ///
+    /// Underlying race: zingolabs/zaino#1118 / ZcashFoundation/zebra#10582.
+    /// Drop this wrapper once those land and switch call sites back to a
+    /// plain `client.sync_and_await().await.unwrap()`.
+    fn sync_and_await_after_batched_generate(
+        &mut self,
+    ) -> impl std::future::Future<Output = ()>;
+
+    /// Retry-wrapped [`LightClient::quick_shield`]. Absorbs the transient
+    /// `SendError::TransmissionError(TransmissionFailed { … })` that
+    /// surfaces when the validator's mempool subsystem briefly rejects new
+    /// tx submissions immediately after a batched `generate_blocks(n)`.
+    ///
+    /// Underlying race: zingolabs/zaino#1118 / ZcashFoundation/zebra#10582.
+    /// Drop this wrapper once those land and switch call sites back to a
+    /// plain `client.quick_shield(account).await.unwrap()`.
+    fn quick_shield_after_batched_generate(
+        &mut self,
+        account: zip32::AccountId,
+    ) -> impl std::future::Future<Output = ()>;
+}
+
+impl LightClientPostBatchedGenerate for LightClient {
+    async fn sync_and_await_after_batched_generate(&mut self) {
+        const MAX_ATTEMPTS: usize = 10;
+        const BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+        let mut last_err: Option<String> = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self.sync_and_await().await {
+                Ok(_) => return,
+                Err(e) => {
+                    last_err = Some(format!("{e:?}"));
+                    if attempt < MAX_ATTEMPTS {
+                        tokio::time::sleep(BACKOFF).await;
+                    }
+                }
+            }
+        }
+        panic!(
+            "sync_and_await_after_batched_generate failed after {MAX_ATTEMPTS} attempts; \
+             last error: {}",
+            last_err.expect("loop ran at least once and only exits early via Ok"),
+        );
+    }
+
+    async fn quick_shield_after_batched_generate(&mut self, account: zip32::AccountId) {
+        const MAX_ATTEMPTS: usize = 10;
+        const BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+        let mut last_err: Option<String> = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self.quick_shield(account).await {
+                Ok(_) => return,
+                Err(e) => {
+                    last_err = Some(format!("{e:?}"));
+                    if attempt < MAX_ATTEMPTS {
+                        tokio::time::sleep(BACKOFF).await;
+                    }
+                }
+            }
+        }
+        panic!(
+            "quick_shield_after_batched_generate failed after {MAX_ATTEMPTS} attempts; \
+             last error: {}",
+            last_err.expect("loop ran at least once and only exits early via Ok"),
+        );
+    }
+}
+
 /// Polls until the given component reports ready.
 ///
 /// Returns `true` if the component became ready within the timeout,
@@ -648,11 +823,14 @@ where
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
 
-        // Issue a single batched generation call rather than n single-block
-        // calls — the per-block loop here used to be required because polling
-        // the readstate service after a multi-block generation appeared not
-        // to function correctly. Empirically re-tested when batching landed;
-        // see zingolabs/zaino#1110 acceptance criteria.
+        // Batched generation: issue a single `generate_blocks(n)` call, then
+        // poll until `pollable` reports the new tip. Exposes a family of
+        // zebra-side races where downstream subsystems (mempool acceptance,
+        // wallet gRPC sync, address-balance read path) haven't fully settled
+        // by the time the chain tip advances. Affected tests are
+        // `#[ignore]`'d with cross-refs to zingolabs/zaino#1118 and
+        // ZcashFoundation/zebra#10582. Remove those ignores once the upstream
+        // races are addressed.
         if n > 0 {
             self.local_net.generate_blocks(n).await.unwrap();
         }

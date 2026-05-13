@@ -12,7 +12,7 @@ use zaino_state::ChainIndex;
 use zaino_state::FetchServiceSubscriber;
 #[allow(deprecated)]
 use zaino_state::{FetchService, LightWalletIndexer, Status, StatusType, ZcashIndexer};
-use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
+use zaino_testutils::{LightClientPostBatchedGenerate, TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::ValidateAddressResponse;
@@ -76,18 +76,18 @@ async fn fetch_service_get_address_balance<V: ValidatorExt>(validator: &Validato
         .expect("Clients are not initialized");
     let recipient_address = clients.get_recipient_address("transparent").await;
 
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     dbg!(clients
@@ -206,23 +206,23 @@ async fn fetch_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKin
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
 
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let recipient_ua: String = clients.get_recipient_address("unified").await;
@@ -240,7 +240,13 @@ async fn fetch_service_get_raw_mempool<V: ValidatorExt>(validator: &ValidatorKin
     .await
     .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    zaino_testutils::poll_until(
+        std::time::Duration::from_millis(50),
+        std::time::Duration::from_secs(5),
+        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+    )
+    .await
+    .expect("mempool did not observe both quick_send txs within 5s");
 
     let mut fetch_service_mempool = fetch_service_subscriber.get_raw_mempool().await.unwrap();
     let mut json_service_mempool = json_service.get_raw_mempool().await.unwrap().transactions;
@@ -272,26 +278,26 @@ pub async fn test_get_mempool_info<V: ValidatorExt>(validator: &ValidatorKind) {
     test_manager
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     // Zebra cannot mine directly to Orchard in this setup, so shield funds first.
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     }
 
     let recipient_unified_address = clients.get_recipient_address("unified").await;
@@ -312,7 +318,13 @@ pub async fn test_get_mempool_info<V: ValidatorExt>(validator: &ValidatorKind) {
     .unwrap();
 
     // Allow the broadcaster and subscribers to observe new transactions.
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    zaino_testutils::poll_until(
+        std::time::Duration::from_millis(50),
+        std::time::Duration::from_secs(5),
+        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+    )
+    .await
+    .expect("mempool did not observe both quick_send txs within 5s");
 
     // Internal method now used for all validators.
     let info = fetch_service_subscriber.get_mempool_info().await.unwrap();
@@ -368,19 +380,19 @@ async fn fetch_service_z_get_treestate<V: ValidatorExt>(validator: &ValidatorKin
         .clients
         .take()
         .expect("Clients are not initialized");
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         // TODO: investigate why 101 blocks are needed instead of the previous 100 blocks (chain index integration related?)
         test_manager
             .generate_blocks_and_wait_for_tip(101, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let recipient_ua = clients.get_recipient_address("unified").await;
@@ -418,19 +430,19 @@ async fn fetch_service_z_get_subtrees_by_index<V: ValidatorExt>(validator: &Vali
         .clients
         .take()
         .expect("Clients are not initialized");
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let recipient_ua = clients.get_recipient_address("unified").await;
@@ -466,18 +478,18 @@ async fn fetch_service_get_raw_transaction<V: ValidatorExt>(validator: &Validato
         .clients
         .take()
         .expect("Clients are not initialized");
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let recipient_ua = clients.get_recipient_address("unified").await;
@@ -515,18 +527,18 @@ async fn fetch_service_get_address_tx_ids<V: ValidatorExt>(validator: &Validator
         .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let tx = zaino_testutils::from_inputs::quick_send(
@@ -576,18 +588,18 @@ async fn fetch_service_get_address_utxos<V: ValidatorExt>(validator: &ValidatorK
         .take()
         .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let txid_1 = zaino_testutils::from_inputs::quick_send(
@@ -600,7 +612,7 @@ async fn fetch_service_get_address_utxos<V: ValidatorExt>(validator: &ValidatorK
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
 
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     let fetch_service_utxos = fetch_service_subscriber
         .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
@@ -1080,7 +1092,7 @@ async fn fetch_service_get_block_range_returns_all_pools<V: ValidatorExt>(
         .take()
         .expect("Clients are not initialized");
 
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
@@ -1088,14 +1100,14 @@ async fn fetch_service_get_block_range_returns_all_pools<V: ValidatorExt>(
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
         for _ in 1..4 {
-            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+            clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
                 .await;
-            clients.faucet.sync_and_await().await.unwrap();
+            clients.faucet.sync_and_await_after_batched_generate().await;
         }
     } else {
         // zcashd
@@ -1103,7 +1115,7 @@ async fn fetch_service_get_block_range_returns_all_pools<V: ValidatorExt>(
             .generate_blocks_and_wait_for_tip(14, &fetch_service_subscriber)
             .await;
 
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     }
 
     let recipient_transparent = clients.get_recipient_address("transparent").await;
@@ -1235,7 +1247,7 @@ async fn fetch_service_get_block_range_no_pools_returns_sapling_orchard<V: Valid
         .take()
         .expect("Clients are not initialized");
 
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     let fetch_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
@@ -1243,14 +1255,14 @@ async fn fetch_service_get_block_range_no_pools_returns_sapling_orchard<V: Valid
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
         for _ in 1..4 {
-            clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+            clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
                 .await;
-            clients.faucet.sync_and_await().await.unwrap();
+            clients.faucet.sync_and_await_after_batched_generate().await;
         }
     } else {
         // zcashd
@@ -1258,7 +1270,7 @@ async fn fetch_service_get_block_range_no_pools_returns_sapling_orchard<V: Valid
             .generate_blocks_and_wait_for_tip(14, &fetch_service_subscriber)
             .await;
 
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     }
 
     let recipient_transparent = clients.get_recipient_address("transparent").await;
@@ -1430,18 +1442,18 @@ async fn fetch_service_get_transaction_mined<V: ValidatorExt>(validator: &Valida
         .clients
         .take()
         .expect("Clients are not initialized");
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let recipient_ua = clients.get_recipient_address("unified").await;
@@ -1484,18 +1496,18 @@ async fn fetch_service_get_transaction_mempool<V: ValidatorExt>(validator: &Vali
         .clients
         .take()
         .expect("Clients are not initialized");
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let recipient_ua = clients.get_recipient_address("unified").await;
@@ -1539,18 +1551,18 @@ async fn fetch_service_get_taddress_txids<V: ValidatorExt>(validator: &Validator
         .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let tx = zaino_testutils::from_inputs::quick_send(
@@ -1620,18 +1632,18 @@ async fn fetch_service_get_taddress_balance<V: ValidatorExt>(validator: &Validat
         .take()
         .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     zaino_testutils::from_inputs::quick_send(
@@ -1685,23 +1697,23 @@ async fn fetch_service_get_mempool_tx<V: ValidatorExt>(validator: &ValidatorKind
     test_manager
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let recipient_ua = clients.get_recipient_address("unified").await;
@@ -1719,7 +1731,13 @@ async fn fetch_service_get_mempool_tx<V: ValidatorExt>(validator: &ValidatorKind
     .await
     .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    zaino_testutils::poll_until(
+        std::time::Duration::from_millis(50),
+        std::time::Duration::from_secs(5),
+        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+    )
+    .await
+    .expect("mempool did not observe both quick_send txs within 5s");
 
     let exclude_list_empty = GetMempoolTxRequest {
         exclude_txid_suffixes: Vec::new(),
@@ -1793,23 +1811,23 @@ async fn fetch_service_get_mempool_stream<V: ValidatorExt>(validator: &Validator
     test_manager
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let fetch_service_subscriber_2 = fetch_service_subscriber.clone();
@@ -1842,7 +1860,13 @@ async fn fetch_service_get_mempool_stream<V: ValidatorExt>(validator: &Validator
     .await
     .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    zaino_testutils::poll_until(
+        std::time::Duration::from_millis(50),
+        std::time::Duration::from_secs(5),
+        || async { fetch_service_subscriber.get_raw_mempool().await.unwrap().len() >= 2 },
+    )
+    .await
+    .expect("mempool did not observe both quick_send txs within 5s");
     test_manager
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
@@ -1945,18 +1969,18 @@ async fn fetch_service_get_taddress_utxos<V: ValidatorExt>(validator: &Validator
         .take()
         .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     let tx = zaino_testutils::from_inputs::quick_send(
@@ -2000,18 +2024,18 @@ async fn fetch_service_get_taddress_utxos_stream<V: ValidatorExt>(validator: &Va
         .take()
         .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.faucet.sync_and_await_after_batched_generate().await;
 
     if matches!(validator, ValidatorKind::Zebrad) {
         test_manager
             .generate_blocks_and_wait_for_tip(100, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
+        clients.faucet.quick_shield_after_batched_generate(AccountId::ZERO).await;
         test_manager
             .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
             .await;
-        clients.faucet.sync_and_await().await.unwrap();
+        clients.faucet.sync_and_await_after_batched_generate().await;
     };
 
     zaino_testutils::from_inputs::quick_send(
