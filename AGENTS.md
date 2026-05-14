@@ -159,3 +159,112 @@ it, double-check whether `?` (in a `fn() -> Result<_, _>` test), a more
 descriptive `.expect("...")` with a message naming the invariant, or an
 `assert!`/`assert_matches!` would make the failure mode clearer. Prefer
 those alternatives whenever they fit.
+
+## LMDB terminology: use the canonical names
+
+Zaino's persistence layer is built on LMDB (Lightning Memory-Mapped
+Database) via the `lmdb` crate. Every component, type, symbol, or term
+that names an LMDB concept MUST use LMDB's canonical vocabulary —
+generic database synonyms ("store", "table", "session", "view") are
+DISALLOWED where an exact LMDB term applies. When a Zaino abstraction
+("ZainoDB") composes LMDB primitives into something LMDB does not
+natively express, the type/module MUST carry a doc comment that names
+the LMDB primitives it is built from.
+
+### Canonical vocabulary
+
+Use the **LMDB term** column. The **synonyms** column lists names that
+MUST NOT appear in Zaino code, doc comments, or design docs when the
+exact LMDB term applies.
+
+| Concept                                  | LMDB term (use this)                                               | Disallowed synonyms                          |
+|------------------------------------------|--------------------------------------------------------------------|----------------------------------------------|
+| Top-level handle / memory-mapped file    | **environment** (`lmdb::Environment`, C: `MDB_env`)                | "store", "db file", "db instance"            |
+| Named B+tree within an environment       | **database** (`lmdb::Database`, C: `MDB_dbi`; a.k.a. "named DB")   | "table", "collection", "namespace", "tree"   |
+| Read txn / write txn handle              | **transaction**, qualified **read txn** / **write txn**            | "session", "view-handle", "connection"       |
+| MVCC view a read txn observes            | **snapshot** (the LMDB term for the read-only view)                | "version", "checkpoint"                      |
+| Key-ordered iterator scoped to a txn     | **cursor** (`lmdb::Cursor`, C: `MDB_cursor`)                       | "iterator", "scanner", "walker"              |
+| Byte-slice operands                      | **key** / **value** (C: `MDB_val`)                                 | "id" / "record" (when discussing the slice)  |
+| On-disk allocation unit                  | **page**                                                           | "block" (collides with Zcash "block"), "chunk" |
+| Multi-value-per-key flag                 | **DUPSORT**                                                        | "multimap", "secondary index"                |
+| Reader registration table & its entries  | **reader table** / **reader slot**                                 | "session table"                              |
+| Basic operations                         | **put** / **get** / **del**                                        | "insert" / "lookup" / "remove"               |
+| Cursor positioning                       | **MDB_FIRST / NEXT / PREV / SET / SET_RANGE / …**                  | ad-hoc names                                 |
+
+Note on "block": Zcash uses "block" for a chain block. Always say
+**page** for the LMDB allocation unit and **block** for the chain
+entity — never overload the term.
+
+### Doc-comment rule for non-native (ZainoDB) concepts
+
+A "ZainoDB" concept is any Zaino abstraction that composes LMDB
+primitives into something LMDB does not natively express
+(e.g. a `Persistent<X>` wrapper, a multi-database atomic write, a
+cross-database lookup that holds one read txn open across two cursors).
+Every such item MUST carry a doc comment whose body explicitly names
+the LMDB primitives in play. Example shape:
+
+```rust
+/// Atomically advance the chain tip across the `blocks` and
+/// `headers` databases.
+///
+/// **LMDB shape**: opens one write **txn** on the **environment**,
+/// `put`s into the `blocks` **database** (`MDB_dbi`) and the
+/// `headers` **database**, then **commits**. Readers observe a
+/// consistent **snapshot** (no torn-tip state) because both writes
+/// share the same `MDB_txn`.
+pub fn advance_tip(&self, ..) -> Result<..> { .. }
+```
+
+The doc comment lets a reader fluent in LMDB verify the implementation
+matches its description without chasing call sites.
+
+### Dual-naming rule
+
+When prose reads more naturally with a loose database term *and* LMDB
+has an exact term, write **both** — lead with the generic term and
+parenthesize the LMDB term on first use in a file:
+
+- "the chain-index store (LMDB **environment**)"
+- "the per-block table (LMDB **database** `blocks`)"
+- "open a read-only view (read **txn**, observing a **snapshot**)"
+- "iterate (open a **cursor**) over the heights"
+
+After the first parenthesized introduction in a file, subsequent
+references in that file should use the LMDB term alone.
+
+### Scope and exceptions
+
+- **Applies to**: type names, field names, module names, function
+  names, and local variable names in code that touches the persistence
+  layer; doc comments throughout `zaino-state` and any other
+  LMDB-backed module; in-tree design notes and PR descriptions
+  discussing persistence.
+- **Does not apply to** business-layer types whose names come from the
+  Zcash protocol (`BlockHash`, `Transaction`, `BlockHeight`, etc.).
+  These keep their domain names; the LMDB framing goes on the doc
+  comment of the *persistence wrapper* (e.g. `PersistentBlockContext`),
+  never on the business type.
+- The `Persistent<X>` naming (see *Persistence-boundary conversions*)
+  is preserved: `Persistent<X>` means "the on-disk encoded form of an
+  `X`, ready to serve as a **value** (`MDB_val`) in an LMDB **put**".
+  New `Persistent*` types MUST carry a doc comment saying so.
+- Naming collision with Rust's `std::env`: refer to the LMDB
+  environment as **environment** (full word) in prose; in code,
+  `lmdb::Environment` / `env: &Environment` is canonical and short
+  enough — never abbreviate to anything other than `env`.
+
+### Review checklist (apply on every PR touching persistence)
+
+1. Grep the diff for disallowed synonyms ("store", "table",
+   "collection", "session", "view-handle") and rewrite each to its
+   LMDB term, or justify in-file why the exact term doesn't apply.
+2. Every new persistence type or function carries a doc comment
+   naming the LMDB primitives it touches (environment / database /
+   read txn / write txn / cursor / put / get / del / commit /
+   snapshot / page / DUPSORT).
+3. On first use within a file, prose that uses a generic DB term
+   names the LMDB term in parentheses; later references use the LMDB
+   term alone.
+4. The Zcash "block" and the LMDB "page" are kept distinct — no
+   prose says "block" to mean an LMDB page.
