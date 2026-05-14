@@ -30,13 +30,15 @@ use crate::jsonrpsee::{
         block_deltas::{BlockDeltas, BlockDeltasError},
         block_header::{GetBlockHeader, GetBlockHeaderError},
         block_subsidy::GetBlockSubsidy,
+        chain_tips::GetChainTipsResponse,
         mining_info::GetMiningInfoWire,
         peer_info::GetPeerInfo,
         z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
+        GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesError,
+        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
+        GetTxOutResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
         SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
@@ -638,6 +640,18 @@ impl JsonRpSeeConnector {
             .await
     }
 
+    /// Returns information about all known tips in the block tree.
+    ///
+    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_chain_tips(
+        &self,
+    ) -> Result<GetChainTipsResponse, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetChainTipsResponse>("getchaintips", ())
+            .await
+    }
+
     /// Return information about the given Zcash address.
     ///
     /// # Parameters
@@ -761,6 +775,54 @@ impl JsonRpSeeConnector {
         };
 
         self.send_request("getrawtransaction", params).await
+    }
+
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    ///
+    /// # Parameters
+    ///
+    /// - `txid`: (string, required, example="mytxid") The transaction ID that contains the output.
+    /// - `n`: (number, required) The output index number.
+    /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
+    pub async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, RpcRequestError<Infallible>> {
+        let params = match include_mempool {
+            Some(include_mempool) => vec![
+                serde_json::to_value(txid).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(n).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(include_mempool).map_err(RpcRequestError::JsonRpc)?,
+            ],
+            None => vec![
+                serde_json::to_value(txid).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(n).map_err(RpcRequestError::JsonRpc)?,
+            ],
+        };
+
+        self.send_request("gettxout", params).await
+    }
+
+    /// Returns the transaction id, input index, and block height where an output is spent.
+    ///
+    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// zcashd 6.12.2 also returns an undocumented `height` field.
+    pub async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, RpcRequestError<GetSpentInfoError>> {
+        let params = vec![serde_json::to_value(request).map_err(RpcRequestError::JsonRpc)?];
+
+        self.send_request("getspentinfo", params).await
     }
 
     /// Returns the transaction ids made by the provided transparent addresses.

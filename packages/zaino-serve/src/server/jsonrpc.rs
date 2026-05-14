@@ -9,6 +9,7 @@ use zaino_state::{
     IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer,
 };
 
+use zebra_chain::block::MAX_BLOCK_BYTES;
 use zebra_rpc::server::{
     cookie::{remove_from_disk, write_to_disk, Cookie},
     http_request_compatibility::HttpRequestMiddlewareLayer,
@@ -64,7 +65,8 @@ impl JsonRpcServer {
         };
 
         // Set up Zebra HTTP request compatibility middleware (handles auth and content-type issues)
-        let http_middleware_layer = HttpRequestMiddlewareLayer::new(cookie);
+        let max_request_body_size = (MAX_BLOCK_BYTES as usize) * 2 + 1024;
+        let http_middleware_layer = HttpRequestMiddlewareLayer::new(cookie, max_request_body_size);
 
         // Set up Zebra JSON-RPC call compatibility middleware (RPC version fixes)
         let rpc_middleware = RpcServiceBuilder::new()
