@@ -33,10 +33,12 @@ use zaino_fetch::jsonrpsee::response::{
     block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
+    chain_tips::GetChainTipsResponse,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
     z_validate_address::ZValidateAddressResponse,
-    GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
+    GetTxOutResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -123,6 +125,9 @@ impl ZcashIndexer for StubSubscriber {
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
         stub!()
     }
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
+        stub!()
+    }
     async fn validate_address(&self, _: String) -> Result<ValidateAddressResponse, Self::Error> {
         stub!()
     }
@@ -152,6 +157,20 @@ impl ZcashIndexer for StubSubscriber {
         _: String,
         _: Option<u8>,
     ) -> Result<GetRawTransaction, Self::Error> {
+        stub!()
+    }
+    async fn get_tx_out(
+        &self,
+        _: String,
+        _: u32,
+        _: Option<bool>,
+    ) -> Result<GetTxOutResponse, Self::Error> {
+        stub!()
+    }
+    async fn get_spent_info(
+        &self,
+        _: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error> {
         stub!()
     }
     async fn get_address_tx_ids(
