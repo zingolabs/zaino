@@ -93,7 +93,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("fetch-service-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -135,7 +135,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("state-srvice-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -2785,21 +2785,25 @@ mod zebra {
                 ],
             };
             if nullifiers_only {
-                let fetch_service_get_block_range = fetch_service_subscriber
-                    .get_block_range_nullifiers(request.clone())
-                    .await
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .collect::<Vec<_>>()
-                    .await;
-                let state_service_get_block_range = state_service_subscriber
-                    .get_block_range_nullifiers(request)
-                    .await
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .collect::<Vec<_>>()
-                    .await;
-                assert_eq!(fetch_service_get_block_range, state_service_get_block_range);
+                // TODO(#1088): replace deprecated nullifier-range client usage.
+                #[allow(deprecated)]
+                {
+                    let fetch_service_get_block_range = fetch_service_subscriber
+                        .get_block_range_nullifiers(request.clone())
+                        .await
+                        .unwrap()
+                        .map(Result::unwrap)
+                        .collect::<Vec<_>>()
+                        .await;
+                    let state_service_get_block_range = state_service_subscriber
+                        .get_block_range_nullifiers(request)
+                        .await
+                        .unwrap()
+                        .map(Result::unwrap)
+                        .collect::<Vec<_>>()
+                        .await;
+                    assert_eq!(fetch_service_get_block_range, state_service_get_block_range);
+                }
             } else {
                 let fetch_service_get_block_range = fetch_service_subscriber
                     .get_block_range(request.clone())

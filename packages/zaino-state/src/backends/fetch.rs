@@ -31,12 +31,14 @@ use zaino_fetch::{
             block_deltas::BlockDeltas,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
+            chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             z_validate_address::{
                 ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
-            GetMempoolInfoResponse, GetNetworkSolPsResponse,
+            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
+            GetSpentInfoResponse, GetTxOutResponse,
         },
     },
 };
@@ -55,12 +57,9 @@ use zaino_proto::proto::{
     },
 };
 
-use crate::{
-    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
-    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-};
 #[allow(deprecated)]
 use crate::{
+    chain_index::chain_tips_from_nonfinalized_snapshot,
     chain_index::{source::ValidatorConnector, types},
     config::{DonationAddress, FetchServiceConfig},
     error::FetchServiceError,
@@ -74,6 +73,10 @@ use crate::{
     },
     utils::{get_build_info, ServiceMetadata},
     BackendType,
+};
+use crate::{
+    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
+    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -486,6 +489,17 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.get_block_count().await?.into())
     }
 
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            return Ok(self.fetcher.get_chain_tips().await?);
+        };
+
+        Ok(chain_tips_from_nonfinalized_snapshot(
+            non_finalized_snapshot,
+        ))
+    }
+
     /// Return information about the given Zcash address.
     ///
     /// # Parameters
@@ -748,6 +762,27 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 zebra_chain::transaction::Hash::from(txid),
             ),
         )))
+    }
+
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, Self::Error> {
+        Ok(self.fetcher.get_tx_out(txid, n, include_mempool).await?)
+    }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        Ok(self.fetcher.get_spent_info(request).await?)
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {

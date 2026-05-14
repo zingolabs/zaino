@@ -29,12 +29,12 @@ pub use zcash_local_net as services;
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::ValidatorConfig as _;
+use zcash_local_net::PoolType;
 use zcash_local_net::{
     error::LaunchError,
     validator::zcashd::{Zcashd, ZcashdConfig},
 };
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
-use zcash_protocol::PoolType;
 use zebra_chain::parameters::NetworkKind;
 use zingo_netutils::{GetClientError, GrpcIndexer};
 use zingo_test_vectors::seeds;
