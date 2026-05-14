@@ -1,4 +1,15 @@
-//! Holds zaino-state::Broadcast, a thread safe broadcaster used by the mempool and non-finalised state.
+//! Holds zaino-state::Broadcast, a thread-safe shared map paired with a
+//! coalescible wakeup channel, used by the mempool and non-finalised state.
+//!
+//! Each [`Broadcast`] owns a [`DashMap<K, V>`] plus a
+//! [`tokio::sync::watch`] sender carrying the producer's most recently
+//! published [`StatusType`]. Calls to [`Broadcast::notify`] (and the
+//! `insert*` / `remove` helpers that imply a notify) replace the
+//! channel's current value and wake parked subscribers — they do **not**
+//! enqueue per-call events. A subscriber that hasn't polled between two
+//! sends sees only the second value; intermediate statuses are dropped.
+//! Treat the channel as "wake up and re-read the map," not as a message
+//! queue.
 
 use dashmap::DashMap;
 use std::{collections::HashSet, hash::Hash, sync::Arc};
@@ -7,7 +18,15 @@ use tracing::debug;
 
 use crate::status::StatusType;
 
-/// A generic, thread-safe broadcaster that manages mutable state and notifies clients of updates.
+/// A thread-safe shared map paired with a coalescible wakeup channel.
+///
+/// Producers mutate the inner [`DashMap`] and call [`Broadcast::notify`]
+/// (or one of the `insert*` / `remove` helpers that notifies inline) to
+/// publish a [`StatusType`] on the watch sender. The watch channel only
+/// retains the most recent value: if a subscriber hasn't polled between
+/// two sends, the earlier value is lost. Subscribers receive wakeups,
+/// not the full sequence of state transitions, and must read the map
+/// directly on every wakeup.
 #[derive(Clone)]
 pub(crate) struct Broadcast<K, V> {
     state: Arc<DashMap<K, V>>,
@@ -30,7 +49,9 @@ impl<K: Eq + Hash + Clone, V: Clone> Broadcast<K, V> {
         Self { state, notifier }
     }
 
-    /// Inserts or updates an entry in the state and optionally broadcasts an update.
+    /// Inserts or updates an entry. If `status` is `Some`, publishes it
+    /// on the wakeup channel, replacing any pending value not yet
+    /// observed by subscribers.
     #[allow(dead_code)]
     pub(crate) fn insert(&self, key: K, value: V, status: Option<StatusType>) {
         self.state.insert(key, value);
@@ -39,7 +60,9 @@ impl<K: Eq + Hash + Clone, V: Clone> Broadcast<K, V> {
         }
     }
 
-    /// Inserts or updates an entry in the state and broadcasts an update.
+    /// Inserts or updates every `(key, value)` in `set`, then publishes
+    /// `status` on the wakeup channel, replacing any pending value not
+    /// yet observed by subscribers.
     #[allow(dead_code)]
     pub(crate) fn insert_set(&self, set: Vec<(K, V)>, status: StatusType) {
         for (key, value) in set {
@@ -48,7 +71,9 @@ impl<K: Eq + Hash + Clone, V: Clone> Broadcast<K, V> {
         let _ = self.notifier.send(status);
     }
 
-    /// Inserts only new entries from the set into the state and broadcasts an update.
+    /// Inserts only new entries from `set` (keys already present are
+    /// left alone), then publishes `status` on the wakeup channel,
+    /// replacing any pending value not yet observed by subscribers.
     pub(crate) fn insert_filtered_set(&self, set: Vec<(K, V)>, status: StatusType) {
         for (key, value) in set {
             // Check if the key is already in the map
@@ -59,7 +84,9 @@ impl<K: Eq + Hash + Clone, V: Clone> Broadcast<K, V> {
         let _ = self.notifier.send(status);
     }
 
-    /// Removes an entry from the state and broadcasts an update.
+    /// Removes an entry. If `status` is `Some`, publishes it on the
+    /// wakeup channel, replacing any pending value not yet observed by
+    /// subscribers.
     #[allow(dead_code)]
     pub(crate) fn remove(&self, key: &K, status: Option<StatusType>) {
         self.state.remove(key);
@@ -94,7 +121,10 @@ impl<K: Eq + Hash + Clone, V: Clone> Broadcast<K, V> {
         self.state.contains_key(key)
     }
 
-    /// Returns a receiver to listen for state update notifications.
+    /// Returns a [`watch::Receiver`] subscribed to the producer's most
+    /// recent [`StatusType`]. The receiver observes coalescible wakeups,
+    /// not a complete event stream: rapid sends collapse to the latest
+    /// value from the receiver's perspective.
     pub(crate) fn subscribe(&self) -> watch::Receiver<StatusType> {
         self.notifier.subscribe()
     }
@@ -139,7 +169,11 @@ impl<K: Eq + Hash + Clone, V: Clone> Broadcast<K, V> {
         self.state.is_empty()
     }
 
-    /// Broadcasts an update.
+    /// Publishes `status` on the wakeup channel, replacing any pending
+    /// value not yet observed by subscribers. This is a coalescible
+    /// wakeup, not a per-call event delivery — concurrent sends collapse
+    /// to whichever value lands last. Logs at `debug` if no subscribers
+    /// are currently connected.
     pub(crate) fn notify(&self, status: StatusType) {
         if self.notifier.send(status).is_err() {
             debug!("No subscribers are currently listening for updates.");
@@ -169,7 +203,15 @@ impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fm
     }
 }
 
-/// A generic, thread-safe broadcaster that manages mutable state and notifies clients of updates.
+/// Subscriber handle for a [`Broadcast`].
+///
+/// Holds a shared reference to the inner map and a [`watch::Receiver`]
+/// that observes the producer's most recent [`StatusType`]. The receiver
+/// delivers coalescible wakeups, not preserved events:
+/// [`BroadcastSubscriber::wait_on_notifier`] returns once that latest
+/// value changes, but may skip past intermediate values produced
+/// between calls. Read the map directly for the current state on each
+/// wakeup.
 #[derive(Clone)]
 pub(crate) struct BroadcastSubscriber<K, V> {
     state: Arc<DashMap<K, V>>,
@@ -177,7 +219,12 @@ pub(crate) struct BroadcastSubscriber<K, V> {
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> BroadcastSubscriber<K, V> {
-    /// Waits on notifier update and returns StatusType.
+    /// Awaits the next wakeup on the underlying [`watch::Receiver`] and
+    /// returns the producer's *current* [`StatusType`]. If the producer
+    /// published several values between calls, only the last one is
+    /// observed — intermediate statuses are dropped by the watch
+    /// channel. Callers that need to see every transition must use a
+    /// different primitive.
     pub(crate) async fn wait_on_notifier(&mut self) -> Result<StatusType, watch::error::RecvError> {
         self.notifier.changed().await?;
         let status = *self.notifier.borrow();
