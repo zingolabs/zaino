@@ -3,17 +3,14 @@
 use std::time::Duration;
 
 use tokio::time::interval;
-use tonic::transport::{server::TcpIncoming, Server};
+use tonic::{
+    service::Routes,
+    transport::{server::TcpIncoming, Server},
+};
 use tracing::warn;
-use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zaino_state::{
-    IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer,
-};
+use zaino_state::{NamedAtomicStatus, StatusType};
 
-use crate::{
-    rpc::GrpcClient,
-    server::{config::GrpcServerConfig, error::ServerError},
-};
+use crate::server::{config::GrpcServerConfig, error::ServerError};
 
 /// LightWallet gRPC server capable of servicing clients over TCP.
 pub struct TonicServer {
@@ -26,18 +23,18 @@ pub struct TonicServer {
 impl TonicServer {
     /// Starts the gRPC service.
     ///
-    /// Launches all components then enters command loop:
-    /// - Updates the ServerStatus.
-    /// - Checks for shutdown signal, shutting down server if received.
-    pub async fn spawn<Indexer: ZcashIndexer + LightWalletIndexer>(
-        service_subscriber: IndexerSubscriber<Indexer>,
+    /// `routes` is a pre-assembled tonic service router; production
+    /// callers build one from an indexer subscriber via
+    /// [`crate::rpc::grpc_routes`]. Decoupling the dispatcher from the
+    /// transport layer keeps this function focused on bind / TLS /
+    /// shutdown and lets the bind-race regression test (see
+    /// zingolabs/zaino#1081) pass [`Routes::default`] instead of a full
+    /// trait-stubbed indexer.
+    pub async fn spawn(
+        routes: Routes,
         server_config: GrpcServerConfig,
     ) -> Result<Self, ServerError> {
         let status = NamedAtomicStatus::new("gRPC", StatusType::Spawning);
-
-        let svc = CompactTxStreamerServer::new(GrpcClient {
-            service_subscriber: service_subscriber.clone(),
-        });
 
         let mut server_builder = Server::builder();
         if let Some(tls_config) = server_config.get_valid_tls().await? {
@@ -63,7 +60,7 @@ impl TonicServer {
             }
         };
         let server_future = server_builder
-            .add_service(svc)
+            .add_routes(routes)
             .serve_with_incoming_shutdown(tcp_incoming, shutdown_signal);
 
         let task_status = status.clone();
