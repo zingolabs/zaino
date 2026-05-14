@@ -9,10 +9,11 @@ use zaino_fetch::jsonrpsee::response::{
     block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
+    chain_tips::GetChainTipsResponse,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
     z_validate_address::ZValidateAddressResponse,
-    GetMempoolInfoResponse, GetNetworkSolPsResponse,
+    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -344,6 +345,17 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error>;
 
+    /// Returns information about all known tips in the block tree.
+    ///
+    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// zcashd builds the response from all block-index leaves, always includes the active
+    /// tip, sorts by descending height, and classifies leaves as `invalid`, `headers-only`,
+    /// `valid-headers`, `valid-fork`, `active`, or `unknown`.
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error>;
+
     /// Return information about the given Zcash address.
     ///
     /// # Parameters
@@ -463,6 +475,43 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         txid_hex: String,
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, Self::Error>;
+
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    ///
+    /// # Parameters
+    ///
+    /// - `txid`: (string, required) The transaction ID that contains the output.
+    /// - `n`: (number, required) The output index number.
+    /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<zaino_fetch::jsonrpsee::response::GetTxOutResponse, Self::Error>;
+
+    /// Returns the txid, input index, and block height where an output is spent.
+    ///
+    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `request`: (object, required) with `txid` and `index`.
+    ///
+    /// # Notes
+    ///
+    /// zcashd 6.12.2 returns an undocumented `height` field in addition to
+    /// the documented `txid` and `index` fields.
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///

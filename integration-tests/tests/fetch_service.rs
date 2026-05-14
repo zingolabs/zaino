@@ -1371,6 +1371,7 @@ async fn fetch_service_get_block_range_no_pools_returns_sapling_orchard<V: Valid
     test_manager.close().await;
 }
 
+// TODO(#1088): replace deprecated nullifier-range client usage.
 #[allow(deprecated)]
 async fn fetch_service_get_block_range_nullifiers<V: ValidatorExt>(validator: &ValidatorKind) {
     let mut test_manager =
