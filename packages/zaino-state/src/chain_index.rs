@@ -926,6 +926,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     #[cfg(test)]
     pub(crate) fn mempool_tip(&self) -> tokio::sync::watch::Receiver<crate::BlockHash> {
         self.mempool.mempool_tip()
+    }
+
     /// Returns the number of transparent outputs of `txid` that are currently unspent in the
     /// finalised state. Returns 0 if `txid` is not indexed by the finalised state.
     ///
