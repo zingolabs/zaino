@@ -56,7 +56,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("zcashd-fetch-service-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -72,7 +72,10 @@ async fn create_zcashd_test_manager_and_fetch_services(
 
     println!("Launching zaino fetch service..");
     let zaino_fetch_service = FetchService::spawn(FetchServiceConfig::new(
-        test_manager.full_node_rpc_listen_address.to_string(),
+        test_manager
+            .zaino_json_rpc_listen_address
+            .expect("zaino jsonrpc address must be active for these tests")
+            .to_string(),
         test_manager.json_server_cookie_dir.clone(),
         None,
         None,
@@ -84,7 +87,7 @@ async fn create_zcashd_test_manager_and_fetch_services(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("zaino-fetch-service-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -115,12 +118,11 @@ async fn generate_blocks_and_poll_all_chain_indexes(
     zaino_subscriber: FetchServiceSubscriber,
     zcashd_subscriber: FetchServiceSubscriber,
 ) {
-    test_manager.generate_blocks_and_poll(n).await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &zaino_subscriber)
+        .generate_blocks_and_wait_for_tip(n, &zaino_subscriber)
         .await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &zcashd_subscriber)
+        .generate_blocks_and_wait_for_tip(0, &zcashd_subscriber)
         .await;
 }
 
@@ -605,6 +607,63 @@ async fn get_raw_transaction_inner() {
     test_manager.close().await;
 }
 
+async fn get_tx_out_inner() {
+    let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
+        create_zcashd_test_manager_and_fetch_services(true).await;
+
+    let mut clients = test_manager
+        .clients
+        .take()
+        .expect("Clients are not initialized");
+    let recipient_taddr = clients.get_recipient_address("transparent").await;
+
+    clients.faucet.sync_and_await().await.unwrap();
+
+    from_inputs::quick_send(
+        &mut clients.faucet,
+        vec![(recipient_taddr.as_str(), 250_000, None)],
+    )
+    .await
+    .unwrap();
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
+
+    let zcashd_utxos = zcashd_subscriber
+        .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
+        .await
+        .unwrap();
+    let (_, txid, output_index, ..) = zcashd_utxos[0].into_parts();
+
+    let zcashd_tx_out = zcashd_subscriber
+        .get_tx_out(txid.to_string(), output_index.index(), Some(true))
+        .await
+        .unwrap();
+    let zaino_tx_out = zaino_subscriber
+        .get_tx_out(txid.to_string(), output_index.index(), Some(true))
+        .await
+        .unwrap();
+
+    assert_eq!(zcashd_tx_out, zaino_tx_out);
+
+    let zcashd_missing_tx_out = zcashd_subscriber
+        .get_tx_out(txid.to_string(), output_index.index() + 100, None)
+        .await
+        .unwrap();
+    let zaino_missing_tx_out = zaino_subscriber
+        .get_tx_out(txid.to_string(), output_index.index() + 100, None)
+        .await
+        .unwrap();
+
+    assert_eq!(zcashd_missing_tx_out, zaino_missing_tx_out);
+
+    test_manager.close().await;
+}
+
 async fn get_address_tx_ids_inner() {
     let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
         create_zcashd_test_manager_and_fetch_services(true).await;
@@ -998,6 +1057,11 @@ mod zcashd {
         #[tokio::test(flavor = "multi_thread")]
         async fn get_raw_transaction() {
             get_raw_transaction_inner().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_tx_out() {
+            get_tx_out_inner().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]

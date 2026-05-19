@@ -3,6 +3,7 @@
 pub(crate) mod finalised_state;
 pub(crate) mod mempool;
 mod mockchain_tests;
+mod non_finalised_state;
 mod poll;
 mod proptest_blockgen;
 mod sync_loop;
