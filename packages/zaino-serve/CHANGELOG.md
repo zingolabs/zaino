@@ -15,57 +15,33 @@ and this library adheres to Rust's notion of
 
 ## [0.2.0] - 2026-05-19
 
-This release covers all main-branch development since the previous
-stable tag `v0.1.2-zr4` (April 2025). The headline addition is the
-JSON-RPC server stack (`rpc::jsonrpc` + `server::jsonrpc`), which
-did not exist at the baseline.
-
 ### Added
 
-#### JSON-RPC server stack (#297 and follow-ups)
-- `rpc::jsonrpc` module exposing the `pub trait ZcashIndexerRpc`
-  (annotated with `#[rpc(server)]` from `jsonrpsee`).
-- `server::jsonrpc::JsonRpcServer`, `JsonRpcServerConfig`,
-  `JsonRpcClient`.
-- 26 JSON-RPC passthrough methods on `ZcashIndexerRpc`, mirroring
-  zcashd's surface: `getinfo`, `getblockchaininfo`, `getblockcount`,
-  `getbestblockhash`, `getblock`, `getblockheader`, `getblockdeltas`,
-  `getblocksubsidy`, `getchaintips`, `getdifficulty`, `gettxout`,
-  `getspentinfo`, `getrawtransaction`, `sendrawtransaction`,
-  `getrawmempool`, `getmempoolinfo`, `getaddressbalance`,
-  `getaddressutxos`, `getaddresstxids`, `validateaddress`,
-  `z_validateaddress`, `getpeerinfo`, `getmininginfo`,
-  `getnetworksolps`, `z_gettreestate`, `z_getsubtreesbyindex`.
-  Each handler delegates to the corresponding `JsonRpSeeConnector`
-  method in `zaino-fetch`; per-method PR attribution lives in
-  `zaino-fetch/CHANGELOG.md` under 0.2.0.
+Four new JSON-RPC handlers on `pub trait ZcashIndexerRpc`, each
+delegating to the matching `JsonRpSeeConnector` method in
+`zaino-fetch` 0.1.1:
 
-#### gRPC server
-- `server::config::GrpcServerConfig` and `server::grpc::GrpcTls`
-  expose TLS configuration on the gRPC service (replaces the simpler
-  `GrpcConfig` — see Removed).
-- Generated `CompactTxStreamer` server impl gains
-  `get_taddress_transactions` to match the upstream `lightwalletd`
-  proto sync (driven by `zaino-proto` 0.2.0).
-- `z_validate_address` handler on `ZcashIndexerRpc` is shipped
-  pre-deprecated; logs `DEPRECATION_NOTICE` from `zaino-fetch` on
-  every call (#389).
+- `z_validateaddress` (#389) — shipped pre-deprecated; logs the
+  `zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE`
+  on every call.
+- `gettxout` (#1085).
+- `getchaintips` (#1092).
+- `getspentinfo` (#1093).
 
 ### Changed
 
-- **Breaking** — `pub trait ZcashIndexerRpc` accumulates new required
-  methods over the 0.2.0 cycle. Each merge adds a method without a
-  default body; downstream implementers of the trait must implement
-  every method or the build fails. (Trait introduction in #297; the
-  full method list is enumerated above.)
-- **Breaking** — `server::config::GrpcConfig` is renamed to
-  `GrpcServerConfig` and grows TLS options (#571).
-- `server::jsonrpc::JsonRpcServer::spawn` extracts its inline
-  shutdown-polling closure into a private `shutdown_signal` async fn
-  (#1054, parent #1051). Pure refactor; no API change at the call
-  site.
+- **Breaking** — `pub trait ZcashIndexerRpc` (annotated with
+  `#[rpc(server)]`) gains four required methods without default
+  bodies, listed above. Downstream crates that implement the trait
+  directly must add `z_validate_address`, `get_tx_out`,
+  `get_chain_tips`, and `get_spent_info`.
 
-### Removed
+## [0.1.0] - 2026-03-26
 
-- `server::config::GrpcConfig` — renamed to `GrpcServerConfig`
-  (see Changed).
+Initial release on crates.io. Previous `v0.1.2` (Aug 2025) was yanked.
+
+Contents include the `rpc::jsonrpc` module with the `ZcashIndexerRpc`
+trait (22 zcashd-compatible methods at the time of publish),
+`server::jsonrpc::JsonRpcServer` / `JsonRpcServerConfig` /
+`JsonRpcClient`, and the `server::config::GrpcServerConfig` /
+`server::grpc::GrpcTls` gRPC configuration types.

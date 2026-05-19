@@ -16,56 +16,40 @@ and this crate adheres to Rust's notion of
 
 ## [0.3.0] - 2026-05-19
 
-This release covers all main-branch development since the previous
-stable tag `v0.1.2-zr4` (April 2025).
-
 ### Added
 
-- **CLI module** — `zainodlib::cli::{Cli, Command}` plus
-  `default_config_path()`, surfacing the binary's argument parsing as
-  library API (#854).
-- **Top-level async entrypoint** — `zainodlib::run(config_path: PathBuf)`
-  drives the indexer loop with restart support; the binary's `main.rs`
-  is now a thin wrapper around it (#854).
-- **Backend-pluggable `Indexer<Service>`** — `Indexer` becomes generic
-  over `Service: ZcashService + LightWalletService`, with the new
-  `start_indexer` and `spawn_indexer` async free functions as the
-  preferred entry points (#311).
-- **TOML config generator** — `GENERATED_CONFIG_HEADER` constant plus
-  `generate_default_config()` emit a documented default config
-  (#854).
-- **Env-aware config loading** — `load_config_with_env()` layered on
-  top of `load_config()` (#469, part of the `figment` → `config-rs`
-  migration).
-- **Optional `donation_address`** — `ZainodConfig.donation_address:
-  Option<DonationAddress>`, validated against `zcash_address` when
-  present (#1008).
-- **Path helpers** — `default_ephemeral_cookie_path()` and
-  `default_zebra_db_path()` (#297, with XDG defaults refined in #854).
-- **Error conversions** — `From<StateServiceError> for IndexerError`
-  and `From<FetchServiceError> for IndexerError`, so service errors
-  propagate cleanly with `?`.
+- **Breaking** — `zainodlib::config::ZainodConfig` gains a new
+  optional field `donation_address: Option<DonationAddress>` (#1008).
+  Adding a public field to a public struct without
+  `#[non_exhaustive]` is a breaking change under
+  [RFC 2008](https://rust-lang.github.io/rfcs/2008-non-exhaustive.html)
+  (consumers that construct `ZainodConfig` via a struct literal must
+  add the new field). TOML configs from 0.2.0 continue to load — the
+  field defaults to `None` when absent.
 
 ### Changed
 
-- **Breaking — `IndexerConfig` renamed to `ZainodConfig`.** The
-  `Default` impl moves with it. Any consumer of zainodlib's config
-  type must rename their import (#571).
-- **Breaking — `Indexer` now requires a generic parameter.**
-  Signature is now `Indexer<Service: ZcashService +
-  LightWalletService>`; the previous parameterless `Indexer` is no
-  longer constructible directly. Use `spawn_indexer` / `start_indexer`
-  for the typical flow (#311).
-- `load_config()` accepts `&std::path::Path` instead of
-  `&std::path::PathBuf` (source-compatible — `PathBuf` derefs to
-  `Path`) — fallout from #469.
 - `LightdInfo.version` now reports the running `zainod` binary
   version rather than the `zaino-state` library version (#1061). The
   binary's `env!("CARGO_PKG_VERSION")` is threaded through
-  `StateServiceConfig` / `FetchServiceConfig` via a new
-  `indexer_version` field on the shared `CommonBackendConfig` payload.
+  `StateServiceConfig` / `FetchServiceConfig` via the new
+  `indexer_version` field on the shared `CommonBackendConfig`
+  payload introduced in `zaino-state` 0.2.0.
 
 ### Fixed
 
 - Restart path no longer crashes early when the validator's readiness
   signal arrives before the indexer's status is observed (#962).
+
+## [0.2.0] - 2026-03-26
+
+Initial post-yank release on crates.io. Previous `v0.1.2` (Aug 2025)
+was yanked.
+
+Contents include the `zainodlib::cli` module (`Cli`, `Command`,
+`default_config_path`), the top-level `run(config_path)` async
+entrypoint, the `Indexer<Service: ZcashService + LightWalletService>`
+generic type with `start_indexer` / `spawn_indexer` free functions,
+the `ZainodConfig` (renamed from `IndexerConfig`) loaded via
+`config-rs`, `generate_default_config()` + `GENERATED_CONFIG_HEADER`,
+and `load_config_with_env`.
