@@ -278,12 +278,24 @@ info "-- IMAGE             = ${IMAGE_NAME}"
 info "-- TAG               = $TAG"
 # info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
-# Set container name for cleanup
-CONTAINER_NAME="zaino-testing"
+# Set container name for cleanup. Suffix with $$ (script PID) so concurrent
+# `makers container-test` invocations on the same host don't collide on the
+# `zaino-testing` name. The base-script cleanup trap reads CONTAINER_NAME
+# from script scope and stops the right container on EXIT/INT/TERM.
+CONTAINER_NAME="zaino-testing-$$"
 
-# Run podman in foreground with proper signal handling
+# Run podman in foreground with proper signal handling.
+#
+# `--pids-limit=-1` removes the default 2048-process cgroup cap. With
+# `--profile stable` (test-threads = num-cpus) each integration test
+# spawns a full zebrad whose rayon pool itself sizes to num-cpus, so
+# peak task count scales ~num_cpus^2. On developer hosts with many
+# cores the default cap is breached and `clone()` returns EAGAIN,
+# surfacing as "OS can't spawn worker thread" / rayon ThreadPoolBuildError
+# panics scattered across unrelated tests.
 podman run --rm \
   --init \
+  --pids-limit=-1 \
   --name "$CONTAINER_NAME" \
   -v "$PWD":/home/container_user/zaino \
   -v zaino-container-target:/home/container_user/zaino/target:U \
