@@ -2,7 +2,6 @@ use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_state::{ZcashIndexer, ZcashService};
 use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
-use zainodlib::config::ZainodConfig;
 use zainodlib::error::IndexerError;
 
 #[allow(deprecated)]
@@ -15,11 +14,9 @@ async fn create_test_manager_and_connector<T, Service>(
 ) -> (TestManager<T, Service>, JsonRpSeeConnector)
 where
     T: ValidatorExt,
-    Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-        + Send
-        + Sync
-        + 'static,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let test_manager = TestManager::<T, Service>::launch(
         validator,
@@ -90,11 +87,9 @@ mod chain_query_interface {
     )
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
+        Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service) = create_test_manager_and_connector::<C, Service>(
             validator,
@@ -258,17 +253,15 @@ mod chain_query_interface {
     async fn get_block_range<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
+        Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
         let range = indexer
@@ -299,30 +292,28 @@ mod chain_query_interface {
     async fn sync_large_chain<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
+        Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service, option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
         if let Some(state_service) = option_state_service.as_ref() {
             test_manager
-                .generate_blocks_and_poll_indexer(0, state_service.get_subscriber().inner_ref())
+                .generate_blocks_and_wait_for_tip(0, state_service.get_subscriber().inner_ref())
                 .await
         }
 
         test_manager
-            .generate_blocks_and_poll_chain_index(150, &indexer)
+            .generate_blocks_and_wait_for_tip(150, &indexer)
             .await;
         if let Some(state_service) = option_state_service.as_ref() {
             test_manager
-                .generate_blocks_and_poll_indexer(0, state_service.get_subscriber().inner_ref())
+                .generate_blocks_and_wait_for_tip(0, state_service.get_subscriber().inner_ref())
                 .await;
         }
 
@@ -375,17 +366,15 @@ mod chain_query_interface {
     async fn get_subtree_roots<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
+        Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
 
         let test_pools = [ShieldedPool::Sapling, ShieldedPool::Orchard];
@@ -482,11 +471,9 @@ mod chain_query_interface {
     async fn get_mempool_stream_fresh_snapshot_repeated<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
+        Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         use futures::StreamExt as _;
         use tokio::time::{timeout, Duration};
@@ -495,7 +482,7 @@ mod chain_query_interface {
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
 
         for iteration in 0..5 {
@@ -511,7 +498,7 @@ mod chain_query_interface {
                     });
 
             test_manager
-                .generate_blocks_and_poll_chain_index(1, &indexer)
+                .generate_blocks_and_wait_for_tip(1, &indexer)
                 .await;
 
             timeout(Duration::from_secs(20), async {
@@ -539,11 +526,9 @@ mod chain_query_interface {
     async fn zallet_like_steady_state_loop<C, Service>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
-        Service: zaino_state::ZcashService<Config: TryFrom<ZainodConfig, Error = IndexerError>>
-            + Send
-            + Sync
-            + 'static,
+        Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         use futures::{StreamExt as _, TryStreamExt as _};
         use tokio::time::{timeout, Duration};
@@ -552,7 +537,7 @@ mod chain_query_interface {
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
 
         test_manager
-            .generate_blocks_and_poll_chain_index(5, &indexer)
+            .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
 
         let initial_snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
@@ -620,7 +605,7 @@ mod chain_query_interface {
                     });
 
             test_manager
-                .generate_blocks_and_poll_chain_index(1, &indexer)
+                .generate_blocks_and_wait_for_tip(1, &indexer)
                 .await;
 
             timeout(Duration::from_secs(20), async {

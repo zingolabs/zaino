@@ -144,9 +144,7 @@ impl Drop for JsonRpcServer {
     }
 }
 
-async fn shutdown_signal(
-    status: NamedAtomicStatus,
-) {
+async fn shutdown_signal(status: NamedAtomicStatus) {
     let mut shutdown_check_interval = interval(Duration::from_millis(100));
     loop {
         shutdown_check_interval.tick().await;
