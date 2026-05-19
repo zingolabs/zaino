@@ -414,6 +414,107 @@ impl ResponseToError for GetNetworkSolPsResponse {
     type RpcError = Infallible;
 }
 
+/// Response to a `gettxoutsetinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum GetTxOutSetInfoResponse {
+    /// UTXO set statistics.
+    Info(GetTxOutSetInfo),
+    /// zcashd returns an empty object if stats collection fails.
+    Empty(EmptyTxOutSetInfo),
+}
+
+/// UTXO set statistics returned by a successful `gettxoutsetinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetTxOutSetInfo {
+    /// The current block height.
+    pub height: u64,
+    /// The best block hash.
+    #[serde(rename = "bestblock")]
+    pub best_block: String,
+    /// The number of transactions with unspent transparent outputs.
+    pub transactions: u64,
+    /// The number of unspent transparent outputs.
+    pub txouts: u64,
+    /// The serialized size of the UTXO set.
+    pub bytes_serialized: u64,
+    /// The serialized UTXO set hash.
+    pub hash_serialized: String,
+    /// The total transparent UTXO amount in ZEC.
+    pub total_amount: f64,
+}
+
+/// Empty `gettxoutsetinfo` response returned by zcashd when stats collection fails.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct EmptyTxOutSetInfo {}
+
+impl ResponseToError for GetTxOutSetInfoResponse {
+    type RpcError = Infallible;
+}
+
+#[cfg(test)]
+mod get_tx_out_set_info_tests {
+    use super::{EmptyTxOutSetInfo, GetTxOutSetInfo, GetTxOutSetInfoResponse};
+
+    #[test]
+    fn parses_zcashd_stats_response() {
+        let json = r#"{
+            "height": 42,
+            "bestblock": "000000000000000000000000000000000000000000000000000000000000002a",
+            "transactions": 12,
+            "txouts": 34,
+            "bytes_serialized": 5678,
+            "hash_serialized": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "total_amount": 123.45678901
+        }"#;
+
+        let parsed: GetTxOutSetInfoResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            parsed,
+            GetTxOutSetInfoResponse::Info(GetTxOutSetInfo {
+                height: 42,
+                best_block: "000000000000000000000000000000000000000000000000000000000000002a"
+                    .to_string(),
+                transactions: 12,
+                txouts: 34,
+                bytes_serialized: 5678,
+                hash_serialized: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+                total_amount: 123.45678901,
+            })
+        );
+    }
+
+    #[test]
+    fn preserves_zcashd_field_names() {
+        let response = GetTxOutSetInfoResponse::Info(GetTxOutSetInfo {
+            height: 1,
+            best_block: "blockhash".to_string(),
+            transactions: 2,
+            txouts: 3,
+            bytes_serialized: 4,
+            hash_serialized: "serializedhash".to_string(),
+            total_amount: 5.0,
+        });
+
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["bestblock"], "blockhash");
+        assert_eq!(value["bytes_serialized"], 4);
+        assert_eq!(value["hash_serialized"], "serializedhash");
+        assert_eq!(value["total_amount"], 5.0);
+        assert!(value.get("best_block").is_none());
+    }
+
+    #[test]
+    fn parses_zcashd_empty_response() {
+        let parsed: GetTxOutSetInfoResponse = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(parsed, GetTxOutSetInfoResponse::Empty(EmptyTxOutSetInfo {}));
+    }
+}
+
 fn default_header() -> Height {
     Height(0)
 }

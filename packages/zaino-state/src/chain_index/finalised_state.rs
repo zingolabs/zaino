@@ -745,13 +745,226 @@ impl ZainoDB {
     pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         self.db.get_metadata().await
     }
+}
 
-    /// Returns the internal router (test-only).
+#[cfg(test)]
+impl ZainoDB {
+    /// Returns the internal router.
     ///
-    /// This is intended for unit/integration tests that need to observe or manipulate routing state
-    /// during migrations. Production code should not depend on the router directly.
-    #[cfg(test)]
+    /// This is a test-only escape hatch for unit and integration tests that need direct access to
+    /// the routed backend, usually to inspect metadata, validate migration results, or exercise
+    /// backend-specific capability methods after a test database has been constructed.
+    ///
+    /// Production code should use the public `ZainoDB` API instead of depending on the router
+    /// directly.
     pub(crate) fn router(&self) -> &Router {
         &self.db
+    }
+
+    /// Opens an existing test database and migrates it to `target_version`.
+    ///
+    /// This helper is intended to be called after a historical fixture database has already been
+    /// created on disk, for example by [`ZainoDB::build_clean_v1_0_0`]. It does not create a new
+    /// database if none exists. A missing database is treated as a test setup error.
+    ///
+    /// The method:
+    /// - rejects target versions newer than the current compiled [`DB_VERSION_V1`],
+    /// - discovers the existing on-disk major database version,
+    /// - opens the matching backend implementation,
+    /// - reads the precise metadata version stored on disk,
+    /// - runs migrations when the stored version is older than `target_version`, and
+    /// - verifies that the final metadata version exactly matches `target_version`.
+    ///
+    /// This is useful when a test needs to start from a known old database version and assert that
+    /// migrations stop at a specific target version rather than always migrating to the latest
+    /// supported version.
+    pub(crate) async fn spawn_with_target_version<T>(
+        cfg: BlockCacheConfig,
+        source: T,
+        target_version: DbVersion,
+    ) -> Result<Self, FinalisedStateError>
+    where
+        T: BlockchainSource,
+    {
+        if target_version.major() > DB_VERSION_V1.major() {
+            return Err(FinalisedStateError::Custom(format!(
+                "unsupported database version: {target_version}"
+            )));
+        }
+        if target_version.major() == DB_VERSION_V1.major() && target_version > DB_VERSION_V1 {
+            return Err(FinalisedStateError::Custom(format!(
+                "unsupported database version: {target_version}"
+            )));
+        }
+
+        let version_opt = Self::try_find_current_db_version(&cfg).await;
+
+        let backend = match version_opt {
+            Some(version) => {
+                info!(version, "Opening ZainoDB from file");
+                match version {
+                    0 => DbBackend::spawn_v0(&cfg).await?,
+                    1 => DbBackend::spawn_v1(&cfg).await?,
+                    _ => {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "unsupported database version: DbV{version}"
+                        )));
+                    }
+                }
+            }
+            None => {
+                return Err(FinalisedStateError::Custom(
+                    "expected existing v1.0.0 migration-test database, found no database"
+                        .to_string(),
+                ));
+            }
+        };
+        let current_version = backend.get_metadata().await?.version();
+
+        let router = Arc::new(Router::new(Arc::new(backend)));
+
+        if current_version < target_version {
+            info!(
+                from_version = %current_version,
+                to_version = %target_version,
+                "Starting ZainoDB migration"
+            );
+            let mut migration_manager = MigrationManager {
+                router: Arc::clone(&router),
+                cfg: cfg.clone(),
+                current_version,
+                target_version,
+                source,
+            };
+            migration_manager.migrate().await?;
+        }
+
+        let metadata = router.get_metadata().await?;
+        if metadata.version() != target_version {
+            return Err(FinalisedStateError::Custom(format!(
+                "database version mismatch after test spawn: expected {}, found {}",
+                target_version,
+                metadata.version()
+            )));
+        }
+
+        Ok(Self { db: router, cfg })
+    }
+
+    /// Builds a clean v1.0.0 database fixture from `source`.
+    ///
+    /// This helper creates a test-only v1 backend initialized with v1.0.0 metadata, fetches every
+    /// block from genesis through the source's best height, converts each block into an
+    /// [`IndexedBlock`], and writes it using the v1.0.0 block writer.
+    ///
+    /// The resulting database is intended to represent a pre-migration v1.0.0 database. Tests should
+    /// usually shut it down and reopen it through [`ZainoDB::spawn_with_target_version`] or
+    /// [`ZainoDB::build_db_to_version`] to exercise migration behavior.
+    ///
+    /// The supplied source must provide:
+    /// - a best block height,
+    /// - every block from genesis through that height, and
+    /// - Sapling and Orchard commitment tree roots for each block.
+    pub(crate) async fn build_clean_v1_0_0<T>(
+        cfg: &BlockCacheConfig,
+        source: T,
+    ) -> Result<DbBackend, FinalisedStateError>
+    where
+        T: BlockchainSource,
+    {
+        let db = DbBackend::spawn_v1_0_0(cfg).await?;
+        db.wait_until_ready().await;
+
+        let tip = source.get_best_block_height().await?.ok_or_else(|| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                "source has no best block height".to_string(),
+            ))
+        })?;
+        let tip = Height::from(tip);
+
+        let mut parent_chainwork = ChainWork::from_u256(0.into());
+
+        for height in GENESIS_HEIGHT.0..=tip.0 {
+            let block = source
+                .get_block(zebra_state::HashOrHeight::Height(
+                    zebra_chain::block::Height(height),
+                ))
+                .await?
+                .ok_or_else(|| {
+                    FinalisedStateError::BlockchainSourceError(
+                        BlockchainSourceError::Unrecoverable(format!(
+                            "source missing block at height {height}"
+                        )),
+                    )
+                })?;
+
+            let block_hash = BlockHash::from(block.hash().0);
+            let (sapling_opt, orchard_opt) = source.get_commitment_tree_roots(block_hash).await?;
+            let (sapling_root, sapling_size) = sapling_opt.ok_or_else(|| {
+                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                    format!("missing Sapling commitment tree root for block {block_hash}"),
+                ))
+            })?;
+            let (orchard_root, orchard_size) = orchard_opt.ok_or_else(|| {
+                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                    format!("missing Orchard commitment tree root for block {block_hash}"),
+                ))
+            })?;
+
+            let metadata = BlockMetadata::new(
+                sapling_root,
+                sapling_size as u32,
+                orchard_root,
+                orchard_size as u32,
+                parent_chainwork,
+                cfg.network.to_zebra_network(),
+            );
+            let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
+            let chain_block = IndexedBlock::try_from(block_with_metadata).map_err(|_| {
+                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                    format!("error building block data at height {height}"),
+                ))
+            })?;
+            parent_chainwork = chain_block.context.chainwork;
+
+            db.write_block_v1_0_0(chain_block).await?;
+        }
+
+        Ok(db)
+    }
+
+    /// Builds a v1.0.0 fixture database and migrates it to `target_version`.
+    ///
+    /// This is the high-level migration-test constructor. It first creates a clean v1.0.0 database
+    /// using [`ZainoDB::build_clean_v1_0_0`], shuts that backend down so all LMDB state is flushed
+    /// and released, then reopens the same database through [`ZainoDB::spawn_with_target_version`].
+    ///
+    /// During the reopen step, the stored v1.0.0 metadata is used as the migration starting point
+    /// and `target_version` is used as the explicit migration target.
+    ///
+    /// Use this helper when a test wants a fully initialized [`ZainoDB`] at a specific version after
+    /// exercising the migration path from v1.0.0. The target version must be at least v1.0.0 and no
+    /// newer than the current compiled [`DB_VERSION_V1`].
+    pub(crate) async fn build_db_to_version<T>(
+        cfg: BlockCacheConfig,
+        source: T,
+        target_version: DbVersion,
+    ) -> Result<Self, FinalisedStateError>
+    where
+        T: BlockchainSource,
+    {
+        let v1_0_0 = DbVersion::new(1, 0, 0);
+        if target_version < v1_0_0 {
+            return Err(FinalisedStateError::Custom(format!(
+                "target version {} is older than v1.0.0",
+                target_version
+            )));
+        }
+
+        let db = Self::build_clean_v1_0_0(&cfg, source.clone()).await?;
+        db.shutdown().await?;
+        drop(db);
+
+        Self::spawn_with_target_version(cfg, source, target_version).await
     }
 }

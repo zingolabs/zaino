@@ -42,7 +42,7 @@ use zaino_fetch::{
                 DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
-            GetSpentInfoResponse, GetSubtreesResponse, GetTxOutResponse,
+            GetSpentInfoResponse, GetSubtreesResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
     },
 };
@@ -1441,6 +1441,15 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
         Ok(self.rpc_client.get_mining_info().await?)
+    }
+
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+        Ok(self.indexer.get_tx_out_set_info().await?)
     }
 
     // No request parameters.

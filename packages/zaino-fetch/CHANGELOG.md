@@ -8,7 +8,12 @@ and this library adheres to Rust's notion of
 ## Unreleased
 - [943] Zallet regtest fixes
 
-### Added 
+### Added
+- `JsonRpSeeConnector::get_tx_out_set_info` — JSON-RPC client method for the
+  upstream `gettxoutsetinfo` call.
+- `jsonrpsee::response::GetTxOutSetInfoResponse` (`Info` | `Empty` untagged
+  enum), `GetTxOutSetInfo` and `EmptyTxOutSetInfo` types covering both the
+  populated and stats-collection-failed shapes returned by zcashd.
 ### Changed
 - `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`
   whose `sapling` and `orchard` fields are optional. In regtest mode, these

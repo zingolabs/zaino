@@ -47,23 +47,23 @@
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::{
-    chain_index::{finalised_state::capability::CapabilityRequest, types::TransactionHash},
+    chain_index::{
+        finalised_state::capability::CapabilityRequest,
+        types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
+    },
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxidList,
+    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::{
-    chain_index::{finalised_state::capability::TransparentHistExt, types::AddrEventBytes},
-    AddrScript, Outpoint,
-};
+use crate::{chain_index::types::AddrEventBytes, AddrScript};
 
 use super::{
     capability::{
         BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbMetadata,
-        IndexedBlockExt,
+        IndexedBlockExt, TransparentHistExt,
     },
     db::DbBackend,
     ZainoDB,
@@ -427,7 +427,6 @@ impl DbReader {
     /// - `Ok(Some(TxLocation))` if the outpoint is spent.
     /// - `Ok(None)` if no entry exists (not spent or not known).
     /// - `Err(...)` on deserialization or DB error.
-    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
@@ -443,13 +442,38 @@ impl DbReader {
     /// - Returns `Some(TxLocation)` if spent,
     /// - `None` if not found,
     /// - or returns `Err` immediately if any DB or decode error occurs.
-    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) async fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,
     ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError> {
         self.db(CapabilityRequest::TransparentHistExt)?
             .get_outpoint_spenders(outpoints)
+            .await
+    }
+
+    /// Returns the finalised-state txout-set accumulator.
+    ///
+    /// This is routed through `TransparentHistExt` because the accumulator is only correct for
+    /// database versions that maintain transparent spent indexing.
+    pub(crate) async fn get_tx_out_set_info_accumulator(
+        &self,
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+        self.db(CapabilityRequest::TransparentHistExt)?
+            .get_tx_out_set_info_accumulator()
+            .await
+    }
+
+    /// Returns the previous transparent output referenced by `outpoint`.
+    ///
+    /// Routed through `BlockTransparentExt` because the lookup reads the transparent block
+    /// table via the txid index. Used by chain-level `gettxoutsetinfo` assembly to resolve
+    /// non-finalised spends against the finalised UTXO set.
+    pub(crate) async fn get_previous_output(
+        &self,
+        outpoint: Outpoint,
+    ) -> Result<TxOutCompact, FinalisedStateError> {
+        self.db(CapabilityRequest::BlockTransparentExt)?
+            .get_previous_output(outpoint)
             .await
     }
 

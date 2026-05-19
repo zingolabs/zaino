@@ -11,7 +11,7 @@ use zaino_fetch::jsonrpsee::response::z_validate_address::{
 };
 use zaino_fetch::jsonrpsee::response::{
     GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetTxOutResponse,
+    GetTxOutResponse, GetTxOutSetInfoResponse,
 };
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -80,6 +80,14 @@ pub trait ZcashIndexerRpc {
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
     #[method(name = "getmininginfo")]
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, ErrorObjectOwned>;
+
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "gettxoutsetinfo")]
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, ErrorObjectOwned>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
     /// zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
@@ -532,6 +540,20 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
                     Some(e.to_string()),
                 )
             })?)
+    }
+
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_tx_out_set_info()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
     }
 
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, ErrorObjectOwned> {

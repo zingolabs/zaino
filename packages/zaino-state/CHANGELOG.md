@@ -44,6 +44,42 @@ and this library adheres to Rust's notion of
   - `get_address_balance`
   - `get_address_txids`
   - `get_address_utxos`
+- `gettxoutsetinfo` is now served indexer-side via Zaino's own UTXO-set
+  accumulator:
+  - `chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator` —
+    new singleton type tracking the finalised transparent UTXO set:
+    `transactions`, `transaction_outputs`, `bytes_serialized`,
+    `hash_serialized: [u8; 32]`, `total_zatoshis`. Maintained incrementally by
+    block write / delete / migration paths.
+  - `hash_serialized` is a Zaino-defined XOR-of-BLAKE2b-256 multiset commitment
+    over the 65-byte canonical UTXO entry
+    `prev_txid || vout || value || script_hash || script_type`, domain-tagged
+    `b"ZcashTxOutSet___"`. It is order-independent and incrementally
+    maintainable; not byte-equal to zcashd's `hash_serialized`.
+    `bytes_serialized` equals `transaction_outputs * 65` by construction.
+  - `chain_index::types::db::metadata::tx_out_set_entry_digest` and
+    `is_unspendable_tx_out` helpers. NonStandard transparent outputs
+    (OP_RETURN, oversized, anything that isn't P2PKH or P2SH) are excluded
+    from every accumulator field — matches zcashd's `IsUnspendable()` view of
+    the UTXO set.
+  - `FinalisedTxOutSetInfoAccumulator::apply_added_output` /
+    `apply_removed_output` per-output helpers and `AccumulatorDeltaError`.
+  - `ChainIndex::get_tx_out_set_info` chain-level method folds the
+    non-finalised state on top of the finalised accumulator and returns the
+    full `GetTxOutSetInfoResponse`. Returns
+    `GetTxOutSetInfoResponse::Empty` while the indexer is still syncing
+    finalised state.
+  - `DbReader::get_previous_output` — new read-only path through
+    `BlockTransparentExt::get_previous_output`, used by the chain-level fold
+    to resolve non-finalised spends against the finalised UTXO set.
+  - `BlockTransparentExt::get_previous_output` trait method and V1
+    implementation (formerly only available behind the
+    `transparent_address_history_experimental` feature flag; now
+    unconditionally available).
+  - New finalised-state singleton table `tx_out_set_info_accumulator`
+    (LMDB key `tx_out_set_info_accumulator_1_2_0`). See the finalised-state
+    changelog for the schema entry.
+  - `ChainIndexError::internal` constructor.
 ### Changed
 - `get_mempool_tx` now takes `GetMempoolTxRequest` as parameter
 - `chain_index::finalised_state`
@@ -70,6 +106,11 @@ and this library adheres to Rust's notion of
   `ChainIndex`.
 - `FetchService` and `StateService` now serve the transparent-address RPCs through
   `ChainIndex`.
+- `FetchService` and `StateService` now serve `gettxoutsetinfo` through
+  `ChainIndex` instead of forwarding to the backing validator. Response fields
+  `transactions`, `txouts`, `total_amount`, `height` and `bestblock` agree
+  with zcashd's RPC; `bytes_serialized` and `hash_serialized` follow Zaino's
+  own deterministic spec.
 
 ### Deprecated
 - `GetTaddressTxids` is replaced by `GetTaddressTransactions`

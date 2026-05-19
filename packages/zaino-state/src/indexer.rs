@@ -14,6 +14,7 @@ use zaino_fetch::jsonrpsee::response::{
     peer_info::GetPeerInfo,
     z_validate_address::ZValidateAddressResponse,
     GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
+    GetTxOutSetInfoResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -558,6 +559,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error>;
+
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///

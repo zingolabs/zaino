@@ -486,6 +486,66 @@ async fn get_mempool_info_inner() {
     test_manager.close().await;
 }
 
+async fn get_tx_out_set_info_inner() {
+    let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
+        create_zcashd_test_manager_and_fetch_services(false).await;
+
+    generate_blocks_and_poll_all_chain_indexes(
+        1,
+        &test_manager,
+        zaino_subscriber.clone(),
+        zcashd_subscriber.clone(),
+    )
+    .await;
+
+    let zcashd_txoutset_info = zcashd_subscriber.get_tx_out_set_info().await.unwrap();
+    let zaino_txoutset_info = zaino_subscriber.get_tx_out_set_info().await.unwrap();
+
+    // Structural parity with zcashd: height, bestblock, transactions, txouts and total_amount
+    // must match. `bytes_serialized` and `hash_serialized` are Zaino-defined and intentionally
+    // diverge from zcashd; only Zaino-internal invariants are asserted on those fields.
+    use zaino_fetch::jsonrpsee::response::GetTxOutSetInfoResponse;
+    let (zaino, zcashd) = match (zaino_txoutset_info, zcashd_txoutset_info) {
+        (GetTxOutSetInfoResponse::Info(z), GetTxOutSetInfoResponse::Info(r)) => (z, r),
+        other => panic!("expected non-empty gettxoutsetinfo from both sides, got {other:?}"),
+    };
+
+    assert_eq!(zaino.height, zcashd.height, "`height` differs from zcashd");
+    assert_eq!(
+        zaino.best_block, zcashd.best_block,
+        "`bestblock` differs from zcashd"
+    );
+    assert_eq!(
+        zaino.transactions, zcashd.transactions,
+        "`transactions` count differs from zcashd"
+    );
+    assert_eq!(zaino.txouts, zcashd.txouts, "`txouts` differs from zcashd");
+    assert!(
+        (zaino.total_amount - zcashd.total_amount).abs() < 1e-8,
+        "`total_amount` differs from zcashd: zaino={} zcashd={}",
+        zaino.total_amount,
+        zcashd.total_amount
+    );
+
+    assert_eq!(
+        zaino.bytes_serialized,
+        zaino.txouts * 65,
+        "`bytes_serialized` must equal txouts * 65 under Zaino's UTXO entry encoding"
+    );
+    assert_eq!(
+        zaino.hash_serialized.len(),
+        64,
+        "`hash_serialized` must be 64 lowercase hex chars"
+    );
+    assert!(
+        zaino.hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
+        "`hash_serialized` must be hex: got {}",
+        zaino.hash_serialized
+    );
+
+    test_manager.close().await;
+}
+
 async fn z_get_treestate_inner() {
     let (mut test_manager, _zcashd_service, zcashd_subscriber, _zaino_service, zaino_subscriber) =
         create_zcashd_test_manager_and_fetch_services(true).await;
@@ -909,6 +969,11 @@ mod zcashd {
             }
 
             test_manager.close().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_tx_out_set_info() {
+            get_tx_out_set_info_inner().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]

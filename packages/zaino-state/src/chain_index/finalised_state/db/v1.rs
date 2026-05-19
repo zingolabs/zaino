@@ -30,6 +30,7 @@ use crate::{
             capability::{
                 BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
                 DbMetadata, DbRead, DbVersion, DbWrite, IndexedBlockExt, MigrationStatus,
+                TransparentHistExt,
             },
             entry::{StoredEntryFixed, StoredEntryVar},
         },
@@ -39,16 +40,13 @@ use crate::{
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _,
-    Height, IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, SaplingCompactTx,
-    SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation,
-    TxOutCompact, TxidList, ZainoVersionedSerde as _,
+    Height, IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint,
+    SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
+    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde as _,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::{
-    chain_index::{finalised_state::capability::TransparentHistExt, types::AddrEventBytes},
-    AddrHistRecord, AddrScript, Outpoint,
-};
+use crate::{chain_index::types::AddrEventBytes, AddrHistRecord, AddrScript};
 
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 use zebra_chain::parameters::NetworkKind;
@@ -63,6 +61,7 @@ use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags,
 };
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::{
     collections::HashSet,
     fs,
@@ -76,9 +75,6 @@ use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-#[cfg(feature = "transparent_address_history_experimental")]
-use std::collections::HashMap;
-
 pub(crate) mod validation;
 
 pub(crate) mod read_core;
@@ -91,7 +87,6 @@ pub(crate) mod block_transparent;
 pub(crate) mod compact_block;
 pub(crate) mod indexed_block;
 
-#[cfg(feature = "transparent_address_history_experimental")]
 pub(crate) mod transparent_address_history;
 
 // ───────────────────────── Schema v1 constants ─────────────────────────
@@ -130,16 +125,23 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
 /// This value is compared against the schema hash stored in the metadata record to detect schema
 /// drift without a corresponding version bump.
 pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0xa8, 0x19, 0x61, 0x50, 0xff, 0xb6, 0x9e, 0xf8, 0xb2, 0xb5, 0x31, 0x80, 0xdd, 0x90, 0xd0, 0x67,
-    0x41, 0x57, 0xfc, 0x51, 0x39, 0xa1, 0x3a, 0xbe, 0xce, 0x70, 0x4e, 0x51, 0x55, 0xc3, 0x3a, 0x0a,
+    0x4d, 0x68, 0xd5, 0x0c, 0x74, 0x77, 0x31, 0x95, 0xa5, 0x0e, 0x24, 0xeb, 0xfe, 0x36, 0xec, 0x39,
+    0xa7, 0xf8, 0xba, 0xef, 0xaa, 0xc2, 0xf1, 0x61, 0x92, 0xb4, 0x4c, 0x7e, 0x21, 0x61, 0x84, 0x3f,
 ];
 
 /// *Current* database V1 version.
 pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
     major: 1,
-    minor: 1,
+    minor: 2,
     patch: 0,
 };
+
+/// LMDB table name for the finalised txout-set accumulator.
+pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME: &str =
+    "tx_out_set_info_accumulator_1_2_0";
+
+/// Singleton key for the finalised txout-set accumulator table.
+pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_KEY: &[u8] = b"tx_out_set_info_accumulator";
 
 /// [`DbCore`] capability implementation for [`DbV1`].
 ///
@@ -223,8 +225,14 @@ pub(crate) struct DbV1 {
     /// Spent outpoints: `Outpoint` -> `StoredEntryFixed<Vec<TxLocation>>`
     ///
     /// Used to check spent status of given outpoints, retuning spending tx.
-    #[cfg(feature = "transparent_address_history_experimental")]
     spent: Database,
+
+    /// Finalised txout-set accumulator:
+    /// `"tx_out_set_info_accumulator"` -> `StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>`.
+    ///
+    /// Stores the finalised-state portion of `gettxoutsetinfo` that can be maintained cheaply
+    /// without adding per-UTXO storage.
+    tx_out_set_info_accumulator: Database,
 
     /// Transparent address history: `AddrScript` -> duplicate values of `StoredEntryFixed<AddrEventBytes>`.
     ///
@@ -317,7 +325,7 @@ impl DbV1 {
 
         // Open LMDB environment and set environmental details.
         let env = Environment::new()
-            .set_max_dbs(12)
+            .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
             .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
@@ -338,6 +346,15 @@ impl DbV1 {
                 .await?;
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
 
+        let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
+
+        let tx_out_set_info_accumulator = super::open_or_create_db(
+            &env,
+            TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
+            DatabaseFlags::empty(),
+        )
+        .await?;
+
         let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
 
         // Create the DbV1 instance. We declare the variable in the outer scope and
@@ -346,9 +363,6 @@ impl DbV1 {
 
         #[cfg(feature = "transparent_address_history_experimental")]
         {
-            let spent =
-                super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
-
             let address_history = super::open_or_create_db(
                 &env,
                 "address_history_1_0_0",
@@ -366,6 +380,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                tx_out_set_info_accumulator,
                 address_history,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
@@ -388,6 +403,8 @@ impl DbV1 {
                 orchard,
                 commitment_tree_data,
                 heights: hashes,
+                spent,
+                tx_out_set_info_accumulator,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
@@ -427,8 +444,8 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
-            #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
+            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
             metadata: self.metadata,
@@ -469,10 +486,16 @@ impl DbV1 {
                 }
                 #[cfg(not(feature = "transparent_address_history_experimental"))]
                 {
-                    if let Err(e) = zaino_db.initial_block_scan().await {
-                        error!("initial block scan failed: {e}");
-                        zaino_db.status.store(StatusType::CriticalError);
-                        return;
+                    let (r1, r2) =
+                        tokio::join!(zaino_db.initial_spent_scan(), zaino_db.initial_block_scan(),);
+
+                    for (desc, result) in [("spent scan", r1), ("block scan", r2)] {
+                        if let Err(e) = result {
+                            error!("initial {desc} failed: {e}");
+                            zaino_db.status.store(StatusType::CriticalError);
+                            // TODO: Handle error better? - Return invalid block error from validate?
+                            return;
+                        }
                     }
                 }
 
@@ -536,7 +559,6 @@ impl DbV1 {
     }
 
     /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn initial_spent_scan(&self) -> Result<(), FinalisedStateError> {
         let env = self.env.clone();
         let spent = self.spent;
@@ -603,8 +625,8 @@ impl DbV1 {
             orchard: self.orchard,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
-            #[cfg(feature = "transparent_address_history_experimental")]
             spent: self.spent,
+            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
             metadata: self.metadata,
@@ -634,6 +656,22 @@ impl DbV1 {
         .await
         .map_err(|e| FinalisedStateError::Custom(format!("spawn_blocking failed: {e}")))?
     }
+
+    /// Provides access to the metadata DB table, enabling the migration manager
+    /// to use this DB table to store temporary migration metadata.
+    pub(crate) fn metadata_db(&self) -> Database {
+        self.metadata
+    }
+
+    /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
+    pub(crate) fn spent_db(&self) -> Database {
+        self.spent
+    }
+
+    /// Provides access to the finalised txout-set accumulator DB table.
+    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
+        self.tx_out_set_info_accumulator
+    }
 }
 
 impl Drop for DbV1 {
@@ -646,5 +684,173 @@ impl Drop for DbV1 {
         {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+impl DbV1 {
+    /// Spawns a test-only [`DbV1`] using the v1.0.0 database metadata.
+    ///
+    /// This method is intended for migration tests that need to create an old v1.0.0 database
+    /// before opening it through the current startup / migration path.
+    ///
+    /// This method:
+    /// - chooses the normal V1 path suffix (`.../<network>/v1`),
+    /// - configures LMDB map size and reader slots,
+    /// - opens or creates the v1.0.0 named databases,
+    /// - writes a `"metadata"` record with database version `1.0.0`, and
+    /// - spawns the background validator / maintenance task.
+    ///
+    /// Unlike [`DbV1::spawn`], this method intentionally does **not** call
+    /// [`DbV1::check_schema_version`], because that would initialize fresh metadata using the
+    /// current [`DB_VERSION_V1`] value instead of the historical v1.0.0 value required by the tests.
+    pub(crate) async fn spawn_v1_0_0(
+        config: &BlockCacheConfig,
+    ) -> Result<Self, FinalisedStateError> {
+        info!("Launching ZainoDB");
+
+        // Prepare database details and path.
+        let db_size_bytes = config.storage.database.size.to_byte_count();
+        let db_path_dir = match config.network.to_zebra_network().kind() {
+            NetworkKind::Mainnet => "mainnet",
+            NetworkKind::Testnet => "testnet",
+            NetworkKind::Regtest => "regtest",
+        };
+        let db_path = config.storage.database.path.join(db_path_dir).join("v1");
+        if !db_path.exists() {
+            fs::create_dir_all(&db_path)?;
+        }
+
+        // Check system rescources to set max db reeaders, clamped between 512 and 4096.
+        let cpu_cnt = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+
+        // Sets LMDB max_readers based on CPU count (cpu * 32), clamped between 512 and 4096.
+        // Allows high async read concurrency while keeping memory use low (~192B per slot).
+        // The 512 min ensures reasonable capacity even on low-core systems.
+        let max_readers = u32::try_from((cpu_cnt * 32).clamp(512, 4096))
+            .expect("max_readers was clamped to fit in u32");
+
+        // Open LMDB environment and set environmental details.
+        let env = Environment::new()
+            .set_max_dbs(15)
+            .set_map_size(db_size_bytes)
+            .set_max_readers(max_readers)
+            .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
+            .open(&db_path)?;
+
+        // Open individual LMDB DBs.
+        let headers =
+            super::open_or_create_db(&env, "headers_1_0_0", DatabaseFlags::empty()).await?;
+        let txids = super::open_or_create_db(&env, "txids_1_0_0", DatabaseFlags::empty()).await?;
+        let transparent =
+            super::open_or_create_db(&env, "transparent_1_0_0", DatabaseFlags::empty()).await?;
+        let sapling =
+            super::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
+        let orchard =
+            super::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
+        let commitment_tree_data =
+            super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
+                .await?;
+        let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
+
+        let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
+
+        let tx_out_set_info_accumulator = super::open_or_create_db(
+            &env,
+            TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
+            DatabaseFlags::empty(),
+        )
+        .await?;
+
+        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
+
+        let mut zaino_db: Self;
+        #[cfg(feature = "transparent_address_history_experimental")]
+        {
+            let address_history = super::open_or_create_db(
+                &env,
+                "address_history_1_0_0",
+                DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
+            )
+            .await?;
+
+            zaino_db = Self {
+                env: Arc::new(env),
+                headers,
+                txids,
+                transparent,
+                sapling,
+                orchard,
+                commitment_tree_data,
+                heights: hashes,
+                spent,
+                tx_out_set_info_accumulator,
+                address_history,
+                metadata,
+                validated_tip: Arc::new(AtomicU32::new(0)),
+                validated_set: DashSet::new(),
+                db_handler: std::sync::Mutex::new(None),
+                cancel_token: CancellationToken::new(),
+                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+                config: config.clone(),
+            };
+        }
+        #[cfg(not(feature = "transparent_address_history_experimental"))]
+        {
+            zaino_db = Self {
+                env: Arc::new(env),
+                headers,
+                txids,
+                transparent,
+                sapling,
+                orchard,
+                commitment_tree_data,
+                heights: hashes,
+                spent,
+                tx_out_set_info_accumulator,
+                metadata,
+                validated_tip: Arc::new(AtomicU32::new(0)),
+                validated_set: DashSet::new(),
+                db_handler: std::sync::Mutex::new(None),
+                cancel_token: CancellationToken::new(),
+                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+                config: config.clone(),
+            };
+        }
+
+        // Initialise the metadata entry before we touch any tables.
+        tokio::task::block_in_place(|| {
+            let mut txn = zaino_db.env.begin_rw_txn()?;
+
+            let entry = StoredEntryFixed::new(
+                b"metadata",
+                DbMetadata {
+                    version: DbVersion {
+                        major: 1,
+                        minor: 0,
+                        patch: 0,
+                    },
+                    schema_hash: [0u8; 32],
+                    migration_status: MigrationStatus::Empty,
+                },
+            );
+            txn.put(
+                zaino_db.metadata,
+                b"metadata",
+                &entry.to_bytes()?,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+
+            txn.commit()?;
+
+            Ok::<(), FinalisedStateError>(())
+        })?;
+
+        // Spawn handler task to perform background validation and trailing tx cleanup.
+        zaino_db.spawn_handler().await?;
+
+        Ok(zaino_db)
     }
 }
