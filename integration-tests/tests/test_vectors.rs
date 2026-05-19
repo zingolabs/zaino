@@ -77,7 +77,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     // *** Mine 100 blocks to finalise first block reward ***
     test_manager
-        .generate_blocks_and_poll_indexer(100, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(100, &state_service_subscriber)
         .await;
 
     // *** Build 100 block chain holding transparent, sapling, and orchard transactions ***
@@ -93,7 +93,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     // Generate block
     test_manager
-        .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
         .await;
 
     // sync wallets
@@ -114,7 +114,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     // Generate block
     test_manager
-        .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
         .await;
 
     // sync wallets
@@ -150,7 +150,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     // Generate block
     test_manager
-        .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
         .await;
 
     // sync wallets
@@ -191,7 +191,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     // Generate block
     test_manager
-        .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
         .await;
 
     for _i in 0..48 {
@@ -245,7 +245,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
         // Generate block
         test_manager
-            .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+            .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
             .await;
 
         // sync wallets
@@ -304,7 +304,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
         // Generate block
         test_manager
-            .generate_blocks_and_poll_indexer(1, &state_service_subscriber)
+            .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
             .await;
     }
     tokio::time::sleep(std::time::Duration::from_millis(10000)).await;

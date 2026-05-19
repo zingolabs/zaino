@@ -3,23 +3,21 @@
 #![forbid(unsafe_code)]
 
 use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
-use zaino_state::LightWalletService;
 use zaino_state::ZcashIndexer;
 use zaino_state::ZcashService;
 use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
 use zaino_testutils::ValidatorExt;
 use zaino_testutils::ValidatorKind;
-use zainodlib::config::ZainodConfig;
 use zainodlib::error::IndexerError;
 use zip32::AccountId;
 
 async fn connect_to_node_get_info_for_validator<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -39,9 +37,9 @@ where
 async fn send_to_orchard<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -55,10 +53,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -66,7 +68,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -87,9 +91,9 @@ where
 async fn send_to_sapling<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -103,10 +107,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -114,7 +122,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -135,9 +145,9 @@ where
 async fn send_to_transparent<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -151,10 +161,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -163,7 +177,9 @@ where
         .await
         .unwrap();
 
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
 
     let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
         test_node_and_return_url(
@@ -195,7 +211,9 @@ where
         .unwrap();
 
     dbg!(unfinalised_transactions.clone());
-    test_manager.generate_blocks_and_poll(99).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(99, test_manager.subscriber())
+        .await;
 
     println!("\n\nFetching Tx From Finalized Chain!\n");
 
@@ -233,9 +251,9 @@ where
 async fn send_to_all<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -246,21 +264,31 @@ where
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.generate_blocks_and_poll(2).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(2, test_manager.subscriber())
+        .await;
     clients.faucet.sync_and_await().await.unwrap();
 
     // "Create" 3 orchard notes in faucet.
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -276,7 +304,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(100).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -319,9 +349,9 @@ where
 async fn shield_for_validator<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -335,10 +365,14 @@ where
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -346,7 +380,9 @@ where
     from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(100).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -366,7 +402,9 @@ where
         .quick_shield(AccountId::ZERO)
         .await
         .unwrap();
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.recipient.sync_and_await().await.unwrap();
 
     assert_eq!(
@@ -387,9 +425,9 @@ where
 async fn monitor_unverified_mempool_for_validator<V, Service>(validator: &ValidatorKind)
 where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -400,17 +438,25 @@ where
         .take()
         .expect("Clients are not initialized");
 
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(100).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.generate_blocks_and_poll(1).await;
+        test_manager
+            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+            .await;
         clients.faucet.sync_and_await().await.unwrap();
     };
 
@@ -498,7 +544,9 @@ where
         250_000
     );
 
-    test_manager.generate_blocks_and_poll(1).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
 
     println!("\n\nFetching Mined Tx 1!\n");
     let _transaction_1 = dbg!(

@@ -4,7 +4,10 @@ use tokio::time::Instant;
 use tracing::info;
 
 use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
-use zaino_serve::server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer};
+use zaino_serve::{
+    rpc::grpc_routes,
+    server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
+};
 #[allow(deprecated)]
 use zaino_state::{
     BackendType, FetchService, FetchServiceConfig, IndexerService, LightWalletService,
@@ -104,7 +107,7 @@ where
         };
 
         let grpc_server = TonicServer::spawn(
-            service.inner_ref().get_subscriber(),
+            grpc_routes(service.inner_ref().get_subscriber()),
             GrpcServerConfig {
                 listen_address: indexer_config.grpc_settings.listen_address,
                 tls: indexer_config.grpc_settings.tls,
