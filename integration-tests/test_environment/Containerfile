@@ -82,16 +82,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     librocksdb-dev \
-    mold=2.37.1+dfsg-1 \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
-
-# Route cargo through mold instead of rust-lld for this container. rust-lld's
-# machine-outliner pass marks deduped CGU functions `hidden` and then can't
-# resolve cross-CGU references on the halo2/bellman/axum monomorphisation
-# shape this workspace produces — see zingolabs/zaino#1116. mold is pinned
-# to the trixie apt version above; bump in lockstep with base-image updates.
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
 # Create container_user
 RUN groupadd --gid ${GID} ${USER} && \
