@@ -376,6 +376,7 @@ where
     C: ValidatorExt,
     Service: TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: PollableTip,
 {
     /// Returns the service subscriber, panicking if zaino wasn't enabled at launch.
     ///

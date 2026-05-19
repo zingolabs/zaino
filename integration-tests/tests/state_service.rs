@@ -168,6 +168,7 @@ async fn generate_blocks_and_poll_all_chain_indexes<V, Service>(
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     test_manager
         .generate_blocks_and_wait_for_tip(n, &fetch_service_subscriber)

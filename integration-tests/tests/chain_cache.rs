@@ -16,6 +16,7 @@ where
     T: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let test_manager = TestManager::<T, Service>::launch(
         validator,
@@ -88,6 +89,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service) = create_test_manager_and_connector::<C, Service>(
             validator,
@@ -253,6 +255,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
@@ -291,6 +294,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service, option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
@@ -364,6 +368,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
@@ -468,6 +473,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         use futures::StreamExt as _;
         use tokio::time::{timeout, Duration};
@@ -522,6 +528,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Service: zaino_testutils::TestService,
         IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         use futures::{StreamExt as _, TryStreamExt as _};
         use tokio::time::{timeout, Duration};

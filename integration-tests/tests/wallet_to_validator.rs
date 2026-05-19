@@ -17,6 +17,7 @@ where
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -38,6 +39,7 @@ where
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -91,6 +93,7 @@ where
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -144,6 +147,7 @@ where
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -249,6 +253,7 @@ where
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -346,6 +351,7 @@ where
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
@@ -421,6 +427,7 @@ where
     V: ValidatorExt,
     Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
     let mut test_manager =
         TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
