@@ -844,7 +844,20 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
                 status.store(StatusType::Syncing);
 
-                let sync_result: Result<(), SyncError> = async {
+                // Race the iter body against cancellation: any await inside
+                // — `source.get_best_block_height`, `fs.sync_to_height` mid-
+                // loop, the pre-fetch RPCs, `non_finalized_state.sync` — is
+                // a checkpoint that can short-circuit to `Ok(())` when
+                // `cancel_token.cancel()` fires. All in-flight ops drop
+                // cleanly (LMDB writes are per-block atomic, ArcSwap CAS is
+                // single-tick, local `Vec`s/`HashMap`s are scoped to the
+                // dropped future). Lets tests drop the indexer without
+                // calling `shutdown()` and still have the worker exit
+                // promptly via the `Drop` impl below.
+                let sync_result: Result<(), SyncError> = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => return Ok(()),
+                    r = async {
                     fn source_error(error: impl std::error::Error + Send + 'static) -> SyncError {
                         SyncError::ErrorFromSource(Box::new(error))
                     }
@@ -921,8 +934,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     std::mem::drop(intermediate_nfs_for_scoping);
 
                     Ok(())
-                }
-                .await;
+                    } => r,
+                };
 
                 match sync_result {
                     Ok(()) => {
@@ -973,6 +986,25 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 }
             }
         })
+    }
+}
+
+impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
+    /// Cooperative cancellation on drop: signals the sync worker (and any
+    /// other futures racing against `cancel_token.cancelled()`) to exit
+    /// promptly when the indexer goes out of scope.
+    ///
+    /// Tests that drop the indexer without calling [`Self::shutdown`] —
+    /// which is most of them — used to rely on a load-bearing
+    /// `sleep(sync_timings.interval)` shim in the harness to align the
+    /// worker into its post-iter sleep before teardown, so that runtime
+    /// shutdown didn't race a mid-iter LMDB write. With body-level
+    /// cancellation in the worker (`select!` on `cancel_token.cancelled()`
+    /// wrapping the entire iter body), the worker exits at its next await
+    /// checkpoint instead — and the harness shim is no longer needed.
+    /// Tracked by PR #1055.
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
     }
 }
 

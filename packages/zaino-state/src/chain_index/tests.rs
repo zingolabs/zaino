@@ -118,18 +118,5 @@ async fn load_with_settings(
             .expect("ChainIndex status sender dropped before reaching Ready");
     }
 
-    // Most callers (mockchain_tests, mempool, poll, proptest_blockgen) drop
-    // the indexer without `shutdown()`, relying on the sync loop being
-    // parked in its `tokio::time::sleep(sync_timings.interval)` (see
-    // chain_index.rs sync loop) at teardown so runtime shutdown doesn't
-    // race a mid-iteration DB write. The watch-based rendezvous above
-    // wakes one statement *before* that sleep is polled, so under the
-    // multi-thread runtime there is a sub-millisecond window where the
-    // sync loop has not yet yielded. One full `interval` here lets the
-    // sync loop reach the sleep statement and stay there. Removing this
-    // requires explicit indexer shutdown (`CancellationToken`-based,
-    // tracked separately).
-    tokio::time::sleep(sync_timings.interval).await;
-
     (blocks, indexer, index_reader, source)
 }
