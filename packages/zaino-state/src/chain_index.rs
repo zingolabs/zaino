@@ -46,11 +46,12 @@ use zebra_rpc::{
 use zebra_state::HashOrHeight;
 
 pub mod encoding;
-/// All state at least 100 blocks old
+/// All state at least [`NON_FINALIZED_DEPTH`] blocks old
 pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
-/// State less than 100 blocks old, stored separately as it may be reorged
+/// State less than [`NON_FINALIZED_DEPTH`] blocks old, stored separately as it
+/// may be reorged
 pub mod non_finalised_state;
 /// BlockchainSource
 pub mod source;
@@ -59,6 +60,33 @@ pub mod types;
 
 #[cfg(test)]
 mod tests;
+
+/// Depth of Zaino's non-finalized state, in blocks above the finalized seam.
+///
+/// Blocks at chain tip distance ≤ `NON_FINALIZED_DEPTH` are non-finalized
+/// (subject to reorg) and live in the [`non_finalised_state`] cache. Blocks
+/// deeper than this go to the [`finalised_state`] DB and are treated as final.
+///
+/// The protocol-relevant comparable is
+/// [`zebra_state::MAX_BLOCK_REORG_HEIGHT`] (99 = one less than
+/// [`zebra_chain::transparent::MIN_TRANSPARENT_COINBASE_MATURITY`]). Zaino's
+/// `100` uses one extra block of margin vs. Zebra's choice — preserved here
+/// as the existing on-disk behavior, pending review against Zebra's value.
+pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
+
+/// Height of the non-finalized state's lower seam — the finalized DB's tip,
+/// derived from the chain's current best tip.
+///
+/// Blocks at height `<= anchor_height(chain_height)` are finalized and live
+/// in the finalized DB; blocks above are non-finalized and live in the NFS.
+/// The seam overlaps by exactly one block (the block at this height appears
+/// in both layers).
+///
+/// Saturates at zero on early chain (`chain_height < NON_FINALIZED_DEPTH`),
+/// meaning the finalized seam is at genesis.
+pub(crate) fn anchor_height(chain_height: u32) -> types::Height {
+    types::Height(chain_height.saturating_sub(NON_FINALIZED_DEPTH))
+}
 
 /// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
 ///
@@ -811,9 +839,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
-                    let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
+                    let anchor_height = anchor_height(chain_height.0);
 
-                    fs.sync_to_height(finalised_height, &source)
+                    fs.sync_to_height(anchor_height, &source)
                         .await
                         .map_err(source_error)?;
 
@@ -826,7 +854,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                     source.clone(),
                                     network,
                                     fs.to_reader()
-                                        .get_chain_block_by_height(finalised_height)
+                                        .get_chain_block_by_height(anchor_height)
                                         .await
                                         .expect("todo"),
                                 )
@@ -1155,9 +1183,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         "validator has no best block",
                         None,
                     ))?;
-                let validator_finalized_height = types::Height(height.0.saturating_sub(100));
+                let validator_anchor_height = anchor_height(height.0);
                 Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
-                    validator_finalized_height,
+                    validator_finalized_height: validator_anchor_height,
                 })
             }
         }
