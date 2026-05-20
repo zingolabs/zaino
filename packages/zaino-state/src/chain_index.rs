@@ -879,9 +879,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     // production, fewer when the chain itself is shorter
                     // than the depth (early chain / regtest).
                     let window_first = anchor_height.0 + 1;
-                    let mut window: Vec<Arc<zebra_chain::block::Block>> = Vec::with_capacity(
-                        chain_height.0.saturating_sub(anchor_height.0) as usize,
-                    );
+                    let mut window: Vec<Arc<zebra_chain::block::Block>> =
+                        Vec::with_capacity(chain_height.0.saturating_sub(anchor_height.0) as usize);
                     for h in window_first..=chain_height.0 {
                         let block = source
                             .get_block(HashOrHeight::Height(zebra_chain::block::Height(h)))
