@@ -29,6 +29,7 @@ use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
@@ -666,6 +667,13 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     network: ZebraNetwork,
     source: Source,
     sync_timings: SyncTimings,
+    /// Signals the sync worker to exit cooperatively. `shutdown()` fires
+    /// `cancel_token.cancel()` *before* tearing down `finalized_db`, so the
+    /// worker wakes from any in-flight `wait_or_source_change` /
+    /// `tokio::time::sleep` and returns `Ok(())` instead of cycling through
+    /// the failure-escalation ladder once `fs.*` calls start failing. Closes
+    /// the race tracked in #1098.
+    cancel_token: CancellationToken,
 }
 
 /// Timing parameters for the ChainIndex sync loop.
@@ -756,6 +764,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             network: config.network.to_zebra_network(),
             source,
             sync_timings,
+            cancel_token: CancellationToken::new(),
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
@@ -775,10 +784,20 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         }
     }
 
-    /// Shut down the sync process, for a cleaner drop
-    /// an error indicates a failure to cleanly shutdown. Dropping the
-    /// chain index should still stop everything
+    /// Shut down the sync process, for a cleaner drop.
+    /// An error indicates a failure to cleanly shutdown. Dropping the
+    /// chain index should still stop everything.
+    ///
+    /// Order matters: `cancel_token.cancel()` runs *before* `fs.shutdown()`
+    /// so the sync worker wakes from its post-iter sleep and exits via the
+    /// cancellation arm. If we tore down `fs` first, the worker's next
+    /// `fs.sync_to_height` call would fail, the failure path would
+    /// `tokio::time::sleep(current_backoff)`, and only the cancellation
+    /// arm on *that* sleep would release the worker — which is exactly
+    /// the design we have. Cancelling first just removes the wasted
+    /// failure-path round trip.
     pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+        self.cancel_token.cancel();
         self.status.store(StatusType::Closing);
         self.finalized_db.shutdown().await?;
         self.mempool.close();
@@ -807,6 +826,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let source = self.source.clone();
         let network = self.network.clone();
         let timings = self.sync_timings;
+        let cancel_token = self.cancel_token.clone();
 
         tokio::task::spawn(async move {
             let status = status.clone();
@@ -818,7 +838,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             loop {
                 let source = source.clone();
                 let network = network.clone();
-                if status.load() == StatusType::Closing {
+                if cancel_token.is_cancelled() {
                     return Ok(());
                 }
 
@@ -909,7 +929,18 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
-                        source::wait_or_source_change(change_rx.as_mut(), timings.interval).await;
+                        // Race the post-success interval wait against
+                        // cancellation: `shutdown()`'s `cancel_token.cancel()`
+                        // releases this immediately so the next top-of-loop
+                        // check exits the worker.
+                        tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => return Ok(()),
+                            _ = source::wait_or_source_change(
+                                change_rx.as_mut(),
+                                timings.interval,
+                            ) => {}
+                        }
                     }
                     Err(e) => {
                         consecutive_failures += 1;
@@ -927,7 +958,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             timings.max_consecutive_failures
                         );
                         status.store(StatusType::RecoverableError);
-                        tokio::time::sleep(current_backoff).await;
+                        // Race the failure-path backoff sleep against
+                        // cancellation. Without this, `shutdown()` after
+                        // `fs.shutdown()` would force the worker through
+                        // the full ~40 s `max_consecutive_failures`
+                        // backoff ladder before exiting (#1098).
+                        tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => return Ok(()),
+                            _ = tokio::time::sleep(current_backoff) => {}
+                        }
                         current_backoff = (current_backoff * 2).min(timings.max_backoff);
                     }
                 }
