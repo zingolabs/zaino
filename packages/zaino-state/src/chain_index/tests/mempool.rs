@@ -490,6 +490,24 @@ async fn get_mempool_stream_correct_expected_chain_tip() {
     handle.await.unwrap();
 }
 
+/// Pins the post-#3147949247 stale-tip behavior of
+/// `MempoolSubscriber::get_mempool_stream`.
+///
+/// Before the review fix, a stale `expected_chain_tip` failed synchronously
+/// with `MempoolError::IncorrectChainTip`. That synchronous-rejection path
+/// caused the #1037 flake: transient lag (mempool's poll cycle behind the
+/// chain-index's authoritative NFS tip) was indistinguishable from genuine
+/// divergence (stale caller snapshot). The fix removes the up-front
+/// rejection; lag now resolves by waiting on `mempool_chain_tip` for up to
+/// `MEMPOOL_TIP_CATCHUP` (500 ms), and only a *timeout* — i.e. real
+/// divergence — closes the stream via the `Syncing` path.
+///
+/// This test exercises the divergence case: the caller's tip is two blocks
+/// behind the mempool's tip and the mempool will never re-converge on it
+/// (the chain has moved on). Expectation: the stream is created
+/// successfully (no synchronous error), then closes within
+/// `MEMPOOL_TIP_CATCHUP` + slack as the streamer task's wait times out and
+/// the `Syncing` arm short-circuits the loop.
 #[tokio::test(flavor = "multi_thread")]
 async fn get_mempool_stream_stale_expected_chain_tip() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
@@ -518,24 +536,24 @@ async fn get_mempool_stream_stale_expected_chain_tip() {
     mockchain.mine_blocks(1);
     wait_for_mempool_to_reflect(&subscriber, next_block_txids(mockchain.active_height())).await;
 
-    let result = subscriber
+    let (mut rx, handle) = subscriber
         .get_mempool_stream(Some(state_chain_tip_hash.into()))
-        .await;
+        .await
+        .expect("get_mempool_stream itself no longer rejects synchronously on stale tip");
 
-    match result {
-        Err(crate::error::MempoolError::IncorrectChainTip {
-            expected_chain_tip,
-            current_chain_tip,
-        }) => {
-            assert_eq!(expected_chain_tip, state_chain_tip_hash);
-            assert_ne!(current_chain_tip, state_chain_tip_hash);
-        }
-        Ok((_rx, handle)) => {
-            handle.abort();
-            panic!("expected IncorrectChainTip error, got Ok");
-        }
-        Err(other) => {
-            panic!("expected IncorrectChainTip error, got {other:?}");
-        }
-    }
+    // Stream should close within the catchup window + scheduler slack as the
+    // streamer task's wait_on_mempool_updates times out and the `Syncing`
+    // arm of `get_mempool_stream` short-circuits the loop. 2 s is generous
+    // headroom over the 500 ms catchup window.
+    let close_deadline = Duration::from_secs(2);
+    timeout(close_deadline, async {
+        // Drain any in-flight items the streamer flushed before timing out
+        // (`get_mempool_and_update_seen` on the Syncing path emits the
+        // current mempool view once). Stop when the channel closes.
+        while rx.recv().await.is_some() {}
+    })
+    .await
+    .expect("stream should close within catchup-timeout + slack on stale tip");
+
+    handle.await.expect("streamer task should exit cleanly");
 }

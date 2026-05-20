@@ -2003,9 +2003,20 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             }
         }
 
+        // Pass the snapshot's tip into the mempool layer so the *returned
+        // stream* is still guarded against mempool↔snapshot divergence
+        // (e.g. a reorg that lands while the stream is open). The chain-
+        // index check above handles up-front snapshot freshness against
+        // authoritative state; the mempool layer's responsibility is now
+        // narrowed to in-stream divergence detection, with transient lag
+        // resolved by waiting rather than rejecting.
+        let expected_chain_tip = non_finalized_snapshot.map(|snapshot| snapshot.best_tip.hash);
         let mut subscriber = self.mempool.clone();
 
-        match subscriber.get_mempool_stream(None).now_or_never() {
+        match subscriber
+            .get_mempool_stream(expected_chain_tip)
+            .now_or_never()
+        {
             Some(Ok((in_rx, _handle))) => {
                 let (out_tx, out_rx) =
                     tokio::sync::mpsc::channel::<Result<Vec<u8>, ChainIndexError>>(32);
