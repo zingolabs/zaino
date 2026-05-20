@@ -205,23 +205,22 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
 
     /// Subscribe to source state-change notifications.
     ///
-    /// `broadcast` gives each subscriber an independent wakeup path, but
-    /// the notification stream is **not a lossless event log**: the
-    /// channel is bounded, and a lagging receiver will see
-    /// `RecvError::Lagged` and miss intermediate pings. That's
-    /// acceptable here because sync loops use the wakeup only as a
-    /// coalescible "source state changed" signal — after waking they
-    /// re-read source state, so a missed ping at most defers them to
-    /// the next fixed-cadence timer tick.
+    /// Returns a `tokio::sync::watch::Receiver<()>` — the idiomatic
+    /// "wake-on-change" primitive in Tokio. The transport coalesces by
+    /// construction: any number of `send_replace(())` calls on the
+    /// sender side between two `changed().await` calls on the receiver
+    /// side collapse into a single wake. Subscribers re-read source
+    /// state on each wake, so the consumer cares only about *whether*
+    /// something changed, not *how many* events fired.
     ///
     /// Sync loops typically call `change_subscribe` once at startup and
-    /// `select!` `recv()` against their fixed-cadence timer, falling
+    /// `select!` `changed()` against their fixed-cadence timer, falling
     /// through to the timer when no push notification arrives.
     ///
     /// The default returns `None` — poll-only sources (real validators)
     /// pace themselves on the timer alone. Push-capable sources (test
     /// mockchains) override to provide a live receiver.
-    fn change_subscribe(&self) -> Option<tokio::sync::broadcast::Receiver<()>> {
+    fn change_subscribe(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         None
     }
 }
@@ -234,13 +233,13 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
 /// every call site; this helper is the single home for the pattern. Pass
 /// `None` for poll-only sources — the helper degrades to a plain sleep.
 pub(super) async fn wait_or_source_change(
-    change_rx: Option<&mut tokio::sync::broadcast::Receiver<()>>,
+    change_rx: Option<&mut tokio::sync::watch::Receiver<()>>,
     duration: std::time::Duration,
 ) {
     match change_rx {
         Some(rx) => tokio::select! {
             _ = tokio::time::sleep(duration) => {}
-            _ = rx.recv() => {}
+            _ = rx.changed() => {}
         },
         None => tokio::time::sleep(duration).await,
     }

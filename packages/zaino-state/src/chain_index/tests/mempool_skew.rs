@@ -83,7 +83,7 @@ async fn chain_index_ahead_returns_stale_stream() {
 /// Tip-skew direction #2 (#1037): mempool serve loop ahead of chain-index.
 ///
 /// Constructed by advancing the mockchain via `mine_blocks_silent`, which
-/// suppresses the source's `change_subscribe` broadcast. The
+/// suppresses the source's `blocks_received_broadcaster` wake. The
 /// mempool's serve loop polls `get_best_block_hash` on its own cadence,
 /// so it observes the new tip first. Once the mempool has advanced
 /// (`wait_for_mempool_tip_change`), the test takes a snapshot — which

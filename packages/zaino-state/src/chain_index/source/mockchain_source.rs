@@ -148,17 +148,21 @@ pub(crate) struct MockchainSource {
     >,
     active_chain_height: Arc<AtomicU32>,
     force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
-    /// Pings every subscriber registered via
-    /// [`BlockchainSource::change_subscribe`] when [`Self::mine_blocks`]
-    /// advances the active height, so each can wake from its interval
-    /// timer immediately. The `broadcast` channel is bounded — a lagging
-    /// subscriber will see `RecvError::Lagged` and miss intermediate
-    /// pings rather than receive every `mine_blocks` event. That's
-    /// acceptable because the ping is only a coalescible "something
-    /// changed" signal: after waking, the subsystem re-reads source
-    /// state, so a dropped intermediate ping at most defers it to the
-    /// next fixed-cadence timer tick.
-    change_broadcast: tokio::sync::broadcast::Sender<()>,
+    /// Announces "blocks received" — i.e. [`Self::mine_blocks`] advanced
+    /// the active height — to every subscriber registered via
+    /// [`BlockchainSource::change_subscribe`], so each can wake from its
+    /// interval timer immediately.
+    ///
+    /// Backed by `tokio::sync::watch`, the idiomatic Tokio primitive
+    /// for "wake multiple subscribers when state has changed since they
+    /// last looked." `send_replace(())` always triggers `changed()` on
+    /// every receiver; multiple `send_replace` calls between two
+    /// `changed().await` calls coalesce into a single wake by
+    /// construction. The wake is a "something happened" signal — the
+    /// subsystem re-reads source state on each wake — so subscribers
+    /// neither know nor care how many `mine_blocks` events occurred
+    /// between wakes.
+    blocks_received_broadcaster: tokio::sync::watch::Sender<()>,
     /// One-shot test hook: fires on the first `get_block(HashOrHeight::Height(_))`
     /// call after [`Self::arm_one_shot_get_block_hook`], regardless of which
     /// height is requested. Used by race regression tests (#1126) to inject
@@ -203,7 +207,7 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
-            change_broadcast: tokio::sync::broadcast::channel(16).0,
+            blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
             get_block_hook: Arc::new(Mutex::new(None)),
         }
     }
@@ -253,7 +257,7 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
-            change_broadcast: tokio::sync::broadcast::channel(16).0,
+            blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
             get_block_hook: Arc::new(Mutex::new(None)),
         }
     }
@@ -280,7 +284,7 @@ impl MockchainSource {
             })
             .is_ok();
         if advanced {
-            let _ = self.change_broadcast.send(());
+            self.blocks_received_broadcaster.send_replace(());
         }
     }
 
@@ -968,8 +972,8 @@ impl BlockchainSource for MockchainSource {
         Ok(None)
     }
 
-    fn change_subscribe(&self) -> Option<tokio::sync::broadcast::Receiver<()>> {
-        Some(self.change_broadcast.subscribe())
+    fn change_subscribe(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.blocks_received_broadcaster.subscribe())
     }
 }
 
@@ -977,23 +981,24 @@ impl BlockchainSource for MockchainSource {
 mod mine_blocks {
     use crate::chain_index::source::BlockchainSource;
     use crate::chain_index::tests::vectors::{build_active_mockchain_source, load_test_vectors};
-    use tokio::sync::broadcast::error::TryRecvError;
 
-    /// `mine_blocks` must fire `change_broadcast`; `mine_blocks_silent`
-    /// must not. The two methods are *defined* by that distinction —
-    /// `mine_blocks_silent` exists solely to advance the active height
-    /// without waking subscribers, and the skew tests rely on that.
+    /// `mine_blocks` must fire the `blocks_received_broadcaster`;
+    /// `mine_blocks_silent` must not. The two methods are *defined* by
+    /// that distinction — `mine_blocks_silent` exists solely to advance
+    /// the active height without waking subscribers, and the skew tests
+    /// rely on that.
     ///
-    /// Regression: the broadcast wiring was previously dropped in a
+    /// Regression: the broadcaster wiring was previously dropped in a
     /// `source.rs` → `source/` split refactor, leaving both methods
-    /// behaviourally identical (both no-op on the broadcast). Compile
-    /// passed and trait dispatch still found the default `change_subscribe
-    /// → None`, so the silent test setups degenerated silently. This
-    /// test pins the contract at the source so any future drift of the
-    /// same shape (field removed, override removed, `send` call dropped)
-    /// fails here instead of leaking into the higher-level skew tests.
+    /// behaviourally identical (both no-op on the broadcaster). Compile
+    /// passed and trait dispatch still found the default
+    /// `change_subscribe → None`, so the silent test setups degenerated
+    /// silently. This test pins the contract at the source so any future
+    /// drift of the same shape (field removed, override removed, `send`
+    /// call dropped) fails here instead of leaking into the higher-level
+    /// skew tests.
     #[test]
-    fn mine_blocks_fires_broadcast_silent_does_not() {
+    fn mine_blocks_fires_broadcaster_silent_does_not() {
         let vectors = load_test_vectors().expect("test vectors load");
         // active_height = 0 leaves room for both mine calls to advance.
         let mockchain = build_active_mockchain_source(0, vectors.blocks);
@@ -1002,29 +1007,32 @@ mod mine_blocks {
             .change_subscribe()
             .expect("MockchainSource must override change_subscribe to return Some");
 
+        // Fresh subscriber: the watch sender has been live since
+        // construction but no `send_replace` has fired yet, so the
+        // initial value is unseen. Mark it seen so subsequent
+        // `has_changed()` calls reflect only post-arming activity.
+        rx.mark_unchanged();
         assert!(
-            matches!(rx.try_recv(), Err(TryRecvError::Empty)),
-            "subscriber should start with an empty buffer"
+            !rx.has_changed().expect("watch sender alive"),
+            "freshly-marked subscriber should see no pending change"
         );
 
         mockchain.mine_blocks(1);
-        rx.try_recv().expect(
-            "mine_blocks must fire change_broadcast — \
-             if this fails, the broadcast wiring on MockchainSource has \
-             regressed (likely a missing field, missing send, or missing \
+        assert!(
+            rx.has_changed().expect("watch sender alive"),
+            "mine_blocks must fire blocks_received_broadcaster — \
+             if this fails, the broadcaster wiring on MockchainSource has \
+             regressed (likely a missing field, missing send_replace, or missing \
              change_subscribe override)",
         );
 
-        while rx.try_recv().is_ok() {}
+        rx.mark_unchanged();
 
         mockchain.mine_blocks_silent(1);
-        match rx.try_recv() {
-            Err(TryRecvError::Empty) => {}
-            other => panic!(
-                "mine_blocks_silent must NOT fire change_broadcast \
-                 (the only behavioural difference from mine_blocks); \
-                 got {other:?}"
-            ),
-        }
+        assert!(
+            !rx.has_changed().expect("watch sender alive"),
+            "mine_blocks_silent must NOT fire blocks_received_broadcaster \
+             (the only behavioural difference from mine_blocks)"
+        );
     }
 }
