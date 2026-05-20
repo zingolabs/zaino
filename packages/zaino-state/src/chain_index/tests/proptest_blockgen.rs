@@ -27,6 +27,7 @@ use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
     chain_index::{
+        finalized_height_floor,
         non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
@@ -254,15 +255,14 @@ fn passthrough_best_chaintip() {
     passthrough_test(async |mockchain, index_reader, snapshot| {
         let tip = index_reader.best_chaintip(snapshot).await.unwrap();
         assert_eq!(
-            tip.height.0,
+            tip.height,
             mockchain
                 .best_branch()
                 .last()
                 .unwrap()
                 .coinbase_height()
+                .map(|h| finalized_height_floor(h.0))
                 .unwrap()
-                .0
-                .saturating_sub(100)
         );
     })
 }

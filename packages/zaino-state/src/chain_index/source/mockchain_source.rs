@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo;
@@ -148,6 +148,29 @@ pub(crate) struct MockchainSource {
     >,
     active_chain_height: Arc<AtomicU32>,
     force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
+    /// Announces "blocks received" — i.e. [`Self::mine_blocks`] advanced
+    /// the active height — to every subscriber registered via
+    /// [`BlockchainSource::change_subscribe`], so each can wake from its
+    /// interval timer immediately.
+    ///
+    /// Backed by `tokio::sync::watch`, the idiomatic Tokio primitive
+    /// for "wake multiple subscribers when state has changed since they
+    /// last looked." `send_replace(())` always triggers `changed()` on
+    /// every receiver; multiple `send_replace` calls between two
+    /// `changed().await` calls coalesce into a single wake by
+    /// construction. The wake is a "something happened" signal — the
+    /// subsystem re-reads source state on each wake — so subscribers
+    /// neither know nor care how many `mine_blocks` events occurred
+    /// between wakes.
+    blocks_received_broadcaster: tokio::sync::watch::Sender<()>,
+    /// One-shot test hook: fires on the first `get_block(HashOrHeight::Height(_))`
+    /// call after [`Self::arm_one_shot_get_block_hook`], regardless of which
+    /// height is requested. Used by race regression tests (#1126) to inject
+    /// a `mine_blocks_silent` precisely inside the worker's height-keyed
+    /// fetch path (pre-fetch under the fix, while-loop without it),
+    /// deterministically placing the iter into the race window. Cleared
+    /// after firing; subsequent `get_block` calls run unaffected.
+    get_block_hook: Arc<Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>>,
 }
 
 impl MockchainSource {
@@ -184,6 +207,8 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
+            blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
+            get_block_hook: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -232,6 +257,8 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
+            blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
+            get_block_hook: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -242,19 +269,39 @@ impl MockchainSource {
             .store(fail, Ordering::SeqCst);
     }
 
-    pub(crate) fn mine_blocks(&self, blocks: u32) {
+    /// Advances `active_chain_height` by up to `blocks`, capped at
+    /// `max_chain_height`. Returns `true` iff the height changed; on a
+    /// no-op advance (already at the cap) returns `false` so callers
+    /// can decide whether to fire the change-notify.
+    fn advance_active_height(&self, blocks: u32) -> bool {
         // len() returns one-indexed length, height is zero-indexed.
         let max_height = self.max_chain_height();
-        let _ =
-            self.active_chain_height
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    let target = current.saturating_add(blocks).min(max_height);
-                    if target == current {
-                        None
-                    } else {
-                        Some(target)
-                    }
-                });
+        self.active_chain_height
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                let target = current.saturating_add(blocks).min(max_height);
+                if target == current {
+                    None
+                } else {
+                    Some(target)
+                }
+            })
+            .is_ok()
+    }
+
+    pub(crate) fn mine_blocks(&self, blocks: u32) {
+        if self.advance_active_height(blocks) {
+            self.blocks_received_broadcaster.send_replace(());
+        }
+    }
+
+    /// Like [`Self::mine_blocks`] but does *not* fire the source's
+    /// change-notify. Lets the chain-index sync loop fall through to its
+    /// timer instead of waking immediately — the only way to put the
+    /// chain-index *behind* the mempool in tests, since the mempool's
+    /// serve loop polls `get_best_block_hash` directly and always
+    /// notices, notify or not.
+    pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
+        self.advance_active_height(blocks);
     }
 
     pub(crate) fn max_chain_height(&self) -> u32 {
@@ -264,6 +311,33 @@ impl MockchainSource {
 
     pub(crate) fn active_height(&self) -> u32 {
         self.active_chain_height.load(Ordering::SeqCst)
+    }
+
+    /// Returns the hash of the currently-active block (the tip the source
+    /// is reporting, which may be lower than `max_chain_height` when
+    /// `mine_blocks*` has not yet advanced through every block). Used by
+    /// tip-skew tests to compare the mempool's tracked tip against the
+    /// expected post-mining hash.
+    pub(crate) fn active_block_hash(&self) -> BlockHash {
+        self.hashes[self.active_height() as usize]
+    }
+
+    /// Arm a one-shot hook that fires the next time `get_block(Height(trigger))`
+    /// is called, before the source checks its active height. Used by
+    /// race regression tests (#1126) to inject a mid-iter source advance
+    /// at a precise point — when the worker's height-keyed fetch path
+    /// (pre-fetch under the fix, while-loop without it) is about to fetch
+    /// its first block of the iter, regardless of which specific height it
+    /// requests first.
+    ///
+    /// The closure runs synchronously inside `get_block`; do non-blocking
+    /// work only (e.g. [`Self::mine_blocks_silent`]). The hook is cleared
+    /// after firing; replacing an armed hook is a silent overwrite.
+    pub(crate) fn arm_one_shot_get_block_hook(&self, f: Box<dyn FnOnce() + Send + Sync>) {
+        *self
+            .get_block_hook
+            .lock()
+            .expect("get_block_hook mutex poisoned") = Some(f);
     }
 
     fn valid_height(&self, height: u32) -> Option<usize> {
@@ -385,6 +459,17 @@ impl BlockchainSource for MockchainSource {
     ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>> {
         match id {
             HashOrHeight::Height(h) => {
+                // One-shot test hook: fires before the active-height check
+                // so the hook's mutation (typically `mine_blocks_silent`)
+                // is visible to this same call's `valid_height` lookup.
+                let hook = self
+                    .get_block_hook
+                    .lock()
+                    .expect("get_block_hook mutex poisoned")
+                    .take();
+                if let Some(f) = hook {
+                    f();
+                }
                 let Some(height_index) = self.valid_height(h.0) else {
                     return Ok(None);
                 };
@@ -881,5 +966,69 @@ impl BlockchainSource for MockchainSource {
         Box<dyn Error + Send + Sync>,
     > {
         Ok(None)
+    }
+
+    fn change_subscribe(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.blocks_received_broadcaster.subscribe())
+    }
+}
+
+#[cfg(test)]
+mod mine_blocks {
+    use crate::chain_index::source::BlockchainSource;
+    use crate::chain_index::tests::vectors::{build_active_mockchain_source, load_test_vectors};
+
+    /// `mine_blocks` must fire the `blocks_received_broadcaster`;
+    /// `mine_blocks_silent` must not. The two methods are *defined* by
+    /// that distinction — `mine_blocks_silent` exists solely to advance
+    /// the active height without waking subscribers, and the skew tests
+    /// rely on that.
+    ///
+    /// Regression: the broadcaster wiring was previously dropped in a
+    /// `source.rs` → `source/` split refactor, leaving both methods
+    /// behaviourally identical (both no-op on the broadcaster). Compile
+    /// passed and trait dispatch still found the default
+    /// `change_subscribe → None`, so the silent test setups degenerated
+    /// silently. This test pins the contract at the source so any future
+    /// drift of the same shape (field removed, override removed, `send`
+    /// call dropped) fails here instead of leaking into the higher-level
+    /// skew tests.
+    #[test]
+    fn mine_blocks_fires_broadcaster_silent_does_not() {
+        let vectors = load_test_vectors().expect("test vectors load");
+        // active_height = 0 leaves room for both mine calls to advance.
+        let mockchain = build_active_mockchain_source(0, vectors.blocks);
+
+        let mut rx = mockchain
+            .change_subscribe()
+            .expect("MockchainSource must override change_subscribe to return Some");
+
+        // Fresh subscriber: the watch sender has been live since
+        // construction but no `send_replace` has fired yet, so the
+        // initial value is unseen. Mark it seen so subsequent
+        // `has_changed()` calls reflect only post-arming activity.
+        rx.mark_unchanged();
+        assert!(
+            !rx.has_changed().expect("watch sender alive"),
+            "freshly-marked subscriber should see no pending change"
+        );
+
+        mockchain.mine_blocks(1);
+        assert!(
+            rx.has_changed().expect("watch sender alive"),
+            "mine_blocks must fire blocks_received_broadcaster — \
+             if this fails, the broadcaster wiring on MockchainSource has \
+             regressed (likely a missing field, missing send_replace, or missing \
+             change_subscribe override)",
+        );
+
+        rx.mark_unchanged();
+
+        mockchain.mine_blocks_silent(1);
+        assert!(
+            !rx.has_changed().expect("watch sender alive"),
+            "mine_blocks_silent must NOT fire blocks_received_broadcaster \
+             (the only behavioural difference from mine_blocks)"
+        );
     }
 }

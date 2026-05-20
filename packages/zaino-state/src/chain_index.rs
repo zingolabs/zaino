@@ -29,6 +29,7 @@ use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
@@ -46,11 +47,12 @@ use zebra_rpc::{
 use zebra_state::HashOrHeight;
 
 pub mod encoding;
-/// All state at least 100 blocks old
+/// All state at least [`NON_FINALIZED_DEPTH`] blocks old
 pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
-/// State less than 100 blocks old, stored separately as it may be reorged
+/// State less than [`NON_FINALIZED_DEPTH`] blocks old, stored separately as it
+/// may be reorged
 pub mod non_finalised_state;
 /// BlockchainSource
 pub mod source;
@@ -59,6 +61,42 @@ pub mod types;
 
 #[cfg(test)]
 mod tests;
+
+/// Depth of Zaino's non-finalized state, in blocks above the finalized seam.
+///
+/// Blocks at chain tip distance ≤ `NON_FINALIZED_DEPTH` are non-finalized
+/// (subject to reorg) and live in the [`non_finalised_state`] cache. Blocks
+/// deeper than this go to the [`finalised_state`] DB and are treated as final.
+///
+/// The protocol-relevant comparable is
+/// [`zebra_state::MAX_BLOCK_REORG_HEIGHT`] (99 = one less than
+/// [`zebra_chain::transparent::MIN_TRANSPARENT_COINBASE_MATURITY`]). Zaino's
+/// `100` uses one extra block of margin vs. Zebra's choice — preserved here
+/// as the existing on-disk behavior, pending review against Zebra's value.
+pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
+
+/// Lower bound on zaino's finalized-DB tip, derived from the current
+/// best-known-chain tip.
+///
+/// Returns `chain_height - NON_FINALIZED_DEPTH` (saturating at zero on
+/// early chain). In steady state this equals `fs.db_height` — each
+/// sync iter advances `fs` to track this value. They can diverge after a
+/// reorg that shortens the best-known-chain tip below the prior
+/// finalization boundary: zaino's finalized DB is monotonic (once a
+/// block is added it stays), so `fs.db_height` can sit *above* the value
+/// returned here. The actual finalized tip is therefore
+/// `max(fs.db_height, finalized_height_floor(chain_tip))`.
+///
+/// For "what has zaino actually finalized," consult `fs.db_height()`.
+/// Use this function only for chain-derived computations — e.g. as the
+/// `target` for `fs.sync_to_height`, which is idempotent and no-ops if
+/// the DB is already past the target.
+///
+/// See #1128 for the read-routing call-site impact at
+/// `ChainIndexSnapshot::StillSyncingFinalizedState`.
+pub(crate) fn finalized_height_floor(chain_height: u32) -> types::Height {
+    types::Height(chain_height.saturating_sub(NON_FINALIZED_DEPTH))
+}
 
 /// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
 ///
@@ -638,6 +676,13 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     network: ZebraNetwork,
     source: Source,
     sync_timings: SyncTimings,
+    /// Signals the sync worker to exit cooperatively. `shutdown()` fires
+    /// `cancel_token.cancel()` *before* tearing down `finalized_db`, so the
+    /// worker wakes from any in-flight `wait_or_source_change` /
+    /// `tokio::time::sleep` and returns `Ok(())` instead of cycling through
+    /// the failure-escalation ladder once `fs.*` calls start failing. Closes
+    /// the race tracked in #1098.
+    cancel_token: CancellationToken,
 }
 
 /// Timing parameters for the ChainIndex sync loop.
@@ -728,6 +773,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             network: config.network.to_zebra_network(),
             source,
             sync_timings,
+            cancel_token: CancellationToken::new(),
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
@@ -747,10 +793,20 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         }
     }
 
-    /// Shut down the sync process, for a cleaner drop
-    /// an error indicates a failure to cleanly shutdown. Dropping the
-    /// chain index should still stop everything
+    /// Shut down the sync process, for a cleaner drop.
+    /// An error indicates a failure to cleanly shutdown. Dropping the
+    /// chain index should still stop everything.
+    ///
+    /// Order matters: `cancel_token.cancel()` runs *before* `fs.shutdown()`
+    /// so the sync worker wakes from its post-iter sleep and exits via the
+    /// cancellation arm. If we tore down `fs` first, the worker's next
+    /// `fs.sync_to_height` call would fail, the failure path would
+    /// `tokio::time::sleep(current_backoff)`, and only the cancellation
+    /// arm on *that* sleep would release the worker — which is exactly
+    /// the design we have. Cancelling first just removes the wasted
+    /// failure-path round trip.
     pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+        self.cancel_token.cancel();
         self.status.store(StatusType::Closing);
         self.finalized_db.shutdown().await?;
         self.mempool.close();
@@ -779,23 +835,38 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let source = self.source.clone();
         let network = self.network.clone();
         let timings = self.sync_timings;
+        let cancel_token = self.cancel_token.clone();
 
         tokio::task::spawn(async move {
             let status = status.clone();
             let source = source.clone();
+            let mut change_rx = source.change_subscribe();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
 
             loop {
                 let source = source.clone();
                 let network = network.clone();
-                if status.load() == StatusType::Closing {
+                if cancel_token.is_cancelled() {
                     return Ok(());
                 }
 
                 status.store(StatusType::Syncing);
 
-                let sync_result: Result<(), SyncError> = async {
+                // Race the iter body against cancellation: any await inside
+                // — `source.get_best_block_height`, `fs.sync_to_height` mid-
+                // loop, the pre-fetch RPCs, `non_finalized_state.sync` — is
+                // a checkpoint that can short-circuit to `Ok(())` when
+                // `cancel_token.cancel()` fires. All in-flight ops drop
+                // cleanly (LMDB writes are per-block atomic, ArcSwap CAS is
+                // single-tick, local `Vec`s/`HashMap`s are scoped to the
+                // dropped future). Lets tests drop the indexer without
+                // calling `shutdown()` and still have the worker exit
+                // promptly via the `Drop` impl below.
+                let sync_result: Result<(), SyncError> = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => return Ok(()),
+                    r = async {
                     fn source_error(error: impl std::error::Error + Send + 'static) -> SyncError {
                         SyncError::ErrorFromSource(Box::new(error))
                     }
@@ -810,9 +881,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
-                    let finalised_height = crate::Height(chain_height.0.saturating_sub(100));
+                    let finalized_height = finalized_height_floor(chain_height.0);
 
-                    fs.sync_to_height(finalised_height, &source)
+                    fs.sync_to_height(finalized_height, &source)
                         .await
                         .map_err(source_error)?;
 
@@ -822,10 +893,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         None => {
                             nfs.store(Some(Arc::new(
                                 NonFinalizedState::initialize(
-                                    source,
+                                    source.clone(),
                                     network,
                                     fs.to_reader()
-                                        .get_chain_block_by_height(finalised_height)
+                                        .get_chain_block_by_height(finalized_height)
                                         .await
                                         .expect("todo"),
                                 )
@@ -836,20 +907,62 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         }
                     };
 
+                    // Pre-fetch the iter's NFS window against the same
+                    // `chain_height` we committed to above. NFS extension
+                    // is bounded by this window, so a source advance mid-
+                    // iter (the validator producing new blocks between
+                    // here and `update`'s CAS swap) is deferred to iter
+                    // N+1 instead of silently widening this iter's
+                    // published snapshot past the seam `fs.sync_to_height`
+                    // committed to (#1126).
+                    //
+                    // Range is `(finalized_height.0 + 1)..=chain_height.0` —
+                    // exactly `NON_FINALIZED_DEPTH` blocks in steady
+                    // production, fewer when the chain itself is shorter
+                    // than the depth (early chain / regtest).
+                    let window_first = finalized_height.0 + 1;
+                    let mut window: Vec<Arc<zebra_chain::block::Block>> =
+                        Vec::with_capacity(chain_height.0.saturating_sub(finalized_height.0) as usize);
+                    for h in window_first..=chain_height.0 {
+                        let block = source
+                            .get_block(HashOrHeight::Height(zebra_chain::block::Height(h)))
+                            .await
+                            .map_err(source_error)?
+                            .ok_or_else(|| {
+                                source_error(std::io::Error::other(format!(
+                                    "source missing block at height {h} \
+                                     (iter chain_height={})",
+                                    chain_height.0
+                                )))
+                            })?;
+                        window.push(block);
+                    }
+
                     // Sync nfs to chain tip, trimming blocks to finalized tip.
-                    non_finalized_state.sync(fs.clone()).await?;
+                    non_finalized_state.sync(fs.clone(), window).await?;
                     std::mem::drop(intermediate_nfs_for_scoping);
 
                     Ok(())
-                }
-                .await;
+                    } => r,
+                };
 
                 match sync_result {
                     Ok(()) => {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
-                        tokio::time::sleep(timings.interval).await;
+                        // Race the post-success interval wait against
+                        // cancellation: `shutdown()`'s `cancel_token.cancel()`
+                        // releases this immediately so the next top-of-loop
+                        // check exits the worker.
+                        tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => return Ok(()),
+                            _ = source::wait_or_source_change(
+                                change_rx.as_mut(),
+                                timings.interval,
+                            ) => {}
+                        }
                     }
                     Err(e) => {
                         consecutive_failures += 1;
@@ -867,12 +980,40 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             timings.max_consecutive_failures
                         );
                         status.store(StatusType::RecoverableError);
-                        tokio::time::sleep(current_backoff).await;
+                        // Race the failure-path backoff sleep against
+                        // cancellation. Without this, `shutdown()` after
+                        // `fs.shutdown()` would force the worker through
+                        // the full ~40 s `max_consecutive_failures`
+                        // backoff ladder before exiting (#1098).
+                        tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => return Ok(()),
+                            _ = tokio::time::sleep(current_backoff) => {}
+                        }
                         current_backoff = (current_backoff * 2).min(timings.max_backoff);
                     }
                 }
             }
         })
+    }
+}
+
+impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
+    /// Cooperative cancellation on drop: signals the sync worker (and any
+    /// other futures racing against `cancel_token.cancelled()`) to exit
+    /// promptly when the indexer goes out of scope.
+    ///
+    /// Tests that drop the indexer without calling [`Self::shutdown`] —
+    /// which is most of them — used to rely on a load-bearing
+    /// `sleep(sync_timings.interval)` shim in the harness to align the
+    /// worker into its post-iter sleep before teardown, so that runtime
+    /// shutdown didn't race a mid-iter LMDB write. With body-level
+    /// cancellation in the worker (`select!` on `cancel_token.cancelled()`
+    /// wrapping the entire iter body), the worker exits at its next await
+    /// checkpoint instead — and the harness shim is no longer needed.
+    /// Tracked by PR #1055.
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
     }
 }
 
@@ -907,6 +1048,24 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             .combine(mempool_status);
         self.status.store(combined_status);
         combined_status
+    }
+
+    /// Returns a [`tokio::sync::watch::Receiver`] that wakes on every
+    /// transition of the chain-index sync loop's status.
+    ///
+    /// Used by tests to await a specific state (e.g. first transition to
+    /// [`StatusType::Ready`]) without busy-polling.
+    #[cfg(test)]
+    pub(crate) fn status_subscribe(&self) -> tokio::sync::watch::Receiver<StatusType> {
+        self.status.subscribe()
+    }
+
+    /// Returns a watch receiver tracking the mempool serve loop's most
+    /// recently observed chain tip. Forwarder for
+    /// [`mempool::MempoolSubscriber::mempool_tip`].
+    #[cfg(test)]
+    pub(crate) fn mempool_tip(&self) -> tokio::sync::watch::Receiver<crate::BlockHash> {
+        self.mempool.mempool_tip()
     }
 
     /// Returns the number of transparent outputs of `txid` that are currently unspent in the
@@ -1136,7 +1295,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         "validator has no best block",
                         None,
                     ))?;
-                let validator_finalized_height = types::Height(height.0.saturating_sub(100));
+                let validator_finalized_height = finalized_height_floor(height.0);
                 Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
                     validator_finalized_height,
                 })
@@ -1831,6 +1990,35 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             },
             None => None,
         };
+
+        // Stale-snapshot check: compare the caller's snapshot against the
+        // chain-index's *current* non-finalized tip (the same source of
+        // truth as `snapshot_nonfinalized_state`), not against the mempool
+        // serve loop's `mempool_chain_tip`. The mempool polls on its own
+        // cadence, so its tip view can diverge from the chain-index's by
+        // up to one poll cycle (#1037); using it here means the API can
+        // accept a stale snapshot whenever the mempool happens to be
+        // lagging, and reject a freshly-issued snapshot whenever the
+        // mempool happens to be ahead — both are caller-visible internal
+        // contradictions. The chain-index is authoritative.
+        if let Some(expected) = non_finalized_snapshot {
+            match self.non_finalized_state.load().as_ref() {
+                Some(current) => {
+                    if expected.best_tip.hash != current.get_snapshot().best_tip.hash {
+                        return None;
+                    }
+                }
+                None => return None,
+            }
+        }
+
+        // Pass the snapshot's tip into the mempool layer so the *returned
+        // stream* is still guarded against mempool↔snapshot divergence
+        // (e.g. a reorg that lands while the stream is open). The chain-
+        // index check above handles up-front snapshot freshness against
+        // authoritative state; the mempool layer's responsibility is now
+        // narrowed to in-stream divergence detection, with transient lag
+        // resolved by waiting rather than rejecting.
         let expected_chain_tip = non_finalized_snapshot.map(|snapshot| snapshot.best_tip.hash);
         let mut subscriber = self.mempool.clone();
 
@@ -1865,7 +2053,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
                 Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))
             }
-            Some(Err(crate::error::MempoolError::IncorrectChainTip { .. })) => None,
             Some(Err(e)) => {
                 let (out_tx, out_rx) =
                     tokio::sync::mpsc::channel::<Result<Vec<u8>, ChainIndexError>>(1);
@@ -2235,7 +2422,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         .map_err(|e| ChainIndexError::internal(e.to_string()))?;
 
                     // Seed the prev_txid unspent counter if this is the first time we touch it.
-                    if let std::collections::hash_map::Entry::Vacant(e) = tx_unspent_count.entry(prev_txid) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        tx_unspent_count.entry(prev_txid)
+                    {
                         let seed = self
                             .count_finalised_unspent_outputs(prev_txid)
                             .await

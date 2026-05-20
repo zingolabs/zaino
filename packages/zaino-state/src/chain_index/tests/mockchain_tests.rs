@@ -1,52 +1,57 @@
 use super::load_test_vectors_and_sync_chain_index;
+use tokio::time::{sleep, timeout, Duration};
+use tokio_stream::StreamExt as _;
+use zebra_chain::serialization::ZcashDeserializeInto;
+
 use crate::{
     chain_index::{
-        source::mockchain_source::MockchainSource,
-        tests::{
-            poll::poll_until,
-            vectors::{load_test_vectors, TestVectorBlockData},
-        },
+        source::{mockchain_source::MockchainSource, BlockchainSource},
+        tests::vectors::{load_test_vectors, TestVectorBlockData},
         types::{BestChainLocation, TransactionHash},
         ChainIndex, NodeBackedChainIndexSubscriber,
     },
-    BlockchainSource as _,
+    StatusType,
 };
-use tokio::time::{sleep, Duration};
-use tokio_stream::StreamExt as _;
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
 };
-use zebra_chain::serialization::ZcashDeserializeInto;
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
-/// Polls the indexer's nonfinalized-state snapshot until its best-tip height
-/// equals `expected`, or panics after a 10 s budget.
+/// Waits until the indexer's nonfinalized-state best-tip height equals
+/// `expected`, or panics after a 10 s budget.
 ///
-/// Use this wherever a test previously relied on a fixed `sleep` to hope the
-/// indexer's sync task had caught up with the mockchain tip: the indexer
-/// publishes new tips asynchronously via its background loop, and under
-/// full-suite parallel load those updates can lag well past 2 s.
-async fn wait_for_indexer_tip(
+/// Wakes on every transition of the chain-index sync loop's status (via
+/// [`NodeBackedChainIndexSubscriber::status_subscribe`]) and re-checks the
+/// snapshot. The sync loop transitions to [`StatusType::Ready`] only after a
+/// successful iteration has updated the tip, so each Ready transition is the
+/// earliest moment the test can observe a new tip — no fixed-cadence polling
+/// required.
+pub(super) async fn wait_for_indexer_tip(
     index_reader: &NodeBackedChainIndexSubscriber<MockchainSource>,
     expected: u32,
 ) {
-    poll_until(
-        "indexer tip to match expected height",
-        Duration::from_secs(10),
-        Duration::from_millis(25),
-        || async {
-            let tip = index_reader
-                .snapshot_nonfinalized_state()
+    let mut status = index_reader.status_subscribe();
+    let work = async {
+        loop {
+            if *status.borrow_and_update() == StatusType::Ready {
+                let tip = index_reader
+                    .snapshot_nonfinalized_state()
+                    .await
+                    .ok()
+                    .and_then(|s| s.get_nfs_snapshot().map(|n| n.best_tip.height.0));
+                if tip == Some(expected) {
+                    return;
+                }
+            }
+            status
+                .changed()
                 .await
-                .ok()?
-                .get_nfs_snapshot()?
-                .best_tip
-                .height
-                .0;
-            (tip == expected).then_some(())
-        },
-    )
-    .await;
+                .expect("ChainIndex status sender dropped before reaching expected tip");
+        }
+    };
+    timeout(Duration::from_secs(10), work)
+        .await
+        .unwrap_or_else(|_| panic!("indexer tip never reached {expected} within 10 s"));
 }
 
 fn faucet_transparent_address() -> String {
@@ -515,22 +520,6 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
             .collect::<Vec<_>>(),
         indexer_mempool_stream_transactions,
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn get_mempool_stream_for_stale_snapshot() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(true).await;
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
-
-    let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
-
-    mockchain.mine_blocks(1);
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
-
-    let mempool_stream = index_reader.get_mempool_stream(Some(&stale_nonfinalized_snapshot));
-
-    assert!(mempool_stream.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

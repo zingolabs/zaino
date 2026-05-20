@@ -5,7 +5,7 @@ use std::{collections::HashSet, sync::Arc};
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
     chain_index::{
-        source::{BlockchainSource, BlockchainSourceError},
+        source::{wait_or_source_change, BlockchainSource, BlockchainSourceError},
         types::db::metadata::MempoolInfo,
     },
     error::{MempoolError, StatusError},
@@ -15,6 +15,14 @@ use crate::{
 use tracing::{info, instrument, warn};
 use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
 use zebra_chain::{block::Hash, transaction::SerializedTransaction};
+
+/// Upper bound on how long the mempool subscriber waits for its
+/// `mempool_chain_tip` to catch up to the caller's `expected_chain_tip`
+/// before treating the mismatch as divergence. Sized to dominate the
+/// mempool serve loop's ~100 ms poll cadence with comfortable headroom
+/// (5×): transient lag clears in one poll, anything beyond this isn't
+/// converging.
+const MEMPOOL_TIP_CATCHUP: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Mempool key
 ///
@@ -142,6 +150,7 @@ impl<T: BlockchainSource> Mempool<T> {
         status.store(StatusType::Spawning);
 
         let sync_handle = tokio::spawn(async move {
+            let mut change_rx = mempool.fetcher.change_subscribe();
             let mut best_block_hash: Hash;
             let mut check_block_hash: Hash;
 
@@ -207,7 +216,16 @@ impl<T: BlockchainSource> Mempool<T> {
                         .send_replace(check_block_hash.into());
                     best_block_hash = check_block_hash;
 
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    // Cool-down before we re-fetch mempool state at the new
+                    // tip — gives the validator a moment to settle. Stays
+                    // interruptible: a follow-on `mine_blocks` must wake us
+                    // immediately, otherwise the next iteration of the test
+                    // sees a stale tip until the timer expires (#1037).
+                    wait_or_source_change(
+                        change_rx.as_mut(),
+                        std::time::Duration::from_millis(100),
+                    )
+                    .await;
                     continue;
                 }
 
@@ -230,7 +248,12 @@ impl<T: BlockchainSource> Mempool<T> {
                     return;
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Wait the cadence interval, but wake immediately if the
+                // source signals new state — keeps mempool↔chain-index
+                // tip propagation aligned within a single iteration on
+                // push-capable sources (#1037 part 2/2).
+                wait_or_source_change(change_rx.as_mut(), std::time::Duration::from_millis(100))
+                    .await;
             }
         });
 
@@ -365,6 +388,14 @@ pub struct MempoolSubscriber {
 }
 
 impl MempoolSubscriber {
+    /// Returns a clone of the watch receiver tracking the mempool's most
+    /// recently observed chain tip. Used by tests to detect the mempool↔
+    /// chain-index tip skew documented in #1037 without busy-polling.
+    #[cfg(test)]
+    pub(crate) fn mempool_tip(&self) -> tokio::sync::watch::Receiver<BlockHash> {
+        self.mempool_chain_tip.clone()
+    }
+
     /// Returns all tx currently in the mempool.
     pub async fn get_mempool(&self) -> Vec<(MempoolKey, MempoolValue)> {
         self.subscriber.get_filtered_state(&HashSet::new())
@@ -422,14 +453,14 @@ impl MempoolSubscriber {
         subscriber.seen_txids.clear();
         let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
 
-        if let Some(expected_chain_tip_hash) = expected_chain_tip {
-            if expected_chain_tip_hash != *self.mempool_chain_tip.borrow() {
-                return Err(MempoolError::IncorrectChainTip {
-                    expected_chain_tip: expected_chain_tip_hash,
-                    current_chain_tip: *self.mempool_chain_tip.borrow(),
-                });
-            }
-        }
+        // No up-front rejection on tip mismatch: the chain-index caller has
+        // already validated the snapshot against its authoritative NFS tip,
+        // so a mempool↔snapshot mismatch at this moment is transient lag
+        // (the mempool's poll cycle hasn't caught up to the same source
+        // advance the chain-index already absorbed). Resolution is deferred
+        // to `wait_on_mempool_updates`, which waits for `mempool_chain_tip`
+        // to reach `expected_chain_tip` and only declares divergence on
+        // timeout. See review #3147949247 on PR #1055.
 
         let streamer_handle = tokio::spawn(async move {
             let mempool_result: Result<(), MempoolError> = async {
@@ -570,11 +601,40 @@ impl MempoolSubscriber {
         &mut self,
         expected_chain_tip: Option<BlockHash>,
     ) -> Result<(StatusType, Vec<(MempoolKey, MempoolValue)>), MempoolError> {
-        if expected_chain_tip.is_some()
-            && expected_chain_tip.unwrap() != *self.mempool_chain_tip.borrow()
-        {
-            self.clear_seen();
-            return Ok((StatusType::Syncing, self.get_mempool_and_update_seen()));
+        // Tip-skew handling. The chain-index caller validates its snapshot
+        // against authoritative NFS before calling us, so a mempool↔expected
+        // mismatch here is either transient lag (the mempool's poll cycle
+        // hasn't seen the same source advance the chain-index already
+        // absorbed — common, resolvable by waiting on `mempool_chain_tip`)
+        // or genuine divergence (caller's snapshot is now stale, or a reorg
+        // landed — rare, terminates the stream via `Syncing`). The bounded
+        // wait disambiguates: lag converges within ~one mempool poll cycle
+        // (`MEMPOOL_TIP_CATCHUP`); anything longer is divergence. See
+        // review #3147949247 on PR #1055.
+        if let Some(expected) = expected_chain_tip {
+            if expected != *self.mempool_chain_tip.borrow() {
+                let wait = async {
+                    while *self.mempool_chain_tip.borrow() != expected {
+                        if self.mempool_chain_tip.changed().await.is_err() {
+                            return Err(MempoolError::StatusError(StatusError {
+                                server_status: StatusType::Closing,
+                            }));
+                        }
+                    }
+                    Ok(())
+                };
+                match tokio::time::timeout(MEMPOOL_TIP_CATCHUP, wait).await {
+                    Ok(Ok(())) => {} // caught up — fall through to normal flow
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => {
+                        // Tip didn't converge — treat as divergence and end
+                        // the stream (the caller will re-issue against a
+                        // fresh snapshot).
+                        self.clear_seen();
+                        return Ok((StatusType::Syncing, self.get_mempool_and_update_seen()));
+                    }
+                }
+            }
         }
 
         let update_status = self.subscriber.wait_on_notifier().await?;
