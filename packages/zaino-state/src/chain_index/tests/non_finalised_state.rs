@@ -24,7 +24,6 @@ use super::{load_test_vectors_and_sync_chain_index, poll::poll_until};
 use crate::chain_index::{anchor_height, ChainIndex};
 use std::time::Duration;
 use tokio::time::sleep;
-use zebra_chain::block::Height as ZebraHeight;
 
 /// **B**: After the chain index has finished its first sync iteration,
 /// the lowest-height block in the NFS snapshot is the same block the
@@ -256,12 +255,18 @@ async fn race_pre_mine_anchor_block_is_evicted_when_source_advances_mid_iter() {
     // the worker continues its current iter — exactly the production
     // scenario where the validator produces blocks while zaino is
     // mid-iteration.
+    //
+    // The hook fires on the *first* height-keyed `get_block` call after
+    // arming. The worker's first such call in iter N+1 is the first block
+    // of its height-keyed fetch path: `get_block(working_tip+1)` for the
+    // pre-fix while-loop, `get_block(anchor_height+1)` for the post-fix
+    // pre-fetch. Either way, that call lands strictly after iter N+1 has
+    // already committed to `chain_height = initial_active` via
+    // `get_best_block_height`, so the source advance the hook performs
+    // *is* mid-iter from the worker's perspective.
     let advance: u32 = 20;
     let mc = mockchain.clone();
-    mockchain.arm_one_shot_get_block_hook(
-        ZebraHeight(initial_active + 1),
-        Box::new(move || mc.mine_blocks_silent(advance)),
-    );
+    mockchain.arm_one_shot_get_block_hook(Box::new(move || mc.mine_blocks_silent(advance)));
 
     let post_mine_active = initial_active + advance;
     poll_until(

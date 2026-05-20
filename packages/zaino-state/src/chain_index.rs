@@ -865,8 +865,40 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         }
                     };
 
+                    // Pre-fetch the iter's NFS window against the same
+                    // `chain_height` we committed to above. NFS extension
+                    // is bounded by this window, so a source advance mid-
+                    // iter (the validator producing new blocks between
+                    // here and `update`'s CAS swap) is deferred to iter
+                    // N+1 instead of silently widening this iter's
+                    // published snapshot past the seam `fs.sync_to_height`
+                    // committed to (#1126).
+                    //
+                    // Range is `(anchor_height.0 + 1)..=chain_height.0` —
+                    // exactly `NON_FINALIZED_DEPTH` blocks in steady
+                    // production, fewer when the chain itself is shorter
+                    // than the depth (early chain / regtest).
+                    let window_first = anchor_height.0 + 1;
+                    let mut window: Vec<Arc<zebra_chain::block::Block>> = Vec::with_capacity(
+                        chain_height.0.saturating_sub(anchor_height.0) as usize,
+                    );
+                    for h in window_first..=chain_height.0 {
+                        let block = source
+                            .get_block(HashOrHeight::Height(zebra_chain::block::Height(h)))
+                            .await
+                            .map_err(source_error)?
+                            .ok_or_else(|| {
+                                source_error(std::io::Error::other(format!(
+                                    "source missing block at height {h} \
+                                     (iter chain_height={})",
+                                    chain_height.0
+                                )))
+                            })?;
+                        window.push(block);
+                    }
+
                     // Sync nfs to chain tip, trimming blocks to finalized tip.
-                    non_finalized_state.sync(fs.clone()).await?;
+                    non_finalized_state.sync(fs.clone(), window).await?;
                     std::mem::drop(intermediate_nfs_for_scoping);
 
                     Ok(())

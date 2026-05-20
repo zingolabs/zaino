@@ -156,14 +156,14 @@ pub(crate) struct MockchainSource {
     /// fires while one subsystem is mid-iteration is preserved on its
     /// receiver and consumed on the next `recv().await`.
     change_broadcast: tokio::sync::broadcast::Sender<()>,
-    /// One-shot test hook: fires on the first `get_block(Height(trigger))`
-    /// call after [`Self::arm_one_shot_get_block_hook`]. Used by race
-    /// regression tests (#1126) to inject a `mine_blocks_silent` precisely
-    /// inside the worker's NFS-sync while loop, deterministically placing
-    /// the iter into the race window. Cleared after firing; subsequent
-    /// `get_block` calls run unaffected.
-    #[allow(clippy::type_complexity)]
-    get_block_hook: Arc<Mutex<Option<(Height, Box<dyn FnOnce() + Send + Sync>)>>>,
+    /// One-shot test hook: fires on the first `get_block(HashOrHeight::Height(_))`
+    /// call after [`Self::arm_one_shot_get_block_hook`], regardless of which
+    /// height is requested. Used by race regression tests (#1126) to inject
+    /// a `mine_blocks_silent` precisely inside the worker's height-keyed
+    /// fetch path (pre-fetch under the fix, while-loop without it),
+    /// deterministically placing the iter into the race window. Cleared
+    /// after firing; subsequent `get_block` calls run unaffected.
+    get_block_hook: Arc<Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>>,
 }
 
 impl MockchainSource {
@@ -322,21 +322,19 @@ impl MockchainSource {
     /// Arm a one-shot hook that fires the next time `get_block(Height(trigger))`
     /// is called, before the source checks its active height. Used by
     /// race regression tests (#1126) to inject a mid-iter source advance
-    /// at a precise point — when the worker's NFS-sync while loop is about
-    /// to fetch the first block past the iter's committed `chain_height`.
+    /// at a precise point — when the worker's height-keyed fetch path
+    /// (pre-fetch under the fix, while-loop without it) is about to fetch
+    /// its first block of the iter, regardless of which specific height it
+    /// requests first.
     ///
     /// The closure runs synchronously inside `get_block`; do non-blocking
     /// work only (e.g. [`Self::mine_blocks_silent`]). The hook is cleared
-    /// after firing; replacing an armed hook is a no-op silent overwrite.
-    pub(crate) fn arm_one_shot_get_block_hook(
-        &self,
-        trigger: Height,
-        f: Box<dyn FnOnce() + Send + Sync>,
-    ) {
+    /// after firing; replacing an armed hook is a silent overwrite.
+    pub(crate) fn arm_one_shot_get_block_hook(&self, f: Box<dyn FnOnce() + Send + Sync>) {
         *self
             .get_block_hook
             .lock()
-            .expect("get_block_hook mutex poisoned") = Some((trigger, f));
+            .expect("get_block_hook mutex poisoned") = Some(f);
     }
 
     fn valid_height(&self, height: u32) -> Option<usize> {
@@ -461,16 +459,11 @@ impl BlockchainSource for MockchainSource {
                 // One-shot test hook: fires before the active-height check
                 // so the hook's mutation (typically `mine_blocks_silent`)
                 // is visible to this same call's `valid_height` lookup.
-                let hook = {
-                    let mut guard = self
-                        .get_block_hook
-                        .lock()
-                        .expect("get_block_hook mutex poisoned");
-                    match guard.as_ref() {
-                        Some((trigger, _)) if *trigger == h => guard.take().map(|(_, f)| f),
-                        _ => None,
-                    }
-                };
+                let hook = self
+                    .get_block_hook
+                    .lock()
+                    .expect("get_block_hook mutex poisoned")
+                    .take();
                 if let Some(f) = hook {
                     f();
                 }

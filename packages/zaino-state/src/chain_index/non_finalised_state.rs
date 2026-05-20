@@ -244,6 +244,21 @@ impl NonfinalizedBlockCacheSnapshot {
         self.heights_to_hashes.insert(block.height(), *block.hash());
         self.blocks.insert(*block.hash(), block);
     }
+
+    /// Predicate: is this block already represented in the NFS?
+    ///
+    /// True iff the block's coinbase height is at or below the current
+    /// best tip — meaning the iter (or a prior iter) has already processed
+    /// the height. Used by `sync` to skip pre-fetched window entries that
+    /// don't extend the chain. Blocks without a coinbase height (malformed
+    /// input) are not considered already-in-NFS; the caller's parent-hash
+    /// chain check will surface the problem.
+    fn block_is_already_in_nfs(&self, block: &zebra_chain::block::Block) -> bool {
+        match block.coinbase_height() {
+            Some(h) => Height::from(h) <= self.best_tip.height,
+            None => false,
+        }
+    }
 }
 
 impl<Source: BlockchainSource> NonFinalizedState<Source> {
@@ -349,9 +364,26 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map(Mutex::new)
     }
 
-    /// sync to the top of the chain, trimming to the finalised tip.
-    #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
-    pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
+    /// Sync the NFS to the iter's committed chain tip, trimming to the
+    /// finalised tip.
+    ///
+    /// `window` is the iter's pre-fetched view of the non-finalized region —
+    /// blocks at heights `anchor_height(chain_height) + 1 ..= chain_height`,
+    /// captured by the worker against the same `chain_height` it passed to
+    /// `fs.sync_to_height`. NFS extension is bounded by the window, so a
+    /// source advance mid-iter is deferred to iter N+1 (which pre-fetches
+    /// its own window against its own fresh `chain_height`). Closes the race
+    /// in #1126.
+    ///
+    /// Window length is `chain_height - anchor_height(chain_height)` —
+    /// `NON_FINALIZED_DEPTH` in steady production, smaller when the chain
+    /// itself is shorter than the depth (early chain / regtest).
+    #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db, window))]
+    pub(super) async fn sync(
+        &self,
+        finalized_db: Arc<ZainoDB>,
+        window: Vec<Arc<zebra_chain::block::Block>>,
+    ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
         if Some(initial_state.best_tip.height) < local_finalized_tip {
@@ -379,19 +411,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         //
         // see https://github.com/ZcashFoundation/zebra/issues/9541
 
-        while let Some(block) = self
-            .source
-            .get_block(HashOrHeight::Height(zebra_chain::block::Height(
-                u32::from(working_snapshot.best_tip.height) + 1,
-            )))
-            .await
-            .map_err(|e| {
-                // TODO: Check error. Determine what kind of error to return, this may be recoverable
-                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
-                    Box::new(e),
-                ))
-            })?
-        {
+        for block in window {
+            // Window may start below `working_snapshot.best_tip` (when iter
+            // N-1 already advanced past `anchor_height(chain_height)`); skip
+            // those entries.
+            if working_snapshot.block_is_already_in_nfs(&block) {
+                continue;
+            }
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
