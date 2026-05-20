@@ -78,14 +78,14 @@ pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
 /// Height of the non-finalized state's lower seam — the finalized DB's tip,
 /// derived from the chain's current best tip.
 ///
-/// Blocks at height `<= anchor_height(chain_height)` are finalized and live
+/// Blocks at height `<= finalized_height(chain_height)` are finalized and live
 /// in the finalized DB; blocks above are non-finalized and live in the NFS.
 /// The seam overlaps by exactly one block (the block at this height appears
 /// in both layers).
 ///
 /// Saturates at zero on early chain (`chain_height < NON_FINALIZED_DEPTH`),
 /// meaning the finalized seam is at genesis.
-pub(crate) fn anchor_height(chain_height: u32) -> types::Height {
+pub(crate) fn finalized_height(chain_height: u32) -> types::Height {
     types::Height(chain_height.saturating_sub(NON_FINALIZED_DEPTH))
 }
 
@@ -872,9 +872,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
-                    let anchor_height = anchor_height(chain_height.0);
+                    let finalized_height = finalized_height(chain_height.0);
 
-                    fs.sync_to_height(anchor_height, &source)
+                    fs.sync_to_height(finalized_height, &source)
                         .await
                         .map_err(source_error)?;
 
@@ -887,7 +887,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                     source.clone(),
                                     network,
                                     fs.to_reader()
-                                        .get_chain_block_by_height(anchor_height)
+                                        .get_chain_block_by_height(finalized_height)
                                         .await
                                         .expect("todo"),
                                 )
@@ -907,13 +907,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     // published snapshot past the seam `fs.sync_to_height`
                     // committed to (#1126).
                     //
-                    // Range is `(anchor_height.0 + 1)..=chain_height.0` —
+                    // Range is `(finalized_height.0 + 1)..=chain_height.0` —
                     // exactly `NON_FINALIZED_DEPTH` blocks in steady
                     // production, fewer when the chain itself is shorter
                     // than the depth (early chain / regtest).
-                    let window_first = anchor_height.0 + 1;
+                    let window_first = finalized_height.0 + 1;
                     let mut window: Vec<Arc<zebra_chain::block::Block>> =
-                        Vec::with_capacity(chain_height.0.saturating_sub(anchor_height.0) as usize);
+                        Vec::with_capacity(chain_height.0.saturating_sub(finalized_height.0) as usize);
                     for h in window_first..=chain_height.0 {
                         let block = source
                             .get_block(HashOrHeight::Height(zebra_chain::block::Height(h)))
@@ -1286,9 +1286,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         "validator has no best block",
                         None,
                     ))?;
-                let validator_anchor_height = anchor_height(height.0);
+                let validator_finalized_height = finalized_height(height.0);
                 Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
-                    validator_finalized_height: validator_anchor_height,
+                    validator_finalized_height,
                 })
             }
         }
