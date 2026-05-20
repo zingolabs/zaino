@@ -279,16 +279,16 @@ impl MockchainSource {
     /// notices, notify or not.
     pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
         let max_height = self.max_chain_height();
-        let _ = self
-            .active_chain_height
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                let target = current.saturating_add(blocks).min(max_height);
-                if target == current {
-                    None
-                } else {
-                    Some(target)
-                }
-            });
+        let _ =
+            self.active_chain_height
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    let target = current.saturating_add(blocks).min(max_height);
+                    if target == current {
+                        None
+                    } else {
+                        Some(target)
+                    }
+                });
     }
 
     pub(crate) fn max_chain_height(&self) -> u32 {

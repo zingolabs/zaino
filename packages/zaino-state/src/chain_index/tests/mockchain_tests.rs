@@ -5,10 +5,7 @@ use zebra_chain::serialization::ZcashDeserializeInto;
 
 use crate::{
     chain_index::{
-        source::{
-            mockchain_source::MockchainSource,
-            BlockchainSource,
-        },
+        source::{mockchain_source::MockchainSource, BlockchainSource},
         tests::vectors::{load_test_vectors, TestVectorBlockData},
         types::{BestChainLocation, TransactionHash},
         ChainIndex, NodeBackedChainIndexSubscriber,

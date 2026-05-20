@@ -49,7 +49,8 @@ pub const ZAINO_TXOUTSET_ENTRY_LEN: u64 = 32 + 4 + 8 + 20 + 1;
 /// used in Zaino. Caller XORs the returned digest into the running
 /// accumulator on add and again on remove (XOR is self-inverse).
 pub fn tx_out_set_entry_digest(outpoint: &Outpoint, out: &TxOutCompact) -> [u8; 32] {
-    let mut hasher = Blake2bVar::new(32).expect("BLAKE2b-256 hasher initialises with digest_size=32");
+    let mut hasher =
+        Blake2bVar::new(32).expect("BLAKE2b-256 hasher initialises with digest_size=32");
     hasher.update(ZAINO_TXOUTSET_DOMAIN_TAG);
     hasher.update(outpoint.prev_txid());
     hasher.update(&outpoint.prev_index().to_le_bytes());
@@ -360,8 +361,8 @@ mod tests {
     #[test]
     fn tx_out_set_entry_digest_is_deterministic_and_domain_separated() {
         let outpoint = Outpoint::new([1u8; 32], 0);
-        let out = TxOutCompact::new(42, [0x22; 20], 1)
-            .expect("script_type 1 (P2SH) should be valid");
+        let out =
+            TxOutCompact::new(42, [0x22; 20], 1).expect("script_type 1 (P2SH) should be valid");
         let a = tx_out_set_entry_digest(&outpoint, &out);
         let b = tx_out_set_entry_digest(&outpoint, &out);
         assert_eq!(a, b);

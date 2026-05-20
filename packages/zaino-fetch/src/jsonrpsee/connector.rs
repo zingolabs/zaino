@@ -1102,17 +1102,13 @@ mod tests {
         });
 
         let url = Url::parse(&format!("http://{addr}/")).expect("parse url");
-        let connector =
-            JsonRpSeeConnector::new_with_basic_auth(url, "u".into(), "p".into())
-                .expect("build connector");
+        let connector = JsonRpSeeConnector::new_with_basic_auth(url, "u".into(), "p".into())
+            .expect("build connector");
 
-        let result = connector
-            .get_tx_out("00".repeat(32), 0, None)
-            .await
-            .expect(
-                "null result for gettxout must decode to GetTxOutResponse(None), \
+        let result = connector.get_tx_out("00".repeat(32), 0, None).await.expect(
+            "null result for gettxout must decode to GetTxOutResponse(None), \
                  not surface as a transport error",
-            );
+        );
 
         assert_eq!(result, GetTxOutResponse(None));
     }

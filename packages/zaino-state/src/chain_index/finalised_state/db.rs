@@ -552,9 +552,7 @@ impl BlockTransparentExt for DbBackend {
         outpoint: Outpoint,
     ) -> Result<TxOutCompact, FinalisedStateError> {
         match self {
-            Self::V1(db) => {
-                <DbV1 as BlockTransparentExt>::get_previous_output(db, outpoint).await
-            }
+            Self::V1(db) => <DbV1 as BlockTransparentExt>::get_previous_output(db, outpoint).await,
             _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }

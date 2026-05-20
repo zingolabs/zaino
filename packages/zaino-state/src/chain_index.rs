@@ -2300,7 +2300,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         .map_err(|e| ChainIndexError::internal(e.to_string()))?;
 
                     // Seed the prev_txid unspent counter if this is the first time we touch it.
-                    if let std::collections::hash_map::Entry::Vacant(e) = tx_unspent_count.entry(prev_txid) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        tx_unspent_count.entry(prev_txid)
+                    {
                         let seed = self
                             .count_finalised_unspent_outputs(prev_txid)
                             .await
