@@ -75,17 +75,26 @@ mod tests;
 /// as the existing on-disk behavior, pending review against Zebra's value.
 pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
 
-/// Height of the non-finalized state's lower seam — the finalized DB's tip,
-/// derived from the chain's current best tip.
+/// Lower bound on zaino's finalized-DB tip, derived from the current
+/// best-known-chain tip.
 ///
-/// Blocks at height `<= finalized_height(chain_height)` are finalized and live
-/// in the finalized DB; blocks above are non-finalized and live in the NFS.
-/// The seam overlaps by exactly one block (the block at this height appears
-/// in both layers).
+/// Returns `chain_height - NON_FINALIZED_DEPTH` (saturating at zero on
+/// early chain). In steady state this equals `fs.db_height` — each
+/// sync iter advances `fs` to track this value. They can diverge after a
+/// reorg that shortens the best-known-chain tip below the prior
+/// finalization boundary: zaino's finalized DB is monotonic (once a
+/// block is added it stays), so `fs.db_height` can sit *above* the value
+/// returned here. The actual finalized tip is therefore
+/// `max(fs.db_height, finalized_height_floor(chain_tip))`.
 ///
-/// Saturates at zero on early chain (`chain_height < NON_FINALIZED_DEPTH`),
-/// meaning the finalized seam is at genesis.
-pub(crate) fn finalized_height(chain_height: u32) -> types::Height {
+/// For "what has zaino actually finalized," consult `fs.db_height()`.
+/// Use this function only for chain-derived computations — e.g. as the
+/// `target` for `fs.sync_to_height`, which is idempotent and no-ops if
+/// the DB is already past the target.
+///
+/// See #1128 for the read-routing call-site impact at
+/// `ChainIndexSnapshot::StillSyncingFinalizedState`.
+pub(crate) fn finalized_height_floor(chain_height: u32) -> types::Height {
     types::Height(chain_height.saturating_sub(NON_FINALIZED_DEPTH))
 }
 
@@ -872,7 +881,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
-                    let finalized_height = finalized_height(chain_height.0);
+                    let finalized_height = finalized_height_floor(chain_height.0);
 
                     fs.sync_to_height(finalized_height, &source)
                         .await
@@ -1286,7 +1295,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         "validator has no best block",
                         None,
                     ))?;
-                let validator_finalized_height = finalized_height(height.0);
+                let validator_finalized_height = finalized_height_floor(height.0);
                 Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
                     validator_finalized_height,
                 })

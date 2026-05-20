@@ -368,14 +368,14 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// finalised tip.
     ///
     /// `window` is the iter's pre-fetched view of the non-finalized region —
-    /// blocks at heights `finalized_height(chain_height) + 1 ..= chain_height`,
+    /// blocks at heights `finalized_height_floor(chain_height) + 1 ..= chain_height`,
     /// captured by the worker against the same `chain_height` it passed to
     /// `fs.sync_to_height`. NFS extension is bounded by the window, so a
     /// source advance mid-iter is deferred to iter N+1 (which pre-fetches
     /// its own window against its own fresh `chain_height`). Closes the race
     /// in #1126.
     ///
-    /// Window length is `chain_height - finalized_height(chain_height)` —
+    /// Window length is `chain_height - finalized_height_floor(chain_height)` —
     /// `NON_FINALIZED_DEPTH` in steady production, smaller when the chain
     /// itself is shorter than the depth (early chain / regtest).
     #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db, window))]
@@ -413,7 +413,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
         for block in window {
             // Window may start below `working_snapshot.best_tip` (when iter
-            // N-1 already advanced past `finalized_height(chain_height)`); skip
+            // N-1 already advanced past `finalized_height_floor(chain_height)`); skip
             // those entries.
             if working_snapshot.block_is_already_in_nfs(&block) {
                 continue;
