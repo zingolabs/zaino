@@ -2044,7 +2044,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
                 Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))
             }
-            Some(Err(crate::error::MempoolError::IncorrectChainTip { .. })) => None,
             Some(Err(e)) => {
                 let (out_tx, out_rx) =
                     tokio::sync::mpsc::channel::<Result<Vec<u8>, ChainIndexError>>(1);

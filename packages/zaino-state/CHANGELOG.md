@@ -121,3 +121,13 @@ and this library adheres to Rust's notion of
 - `non_finalized_state::NonfinalizedBlockCacheSnapshot` visibility narrowed
   from `pub` to `pub(crate)`; it is no longer part of the public API.
   External consumers should use `ChainIndexSnapshot` instead.
+- `error::MempoolError::IncorrectChainTip` — the variant is no longer
+  constructed under the lag-vs-divergence handling introduced in
+  `MempoolSubscriber::get_mempool_stream` (PR #1055 review
+  #3147949247). Tip-mismatch detection now lives inside
+  `wait_on_mempool_updates`, which waits on `mempool_chain_tip` for up to
+  `MEMPOOL_TIP_CATCHUP` and only closes the stream via the existing
+  `Syncing` path on timeout — never via a synchronous error. Removing
+  the variant is a breaking change for consumers that pattern-matched
+  on it; the canonical replacement is to observe stream closure (the
+  `Receiver` drains and returns `None`).
