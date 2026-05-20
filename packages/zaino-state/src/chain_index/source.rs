@@ -205,10 +205,17 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
 
     /// Subscribe to source state-change notifications.
     ///
-    /// Each subscriber receives every change-event on its own buffered
-    /// receiver, so wakes between iterations are preserved (no missed-wake
-    /// gap). Sync loops typically call `change_subscribe` once at startup
-    /// and `select!` `recv()` against their fixed-cadence timer, falling
+    /// `broadcast` gives each subscriber an independent wakeup path, but
+    /// the notification stream is **not a lossless event log**: the
+    /// channel is bounded, and a lagging receiver will see
+    /// `RecvError::Lagged` and miss intermediate pings. That's
+    /// acceptable here because sync loops use the wakeup only as a
+    /// coalescible "source state changed" signal — after waking they
+    /// re-read source state, so a missed ping at most defers them to
+    /// the next fixed-cadence timer tick.
+    ///
+    /// Sync loops typically call `change_subscribe` once at startup and
+    /// `select!` `recv()` against their fixed-cadence timer, falling
     /// through to the timer when no push notification arrives.
     ///
     /// The default returns `None` — poll-only sources (real validators)

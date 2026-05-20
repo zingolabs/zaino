@@ -151,10 +151,13 @@ pub(crate) struct MockchainSource {
     /// Pings every subscriber registered via
     /// [`BlockchainSource::change_subscribe`] when [`Self::mine_blocks`]
     /// advances the active height, so each can wake from its interval
-    /// timer immediately. `broadcast` (over `Notify`) gives every
-    /// subscriber its own buffered receiver, so a `mine_blocks` that
-    /// fires while one subsystem is mid-iteration is preserved on its
-    /// receiver and consumed on the next `recv().await`.
+    /// timer immediately. The `broadcast` channel is bounded — a lagging
+    /// subscriber will see `RecvError::Lagged` and miss intermediate
+    /// pings rather than receive every `mine_blocks` event. That's
+    /// acceptable because the ping is only a coalescible "something
+    /// changed" signal: after waking, the subsystem re-reads source
+    /// state, so a dropped intermediate ping at most defers it to the
+    /// next fixed-cadence timer tick.
     change_broadcast: tokio::sync::broadcast::Sender<()>,
     /// One-shot test hook: fires on the first `get_block(HashOrHeight::Height(_))`
     /// call after [`Self::arm_one_shot_get_block_hook`], regardless of which
