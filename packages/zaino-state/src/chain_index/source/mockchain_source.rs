@@ -269,11 +269,14 @@ impl MockchainSource {
             .store(fail, Ordering::SeqCst);
     }
 
-    pub(crate) fn mine_blocks(&self, blocks: u32) {
+    /// Advances `active_chain_height` by up to `blocks`, capped at
+    /// `max_chain_height`. Returns `true` iff the height changed; on a
+    /// no-op advance (already at the cap) returns `false` so callers
+    /// can decide whether to fire the change-notify.
+    fn advance_active_height(&self, blocks: u32) -> bool {
         // len() returns one-indexed length, height is zero-indexed.
         let max_height = self.max_chain_height();
-        let advanced = self
-            .active_chain_height
+        self.active_chain_height
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 let target = current.saturating_add(blocks).min(max_height);
                 if target == current {
@@ -282,8 +285,11 @@ impl MockchainSource {
                     Some(target)
                 }
             })
-            .is_ok();
-        if advanced {
+            .is_ok()
+    }
+
+    pub(crate) fn mine_blocks(&self, blocks: u32) {
+        if self.advance_active_height(blocks) {
             self.blocks_received_broadcaster.send_replace(());
         }
     }
@@ -295,17 +301,7 @@ impl MockchainSource {
     /// serve loop polls `get_best_block_hash` directly and always
     /// notices, notify or not.
     pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
-        let max_height = self.max_chain_height();
-        let _ =
-            self.active_chain_height
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    let target = current.saturating_add(blocks).min(max_height);
-                    if target == current {
-                        None
-                    } else {
-                        Some(target)
-                    }
-                });
+        self.advance_active_height(blocks);
     }
 
     pub(crate) fn max_chain_height(&self) -> u32 {
