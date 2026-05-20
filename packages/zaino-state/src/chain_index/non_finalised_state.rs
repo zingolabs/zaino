@@ -794,3 +794,85 @@ impl Block for zebra_chain::block::Block {
         nfs.block_to_chainblock(prev_block, self).await
     }
 }
+
+#[cfg(test)]
+mod block_is_already_in_nfs_predicate {
+    //! Reproducer for [#1129](https://github.com/zingolabs/zaino/issues/1129):
+    //! [`NonfinalizedBlockCacheSnapshot::block_is_already_in_nfs`] checks
+    //! `block.coinbase_height() <= self.best_tip.height` rather than membership
+    //! in `self.blocks`. For a block that *is* in `self.blocks` but at a
+    //! height above `best_tip.height` (the legitimate shape for a non-best-
+    //! chain block retained via `handle_nfs_change_listener` →
+    //! `add_nonbest_block`), the predicate returns false even though the
+    //! block is in the NFS — the docstring's contract is broken.
+    //!
+    //! Today the bug doesn't bite in production because the only call site
+    //! (`sync()`'s for-loop at ~line 419) feeds the predicate the iter's
+    //! best-chain pre-fetched window, where the height heuristic happens
+    //! to give the right answer. This test pins the broken contract at
+    //! the predicate level so a fix lands honestly. See #1129 for the
+    //! fix discussion (check by hash vs. rename to reflect the heuristic).
+    use super::*;
+    use crate::chain_index::tests::vectors::{load_test_vectors, TestVectorBlockData};
+    use zaino_common::network::ActivationHeights;
+
+    fn make_indexed_block_at(idx: usize, blocks: &[TestVectorBlockData]) -> IndexedBlock {
+        let b = &blocks[idx];
+        let metadata = BlockMetadata::new(
+            b.sapling_root,
+            b.sapling_tree_size as u32,
+            b.orchard_root,
+            b.orchard_tree_size as u32,
+            ChainWork::from_u256(0.into()),
+            zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network(),
+        );
+        IndexedBlock::try_from(BlockWithMetadata::new(&b.zebra_block, metadata)).unwrap()
+    }
+
+    #[test]
+    fn misses_block_in_nfs_above_best_tip() {
+        let vectors = load_test_vectors().unwrap();
+        let blocks = vectors.blocks;
+
+        // Build a snapshot with best_tip.height = 10.
+        let initial = make_indexed_block_at(10, &blocks);
+        let mut snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(initial);
+        assert_eq!(
+            snapshot.best_tip.height,
+            Height(10),
+            "precondition: snapshot best_tip is at height 10"
+        );
+
+        // Stash a block at height 50 directly into nfs.blocks (not in
+        // heights_to_hashes) — the shape `add_nonbest_block` produces
+        // for non-best-chain blocks retained via the listener path.
+        let stranded = make_indexed_block_at(50, &blocks);
+        snapshot.blocks.insert(*stranded.hash(), stranded.clone());
+
+        // Sanity: the block IS in snapshot.blocks.
+        assert!(
+            snapshot.blocks.contains_key(stranded.hash()),
+            "precondition: stranded block was inserted into snapshot.blocks"
+        );
+
+        // Predicate's docstring: "is this block already represented in
+        // the NFS?" Answer: yes, the block IS in snapshot.blocks.
+        //
+        // Implementation: checks coinbase_height(50) <= best_tip.height(10).
+        // Returns false. Bug.
+        //
+        // When called from `sync()`'s for-loop (~line 419), this false
+        // negative means the `continue` is NOT hit, and the loop
+        // re-processes the block via `add_block_new_chaintip` or
+        // `handle_reorg`. Tracked in #1129.
+        let zebra_block_at_50 = blocks[50].zebra_block.clone();
+        assert!(
+            snapshot.block_is_already_in_nfs(&zebra_block_at_50),
+            "block at height 50 is in snapshot.blocks but \
+             block_is_already_in_nfs returned false because the \
+             predicate only checks coinbase_height <= best_tip.height \
+             (best_tip.height = {}); see #1129",
+            snapshot.best_tip.height.0,
+        );
+    }
+}
