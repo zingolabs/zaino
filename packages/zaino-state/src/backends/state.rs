@@ -2831,13 +2831,13 @@ mod tests {
             return ByteRelation::PerByteBitReversal;
         }
 
-        if actual.len() % 2 == 0 && chunk_swap(2) == expected {
+        if actual.len().is_multiple_of(2) && chunk_swap(2) == expected {
             return ByteRelation::ChunkSwap16;
         }
-        if actual.len() % 4 == 0 && chunk_swap(4) == expected {
+        if actual.len().is_multiple_of(4) && chunk_swap(4) == expected {
             return ByteRelation::ChunkSwap32;
         }
-        if actual.len() % 8 == 0 && chunk_swap(8) == expected {
+        if actual.len().is_multiple_of(8) && chunk_swap(8) == expected {
             return ByteRelation::ChunkSwap64;
         }
 
