@@ -25,7 +25,6 @@ pub(crate) fn init_tracing() {
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
-use tokio::time::Duration;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 
 use crate::{
@@ -68,17 +67,7 @@ async fn load_test_vectors_and_sync_chain_index(
     NodeBackedChainIndexSubscriber<MockchainSource>,
     MockchainSource,
 ) {
-    // 25 ms setup-poll interval mirrors `_with_timings`. The previous 2 s
-    // value was load-bearing for the teardown race tracked in #1098: most
-    // callers (mockchain_tests, mempool, poll, proptest_blockgen) drop the
-    // indexer without calling `shutdown()`, and the old worker needed to
-    // be parked in its post-success interval-sleep before runtime teardown
-    // raced a mid-iter LMDB write. With `Drop for NodeBackedChainIndex`
-    // firing `cancel_token.cancel()` and the worker's iter body wrapped in
-    // `tokio::select!` against that token, the worker now exits at its
-    // next await checkpoint on drop — the harness no longer needs to
-    // bait the timing.
-    load_with_settings(mode, SyncTimings::default(), Duration::from_millis(25)).await
+    load_with_settings(mode, SyncTimings::default()).await
 }
 
 async fn load_test_vectors_and_sync_chain_index_with_timings(
@@ -90,13 +79,12 @@ async fn load_test_vectors_and_sync_chain_index_with_timings(
     NodeBackedChainIndexSubscriber<MockchainSource>,
     MockchainSource,
 ) {
-    load_with_settings(mode, sync_timings, Duration::from_millis(25)).await
+    load_with_settings(mode, sync_timings).await
 }
 
 async fn load_with_settings(
     mode: MockchainMode,
     sync_timings: SyncTimings,
-    setup_poll_interval: Duration,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
     NodeBackedChainIndex<MockchainSource>,
@@ -151,7 +139,15 @@ async fn load_with_settings(
     // at `source.active_height()` implies the finalised DB has reached its
     // floor — the sync loop only initialises NFS after `sync_to_height`
     // succeeds — so this condition subsumes the old one.
+    //
+    // The wait is woken by the sync loop's status watch channel rather than a
+    // fixed-cadence poll: each status transition is the earliest point at
+    // which a new NFS tip can be observed. Teardown no longer needs a timing
+    // shim — `Drop for NodeBackedChainIndex` cancels the worker's
+    // `cancel_token`, so the worker exits at its next await checkpoint when a
+    // test drops the indexer without calling `shutdown()`.
     let expected_nfs_tip = source.active_height();
+    let mut status = index_reader.status_subscribe();
     loop {
         let nfs_ready = match index_reader.snapshot_nonfinalized_state().await {
             Ok(snap) => snap
@@ -162,7 +158,10 @@ async fn load_with_settings(
         if nfs_ready {
             break;
         }
-        tokio::time::sleep(setup_poll_interval).await;
+        status
+            .changed()
+            .await
+            .expect("ChainIndex status sender dropped before reaching Ready");
     }
 
     (blocks, indexer, index_reader, source)
