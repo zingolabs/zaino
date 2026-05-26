@@ -19,8 +19,17 @@
 //! Tests of the cold-start "still-syncing" variant are deliberately
 //! omitted: that variant is being eliminated, and pinning its shape
 //! would create immediate test churn at the refactor PR.
+//!
+//! The one exception is the trailing **red driver** for #1096
+//! (`best_chaintip_derives_tip_from_nfs_snapshot_not_validator_passthrough`).
+//! Unlike the characterization tests above — which pin behavior that must
+//! survive the refactor unchanged — that test is *failing on purpose* and is
+//! expected to be rewritten when the still-syncing variant is removed. It
+//! pins cold-start shape precisely because it is driving that variant's
+//! elimination, so the churn it incurs is the point, not an accident.
 
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
+use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
 use crate::chain_index::{finalized_height_floor, ChainIndex};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -284,5 +293,61 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
          source advances mid-iter; published NFS overshoots its iter-committed \
          seam (#1126)",
         pre_mine_finalized_height.0,
+    );
+}
+
+/// **Red driver for #1096** (NOT a surviving characterization test — see the
+/// module-level doc; this one is *failing on purpose* and is expected to be
+/// rewritten when the still-syncing variant is removed).
+///
+/// Target invariant: `best_chaintip` must derive the chain tip from the
+/// non-finalized snapshot in *every* availability state — it must never fall
+/// back to a validator passthrough.
+///
+/// Today the lazy design hands out
+/// [`ChainIndexSnapshot::StillSyncingFinalizedState`] during the cold-start
+/// window, before the NFS slot is populated. In that variant `best_chaintip`
+/// (`chain_index.rs`, the `StillSyncingFinalizedState` arm) has no snapshot
+/// tip to read, so it round-trips to the validator and reports the *finalized
+/// floor* (`validator_finalized_height`) as the tip — a stale height, and a
+/// fallible call that surfaces `database_hole` if the validator can't serve
+/// the floor block.
+///
+/// After #1096 there is no still-syncing variant: the snapshot always carries
+/// an NFS `best_tip`, so `best_chaintip` reads it directly and reports the
+/// real tip with no validator call. The test will then be rewritten to assert
+/// the invariant over a snapshot returned by `snapshot_nonfinalized_state()`.
+///
+/// multi_thread: depends on the harness's background sync loop advancing the
+/// NFS concurrently with the setup's poll-until-ready loop.
+#[tokio::test(flavor = "multi_thread")]
+async fn best_chaintip_derives_tip_from_nfs_snapshot_not_validator_passthrough() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+
+    // The chain tip the always-present NFS snapshot reports: the harness syncs
+    // the NFS to exactly the source's active height before returning.
+    let chain_tip = mockchain.active_height();
+
+    // The cold-start variant the lazy design can hand out instead. Its
+    // `validator_finalized_height` is the true floor — exactly what
+    // `snapshot_nonfinalized_state()` computes while the NFS slot is `None`.
+    let cold_start_snapshot = ChainIndexSnapshot::StillSyncingFinalizedState {
+        validator_finalized_height: finalized_height_floor(chain_tip),
+    };
+
+    let tip = index_reader
+        .best_chaintip(&cold_start_snapshot)
+        .await
+        .expect("best_chaintip resolves against a still-syncing snapshot");
+
+    assert_eq!(
+        tip.height.0,
+        chain_tip,
+        "best_chaintip must derive the tip from the NFS snapshot and report the \
+         chain tip ({chain_tip}) in every availability state; today the cold-start \
+         variant passes through to the validator and reports the finalized floor \
+         ({}) instead (#1096)",
+        finalized_height_floor(chain_tip).0,
     );
 }
