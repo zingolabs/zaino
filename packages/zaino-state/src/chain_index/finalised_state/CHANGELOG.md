@@ -171,5 +171,100 @@ On-disk schema
   - No changes.
 
 --------------------------------------------------------------------------------
+DB VERSION v1.2.0 (from v1.1.0)
+Date: 2026-05-10
+--------------------------------------------------------------------------------
+
+Summary
+- Promote the `spent` outpoint index to core finalised-state data.
+- Add a finalised txout-set accumulator (`tx_out_set_info_accumulator`)
+  maintaining the data needed to serve `gettxoutsetinfo` directly from the
+  indexer.
+- Backfill both new structures from existing per-block transparent transaction
+  data via a single in-place migration.
+- Add resumable in-place migration progress tracking using a temporary metadata entry.
+
+On-disk schema
+- Layout:
+  - No directory layout changes.
+- Tables:
+  - Added: `spent` is now a core v1 table rather than an experimental transparent-address-history table.
+  - Added: `tx_out_set_info_accumulator` — singleton table holding the
+    finalised transparent UTXO-set summary
+    (LMDB database name: `tx_out_set_info_accumulator_1_2_0`,
+    singleton key: ASCII `"tx_out_set_info_accumulator"`).
+  - Removed: None.
+  - Renamed: None.
+- Encoding:
+  - Keys: No changes to `Outpoint` encoding.
+  - Values: `spent` stores `StoredEntryFixed<TxLocation>` values.
+    `tx_out_set_info_accumulator` stores
+    `StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>` whose body is
+    `LE(u64) transactions || LE(u64) transaction_outputs ||
+     LE(u64) bytes_serialized || [32] hash_serialized ||
+     LE(u64) total_zatoshis` (64 bytes).
+  - Checksums / validation:
+    - `spent` entries are checksum-protected using the encoded `Outpoint` key.
+    - The accumulator entry is checksum-protected using its singleton key.
+    - Migration progress is temporarily stored as `StoredEntryFixed<Height>` in the metadata DB under `_migration_spent_progress_1_2_0_next_height`.
+- Invariants:
+  - For every non-null transparent input in finalised-state block data, `spent[Outpoint]` must exist and point to the spending transaction’s `TxLocation`.
+  - Existing `spent` entries encountered during migration must decode, verify, and match the expected `TxLocation`.
+  - The accumulator excludes provably-unspendable transparent outputs
+    (anything whose `ScriptType` is not `P2PKH` or `P2SH` — matches zcashd's
+    `IsUnspendable()` view of the UTXO set: OP_RETURN, oversized scripts,
+    etc.). `bytes_serialized == transaction_outputs * 65` by construction.
+  - `hash_serialized` is the XOR over all currently-unspent transparent
+    outputs of `BLAKE2b-256(b"ZcashTxOutSet___" || prev_txid || LE(u32)
+    vout || LE(u64) value || script_hash[20] || u8 script_type)`. Order-
+    independent and self-inverse under add/remove. Not byte-equal to
+    zcashd's `hash_serialized`.
+
+API / capabilities
+- Capability changes:
+  - Added: core availability of spent-outpoint lookup data.
+  - Removed: None.
+  - Changed:
+    - Spent-outpoint indexing is no longer dependent on transparent address-history support.
+    - `BlockTransparentExt::get_previous_output` is now part of the trait
+      (formerly available only behind
+      `transparent_address_history_experimental`).
+    - `TransparentHistExt::get_tx_out_set_info_accumulator` returns the new
+      `FinalisedTxOutSetInfoAccumulator` value.
+- Public surface changes:
+  - Added:
+    - `DbReader::get_previous_output(outpoint) -> TxOutCompact` — the
+      read-only entry point for finalised previous-output lookups.
+    - `DbReader::get_tx_out_set_info_accumulator() -> FinalisedTxOutSetInfoAccumulator`.
+  - Removed: None.
+  - Changed:
+    - Existing spent/outpoint-spender functionality can be backed by the core `spent` table.
+
+Migration
+- Strategy: in-place index backfill (single migration step covers both new
+  structures).
+- Backfill:
+  - Iterates existing transparent block data from genesis through the current finalised DB tip.
+  - For each non-null transparent input, writes `Outpoint -> StoredEntryFixed<TxLocation>` to `spent`.
+  - For each block, advances the singleton
+    `tx_out_set_info_accumulator` via the same calculator used by the
+    write path (`calculate_tx_out_set_info_accumulator_after_block`),
+    skipping NonStandard outputs.
+- Completion criteria:
+  - All heights through the current finalised DB tip have been processed.
+  - Migration status reaches `Complete`.
+  - Temporary migration progress key is deleted.
+  - `DbMetadata.version` is advanced to v1.2.0 and `migration_status` is reset to `Empty`.
+- Failure handling:
+  - Resumes from the temporary metadata progress height.
+  - Spent entries and progress updates for each height are committed in the same LMDB transaction.
+  - Existing matching spent entries are accepted after checksum and `TxLocation` verification.
+  - Existing conflicting or corrupt spent entries fail the migration.
+
+Bug Fixes / Optimisations
+- Avoids a shadow rebuild by deriving the new core `spent` index from existing transparent transaction data.
+- Avoids temporary named LMDB databases by storing migration progress as a temporary metadata entry.
+
+--------------------------------------------------------------------------------
 (append new entries below)
 --------------------------------------------------------------------------------

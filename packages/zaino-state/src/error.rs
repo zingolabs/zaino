@@ -610,6 +610,18 @@ impl ChainIndexError {
     pub fn kind(&self) -> ChainIndexErrorKind {
         self.kind
     }
+    /// Constructs an `InternalServerError`-kind error with a free-form message.
+    ///
+    /// Intended for call sites that produce a string error and have no underlying
+    /// `std::error::Error` source to attach.
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message: message.into(),
+            source: None,
+        }
+    }
+
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,

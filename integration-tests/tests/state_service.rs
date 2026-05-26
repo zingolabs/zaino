@@ -4,7 +4,7 @@ use zaino_common::{DatabaseConfig, ServiceConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
 use zaino_proto::proto::service::{BlockId, BlockRange, PoolType, TransparentAddressBlockFilter};
 use zaino_state::ChainIndex as _;
-use zaino_state::{LightWalletService, ZcashService};
+use zaino_state::ZcashService;
 
 #[allow(deprecated)]
 use zaino_state::{
@@ -13,7 +13,6 @@ use zaino_state::{
 };
 use zaino_testutils::{from_inputs, ValidatorExt};
 use zaino_testutils::{TestManager, ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
-use zainodlib::config::ZainodConfig;
 use zainodlib::error::IndexerError;
 use zcash_local_net::validator::{zebrad::Zebrad, Validator};
 use zebra_chain::parameters::NetworkKind;
@@ -93,7 +92,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("fetch-service-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -135,7 +134,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
                     .data_dir()
                     .path()
                     .to_path_buf()
-                    .join("zaino"),
+                    .join("state-srvice-zaino"),
                 ..Default::default()
             },
             ..Default::default()
@@ -167,16 +166,15 @@ async fn generate_blocks_and_poll_all_chain_indexes<V, Service>(
     state_service_subscriber: StateServiceSubscriber,
 ) where
     V: ValidatorExt,
-    Service: LightWalletService + Send + Sync + 'static,
-    Service::Config: TryFrom<ZainodConfig, Error = IndexerError>,
+    Service: zaino_testutils::TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    test_manager.generate_blocks_and_poll(n).await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &fetch_service_subscriber)
+        .generate_blocks_and_wait_for_tip(n, &fetch_service_subscriber)
         .await;
     test_manager
-        .generate_blocks_and_poll_indexer(0, &state_service_subscriber)
+        .generate_blocks_and_wait_for_tip(0, &state_service_subscriber)
         .await;
 }
 async fn state_service_check_info<V: ValidatorExt>(
@@ -2785,21 +2783,25 @@ mod zebra {
                 ],
             };
             if nullifiers_only {
-                let fetch_service_get_block_range = fetch_service_subscriber
-                    .get_block_range_nullifiers(request.clone())
-                    .await
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .collect::<Vec<_>>()
-                    .await;
-                let state_service_get_block_range = state_service_subscriber
-                    .get_block_range_nullifiers(request)
-                    .await
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .collect::<Vec<_>>()
-                    .await;
-                assert_eq!(fetch_service_get_block_range, state_service_get_block_range);
+                // TODO(#1088): replace deprecated nullifier-range client usage.
+                #[allow(deprecated)]
+                {
+                    let fetch_service_get_block_range = fetch_service_subscriber
+                        .get_block_range_nullifiers(request.clone())
+                        .await
+                        .unwrap()
+                        .map(Result::unwrap)
+                        .collect::<Vec<_>>()
+                        .await;
+                    let state_service_get_block_range = state_service_subscriber
+                        .get_block_range_nullifiers(request)
+                        .await
+                        .unwrap()
+                        .map(Result::unwrap)
+                        .collect::<Vec<_>>()
+                        .await;
+                    assert_eq!(fetch_service_get_block_range, state_service_get_block_range);
+                }
             } else {
                 let fetch_service_get_block_range = fetch_service_subscriber
                     .get_block_range(request.clone())

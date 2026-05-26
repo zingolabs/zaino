@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────────────
-#  Zaino – Finalised State Database, on-disk layout (Schema v1, 2025-08-05)
+#  Zaino – Finalised State Database, on-disk layout (Schema v1.2, 2026-13-05)
 # ────────────────────────────────────────────────────────────────────────────────
 #
 #  Any change to this file is a **breaking** change.  Bump the schema version,
@@ -89,12 +89,29 @@
 #    Val : 0x01 + CS n + n × TxLocation
 #           TxLocation = LE(u32) height  LE(u32) tx_index
 #
-# 9. address_history  ―  AddrScript  ->  StoredEntryFixed<AddrEventBytes>
+# 9. tx_out_set_info_accumulator  ―  "tx_out_set_info_accumulator" (ASCII)
+#       ->  StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>  (singleton)
+#    Val : 0x01 + FinalisedTxOutSetInfoAccumulator V1 body + [32] checksum
+#    FinalisedTxOutSetInfoAccumulator V1 body =
+#        LE(u64) transactions
+#        LE(u64) transaction_outputs
+#        LE(u64) bytes_serialized
+#        [32]   hash_serialized
+#        LE(u64) total_zatoshis
+#
+#    `hash_serialized` is Zaino's XOR-of-BLAKE2b-256 multiset commitment over
+#    every currently-unspent transparent output. Per-output digest =
+#    BLAKE2b-256(b"ZcashTxOutSet___" || prev_txid[32] || LE(u32) prev_index
+#                || LE(u64) value || script_hash[20] || u8 script_type).
+#    The 65-byte canonical entry is also what `bytes_serialized` counts:
+#    bytes_serialized == transaction_outputs * 65.
+#
+# 10. address_history  ―  AddrScript  ->  StoredEntryFixed<AddrEventBytes>
 #    Key : 0x01 + AddrScript
 #           AddrScript = [20] hash  u8 script_type
 #    Val : 0x01 + CS len + raw event bytes  (multiple entries may share the key)
 #
-# 10. metadata  ―  "metadata" (ASCII)  ->  StoredEntryFixed<DbMetadata>  (singleton)
+# 11. metadata  ―  "metadata" (ASCII)  ->  StoredEntryFixed<DbMetadata>  (singleton)
 #    Val : 0x01 + DbMetadata V1 body + [32] checksum
 #    DbMetadata V1 body =
 #        DbVersion version
@@ -106,7 +123,7 @@
 #
 # ─────────────────────────── Environment settings ─────────────────────────────
 #   LMDB page-size:         platform default
-#   max_dbs:                10 (see list above)
+#   max_dbs:                11 (see list above)
 #   Flags:                  MDB_NOTLS | MDB_NORDAHEAD
 #
 #   All Databases are append-only and indexed by height -> LMDB default

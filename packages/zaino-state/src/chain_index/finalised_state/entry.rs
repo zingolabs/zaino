@@ -181,6 +181,44 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
             .expect("Failed to finalize hash");
         output
     }
+
+    /// Builds serialized stored-entry bytes using a specific inner item version.
+    ///
+    /// This is required when writing historical database values whose inner item must be encoded
+    /// with an older version than `T::VERSION`.
+    ///
+    /// The returned bytes are:
+    /// - StoredEntryFixed version tag
+    /// - inner item bytes encoded with `item_version`
+    /// - checksum over `encoded_key || inner_item_bytes`
+    ///
+    /// This method returns serialized bytes directly because `StoredEntryFixed<T>` does not store
+    /// the inner item version. Constructing `Self` alone would lose the requested item version
+    /// before the value is written.
+    #[cfg(test)]
+    pub(crate) fn to_bytes_with_item_version<K: AsRef<[u8]>>(
+        key: K,
+        item: &T,
+        item_version: u8,
+    ) -> io::Result<Vec<u8>> {
+        let item_bytes = item.to_bytes_with_version(item_version)?;
+
+        if item_bytes.len() != T::VERSIONED_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "encoded fixed-length item has an unexpected length",
+            ));
+        }
+
+        let checksum = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+
+        let mut stored_entry_bytes = Vec::with_capacity(1 + T::VERSIONED_LEN + 32);
+        stored_entry_bytes.push(Self::VERSION);
+        stored_entry_bytes.extend_from_slice(&item_bytes);
+        stored_entry_bytes.extend_from_slice(&checksum);
+
+        Ok(stored_entry_bytes)
+    }
 }
 
 /// Versioned on-disk encoding for fixed-length checksummed entries.
@@ -314,6 +352,38 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
             .finalize_variable(&mut output)
             .expect("Failed to finalize hash");
         output
+    }
+
+    /// Builds serialized stored-entry bytes using a specific inner item version.
+    ///
+    /// This is required when writing historical database values whose inner item must be encoded
+    /// with an older version than `T::VERSION`.
+    ///
+    /// The returned bytes are:
+    /// - StoredEntryVar version tag
+    /// - CompactSize length of the inner item bytes
+    /// - inner item bytes encoded with `item_version`
+    /// - checksum over `encoded_key || inner_item_bytes`
+    ///
+    /// This method returns serialized bytes directly because `StoredEntryVar<T>` does not store
+    /// the inner item version. Constructing `Self` alone would lose the requested item version
+    /// before the value is written.
+    #[cfg(test)]
+    pub(crate) fn to_bytes_with_item_version<K: AsRef<[u8]>>(
+        key: K,
+        item: &T,
+        item_version: u8,
+    ) -> io::Result<Vec<u8>> {
+        let item_bytes = item.to_bytes_with_version(item_version)?;
+        let checksum = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+
+        let mut stored_entry_bytes = Vec::new();
+        stored_entry_bytes.push(Self::VERSION);
+        CompactSize::write(&mut stored_entry_bytes, item_bytes.len())?;
+        stored_entry_bytes.extend_from_slice(&item_bytes);
+        write_fixed_le::<32, _>(&mut stored_entry_bytes, &checksum)?;
+
+        Ok(stored_entry_bytes)
     }
 }
 

@@ -78,15 +78,17 @@
 use core::fmt;
 
 use crate::{
-    chain_index::types::TransactionHash, error::FinalisedStateError, read_fixed_le, read_u32_le,
-    read_u8, version, write_fixed_le, write_u32_le, write_u8, BlockHash, BlockHeaderData,
-    CommitmentTreeData, CompactBlockStream, FixedEncodedLen, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerde,
+    chain_index::types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
+    error::FinalisedStateError,
+    read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, FixedEncodedLen, Height,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
+    ZainoVersionedSerde,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::{chain_index::types::AddrEventBytes, AddrScript, Outpoint};
+use crate::{chain_index::types::AddrEventBytes, AddrScript};
 
 use async_trait::async_trait;
 use bitflags::bitflags;
@@ -152,7 +154,6 @@ bitflags! {
         const CHAIN_BLOCK_EXT       = 0b0100_0000;
 
         /// Backend implements [`TransparentHistExt`] (transparent address history indices).
-        #[cfg(feature = "transparent_address_history_experimental")]
         const TRANSPARENT_HIST_EXT  = 0b1000_0000;
     }
 }
@@ -164,24 +165,14 @@ impl Capability {
     /// sync with:
     /// - the latest on-disk schema (`DbV1` today, `DbV2` in the future),
     /// - and [`DbVersion::capability`] for that schema.
-    pub(crate) const LATEST: Capability = {
-        let base = Capability::READ_CORE
-            .union(Capability::WRITE_CORE)
-            .union(Capability::BLOCK_CORE_EXT)
-            .union(Capability::BLOCK_TRANSPARENT_EXT)
-            .union(Capability::BLOCK_SHIELDED_EXT)
-            .union(Capability::COMPACT_BLOCK_EXT)
-            .union(Capability::CHAIN_BLOCK_EXT);
-
-        #[cfg(feature = "transparent_address_history_experimental")]
-        {
-            base.union(Capability::TRANSPARENT_HIST_EXT)
-        }
-        #[cfg(not(feature = "transparent_address_history_experimental"))]
-        {
-            base
-        }
-    };
+    pub(crate) const LATEST: Capability = Capability::READ_CORE
+        .union(Capability::WRITE_CORE)
+        .union(Capability::BLOCK_CORE_EXT)
+        .union(Capability::BLOCK_TRANSPARENT_EXT)
+        .union(Capability::BLOCK_SHIELDED_EXT)
+        .union(Capability::COMPACT_BLOCK_EXT)
+        .union(Capability::CHAIN_BLOCK_EXT)
+        .union(Capability::TRANSPARENT_HIST_EXT);
 
     /// Returns `true` if `self` includes **all** bits from `other`.
     ///
@@ -224,7 +215,6 @@ pub(crate) enum CapabilityRequest {
     IndexedBlockExt,
 
     /// Request the [`TransparentHistExt`] extension surface.
-    #[cfg(feature = "transparent_address_history_experimental")]
     TransparentHistExt,
 }
 
@@ -244,7 +234,6 @@ impl CapabilityRequest {
             CapabilityRequest::BlockShieldedExt => Capability::BLOCK_SHIELDED_EXT,
             CapabilityRequest::CompactBlockExt => Capability::COMPACT_BLOCK_EXT,
             CapabilityRequest::IndexedBlockExt => Capability::CHAIN_BLOCK_EXT,
-            #[cfg(feature = "transparent_address_history_experimental")]
             CapabilityRequest::TransparentHistExt => Capability::TRANSPARENT_HIST_EXT,
         }
     }
@@ -263,7 +252,6 @@ impl CapabilityRequest {
             CapabilityRequest::BlockShieldedExt => "BLOCK_SHIELDED_EXT",
             CapabilityRequest::CompactBlockExt => "COMPACT_BLOCK_EXT",
             CapabilityRequest::IndexedBlockExt => "CHAIN_BLOCK_EXT",
-            #[cfg(feature = "transparent_address_history_experimental")]
             CapabilityRequest::TransparentHistExt => "TRANSPARENT_HIST_EXT",
         }
     }
@@ -471,23 +459,39 @@ impl DbVersion {
             }
 
             // V1: Adds chainblockv1 and transparent transaction history data.
-            (1, 0) => {
-                let base = Capability::READ_CORE
+            #[cfg(feature = "transparent_address_history_experimental")]
+            (1, 0) | (1, 1) => {
+                Capability::READ_CORE
                     | Capability::WRITE_CORE
                     | Capability::BLOCK_CORE_EXT
                     | Capability::BLOCK_TRANSPARENT_EXT
                     | Capability::BLOCK_SHIELDED_EXT
                     | Capability::COMPACT_BLOCK_EXT
-                    | Capability::CHAIN_BLOCK_EXT;
+                    | Capability::CHAIN_BLOCK_EXT
+                    | Capability::TRANSPARENT_HIST_EXT
+            }
 
-                #[cfg(feature = "transparent_address_history_experimental")]
-                {
-                    base | Capability::TRANSPARENT_HIST_EXT
-                }
-                #[cfg(not(feature = "transparent_address_history_experimental"))]
-                {
-                    base
-                }
+            #[cfg(not(feature = "transparent_address_history_experimental"))]
+            (1, 0) | (1, 1) => {
+                Capability::READ_CORE
+                    | Capability::WRITE_CORE
+                    | Capability::BLOCK_CORE_EXT
+                    | Capability::BLOCK_TRANSPARENT_EXT
+                    | Capability::BLOCK_SHIELDED_EXT
+                    | Capability::COMPACT_BLOCK_EXT
+                    | Capability::CHAIN_BLOCK_EXT
+            }
+
+            // V1.2: Moves Spent indexing out of "transparent_address_history_experimental".
+            (1, 2) => {
+                Capability::READ_CORE
+                    | Capability::WRITE_CORE
+                    | Capability::BLOCK_CORE_EXT
+                    | Capability::BLOCK_TRANSPARENT_EXT
+                    | Capability::BLOCK_SHIELDED_EXT
+                    | Capability::COMPACT_BLOCK_EXT
+                    | Capability::CHAIN_BLOCK_EXT
+                    | Capability::TRANSPARENT_HIST_EXT
             }
 
             // Unknown / unsupported
@@ -818,6 +822,16 @@ pub trait BlockTransparentExt: Send + Sync {
         start: Height,
         end: Height,
     ) -> Result<Vec<TransparentTxList>, FinalisedStateError>;
+
+    /// Returns the [`TxOutCompact`] referenced by `outpoint`, looking up the previous
+    /// transaction's transparent data via the txid index and the transparent block table.
+    ///
+    /// Returns an error if the previous transaction is not indexed by the finalised state
+    /// or the requested output index is out of range.
+    async fn get_previous_output(
+        &self,
+        outpoint: Outpoint,
+    ) -> Result<TxOutCompact, FinalisedStateError>;
 }
 
 /// Shielded transaction indexing extension (Sapling + Orchard + commitment tree data).
@@ -929,7 +943,6 @@ pub trait IndexedBlockExt: Send + Sync {
 /// Range semantics:
 /// - Methods that accept `start_height` and `end_height` interpret the range as inclusive:
 ///   `[start_height, end_height]`
-#[cfg(feature = "transparent_address_history_experimental")]
 #[async_trait]
 pub trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.
@@ -938,6 +951,7 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(Some(records))` if one or more valid records exist,
     /// - `Ok(None)` if no records exist (not an error),
     /// - `Err(...)` if any decoding or DB error occurs.
+    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_records(
         &self,
         addr_script: AddrScript,
@@ -949,6 +963,7 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(Some(records))` if one or more matching records are found at that index,
     /// - `Ok(None)` if no matching records exist (not an error),
     /// - `Err(...)` on decode or DB failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_and_index_records(
         &self,
         addr_script: AddrScript,
@@ -962,6 +977,7 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(Some(vec))` if one or more matching records are found,
     /// - `Ok(None)` if no matches found (not an error),
     /// - `Err(...)` on decode or DB failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_tx_locations_by_range(
         &self,
         addr_script: AddrScript,
@@ -978,6 +994,7 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(Some(vec))` if one or more UTXOs are found,
     /// - `Ok(None)` if none found (not an error),
     /// - `Err(...)` on decode or DB failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
@@ -993,6 +1010,7 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `−value` for spent inputs
     ///
     /// Returns the signed net value as `i64`, or error on failure.
+    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,
@@ -1023,4 +1041,17 @@ pub trait TransparentHistExt: Send + Sync {
         &self,
         outpoints: Vec<Outpoint>,
     ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError>;
+
+    /// Returns the finalised-state txout-set accumulator.
+    ///
+    /// This is the finalised database portion of `gettxoutsetinfo`. It only contains values that
+    /// are maintained by the finalised state:
+    /// - number of transactions with at least one currently unspent transparent output;
+    /// - number of currently unspent transparent outputs.
+    ///
+    /// Full RPC assembly, including non-finalised state and RPC-only fields, belongs above the
+    /// finalised database layer.
+    async fn get_tx_out_set_info_accumulator(
+        &self,
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError>;
 }

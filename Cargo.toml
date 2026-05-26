@@ -29,28 +29,20 @@ license = "Apache-2.0"
 # Zingo
 
 zingo_common_components =  "0.3.0"
-zingo-netutils = { version = "4.0.0", features = ["back_compatible"] }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab", features = [
-    "testutils",
-] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "823a8f77b85592064ecd8daaa584a027766ee1ab" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "1a75152f4744b9e130a7d7f249a5b7691a6bf2fe" }
-
 
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.10"
-zcash_keys = "0.12"
-zcash_protocol = "0.7.2"
-zcash_primitives = "0.26.0"
-zcash_transparent = "0.6.3"
-zcash_client_backend = "0.21.0"
+zcash_address = "0.11"
+zcash_keys = "0.13"
+zcash_protocol = "0.8"
+zcash_primitives = "0.27"
+zcash_transparent = "0.7"
+zcash_client_backend = "0.22"
 
 # Zebra
-zebra-chain = "6.0.2"
-zebra-state = "5.0.0"
-zebra-rpc = "6.0.2"
+zebra-chain = "7.0.0"
+zebra-state = "6.0.0"
+zebra-rpc = "7.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -128,11 +120,11 @@ bitflags = "2.9"
 portpicker = "0.1"
 tempfile = "3.2"
 zainod = { path = "packages/zainod" }
-zaino-common = { path = "packages/zaino-common", version = "0.1.0" }
-zaino-fetch = { path = "packages/zaino-fetch", version = "0.1.0" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.1.0" }
-zaino-state = { path = "packages/zaino-state", version = "0.1.0" }
-zaino-serve = { path = "packages/zaino-serve", version = "0.1.0" }
+zaino-common = { path = "packages/zaino-common", version = "0.1.1" }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.1.1" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.1.1" }
+zaino-state = { path = "packages/zaino-state", version = "0.2.0" }
+zaino-serve = { path = "packages/zaino-serve", version = "0.2.0" }
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
@@ -147,7 +139,6 @@ cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"
 
-[patch.crates-io]
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}

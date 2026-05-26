@@ -3,8 +3,15 @@ use std::io;
 use std::process::Command;
 
 fn git(args: &[&str]) -> String {
-    let out = Command::new("git").args(args).output().expect("git failed").stdout;
-    String::from_utf8(out).expect("git output not UTF-8").trim().to_string()
+    let out = Command::new("git")
+        .args(args)
+        .output()
+        .expect("git failed")
+        .stdout;
+    String::from_utf8(out)
+        .expect("git output not UTF-8")
+        .trim()
+        .to_string()
 }
 
 fn main() -> io::Result<()> {

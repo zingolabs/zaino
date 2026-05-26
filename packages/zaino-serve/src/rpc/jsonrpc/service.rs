@@ -3,12 +3,16 @@
 use zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas;
 use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
+use zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
 use zaino_fetch::jsonrpsee::response::z_validate_address::{
     ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
 };
-use zaino_fetch::jsonrpsee::response::{GetMempoolInfoResponse, GetNetworkSolPsResponse};
+use zaino_fetch::jsonrpsee::response::{
+    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
+    GetTxOutResponse, GetTxOutSetInfoResponse,
+};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
@@ -77,6 +81,14 @@ pub trait ZcashIndexerRpc {
     #[method(name = "getmininginfo")]
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, ErrorObjectOwned>;
 
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "gettxoutsetinfo")]
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, ErrorObjectOwned>;
+
     /// Returns the hash of the best block (tip) of the longest chain.
     /// zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
     /// method: post
@@ -136,6 +148,19 @@ pub trait ZcashIndexerRpc {
     /// tags: blockchain
     #[method(name = "getblockcount")]
     async fn get_block_count(&self) -> Result<Height, ErrorObjectOwned>;
+
+    /// Returns information about all known tips in the block tree.
+    ///
+    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// zcashd implementation details:
+    /// - builds the result from block-index leaves and always includes the active tip
+    /// - reports `branchlen` as `tip.height - active_chain_find_fork(tip).height`
+    /// - sorts by descending height via `CompareBlocksByHeight`
+    #[method(name = "getchaintips")]
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, ErrorObjectOwned>;
 
     /// Return information about the given Zcash address.
     ///
@@ -351,6 +376,45 @@ pub trait ZcashIndexerRpc {
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, ErrorObjectOwned>;
 
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    ///
+    /// # Parameters
+    ///
+    /// - `txid`: (string, required, example="mytxid") The transaction ID that contains the output.
+    /// - `n`: (number, required) The output index number.
+    /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
+    #[method(name = "gettxout")]
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, ErrorObjectOwned>;
+
+    /// Returns the txid, input index, and block height where an output is spent.
+    ///
+    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// # Parameters
+    ///
+    /// - `request`: (object, required) with `txid` and `index`.
+    ///
+    /// # Notes
+    ///
+    /// zcashd 6.12.2 returns an undocumented `height` field in addition to
+    /// the documented `txid` and `index` fields.
+    #[method(name = "getspentinfo")]
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, ErrorObjectOwned>;
+
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
     /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
@@ -411,6 +475,41 @@ pub trait ZcashIndexerRpc {
         height: Option<i32>,
     ) -> Result<GetNetworkSolPsResponse, ErrorObjectOwned>;
 }
+
+// Currently all errors are hidden from downstream client, a full fix should be implemented. this is a temporary fix to
+// get zaino working, propagating a 500 error code to "block not found". This is still not the full correct behaviour
+// but fixes the current bugs in zaino and gets tests running.
+fn getblock_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
+where
+    Error: std::error::Error + 'static,
+{
+    let mut current_error: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+
+    while let Some(error_source) = current_error {
+        if let Some(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) =
+            error_source.downcast_ref::<zaino_fetch::jsonrpsee::error::TransportError>()
+        {
+            return ErrorObjectOwned::owned(
+                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "block not found",
+                )
+                .code as i32,
+                "block not found",
+                None::<()>,
+            );
+        }
+
+        current_error = error_source.source();
+    }
+
+    ErrorObjectOwned::owned(
+        ErrorCode::InternalError.code(),
+        "Internal server error",
+        Some(error.to_string()),
+    )
+}
+
 /// Uses ErrorCode::InvalidParams as this is converted to zcash legacy "minsc" ErrorCode in RPC middleware.
 #[jsonrpsee::core::async_trait]
 impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonRpcClient<Indexer> {
@@ -441,6 +540,20 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
                     Some(e.to_string()),
                 )
             })?)
+    }
+
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_tx_out_set_info()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
     }
 
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, ErrorObjectOwned> {
@@ -555,6 +668,20 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             })
     }
 
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_chain_tips()
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
     async fn validate_address(
         &self,
         address: String,
@@ -634,13 +761,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_block(hash_or_height, verbosity)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(getblock_error_object_from_indexer_error)
     }
 
     async fn get_block_header(
@@ -719,6 +840,42 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         self.service_subscriber
             .inner_ref()
             .get_raw_transaction(txid_hex, verbose)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_tx_out(txid, n, include_mempool)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InvalidParams.code(),
+                    "Internal server error",
+                    Some(e.to_string()),
+                )
+            })
+    }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_spent_info(request)
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

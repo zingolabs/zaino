@@ -1,4 +1,4 @@
-use super::{finalised_state::ZainoDB, source::BlockchainSource};
+use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -349,9 +349,22 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map(Mutex::new)
     }
 
-    /// sync to the top of the chain, trimming to the finalised tip.
+    /// Sync to the iter-committed `chain_height`, trimming to the finalised
+    /// tip.
+    ///
+    /// `chain_height` is the worker's snapshot of the source's best block
+    /// height at the start of this iter (the same value `fs.sync_to_height`
+    /// was called against). NFS extension is bounded by that height, so a
+    /// source advance mid-iter — the validator producing new blocks while
+    /// the worker's NFS-sync loop is still running — is deferred to iter
+    /// N+1, which will read a fresh `chain_height` and trim the published
+    /// snapshot with the correct finalised floor. Closes #1126.
     #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
-    pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
+    pub(super) async fn sync(
+        &self,
+        finalized_db: Arc<ZainoDB>,
+        chain_height: Height,
+    ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
         if Some(initial_state.best_tip.height) < local_finalized_tip {
@@ -392,6 +405,15 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 ))
             })?
         {
+            // Bail before applying any block that lies above the iter's
+            // committed `chain_height`. The speculative `get_block` above
+            // can return a block that wasn't yet on the source when the
+            // worker committed (the mid-iter source-advance race in
+            // #1126); applying it would silently widen this iter's
+            // publish past its iter-start `fs.sync_to_height` floor.
+            if u32::from(working_snapshot.best_tip.height) + 1 > u32::from(chain_height) {
+                break;
+            }
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
@@ -423,7 +445,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 // we need to work backwards from it and update heights_to_hashes
                 // with it and all its parents.
             }
-            if initial_state.best_tip.height + 100 < working_snapshot.best_tip.height {
+            if initial_state.best_tip.height + NON_FINALIZED_DEPTH
+                < working_snapshot.best_tip.height
+            {
                 self.update(finalized_db.clone(), initial_state, working_snapshot)
                     .await?;
                 initial_state = self.current.load_full();

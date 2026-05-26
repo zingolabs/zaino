@@ -23,6 +23,7 @@ use tracing::error;
 use zebra_rpc::client::ValidateAddressResponse;
 
 use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
+use crate::jsonrpsee::response::GetTxOutSetInfoResponse;
 use crate::jsonrpsee::{
     error::{JsonRpcError, TransportError},
     response::{
@@ -30,13 +31,15 @@ use crate::jsonrpsee::{
         block_deltas::{BlockDeltas, BlockDeltasError},
         block_header::{GetBlockHeader, GetBlockHeaderError},
         block_subsidy::GetBlockSubsidy,
+        chain_tips::GetChainTipsResponse,
         mining_info::GetMiningInfoWire,
         peer_info::GetPeerInfo,
         z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
-        GetSubtreesError, GetSubtreesResponse, GetTransactionResponse, GetTreestateError,
-        GetTreestateResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
+        GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesError,
+        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
+        GetTxOutResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
         SendTransactionResponse, TxidsError, TxidsResponse,
     },
 };
@@ -52,10 +55,15 @@ struct RpcRequest<T> {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct RpcResponse<T> {
+struct RpcResponse {
     id: i64,
     jsonrpc: Option<String>,
-    result: Option<T>,
+    // Capture `result` as a raw value so a JSON `null` (the documented
+    // success shape for RPCs like `gettxout` when the output is absent)
+    // flows through to the inner type instead of being indistinguishable
+    // from a missing field.
+    #[serde(default)]
+    result: serde_json::Value,
     error: Option<RpcError>,
 }
 
@@ -336,24 +344,26 @@ impl JsonRpSeeConnector {
                 )),
                 // Success
                 200..300 => {
-                    let response: RpcResponse<R> = serde_json::from_slice(&body_bytes)
+                    let response: RpcResponse = serde_json::from_slice(&body_bytes)
                         .map_err(|e| TransportError::BadNodeData(Box::new(e), type_name::<R>()))?;
 
-                    match (response.error, response.result) {
-                        (Some(error), _) => Err(RpcRequestError::Method(
+                    match response.error {
+                        Some(error) => Err(RpcRequestError::Method(
                             R::RpcError::try_from(error).map_err(|e| {
                                 RpcRequestError::UnexpectedErrorResponse(Box::new(e))
                             })?,
                         )),
-                        (None, Some(result)) => match result.to_error() {
-                            Ok(r) => Ok(r),
-                            Err(e) => Err(RpcRequestError::Method(e)),
-                        },
-                        (None, None) => Err(RpcRequestError::Transport(
-                            TransportError::EmptyResponseBody,
-                        )),
+                        None => {
+                            let result: R =
+                                serde_json::from_value(response.result).map_err(|e| {
+                                    TransportError::BadNodeData(Box::new(e), type_name::<R>())
+                                })?;
+                            match result.to_error() {
+                                Ok(r) => Ok(r),
+                                Err(e) => Err(RpcRequestError::Method(e)),
+                            }
+                        }
                     }
-                    // Error
                 }
                 400..600 => Err(RpcRequestError::Transport(TransportError::ErrorStatusCode(
                     code,
@@ -638,6 +648,18 @@ impl JsonRpSeeConnector {
             .await
     }
 
+    /// Returns information about all known tips in the block tree.
+    ///
+    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_chain_tips(
+        &self,
+    ) -> Result<GetChainTipsResponse, RpcRequestError<Infallible>> {
+        self.send_request::<(), GetChainTipsResponse>("getchaintips", ())
+            .await
+    }
+
     /// Return information about the given Zcash address.
     ///
     /// # Parameters
@@ -763,6 +785,54 @@ impl JsonRpSeeConnector {
         self.send_request("getrawtransaction", params).await
     }
 
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    ///
+    /// # Parameters
+    ///
+    /// - `txid`: (string, required, example="mytxid") The transaction ID that contains the output.
+    /// - `n`: (number, required) The output index number.
+    /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
+    pub async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, RpcRequestError<Infallible>> {
+        let params = match include_mempool {
+            Some(include_mempool) => vec![
+                serde_json::to_value(txid).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(n).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(include_mempool).map_err(RpcRequestError::JsonRpc)?,
+            ],
+            None => vec![
+                serde_json::to_value(txid).map_err(RpcRequestError::JsonRpc)?,
+                serde_json::to_value(n).map_err(RpcRequestError::JsonRpc)?,
+            ],
+        };
+
+        self.send_request("gettxout", params).await
+    }
+
+    /// Returns the transaction id, input index, and block height where an output is spent.
+    ///
+    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// method: post
+    /// tags: blockchain
+    ///
+    /// zcashd 6.12.2 also returns an undocumented `height` field.
+    pub async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, RpcRequestError<GetSpentInfoError>> {
+        let params = vec![serde_json::to_value(request).map_err(RpcRequestError::JsonRpc)?];
+
+        self.send_request("getspentinfo", params).await
+    }
+
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
     /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
@@ -812,6 +882,17 @@ impl JsonRpSeeConnector {
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
     pub async fn get_mining_info(&self) -> Result<GetMiningInfoWire, RpcRequestError<Infallible>> {
         self.send_request("getmininginfo", ()).await
+    }
+
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_tx_out_set_info(
+        &self,
+    ) -> Result<GetTxOutSetInfoResponse, RpcRequestError<Infallible>> {
+        self.send_request("gettxoutsetinfo", ()).await
     }
 
     /// Returns the estimated network solutions per second based on the last n blocks.
@@ -907,7 +988,7 @@ async fn test_node_connection(
         .bytes()
         .await
         .map_err(TestNodeConnectionError::ResponseBody)?;
-    let _response: RpcResponse<serde_json::Value> =
+    let _response: RpcResponse =
         serde_json::from_slice(&body_bytes).map_err(TestNodeConnectionError::BodyJson)?;
     Ok(())
 }
@@ -984,5 +1065,51 @@ mod tests {
             result.unwrap_err(),
             TransportError::BadNodeData(_, "address resolution")
         ));
+    }
+
+    // zcashd's documented success shape for `gettxout` when the output does not
+    // exist is `{"result": null, "error": null}`. The connector must decode
+    // that into `GetTxOutResponse(None)`, not surface as a transport error.
+    #[tokio::test]
+    async fn connector_get_tx_out_null_result_decodes_as_none() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener local_addr");
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut scratch = [0u8; 4096];
+            let _ = sock.read(&mut scratch).await;
+            let body = r#"{"id":0,"result":null,"error":null,"jsonrpc":"2.0"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
+                body.len(),
+                body,
+            );
+            sock.write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            let _ = sock.shutdown().await;
+        });
+
+        let url = Url::parse(&format!("http://{addr}/")).expect("parse url");
+        let connector = JsonRpSeeConnector::new_with_basic_auth(url, "u".into(), "p".into())
+            .expect("build connector");
+
+        let result = connector.get_tx_out("00".repeat(32), 0, None).await.expect(
+            "null result for gettxout must decode to GetTxOutResponse(None), \
+                 not surface as a transport error",
+        );
+
+        assert_eq!(result, GetTxOutResponse(None));
     }
 }

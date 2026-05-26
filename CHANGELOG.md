@@ -8,12 +8,25 @@ and this library adheres to Rust's notion of
 ## Unreleased
 - [943] Zallet regtest fixes
 - [1065] Move functionality to BlockChainSource: t-address rpcs
+- `gettxoutsetinfo` is now served indexer-side. Both `FetchService` and
+  `StateService` compute the response from Zaino's own UTXO-set accumulator
+  (finalised state + non-finalised state) instead of forwarding to the backing
+  validator.
 
 ### Added
 - `zaino-state::chain_index::source::BlockchainSource` and
   `zaino-state::chain_index::ChainIndex` now expose transparent-address query
   methods for deltas, balances, txids, and UTXOs.
+- `ChainIndex::get_tx_out_set_info` — combines the finalised
+  `FinalisedTxOutSetInfoAccumulator` with the non-finalised state to produce
+  the full `GetTxOutSetInfoResponse`.
 ### Changed
+- Integration tests now use `corez`, with Zcash, Zebra, and Zingo dependencies
+  updated to releases and companion branches that no longer depend on the
+  yanked `core2` crate.
+- Integration tests now follow the companion Zingo corez migration branches and
+  use `zcash_client_backend` 0.22, with deprecated nullifier-range client calls
+  allowed locally until they are replaced.
 - `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`
   whose `sapling` and `orchard` fields are optional. In regtest mode, these
   fields may be omitted when the corresponding network upgrade activation

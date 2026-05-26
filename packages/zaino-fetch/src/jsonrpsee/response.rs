@@ -7,6 +7,7 @@ pub mod address_deltas;
 pub mod block_deltas;
 pub mod block_header;
 pub mod block_subsidy;
+pub mod chain_tips;
 pub mod common;
 pub mod mining_info;
 pub mod peer_info;
@@ -104,6 +105,167 @@ impl ResponseToError for GetInfoResponse {
 
 impl ResponseToError for GetDifficultyResponse {
     type RpcError = Infallible;
+}
+
+/// Response to a `gettxout` RPC request.
+///
+/// The result is either the validator's output object or `null` when the
+/// output is spent or missing. This intentionally preserves the passthrough
+/// JSON payload without exposing Zebra's Rust response type in Zaino's API.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct GetTxOutResponse(pub Option<serde_json::Value>);
+
+impl ResponseToError for GetTxOutResponse {
+    type RpcError = Infallible;
+}
+
+/// Request parameters for the `getspentinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetSpentInfoRequest {
+    /// The hex string of the transaction id containing the output.
+    pub txid: String,
+    /// The output index in the previous transaction's `vout` array.
+    pub index: u32,
+}
+
+/// Response to a `getspentinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetSpentInfoResponse {
+    /// Transaction id of the transaction that spent the requested output.
+    pub txid: String,
+    /// Input index in the spending transaction's `vin` array.
+    pub index: u32,
+    /// Height of the block containing the spending transaction.
+    ///
+    /// This field is returned by zcashd 6.12.2 but omitted from the public 6.2.0 RPC page.
+    pub height: u32,
+}
+
+/// Error type for the `getspentinfo` RPC request.
+#[derive(Debug, thiserror::Error)]
+pub enum GetSpentInfoError {
+    /// The requested output is not known as spent.
+    #[error("{0}")]
+    UnableToGetSpentInfo(String),
+
+    /// The request parameters were invalid.
+    #[error("{0}")]
+    InvalidParameter(String),
+}
+
+impl ResponseToError for GetSpentInfoResponse {
+    type RpcError = GetSpentInfoError;
+}
+
+impl TryFrom<super::connector::RpcError> for GetSpentInfoError {
+    type Error = super::connector::RpcError;
+
+    fn try_from(value: super::connector::RpcError) -> Result<Self, Self::Error> {
+        match value.code {
+            -5 => Ok(Self::UnableToGetSpentInfo(value.message)),
+            -8 => Ok(Self::InvalidParameter(value.message)),
+            _ => Err(value),
+        }
+    }
+}
+
+#[cfg(test)]
+mod get_spent_info {
+    use super::{GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse};
+    use crate::jsonrpsee::connector::RpcError;
+    use serde_json::json;
+
+    fn rpc_error(code: i64, message: &str) -> RpcError {
+        RpcError {
+            code,
+            message: message.to_string(),
+            data: None,
+        }
+    }
+
+    #[test]
+    fn request_serializes_as_single_object_with_txid_and_index() {
+        let request = GetSpentInfoRequest {
+            txid: "deadbeef".to_string(),
+            index: 7,
+        };
+        let json_value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(json_value, json!({ "txid": "deadbeef", "index": 7 }));
+    }
+
+    #[test]
+    fn request_round_trips_through_json() {
+        let request = GetSpentInfoRequest {
+            txid: "abcd1234".to_string(),
+            index: 0,
+        };
+        let json_value = serde_json::to_value(&request).expect("serialize request");
+        let round_tripped: GetSpentInfoRequest =
+            serde_json::from_value(json_value).expect("deserialize request");
+        assert_eq!(round_tripped, request);
+    }
+
+    // zcashd 6.12.2 returns the undocumented `height` field alongside txid/index.
+    // This test pins that wire shape so a regression breaks loudly.
+    #[test]
+    fn response_deserializes_zcashd_payload_with_height() {
+        let json_value = json!({
+            "txid": "feed1234",
+            "index": 3,
+            "height": 1_234_567,
+        });
+        let response: GetSpentInfoResponse =
+            serde_json::from_value(json_value).expect("deserialize response");
+        assert_eq!(response.txid, "feed1234");
+        assert_eq!(response.index, 3);
+        assert_eq!(response.height, 1_234_567);
+    }
+
+    #[test]
+    fn response_round_trips_through_json() {
+        let response = GetSpentInfoResponse {
+            txid: "cafebabe".to_string(),
+            index: 1,
+            height: 42,
+        };
+        let json_value = serde_json::to_value(&response).expect("serialize response");
+        let round_tripped: GetSpentInfoResponse =
+            serde_json::from_value(json_value).expect("deserialize response");
+        assert_eq!(round_tripped, response);
+    }
+
+    #[test]
+    fn error_maps_minus_five_to_unable_to_get_spent_info() {
+        let mapped = GetSpentInfoError::try_from(rpc_error(-5, "Unable to get spent info"))
+            .expect("expected UnableToGetSpentInfo");
+        match mapped {
+            GetSpentInfoError::UnableToGetSpentInfo(message) => {
+                assert_eq!(message, "Unable to get spent info");
+            }
+            other => panic!("expected UnableToGetSpentInfo, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn error_maps_minus_eight_to_invalid_parameter() {
+        let mapped = GetSpentInfoError::try_from(rpc_error(-8, "Invalid parameter"))
+            .expect("expected InvalidParameter");
+        match mapped {
+            GetSpentInfoError::InvalidParameter(message) => {
+                assert_eq!(message, "Invalid parameter");
+            }
+            other => panic!("expected InvalidParameter, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn error_returns_original_rpc_error_for_unknown_code() {
+        let returned = GetSpentInfoError::try_from(rpc_error(-32603, "Internal error"))
+            .expect_err("unknown code must Err with the original RpcError");
+        assert_eq!(returned.code, -32603);
+        assert_eq!(returned.message, "Internal error");
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -250,6 +412,107 @@ pub struct GetNetworkSolPsResponse(pub u64);
 
 impl ResponseToError for GetNetworkSolPsResponse {
     type RpcError = Infallible;
+}
+
+/// Response to a `gettxoutsetinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum GetTxOutSetInfoResponse {
+    /// UTXO set statistics.
+    Info(GetTxOutSetInfo),
+    /// zcashd returns an empty object if stats collection fails.
+    Empty(EmptyTxOutSetInfo),
+}
+
+/// UTXO set statistics returned by a successful `gettxoutsetinfo` RPC request.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GetTxOutSetInfo {
+    /// The current block height.
+    pub height: u64,
+    /// The best block hash.
+    #[serde(rename = "bestblock")]
+    pub best_block: String,
+    /// The number of transactions with unspent transparent outputs.
+    pub transactions: u64,
+    /// The number of unspent transparent outputs.
+    pub txouts: u64,
+    /// The serialized size of the UTXO set.
+    pub bytes_serialized: u64,
+    /// The serialized UTXO set hash.
+    pub hash_serialized: String,
+    /// The total transparent UTXO amount in ZEC.
+    pub total_amount: f64,
+}
+
+/// Empty `gettxoutsetinfo` response returned by zcashd when stats collection fails.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct EmptyTxOutSetInfo {}
+
+impl ResponseToError for GetTxOutSetInfoResponse {
+    type RpcError = Infallible;
+}
+
+#[cfg(test)]
+mod get_tx_out_set_info_tests {
+    use super::{EmptyTxOutSetInfo, GetTxOutSetInfo, GetTxOutSetInfoResponse};
+
+    #[test]
+    fn parses_zcashd_stats_response() {
+        let json = r#"{
+            "height": 42,
+            "bestblock": "000000000000000000000000000000000000000000000000000000000000002a",
+            "transactions": 12,
+            "txouts": 34,
+            "bytes_serialized": 5678,
+            "hash_serialized": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "total_amount": 123.45678901
+        }"#;
+
+        let parsed: GetTxOutSetInfoResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            parsed,
+            GetTxOutSetInfoResponse::Info(GetTxOutSetInfo {
+                height: 42,
+                best_block: "000000000000000000000000000000000000000000000000000000000000002a"
+                    .to_string(),
+                transactions: 12,
+                txouts: 34,
+                bytes_serialized: 5678,
+                hash_serialized: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+                total_amount: 123.45678901,
+            })
+        );
+    }
+
+    #[test]
+    fn preserves_zcashd_field_names() {
+        let response = GetTxOutSetInfoResponse::Info(GetTxOutSetInfo {
+            height: 1,
+            best_block: "blockhash".to_string(),
+            transactions: 2,
+            txouts: 3,
+            bytes_serialized: 4,
+            hash_serialized: "serializedhash".to_string(),
+            total_amount: 5.0,
+        });
+
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["bestblock"], "blockhash");
+        assert_eq!(value["bytes_serialized"], 4);
+        assert_eq!(value["hash_serialized"], "serializedhash");
+        assert_eq!(value["total_amount"], 5.0);
+        assert!(value.get("best_block").is_none());
+    }
+
+    #[test]
+    fn parses_zcashd_empty_response() {
+        let parsed: GetTxOutSetInfoResponse = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(parsed, GetTxOutSetInfoResponse::Empty(EmptyTxOutSetInfo {}));
+    }
 }
 
 fn default_header() -> Height {
@@ -864,7 +1127,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                 Ok(zebra_rpc::methods::GetBlock::Raw(serialized_block.0))
             }
             GetBlockResponse::Object(block) => {
-                let tx_ids: Result<Vec<_>, _> = block
+                let tx: Result<Vec<_>, _> = block
                     .tx
                     .into_iter()
                     .map(|txid| {
@@ -872,6 +1135,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                             .map(zebra_rpc::methods::GetBlockTransaction::Hash)
                     })
                     .collect();
+                let tx = tx?;
 
                 Ok(zebra_rpc::methods::GetBlock::Object(Box::new(
                     zebra_rpc::client::BlockObject::new(
@@ -884,10 +1148,11 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.block_commitments,
                         block.final_sapling_root,
                         block.final_orchard_root,
-                        tx_ids?,
+                        tx.len(),
+                        tx,
                         block.time,
                         block.nonce,
-                        block.solution.map(Into::into),
+                        block.solution.map(|solution| solution.0),
                         block.bits,
                         block.difficulty,
                         block.chain_supply.map(|supply| supply.0),
