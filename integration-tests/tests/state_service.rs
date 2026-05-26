@@ -176,6 +176,14 @@ async fn generate_blocks_and_poll_all_chain_indexes<V, Service>(
     test_manager
         .generate_blocks_and_wait_for_tip(0, &state_service_subscriber)
         .await;
+    // The wallet's zaino (`test_manager.subscriber()`) is a *separate*
+    // chain-index instance from the fetch/state comparison subscribers above,
+    // and it is the index the LightClients actually sync against. Without
+    // waiting on it too, a following `sync_and_await` can observe a stale tip
+    // and leave the wallet with unconfirmed/zero balance. See #1144.
+    test_manager
+        .generate_blocks_and_wait_for_tip(0, test_manager.subscriber())
+        .await;
 }
 async fn state_service_check_info<V: ValidatorExt>(
     validator: &ValidatorKind,
@@ -1488,46 +1496,43 @@ async fn state_service_get_raw_transaction_testnet() {
     test_manager.close().await;
 }
 
-/// Deterministic regression test for the wallet-zaino lag bug.
+/// Regression test for the wallet-zaino lag bug (#1144).
 ///
-/// `local_net.generate_blocks(n)` advances the validator and polls *its*
-/// height only. The wallet-facing zaino — `test_manager.subscriber()`, the
-/// index the LightClients sync against — ingests blocks on its own cadence
-/// and is never in the wait set of `generate_blocks_and_poll_all_chain_indexes`.
-/// So immediately after mining a batch the wallet's zaino is provably behind
-/// the validator tip, and any `sync_and_await` issued at that point syncs to a
-/// stale tip — the root cause of the flaky `InsufficientFunds { available: 0 }`
-/// failures.
+/// The wallet-facing zaino — `test_manager.subscriber()` — is a separate
+/// chain-index instance from the fetch/state comparison subscribers, and it is
+/// the index the LightClients sync against. `generate_blocks_and_poll_all_chain_indexes`
+/// must leave *every* index, including the wallet's (slow) zaino, at the new
+/// tip before returning.
 ///
-/// This asserts the invariant the fix must establish (wallet zaino ==
-/// validator tip) with no wait on the wallet's zaino, so it fails
-/// deterministically against the current code and passes once a barrier waits
-/// on the wallet's zaino.
+/// This mines through that barrier and asserts the wallet's zaino reached the
+/// validator tip. It fails if the barrier ever stops waiting on
+/// `test_manager.subscriber()` (the original bug), and passes once it does.
 async fn state_service_wallet_zaino_lags_regtest<V: ValidatorExt>(validator: &ValidatorKind) {
     use zaino_testutils::PollableTip as _;
 
-    let (mut test_manager, _fetch_service, _fetch_subscriber, _state_service, _state_subscriber) =
-        create_test_manager_and_services::<V>(validator, None, true, true, None).await;
+    let (
+        mut test_manager,
+        _fetch_service,
+        fetch_service_subscriber,
+        _state_service,
+        state_service_subscriber,
+    ) = create_test_manager_and_services::<V>(validator, None, true, true, None).await;
 
-    // Baseline: bring the wallet's zaino up to the current tip so the only lag
-    // measured below is the lag introduced by the blocks we mine.
-    test_manager
-        .generate_blocks_and_wait_for_tip(0, test_manager.subscriber())
-        .await;
-
-    // Mine directly on the validator. `generate_blocks` returns as soon as the
-    // *validator* reaches the target height; it does not advance the wallet's
-    // zaino.
-    const N: u32 = 100;
-    test_manager.local_net.generate_blocks(N).await.unwrap();
+    generate_blocks_and_poll_all_chain_indexes(
+        100,
+        &test_manager,
+        fetch_service_subscriber,
+        state_service_subscriber,
+    )
+    .await;
 
     let validator_tip = u64::from(test_manager.local_net.get_chain_height().await);
     let wallet_zaino_tip = test_manager.subscriber().tip_height().await;
 
     assert_eq!(
         wallet_zaino_tip, validator_tip,
-        "wallet's zaino lagged the validator: validator at {validator_tip}, \
-         wallet zaino at {wallet_zaino_tip} (behind by {})",
+        "wallet's zaino lagged the validator after the sync barrier: validator at \
+         {validator_tip}, wallet zaino at {wallet_zaino_tip} (behind by {})",
         validator_tip.saturating_sub(wallet_zaino_tip),
     );
 
@@ -1550,18 +1555,28 @@ async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
         .take()
         .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
+    // Advance the chain through the all-index barrier so the wallet's (slow)
+    // zaino is at the validator tip before any `sync_and_await` reads it — no
+    // fixed sleeps. See #1144.
+    let advance = async |n: u32| {
+        generate_blocks_and_poll_all_chain_indexes(
+            n,
+            &test_manager,
+            fetch_service_subscriber.clone(),
+            state_service_subscriber.clone(),
+        )
+        .await;
+    };
+
+    advance(0).await;
     clients.faucet.sync_and_await().await.unwrap();
 
     if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager.local_net.generate_blocks(100).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+        advance(100).await;
         clients.faucet.sync_and_await().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager.local_net.generate_blocks(1).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        advance(1).await;
         clients.faucet.sync_and_await().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
 
     let tx = from_inputs::quick_send(
@@ -1570,8 +1585,7 @@ async fn state_service_get_address_transactions_regtest<V: ValidatorExt>(
     )
     .await
     .unwrap();
-    test_manager.local_net.generate_blocks(1).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    advance(1).await;
 
     let chain_height: u32 = {
         let idx = &fetch_service_subscriber.indexer;
@@ -2016,8 +2030,8 @@ mod zebra {
             state_service_get_address_transactions_regtest::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
 
-        // Deterministic reproduction of the wallet-zaino lag bug. Expected to
-        // FAIL until a sync barrier waits on `test_manager.subscriber()`.
+        // Regression test for #1144: the sync barrier must leave the wallet's
+        // zaino at the validator tip.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn wallet_zaino_lags_regtest() {
             state_service_wallet_zaino_lags_regtest::<Zebrad>(&ValidatorKind::Zebrad).await;
