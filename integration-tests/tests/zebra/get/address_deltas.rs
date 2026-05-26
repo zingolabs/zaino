@@ -238,7 +238,7 @@ async fn test_non_existent_address(subscriber: &StateServiceSubscriber) {
 
 #[allow(deprecated)]
 pub(super) async fn main() {
-    let mut test_manager = super::TestServices::<Zebrad>::new(
+    let mut test_manager = super::StateServiceFixtures::<Zebrad>::new(
         &ValidatorKind::Zebrad,
         None,
         true,

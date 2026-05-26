@@ -627,6 +627,27 @@ where
         debug!("[TEST] Test environment ready");
     }
 
+    /// Mine `n` blocks and wait until two comparison indexes AND the
+    /// wallet-facing zaino (`self.subscriber()`) all observe the new tip.
+    ///
+    /// The single definition of the "advance and poll every chain index"
+    /// barrier shared by the integration-test binaries. `primary` is waited to
+    /// the new tip (it drives the mining); `secondary` and the wallet's zaino
+    /// are then waited to the same tip. Waiting on `self.subscriber()` — the
+    /// index the LightClients sync against — is what closes the stale-sync /
+    /// zero-balance race (#1144); a slow wallet zaino is handled by the
+    /// poll-until-tip wait, not a fixed sleep.
+    pub async fn advance_and_poll<A: PollableTip, B: PollableTip>(
+        &self,
+        n: u32,
+        primary: &A,
+        secondary: &B,
+    ) {
+        self.generate_blocks_and_wait_for_tip(n, primary).await;
+        self.generate_blocks_and_wait_for_tip(0, secondary).await;
+        self.generate_blocks_and_wait_for_tip(0, self.subscriber()).await;
+    }
+
     /// Generate `n` blocks and wait for `pollable` to observe each new tip.
     ///
     /// Anything implementing [`PollableTip`] (a Zaino service subscriber, a
