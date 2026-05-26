@@ -1496,6 +1496,55 @@ async fn state_service_get_raw_transaction_testnet() {
     test_manager.close().await;
 }
 
+/// A [`zaino_testutils::PollableTip`] whose observed tip never advances —
+/// models a wallet zaino that is permanently behind.
+struct NeverSyncingTip;
+
+impl zaino_common::status::Status for NeverSyncingTip {
+    fn status(&self) -> zaino_common::status::StatusType {
+        zaino_common::status::StatusType::Ready
+    }
+}
+
+impl zaino_testutils::PollableTip for NeverSyncingTip {
+    async fn tip_height(&self) -> u64 {
+        0
+    }
+}
+
+/// Deterministic guard for the wait machinery behind #1144.
+///
+/// The sync barrier's protection rests on `generate_blocks_and_wait_for_tip`
+/// actually *blocking* until its pollable observes the new tip. If it ever
+/// returned early, the barrier's `subscriber()` wait would be a silent no-op
+/// and the wallet-zaino lag would return. Unlike `wallet_zaino_lags_regtest`
+/// (which can't open a lag in isolation), this is deterministic: a pollable
+/// that never advances must make the call time out.
+async fn state_service_wait_for_tip_blocks_on_lagging_pollable<V: ValidatorExt>(
+    validator: &ValidatorKind,
+) {
+    let mut test_manager =
+        TestManager::<V, StateService>::launch(validator, None, None, None, false, false, false)
+            .await
+            .unwrap();
+
+    // `n = 1` mines one real block, then the call must spin waiting for the
+    // pollable to reach the new tip — which `NeverSyncingTip` never reports.
+    let waited = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        test_manager.generate_blocks_and_wait_for_tip(1, &NeverSyncingTip),
+    )
+    .await;
+
+    assert!(
+        waited.is_err(),
+        "generate_blocks_and_wait_for_tip returned without the pollable reaching \
+         the tip — the barrier's wait would be a no-op (see #1144)",
+    );
+
+    test_manager.close().await;
+}
+
 /// Regression test for the wallet-zaino lag bug (#1144).
 ///
 /// The wallet-facing zaino — `test_manager.subscriber()` — is a separate
@@ -2035,6 +2084,14 @@ mod zebra {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn wallet_zaino_lags_regtest() {
             state_service_wallet_zaino_lags_regtest::<Zebrad>(&ValidatorKind::Zebrad).await;
+        }
+
+        // Deterministic guard for #1144: the wait primitive must block on a
+        // lagging pollable (the no-op the barrier fix would otherwise become).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn wait_for_tip_blocks_on_lagging_pollable() {
+            state_service_wait_for_tip_blocks_on_lagging_pollable::<Zebrad>(&ValidatorKind::Zebrad)
+                .await;
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
