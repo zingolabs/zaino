@@ -509,6 +509,14 @@ impl ZainoDB {
     where
         T: BlockchainSource,
     {
+        // Honour a source-imposed sync cap (a test/backpressure hook): the
+        // finalized DB may be held below the chain's finalization ceiling,
+        // which — since the non-finalized state leads — holds the snapshot
+        // Provisional with a deterministic catch-up gap.
+        let height = match source.finalized_sync_cap() {
+            Some(cap) => height.min(cap),
+            None => height,
+        };
         let network = self.cfg.network;
         let db_height_opt = self.db_height().await?;
         let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);

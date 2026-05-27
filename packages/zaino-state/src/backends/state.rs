@@ -1,5 +1,6 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
+use crate::{chain_index::types::BestChainLocation, TransactionHash};
 #[allow(deprecated)]
 use crate::{
     chain_index::{
@@ -19,10 +20,6 @@ use crate::{
     },
     utils::{get_build_info, ServiceMetadata},
     BackendType, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State,
-};
-use crate::{
-    chain_index::{types::BestChainLocation, NonFinalizedSnapshot},
-    TransactionHash,
 };
 use tokio_stream::StreamExt as _;
 use zaino_fetch::{
@@ -681,7 +678,7 @@ impl StateServiceSubscriber {
         height: u32,
     ) -> Result<CompactBlock, StateServiceError> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        let chain_height = snapshot.max_serviceable_height().0;
+        let chain_height = snapshot.get_nfs_snapshot().best_tip.height.0;
         Err(if height >= chain_height {
             StateServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
                 "Error: Height out of range [{height}]. Height requested \
@@ -1704,7 +1701,9 @@ impl ZcashIndexer for StateServiceSubscriber {
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(BestChainLocation::Block(block_hash, height)) => {
                 let confirmations = snapshot
-                    .max_serviceable_height()
+                    .get_nfs_snapshot()
+                    .best_tip
+                    .height
                     .0
                     .saturating_sub(height.0)
                     .saturating_add(1);

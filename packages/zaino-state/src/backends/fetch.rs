@@ -75,8 +75,8 @@ use crate::{
     BackendType,
 };
 use crate::{
-    chain_index::{non_finalised_state::SnapshotAvailability, NonFinalizedSnapshot},
-    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    chain_index::non_finalised_state::SnapshotAvailability, ChainIndex, NodeBackedChainIndex,
+    NodeBackedChainIndexSubscriber,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -742,7 +742,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(types::BestChainLocation::Block(block_hash, height)) => {
                 let confirmations = snapshot
-                    .max_serviceable_height()
+                    .get_nfs_snapshot()
+                    .best_tip
+                    .height
                     .0
                     .saturating_sub(height.0)
                     .saturating_add(1);
@@ -799,7 +801,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
             self.indexer
                 .snapshot_nonfinalized_state()
                 .await?
-                .max_serviceable_height()
+                .get_nfs_snapshot()
+                .best_tip
+                .height
                 .0,
         ))
     }
@@ -883,10 +887,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         match snapshot.availability() {
-            SnapshotAvailability::Resolved { .. } => {
-                Ok(snapshot.get_nfs_snapshot().best_tip.to_wire())
-            }
-            SnapshotAvailability::Provisional { .. } => {
+            SnapshotAvailability::Resolved => Ok(snapshot.get_nfs_snapshot().best_tip.to_wire()),
+            SnapshotAvailability::Provisional => {
                 // TODO: This probably shouldn't be an error.
                 // this is an improvement over previous behaviour of reporting
                 // the genesis block

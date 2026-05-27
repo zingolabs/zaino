@@ -31,7 +31,7 @@ use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageC
 use crate::{
     chain_index::{
         finalised_state::ZainoDB,
-        finalized_height_floor,
+        finalization_ceiling,
         source::mockchain_source::MockchainSource,
         tests::vectors::{
             build_active_mockchain_source, build_mockchain_source, copy_dir_recursive,
@@ -48,12 +48,12 @@ use crate::{
 ///
 /// - `Active` → `build_active_mockchain_source(150, blocks)`: source has a
 ///   separately-tracked `active_height = 150` that tests can advance via
-///   `mockchain.mine_blocks(N)`. Indexer's finalised sync target is
-///   `finalized_height_floor(150) = 50`.
+///   `mockchain.mine_blocks(N)`. Indexer's finalised sync target is the
+///   finalization ceiling for tip 150 = 50.
 /// - `Static` → `build_mockchain_source(blocks)`: every loaded block is
 ///   immediately active (`active_height = tip_height = 200` for the 201-block
 ///   vector); the tip doesn't move during the test. Indexer's finalised sync
-///   target is `finalized_height_floor(200) = 100`.
+///   target is the finalization ceiling for tip 200 = 100.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MockchainMode {
     Active,
@@ -143,7 +143,7 @@ async fn load_with_settings(
 
     // Wait until the indexer's non-finalised state has been built and its
     // best tip matches the source. The previous form checked only
-    // `finalized_state.db_height() == finalized_height_floor(active_height)`,
+    // `finalized_state.db_height() == finalization ceiling for active_height`,
     // which the seed copy makes true *before* the sync loop has had a chance
     // to initialise NFS. Tests that read the NFS immediately after the
     // helper returns (`nfs_lowest_block_matches_finalized_db_tip`,
@@ -190,7 +190,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             MockchainMode::Active => build_active_mockchain_source(150, blocks.clone()),
             MockchainMode::Static => build_mockchain_source(blocks.clone()),
         };
-        let target = finalized_height_floor(source.active_height()).0;
+        let target = finalization_ceiling(source.active_height()).0;
 
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
         let config = BlockCacheConfig {

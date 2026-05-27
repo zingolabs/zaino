@@ -23,11 +23,11 @@ use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
     methods::{AddressBalance, GetAddressUtxos},
 };
-use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
+use zebra_state::HashOrHeight;
 
 use crate::{
     chain_index::{
-        finalized_height_floor,
+        finalization_ceiling,
         non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
@@ -37,6 +37,13 @@ use crate::{
     BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
     NodeBackedChainIndexSubscriber, TransactionHash,
 };
+
+/// The finalization ceiling for a snapshot's own best tip: the highest height
+/// it serves from its own data, and the boundary below which the validator may
+/// be consulted by passthrough.
+fn snapshot_finalization_ceiling(snapshot: &ChainIndexSnapshot) -> crate::Height {
+    finalization_ceiling(snapshot.get_nfs_snapshot().best_tip.height.0)
+}
 
 /// Handle all the boilerplate for a passthrough
 fn passthrough_test(
@@ -66,10 +73,12 @@ fn passthrough_test(
             let mockchain = ProptestMockchain {
                 genesis_segment,
                 branching_segments,
-                // This number can be played with. We want to slow down
-                // sync enough to trigger passthrough without
-                // slowing down passthrough more than we need to
-                delay: Some(Duration::from_millis(100)),
+                // Hold the finalized DB at genesis so the snapshot stays
+                // Provisional: the always-leading NFS reaches the tip while the
+                // finalized DB lags, so every block below the finalization
+                // ceiling is served through the validator-passthrough gap. No
+                // artificial per-call delay — the gap is deterministic.
+                finalized_sync_cap: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 best_branch_cache: Arc::new(std::sync::OnceLock::new()),
                 tx_index: Arc::new(std::sync::OnceLock::new()),
             };
@@ -94,26 +103,29 @@ fn passthrough_test(
                 .unwrap();
             let index_reader = indexer.subscriber();
             // 101 instead of 100 as heights are 0-indexed
-            let expected_max_serviceable_height = (2 * segment_length) - 101;
-            // Poll rather than sleeping a fixed 5 s: the indexer discovers the
-            // chain topology as soon as the sync task has walked enough of the
-            // source to identify the finalized-state cutoff. With a 1 s
-            // per-block source delay (above) that's well under 5 s in practice,
-            // but can be longer under parallel-suite scheduler pressure.
+            let expected_finalization_ceiling = (2 * segment_length) - 101;
+            // Poll rather than sleeping: the always-leading NFS reaches the tip
+            // (and so the expected finalization ceiling) as soon as the sync
+            // task has walked the non-finalized window from the source. With no
+            // artificial per-call delay this is fast; the budget only guards
+            // against parallel-suite scheduler pressure.
             poll_until(
-                "indexer to reach expected max_serviceable_height",
+                "indexer to reach the expected finalization ceiling",
                 Duration::from_secs(30),
                 Duration::from_millis(50),
                 || async {
                     let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
-                    (snapshot.max_serviceable_height().0 as usize
-                        == expected_max_serviceable_height)
+                    (snapshot_finalization_ceiling(&snapshot).0 as usize
+                        == expected_finalization_ceiling)
                         .then_some(())
                 },
             )
             .await;
             let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
-            assert_eq!(snapshot.max_serviceable_height().0 as usize, expected_max_serviceable_height);
+            assert_eq!(
+                snapshot_finalization_ceiling(&snapshot).0 as usize,
+                expected_finalization_ceiling
+            );
             assert!(!snapshot.is_resolved());
 
             test(&mockchain, index_reader, &snapshot).await;
@@ -135,7 +147,7 @@ fn passthrough_find_fork_point() {
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
         //
-        // This allows the artificial delays to happen in parallel
+        // This lets the per-block passthrough source calls run concurrently.
         let mut parallel = FuturesUnordered::new();
         // As we only have one branch, arbitrary branch order is fine
         for (height, hash) in mockchain
@@ -150,14 +162,11 @@ fn passthrough_find_fork_point() {
                     .await
                     .unwrap();
 
-                if height <= *snapshot.max_serviceable_height() {
-                    // passthrough fork point can only ever be the requested block
-                    // as we don't passthrough to nonfinalized state
-                    assert_eq!(hash, fork_point.unwrap().0);
-                    assert_eq!(height, fork_point.unwrap().1);
-                } else {
-                    assert!(fork_point.is_none());
-                }
+                // Single branch: every block is on the best chain, so its fork
+                // point is itself — served from the NFS window, or (below the
+                // ceiling) via the validator-passthrough gap. Never None.
+                assert_eq!(hash, fork_point.unwrap().0);
+                assert_eq!(height, fork_point.unwrap().1);
             })
         }
         while let Some(_success) = parallel.next().await {}
@@ -171,7 +180,7 @@ fn passthrough_get_transaction_status() {
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
         //
-        // This allows the artificial delays to happen in parallel
+        // This lets the per-block passthrough source calls run concurrently.
         let mut parallel = FuturesUnordered::new();
         // As we only have one branch, arbitrary branch order is fine
         for (height, txid) in mockchain.all_blocks_arb_branch_order().flat_map(|block| {
@@ -189,18 +198,14 @@ fn passthrough_get_transaction_status() {
                     .await
                     .unwrap();
 
-                if height <= *snapshot.max_serviceable_height() {
-                    // passthrough transaction status can only ever be on the best
-                    // chain as we don't passthrough to nonfinalized state
-                    let Some(BestChainLocation::Block(_block_hash, transaction_height)) =
-                        transaction_status.0
-                    else {
-                        panic!("expected best chain location")
-                    };
-                    assert_eq!(height, transaction_height);
-                } else {
-                    assert!(transaction_status.0.is_none());
-                }
+                // Single branch: every transaction is on the best chain, served
+                // from the NFS window or (below the ceiling) the passthrough gap.
+                let Some(BestChainLocation::Block(_block_hash, transaction_height)) =
+                    transaction_status.0
+                else {
+                    panic!("expected best chain location")
+                };
+                assert_eq!(height, transaction_height);
                 assert!(transaction_status.1.is_empty());
             })
         }
@@ -215,7 +220,7 @@ fn passthrough_get_raw_transaction() {
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
         //
-        // This allows the artificial delays to happen in parallel
+        // This lets the per-block passthrough source calls run concurrently.
         let mut parallel = FuturesUnordered::new();
         // As we only have one branch, arbitrary branch order is fine
         for (expected_transaction, height) in
@@ -254,6 +259,8 @@ fn passthrough_get_raw_transaction() {
 fn passthrough_best_chaintip() {
     passthrough_test(async |mockchain, index_reader, snapshot| {
         let tip = index_reader.best_chaintip(snapshot).await.unwrap();
+        // best_chaintip derives from the always-leading NFS, which sits at the
+        // full chain tip even while the finalized DB lags behind.
         assert_eq!(
             tip.height.0,
             mockchain
@@ -261,8 +268,8 @@ fn passthrough_best_chaintip() {
                 .last()
                 .unwrap()
                 .coinbase_height()
-                .map(|h| finalized_height_floor(h.0).0)
                 .unwrap()
+                .0
         );
     })
 }
@@ -274,7 +281,7 @@ fn passthrough_get_block_height() {
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
         //
-        // This allows the artificial delays to happen in parallel
+        // This lets the per-block passthrough source calls run concurrently.
         let mut parallel = FuturesUnordered::new();
 
         for (expected_height, hash) in mockchain
@@ -288,11 +295,9 @@ fn passthrough_get_block_height() {
                     .get_block_height(&snapshot, hash.into())
                     .await
                     .unwrap();
-                if expected_height <= *snapshot.max_serviceable_height() {
-                    assert_eq!(height, Some(expected_height.into()));
-                } else {
-                    assert_eq!(height, None);
-                }
+                // Every block is served: the NFS window, or (below the ceiling)
+                // the validator-passthrough gap.
+                assert_eq!(height, Some(expected_height.into()));
             });
         }
         while let Some(_success) = parallel.next().await {}
@@ -306,7 +311,7 @@ fn passthrough_get_block_range() {
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
         //
-        // This allows the artificial delays to happen in parallel
+        // This lets the per-block passthrough source calls run concurrently.
         let mut parallel = FuturesUnordered::new();
 
         for expected_start_height in mockchain
@@ -323,36 +328,33 @@ fn passthrough_get_block_range() {
                         expected_start_height.into(),
                         Some(expected_end_height.into()),
                     );
-                    if expected_start_height <= *snapshot.max_serviceable_height() {
-                        let mut block_range_stream = Box::pin(block_range_stream.unwrap());
-                        let mut num_blocks_in_stream = 0;
-                        while let Some(block) = block_range_stream.next().await {
-                            let expected_block = mockchain
-                                .all_blocks_arb_branch_order()
-                                .nth(expected_start_height.0 as usize + num_blocks_in_stream)
-                                .unwrap()
-                                .zcash_serialize_to_vec()
-                                .unwrap();
-                            assert_eq!(block.unwrap(), expected_block);
-                            num_blocks_in_stream += 1;
-                        }
-                        assert_eq!(
-                            num_blocks_in_stream,
-                            // expect 10 blocks
-                            10.min(
-                                // unless the provided range overlaps the finalized boundary.
-                                // in that case, expect all blocks between start height
-                                // and finalized height, (+1 for inclusive range)
-                                snapshot
-                                    .max_serviceable_height()
-                                    .0
-                                    .saturating_sub(expected_start_height.0)
-                                    + 1
-                            ) as usize
-                        );
-                    } else {
-                        assert!(block_range_stream.is_none())
+                    // Every height up to the tip is served (NFS window ∪
+                    // passthrough gap), so the range is always servable.
+                    let mut block_range_stream = Box::pin(block_range_stream.unwrap());
+                    let mut num_blocks_in_stream = 0;
+                    while let Some(block) = block_range_stream.next().await {
+                        let expected_block = mockchain
+                            .all_blocks_arb_branch_order()
+                            .nth(expected_start_height.0 as usize + num_blocks_in_stream)
+                            .unwrap()
+                            .zcash_serialize_to_vec()
+                            .unwrap();
+                        assert_eq!(block.unwrap(), expected_block);
+                        num_blocks_in_stream += 1;
                     }
+                    assert_eq!(
+                        num_blocks_in_stream,
+                        // 10 blocks, unless the range runs past the best tip.
+                        10.min(
+                            snapshot
+                                .get_nfs_snapshot()
+                                .best_tip
+                                .height
+                                .0
+                                .saturating_sub(expected_start_height.0)
+                                + 1
+                        ) as usize
+                    );
                 });
             }
         }
@@ -377,7 +379,9 @@ fn make_chain() {
             let mockchain = ProptestMockchain {
                 genesis_segment,
                 branching_segments,
-                delay: None,
+                // No cap: the finalized DB syncs all the way to the ceiling, so
+                // the snapshot resolves.
+                finalized_sync_cap: Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
                 best_branch_cache: Arc::new(std::sync::OnceLock::new()),
                 tx_index: Arc::new(std::sync::OnceLock::new()),
             };
@@ -444,7 +448,13 @@ fn make_chain() {
 struct ProptestMockchain {
     genesis_segment: ChainSegment,
     branching_segments: Vec<ChainSegment>,
-    delay: Option<Duration>,
+    /// Caps the height the finalized DB may sync to (`u32::MAX` = no cap),
+    /// surfaced via [`BlockchainSource::finalized_sync_cap`]. Holding it below
+    /// the finalization ceiling keeps the snapshot deterministically Provisional
+    /// — the always-leading NFS reaches the tip while the finalized DB stays
+    /// behind — so the catch-up gap (served by passthrough) is exercised without
+    /// any artificial per-call delay.
+    finalized_sync_cap: Arc<std::sync::atomic::AtomicU32>,
     /// Cached result of `best_branch()`. The best branch is pure function of
     /// the other fields (which are never mutated after construction), so it's
     /// safe to memoize. Shared via `Arc` so `mockchain.clone()` — which
@@ -533,33 +543,6 @@ impl ProptestMockchain {
                 .flat_map(|branch| branch.iter()),
         )
     }
-
-    fn get_block_and_all_preceeding(
-        &self,
-        // This probably doesn't need to allow FnMut closures (Fn should suffice)
-        // but there's no cost to allowing it
-        mut block_identifier: impl FnMut(&zebra_chain::block::Block) -> bool,
-    ) -> std::option::Option<Vec<&Arc<zebra_chain::block::Block>>> {
-        let mut blocks = Vec::new();
-        for block in self.genesis_segment.iter() {
-            blocks.push(block);
-            if block_identifier(block) {
-                return Some(blocks);
-            }
-        }
-        for branch in self.branching_segments.iter() {
-            let mut branch_blocks = Vec::new();
-            for block in branch.iter() {
-                branch_blocks.push(block);
-                if block_identifier(block) {
-                    blocks.extend_from_slice(&branch_blocks);
-                    return Some(blocks);
-                }
-            }
-        }
-
-        None
-    }
 }
 
 #[async_trait]
@@ -569,9 +552,6 @@ impl BlockchainSource for ProptestMockchain {
         &self,
         id: HashOrHeight,
     ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>> {
-        if let Some(delay) = self.delay {
-            tokio::time::sleep(delay).await;
-        }
         match id {
             HashOrHeight::Hash(hash) => {
                 let matches_hash = |block: &&Arc<zebra_chain::block::Block>| block.hash() == hash;
@@ -608,69 +588,19 @@ impl BlockchainSource for ProptestMockchain {
     /// Returns the block commitment tree data by hash
     async fn get_commitment_tree_roots(
         &self,
-        id: BlockHash,
+        _id: BlockHash,
     ) -> BlockchainSourceResult<(
         Option<(zebra_chain::sapling::tree::Root, u64)>,
         Option<(zebra_chain::orchard::tree::Root, u64)>,
     )> {
-        if let Some(delay) = self.delay {
-            tokio::time::sleep(delay).await;
-        }
-        let Some(chain_up_to_block) =
-            self.get_block_and_all_preceeding(|block| block.hash().0 == id.0)
-        else {
-            return Ok((None, None));
-        };
-
-        let (sapling, orchard) =
-            chain_up_to_block
-                .iter()
-                .fold((None, None), |(mut sapling, mut orchard), block| {
-                    for transaction in &block.transactions {
-                        for sap_commitment in transaction.sapling_note_commitments() {
-                            let sap_commitment =
-                                sapling_crypto::Node::from_bytes(sap_commitment.to_bytes())
-                                    .unwrap();
-
-                            sapling = Some(sapling.unwrap_or_else(|| {
-                                incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
-                            }));
-
-                            sapling = sapling.map(|mut tree| {
-                                tree.append(sap_commitment);
-                                tree
-                            });
-                        }
-                        for orc_commitment in transaction.orchard_note_commitments() {
-                            let orc_commitment =
-                                zebra_chain::orchard::tree::Node::from(*orc_commitment);
-
-                            orchard = Some(orchard.unwrap_or_else(|| {
-                                incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
-                            }));
-
-                            orchard = orchard.map(|mut tree| {
-                                tree.append(orc_commitment);
-                                tree
-                            });
-                        }
-                    }
-                    (sapling, orchard)
-                });
-        Ok((
-            sapling.map(|sap_front| {
-                (
-                    zebra_chain::sapling::tree::Root::from_bytes(sap_front.root().to_bytes()),
-                    sap_front.tree_size(),
-                )
-            }),
-            orchard.map(|orc_front| {
-                (
-                    zebra_chain::orchard::tree::Root::from_bytes(orc_front.root().as_bytes()),
-                    orc_front.tree_size(),
-                )
-            }),
-        ))
+        // These proptests exercise block/transaction *routing* (NFS window,
+        // finalized DB, validator passthrough), never commitment-tree data.
+        // Rebuilding the Sapling/Orchard frontier from genesis on every call is
+        // O(N) cryptographic hashing per block — O(N²) across the NFS window
+        // walk, which was the dominant (tens-of-seconds) cost of these tests.
+        // Serve no roots: blocks are built with default (empty) tree data,
+        // which these tests don't inspect.
+        Ok((None, None))
     }
 
     /// Returns the sapling and orchard treestate by hash
@@ -686,9 +616,6 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_mempool_txids(
         &self,
     ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>> {
-        if let Some(delay) = self.delay {
-            tokio::time::sleep(delay).await;
-        }
         Ok(Some(Vec::new()))
     }
 
@@ -702,9 +629,6 @@ impl BlockchainSource for ProptestMockchain {
             GetTransactionLocation,
         )>,
     > {
-        if let Some(delay) = self.delay {
-            tokio::time::sleep(delay).await;
-        }
         Ok(self.tx_index().get(&txid.into()).cloned())
     }
 
@@ -712,9 +636,6 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_best_block_hash(
         &self,
     ) -> BlockchainSourceResult<Option<zebra_chain::block::Hash>> {
-        if let Some(delay) = self.delay {
-            tokio::time::sleep(delay).await;
-        }
         Ok(Some(self.best_branch().last().unwrap().hash()))
     }
 
@@ -722,9 +643,6 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_best_block_height(
         &self,
     ) -> BlockchainSourceResult<Option<zebra_chain::block::Height>> {
-        if let Some(delay) = self.delay {
-            tokio::time::sleep(delay).await;
-        }
         Ok(Some(
             self.best_branch()
                 .last()
@@ -732,6 +650,16 @@ impl BlockchainSource for ProptestMockchain {
                 .coinbase_height()
                 .unwrap(),
         ))
+    }
+
+    fn finalized_sync_cap(&self) -> Option<crate::Height> {
+        match self
+            .finalized_sync_cap
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            u32::MAX => None,
+            cap => Some(crate::Height(cap)),
+        }
     }
 
     /// Get a listener for new nonfinalized blocks,

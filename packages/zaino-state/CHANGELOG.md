@@ -19,7 +19,6 @@ and this library adheres to Rust's notion of
     - `compact_vout`
     - `to_compact`: returns a compactTx from TxInCompact
   - new type: `non_finalized_state::ChainIndexSnapshot`
-  - `NonFinalizedSnapshot` trait has new method: `max_serviceable_height`
   - `::types`
     - new submodule `primitives` with type `BlockIndex { height, hash }`
       (re-exported as `chain_index::types::BlockIndex`)

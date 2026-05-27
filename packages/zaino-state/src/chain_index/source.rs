@@ -223,6 +223,19 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         None
     }
+
+    /// An optional upper bound on the height the finalized DB may sync to this
+    /// iteration, independent of the chain tip.
+    ///
+    /// Default `None` imposes no cap — real validators let the finalized DB
+    /// climb to the finalization ceiling. Test mockchains override it to hold
+    /// the finalized DB at a known height below the ceiling: since the
+    /// non-finalized state is validator-sourced and *leads*, capping the
+    /// finalized DB deterministically holds the snapshot Provisional with a
+    /// known catch-up gap — without slowing any source call.
+    fn finalized_sync_cap(&self) -> Option<crate::Height> {
+        None
+    }
 }
 
 /// Sleep up to `duration`, but return early if `change_rx` resolves first.
