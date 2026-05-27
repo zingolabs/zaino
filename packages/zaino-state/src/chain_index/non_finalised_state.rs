@@ -880,33 +880,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         })
     }
 
-    async fn block_to_chainblock(
-        &self,
-        prev_block: &IndexedBlock,
-        block: &zebra_chain::block::Block,
-    ) -> Result<IndexedBlock, SyncError> {
-        let tree_roots = self
-            .get_tree_roots_from_source(block.hash().into())
-            .await
-            .map_err(|e| {
-                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
-                    Box::new(InvalidData(format!("{}", e))),
-                ))
-            })?;
-
-        Self::create_indexed_block_with_optional_roots(
-            block,
-            &tree_roots,
-            *prev_block.chainwork(),
-            self.network.clone(),
-        )
-        .map_err(|e| {
-            SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
-                InvalidData(e),
-            )))
-        })
-    }
-
     /// Get commitment tree roots from the blockchain source
     async fn get_tree_roots_from_source(
         &self,
