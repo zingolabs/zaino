@@ -1,6 +1,6 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
 use crate::chain_index::types::db::{
-    legacy::{BlockData, CompactTxData},
+    legacy::{compact_block_from_parts, BlockData, CompactTxData},
     CommitmentTreeData,
 };
 use crate::{
@@ -88,7 +88,7 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
     /// removed by a reorg. Blocks reorged away have no height.
-    pub blocks: HashMap<BlockHash, IndexedBlock>,
+    pub blocks: HashMap<BlockHash, ProvisionalBlock>,
     /// hashes indexed by height
     /// Hashes in this map are part of the best chain.
     pub heights_to_hashes: HashMap<Height, BlockHash>,
@@ -214,6 +214,36 @@ impl ProvisionalBlock {
     /// Commitment tree data after this block.
     pub(crate) fn commitment_tree_data(&self) -> &CommitmentTreeData {
         &self.commitment_tree_data
+    }
+
+    /// The compact-block representation. Compact blocks carry no cumulative
+    /// chainwork, so this is identical to an indexed block's; both delegate to
+    /// [`compact_block_from_parts`].
+    pub(crate) fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
+        compact_block_from_parts(
+            self.height(),
+            self.hash(),
+            self.parent_hash(),
+            self.data().time(),
+            self.transactions(),
+            self.commitment_tree_data(),
+        )
+    }
+
+    /// Build the seam anchor from a finalized [`IndexedBlock`]. The anchor's
+    /// relative work is zero by definition ([`ProvisionalCumulativeWork::seam`]);
+    /// the block's absolute chainwork is intentionally dropped — the NFS tracks
+    /// work relative to this seam, and the absolute base is reattached only at
+    /// resolution.
+    pub(crate) fn from_indexed_seam(indexed: IndexedBlock) -> Self {
+        Self {
+            index: indexed.context.index,
+            parent_hash: indexed.context.parent_hash,
+            provisional_cumulative_work: ProvisionalCumulativeWork::seam(),
+            data: indexed.data,
+            transactions: indexed.transactions,
+            commitment_tree_data: indexed.commitment_tree_data,
+        }
     }
 
     /// Promote to an [`IndexedBlock`] once the seam's absolute cumulative work
@@ -348,7 +378,7 @@ impl NonfinalizedBlockCacheSnapshot {
         let mut blocks = HashMap::new();
         let mut heights_to_hashes = HashMap::new();
 
-        blocks.insert(hash, block);
+        blocks.insert(hash, ProvisionalBlock::from_indexed_seam(block));
         heights_to_hashes.insert(height, hash);
 
         Self {
@@ -358,7 +388,7 @@ impl NonfinalizedBlockCacheSnapshot {
         }
     }
 
-    fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
+    fn add_block_new_chaintip(&mut self, block: ProvisionalBlock) {
         self.best_tip = BlockIndex {
             height: block.height(),
             hash: *block.hash(),
@@ -366,7 +396,10 @@ impl NonfinalizedBlockCacheSnapshot {
         self.add_block(block)
     }
 
-    fn get_block_by_hash_bytes_in_serialized_order(&self, hash: [u8; 32]) -> Option<&IndexedBlock> {
+    fn get_block_by_hash_bytes_in_serialized_order(
+        &self,
+        hash: [u8; 32],
+    ) -> Option<&ProvisionalBlock> {
         self.blocks
             .values()
             .find(|block| block.hash_bytes_serialized_order() == hash)
@@ -381,7 +414,7 @@ impl NonfinalizedBlockCacheSnapshot {
             .retain(|height, _hash| height >= &finalized_height);
     }
 
-    fn add_block(&mut self, block: IndexedBlock) {
+    fn add_block(&mut self, block: ProvisionalBlock) {
         self.heights_to_hashes.insert(block.height(), *block.hash());
         self.blocks.insert(*block.hash(), block);
     }
@@ -558,24 +591,29 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
-                let prev_block = working_snapshot
-                    .blocks
-                    .get(&working_snapshot.best_tip.hash)
-                    .ok_or_else(|| {
-                        SyncError::ReorgFailure(format!(
-                            "found blocks {:?}, expected block {:?}",
-                            working_snapshot
-                                .blocks
-                                .values()
-                                .map(|block| (block.context.index.hash, block.context.index.height))
-                                .collect::<Vec<_>>(),
-                            working_snapshot.best_tip
-                        ))
-                    })?;
-                let chainblock = self.block_to_chainblock(prev_block, &block).await?;
+                let parent_work = {
+                    let prev_block = working_snapshot
+                        .blocks
+                        .get(&working_snapshot.best_tip.hash)
+                        .ok_or_else(|| {
+                            SyncError::ReorgFailure(format!(
+                                "found blocks {:?}, expected block {:?}",
+                                working_snapshot
+                                    .blocks
+                                    .values()
+                                    .map(|block| (*block.hash(), block.height()))
+                                    .collect::<Vec<_>>(),
+                                working_snapshot.best_tip
+                            ))
+                        })?;
+                    *prev_block.provisional_cumulative_work()
+                };
+                let chainblock = self
+                    .block_to_provisional_block(&parent_work, &block)
+                    .await?;
                 info!(
                     height = (working_snapshot.best_tip.height + 1).0,
-                    hash = %chainblock.context.index.hash,
+                    hash = %chainblock.hash(),
                     "Syncing block"
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
@@ -610,7 +648,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
-    ) -> Result<IndexedBlock, SyncError> {
+    ) -> Result<ProvisionalBlock, SyncError> {
         let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -648,9 +686,10 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 Box::pin(self.handle_reorg(working_snapshot, &*prev_block)).await?
             }
         };
-        let indexed_block = block.to_indexed_block(&prev_block, self).await?;
-        working_snapshot.add_block_new_chaintip(indexed_block.clone());
-        Ok(indexed_block)
+        let parent_work = *prev_block.provisional_cumulative_work();
+        let provisional_block = block.to_provisional_block(&parent_work, self).await?;
+        working_snapshot.add_block_new_chaintip(provisional_block.clone());
+        Ok(provisional_block)
     }
 
     /// Handle non-finalized change listener events
@@ -708,7 +747,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let best_block = &new_snapshot
             .blocks
             .values()
-            .max_by_key(|block| block.chainwork())
+            .max_by_key(|block| block.provisional_cumulative_work())
             .cloned()
             .expect("empty snapshot impossible");
         self.handle_reorg(&mut new_snapshot, best_block)
@@ -913,7 +952,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
-    ) -> Result<IndexedBlock, SyncError> {
+    ) -> Result<ProvisionalBlock, SyncError> {
         let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -941,9 +980,10 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 Box::pin(self.add_nonbest_block(working_snapshot, &*prev_block)).await?
             }
         };
-        let indexed_block = block.to_indexed_block(&prev_block, self).await?;
-        working_snapshot.add_block(indexed_block.clone());
-        Ok(indexed_block)
+        let parent_work = *prev_block.provisional_cumulative_work();
+        let provisional_block = block.to_provisional_block(&parent_work, self).await?;
+        working_snapshot.add_block(provisional_block.clone());
+        Ok(provisional_block)
     }
 }
 
@@ -969,27 +1009,32 @@ pub enum UpdateError {
 trait Block {
     fn hash_bytes_serialized_order(&self) -> [u8; 32];
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32];
-    async fn to_indexed_block<Source: BlockchainSource>(
+    /// Produce the [`ProvisionalBlock`] for this block, accumulating its work
+    /// onto `parent_work` (relative to the seam). Replaces the former
+    /// `to_indexed_block`: the NFS holds provisional, not indexed, blocks.
+    async fn to_provisional_block<Source: BlockchainSource>(
         &self,
-        prev_block: &IndexedBlock,
+        parent_work: &ProvisionalCumulativeWork,
         nfs: &NonFinalizedState<Source>,
-    ) -> Result<IndexedBlock, SyncError>;
+    ) -> Result<ProvisionalBlock, SyncError>;
 }
 
-impl Block for IndexedBlock {
+impl Block for ProvisionalBlock {
     fn hash_bytes_serialized_order(&self) -> [u8; 32] {
         self.hash().0
     }
 
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32] {
-        self.context.parent_hash.0
+        self.parent_hash().0
     }
 
-    async fn to_indexed_block<Source: BlockchainSource>(
+    async fn to_provisional_block<Source: BlockchainSource>(
         &self,
-        _prev_block: &IndexedBlock,
+        _parent_work: &ProvisionalCumulativeWork,
         _nfs: &NonFinalizedState<Source>,
-    ) -> Result<IndexedBlock, SyncError> {
+    ) -> Result<ProvisionalBlock, SyncError> {
+        // Identity: a block already in the snapshot keeps the relative work it
+        // was assigned when first added; `parent_work` is irrelevant here.
         Ok(self.clone())
     }
 }
@@ -1002,11 +1047,11 @@ impl Block for zebra_chain::block::Block {
         self.header.previous_block_hash.bytes_in_serialized_order()
     }
 
-    async fn to_indexed_block<Source: BlockchainSource>(
+    async fn to_provisional_block<Source: BlockchainSource>(
         &self,
-        prev_block: &IndexedBlock,
+        parent_work: &ProvisionalCumulativeWork,
         nfs: &NonFinalizedState<Source>,
-    ) -> Result<IndexedBlock, SyncError> {
-        nfs.block_to_chainblock(prev_block, self).await
+    ) -> Result<ProvisionalBlock, SyncError> {
+        nfs.block_to_provisional_block(parent_work, self).await
     }
 }

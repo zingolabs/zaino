@@ -26,7 +26,7 @@ use std::{sync::Arc, time::Duration};
 use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
 use hex::FromHex as _;
-use non_finalised_state::NonfinalizedBlockCacheSnapshot;
+use non_finalised_state::{NonfinalizedBlockCacheSnapshot, ProvisionalBlock};
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -95,7 +95,7 @@ pub(crate) fn chain_tips_from_nonfinalized_snapshot(
     let parent_hashes = snapshot
         .blocks
         .values()
-        .map(|block| *block.context.parent_hash())
+        .map(|block| *block.parent_hash())
         .collect::<HashSet<_>>();
 
     let mut tip_hashes = snapshot
@@ -142,7 +142,7 @@ pub(crate) fn chain_tips_from_nonfinalized_snapshot(
 
 fn branch_len_to_active_chain(
     snapshot: &NonfinalizedBlockCacheSnapshot,
-    block: &IndexedBlock,
+    block: &ProvisionalBlock,
 ) -> u32 {
     let mut branch_len = 0;
     let mut current = block;
@@ -154,11 +154,48 @@ fn branch_len_to_active_chain(
 
         branch_len += 1;
 
-        let parent_hash = current.context.parent_hash();
+        let parent_hash = current.parent_hash();
         let Some(parent) = snapshot.blocks.get(parent_hash) else {
             return branch_len;
         };
         current = parent;
+    }
+}
+
+/// A block from either chain layer: the finalized state (an [`IndexedBlock`],
+/// carrying absolute chainwork) or the non-finalized state (a
+/// [`ProvisionalBlock`], carrying relative work). Unifies the two for query
+/// methods that may resolve a block from either layer while the NFS holds
+/// provisional blocks.
+///
+/// Interim shape: once the Availability/Resolved work lands, a resolved NFS
+/// block promotes to `IndexedBlock` (via `into_indexed`), and these methods
+/// return `IndexedBlock` directly — see issue #1096.
+pub(crate) enum ChainBlock {
+    Finalized(IndexedBlock),
+    NonFinalized(ProvisionalBlock),
+}
+
+impl ChainBlock {
+    pub(crate) fn hash(&self) -> &types::BlockHash {
+        match self {
+            ChainBlock::Finalized(block) => block.hash(),
+            ChainBlock::NonFinalized(block) => block.hash(),
+        }
+    }
+
+    pub(crate) fn height(&self) -> types::Height {
+        match self {
+            ChainBlock::Finalized(block) => block.height(),
+            ChainBlock::NonFinalized(block) => block.height(),
+        }
+    }
+
+    pub(crate) fn data(&self) -> &types::db::legacy::BlockData {
+        match self {
+            ChainBlock::Finalized(block) => block.data(),
+            ChainBlock::NonFinalized(block) => block.data(),
+        }
     }
 }
 
@@ -326,11 +363,15 @@ pub trait ChainIndex {
     ///
     /// **NOTE: This Method is currently not "passthrough aware", cumulative
     /// chain work must be made optional to enable this.**
+    // Interim return type while the NFS holds provisional blocks: a finalized
+    // hit is an `IndexedBlock`, a non-finalized hit a `ProvisionalBlock`. Once
+    // the FS is fully synced (Resolved), these resolve to `IndexedBlock` (#1096).
+    #[allow(private_interfaces)]
     fn get_indexed_block_by_hash(
         &self,
         snapshot: &Self::Snapshot,
         target_hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<ChainBlock>, Self::Error>>;
 
     /// Returns Some(IndexedBlock) for the given block height.in the best chain.
     ///
@@ -338,11 +379,12 @@ pub trait ChainIndex {
     ///
     /// **NOTE: This Method is currently not "passthrough aware", cumulative
     /// chain work must be made optional to enable this.**
+    #[allow(private_interfaces)]
     fn get_indexed_block_by_height(
         &self,
         snapshot: &Self::Snapshot,
         target_height: &types::Height,
-    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<ChainBlock>, Self::Error>>;
 
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights.
@@ -1093,7 +1135,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 .values()
                 .find(|h| **h == hash)
                 // Canonical height is None for blocks not on the best chain
-                .map(|_| block.context.index.height)),
+                .map(|_| block.height())),
             None => self
                 // ChainIndex step 4:
                 .finalized_state
@@ -1113,7 +1155,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         &'self_lt self,
         snapshot: &'snapshot NonfinalizedBlockCacheSnapshot,
         txid: [u8; 32],
-    ) -> Result<impl Iterator<Item = IndexedBlock> + use<'iter, Source>, FinalisedStateError>
+    ) -> Result<impl Iterator<Item = ChainBlock> + use<'iter, Source>, FinalisedStateError>
     where
         'snapshot: 'iter,
         'self_lt: 'iter,
@@ -1131,12 +1173,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
 
             None => None,
         }
-        .into_iter();
+        .into_iter()
+        .map(ChainBlock::Finalized);
         let non_finalized_blocks_containing_transaction =
             snapshot.blocks.values().filter_map(move |block| {
                 block.transactions().iter().find_map(|transaction| {
                     if transaction.txid().0 == txid {
-                        Some(block.clone())
+                        Some(ChainBlock::NonFinalized(block.clone()))
                     } else {
                         None
                     }
@@ -1342,14 +1385,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         &self,
         snapshot: &Self::Snapshot,
         target_hash: &types::BlockHash,
-    ) -> Result<Option<IndexedBlock>, Self::Error> {
+    ) -> Result<Option<ChainBlock>, Self::Error> {
         match snapshot.get_chainblock_by_hash(target_hash) {
-            Some(block) => Ok(Some(block.clone())),
+            Some(block) => Ok(Some(ChainBlock::NonFinalized(block.clone()))),
             None => match self.get_block_height(snapshot, *target_hash).await {
                 Ok(Some(height)) => Ok(self
                     .finalized_state
                     .get_chain_block_by_height(height)
-                    .await?),
+                    .await?
+                    .map(ChainBlock::Finalized)),
                 Ok(None) => Ok(None),
                 Err(e) => Err(e),
             },
@@ -1366,13 +1410,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         &self,
         snapshot: &Self::Snapshot,
         target_height: &types::Height,
-    ) -> Result<Option<IndexedBlock>, Self::Error> {
+    ) -> Result<Option<ChainBlock>, Self::Error> {
         match snapshot.get_chainblock_by_height(target_height) {
-            Some(block) => Ok(Some(block.clone())),
+            Some(block) => Ok(Some(ChainBlock::NonFinalized(block.clone()))),
             None => Ok(self
                 .finalized_state
                 .get_chain_block_by_height(*target_height)
-                .await?),
+                .await?
+                .map(ChainBlock::Finalized)),
         }
     }
 
@@ -1742,7 +1787,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .await?
                     .next()
                 {
-                    Some(block) => block.context.index.height.into(),
+                    Some(block) => block.height().into(),
                     // As above Ok(None)
                     None => return Ok(None),
                 }
@@ -2024,9 +2069,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             // The block is in the best chain.
                             Ok(Some((*block.hash(), block.height())))
                         } else {
-                            // Otherwise, it's non-best chain! Grab its parent, and recurse
-                            Box::pin(self.find_fork_point(snapshot, &block.context.parent_hash))
-                                .await
+                            // Otherwise, it's non-best chain! Grab its parent, and recurse.
+                            // NOTE: walks the (provisional-stage UNTRUSTED) prev-hash linkage;
+                            // the Availability step should gate this trust on Resolved (#1096).
+                            Box::pin(self.find_fork_point(snapshot, block.parent_hash())).await
                             // gotta pin recursive async functions to prevent infinite-sized
                             // Future-implementing types
                         }
@@ -2432,11 +2478,11 @@ impl<T> NonFinalizedSnapshot for Arc<T>
 where
     T: NonFinalizedSnapshot,
 {
-    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&ProvisionalBlock> {
         self.as_ref().get_chainblock_by_hash(target_hash)
     }
 
-    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&ProvisionalBlock> {
         self.as_ref().get_chainblock_by_height(target_height)
     }
 
@@ -2446,17 +2492,17 @@ where
 }
 
 /// A snapshot of the non-finalized state, for consistent queries
-pub trait NonFinalizedSnapshot {
+pub(crate) trait NonFinalizedSnapshot {
     /// Hash -> block
-    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock>;
+    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&ProvisionalBlock>;
     /// Height -> block
-    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock>;
+    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&ProvisionalBlock>;
     /// The maximum height that this snapshot can serve data for.
     fn max_serviceable_height(&self) -> &types::Height;
 }
 
 impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
-    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&ProvisionalBlock> {
         self.blocks.iter().find_map(|(hash, chainblock)| {
             if hash == target_hash {
                 Some(chainblock)
@@ -2465,7 +2511,7 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
             }
         })
     }
-    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&ProvisionalBlock> {
         self.heights_to_hashes.iter().find_map(|(height, hash)| {
             if height == target_height {
                 self.get_chainblock_by_hash(hash)
@@ -2481,7 +2527,7 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
 }
 
 impl NonFinalizedSnapshot for ChainIndexSnapshot {
-    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&ProvisionalBlock> {
         match self {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,
@@ -2491,7 +2537,7 @@ impl NonFinalizedSnapshot for ChainIndexSnapshot {
         }
     }
 
-    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&IndexedBlock> {
+    fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&ProvisionalBlock> {
         match self {
             ChainIndexSnapshot::NonFinalizedStateExists {
                 non_finalized_snapshot,

@@ -420,7 +420,10 @@ fn make_chain() {
                 .unwrap();
             for (hash, block) in &non_finalized_snapshot.blocks {
                 if hash != &best_tip_hash {
-                    assert!(block.chainwork().to_u256() <= best_tip_block.chainwork().to_u256());
+                    assert!(
+                        block.provisional_cumulative_work()
+                            <= best_tip_block.provisional_cumulative_work()
+                    );
                     if non_finalized_snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
                         assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
                     } else {

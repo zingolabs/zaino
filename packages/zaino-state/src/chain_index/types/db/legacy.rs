@@ -1179,33 +1179,53 @@ impl IndexedBlock {
     ///       with tx data being added selectively here.
     pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
         // NOTE: Returns u64::MAX if the block is not in the best chain.
-        let height: u64 = self.height().0.into();
+        compact_block_from_parts(
+            self.height(),
+            self.hash(),
+            &self.context.parent_hash,
+            self.data().time(),
+            self.transactions(),
+            self.commitment_tree_data(),
+        )
+    }
+}
 
-        let hash = self.hash().0.to_vec();
-        let prev_hash = self.context.parent_hash.0.to_vec();
+/// Build a proto-v4 `CompactBlock` from the parts shared by [`IndexedBlock`]
+/// and the non-finalized `ProvisionalBlock`. Compact-block construction needs
+/// no cumulative chainwork, so both block types produce identical output via
+/// this one assembly — no duplication.
+pub(crate) fn compact_block_from_parts(
+    height: Height,
+    hash: &BlockHash,
+    parent_hash: &BlockHash,
+    time: i64,
+    transactions: &[CompactTxData],
+    commitment_tree_data: &CommitmentTreeData,
+) -> zaino_proto::proto::compact_formats::CompactBlock {
+    let height: u64 = height.0.into();
+    let hash = hash.0.to_vec();
+    let prev_hash = parent_hash.0.to_vec();
 
-        let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = self
-            .transactions()
-            .iter()
-            .map(|tx| tx.to_compact_tx(None))
-            .collect();
+    let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = transactions
+        .iter()
+        .map(|tx| tx.to_compact_tx(None))
+        .collect();
 
-        let sapling_commitment_tree_size = self.commitment_tree_data().sizes().sapling();
-        let orchard_commitment_tree_size = self.commitment_tree_data().sizes().orchard();
+    let sapling_commitment_tree_size = commitment_tree_data.sizes().sapling();
+    let orchard_commitment_tree_size = commitment_tree_data.sizes().orchard();
 
-        zaino_proto::proto::compact_formats::CompactBlock {
-            proto_version: 4,
-            height,
-            hash,
-            prev_hash,
-            time: self.data().time() as u32,
-            header: vec![],
-            vtx,
-            chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
-                sapling_commitment_tree_size,
-                orchard_commitment_tree_size,
-            }),
-        }
+    zaino_proto::proto::compact_formats::CompactBlock {
+        proto_version: 4,
+        height,
+        hash,
+        prev_hash,
+        time: time as u32,
+        header: vec![],
+        vtx,
+        chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
+            sapling_commitment_tree_size,
+            orchard_commitment_tree_size,
+        }),
     }
 }
 
