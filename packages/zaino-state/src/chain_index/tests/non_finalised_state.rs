@@ -63,6 +63,47 @@ async fn nfs_lowest_block_matches_finalized_db_tip() {
     );
 }
 
+/// Converged full-coverage check, the Resolved counterpart to the Provisional
+/// `passthrough_*` tests: once the indexer has resolved over the real-vector
+/// chain, every height from genesis to the best tip — across the FS/NFS seam —
+/// is served from the snapshot's own data (finalized DB below the seam, NFS
+/// window above it), with no catch-up gap, and height ↔ hash round-trips
+/// through all three query methods.
+#[tokio::test(flavor = "multi_thread")]
+async fn resolved_snapshot_serves_every_block() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+
+    let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+    assert!(
+        snapshot.is_resolved(),
+        "harness syncs the finalized DB to the seam, so the snapshot is Resolved",
+    );
+
+    for height in 0..=mockchain.active_height() {
+        let height = crate::Height(height);
+        let hash = index_reader
+            .get_block_hash(&snapshot, height)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("no block served at height {}", height.0));
+
+        assert_eq!(
+            index_reader.get_block_height(&snapshot, hash).await.unwrap(),
+            Some(height),
+            "get_block_height round-trip at height {}",
+            height.0,
+        );
+
+        let fork_point = index_reader
+            .find_fork_point(&snapshot, &hash)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("no fork point served at height {}", height.0));
+        assert_eq!(fork_point, (hash, height));
+    }
+}
+
 /// **D**: A block in the NFS is evicted once the finalized DB advances
 /// past its height. Pins the trim step inside `update`
 /// (`non_finalised_state.rs:remove_finalized_blocks`, which retains

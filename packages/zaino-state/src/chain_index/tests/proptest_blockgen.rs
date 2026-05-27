@@ -23,7 +23,7 @@ use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
     methods::{AddressBalance, GetAddressUtxos},
 };
-use zebra_state::HashOrHeight;
+use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
     chain_index::{
@@ -81,6 +81,7 @@ fn passthrough_test(
                 finalized_sync_cap: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 best_branch_cache: Arc::new(std::sync::OnceLock::new()),
                 tx_index: Arc::new(std::sync::OnceLock::new()),
+                commitment_roots_cache: Arc::new(std::sync::OnceLock::new()),
             };
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
@@ -384,6 +385,7 @@ fn make_chain() {
                 finalized_sync_cap: Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
                 best_branch_cache: Arc::new(std::sync::OnceLock::new()),
                 tx_index: Arc::new(std::sync::OnceLock::new()),
+                commitment_roots_cache: Arc::new(std::sync::OnceLock::new()),
             };
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
@@ -444,6 +446,58 @@ fn make_chain() {
     });
 }
 
+/// Sapling and Orchard commitment-tree `(root, tree_size)` for a block, as
+/// returned by [`BlockchainSource::get_commitment_tree_roots`].
+type CommitmentRoots = (
+    Option<(zebra_chain::sapling::tree::Root, u64)>,
+    Option<(zebra_chain::orchard::tree::Root, u64)>,
+);
+
+type SaplingFrontier = incrementalmerkletree::frontier::Frontier<sapling_crypto::Node, 32>;
+type OrchardFrontier =
+    incrementalmerkletree::frontier::Frontier<zebra_chain::orchard::tree::Node, 32>;
+
+/// Append each block's note commitments to the running frontiers, recording the
+/// resulting `(root, tree_size)` per block hash into `map`. Returns the final
+/// frontiers so a branch can continue from where the genesis segment left off.
+fn fold_commitment_roots<'a>(
+    blocks: impl Iterator<Item = &'a Arc<zebra_chain::block::Block>>,
+    mut sapling: Option<SaplingFrontier>,
+    mut orchard: Option<OrchardFrontier>,
+    map: &mut std::collections::HashMap<BlockHash, CommitmentRoots>,
+) -> (Option<SaplingFrontier>, Option<OrchardFrontier>) {
+    for block in blocks {
+        for transaction in &block.transactions {
+            for sap in transaction.sapling_note_commitments() {
+                let node = sapling_crypto::Node::from_bytes(sap.to_bytes()).unwrap();
+                sapling.get_or_insert_with(SaplingFrontier::empty).append(node);
+            }
+            for orc in transaction.orchard_note_commitments() {
+                let node = zebra_chain::orchard::tree::Node::from(*orc);
+                orchard.get_or_insert_with(OrchardFrontier::empty).append(node);
+            }
+        }
+        map.insert(
+            BlockHash::from(block.hash()),
+            (
+                sapling.as_ref().map(|f| {
+                    (
+                        zebra_chain::sapling::tree::Root::from_bytes(f.root().to_bytes()),
+                        f.tree_size(),
+                    )
+                }),
+                orchard.as_ref().map(|f| {
+                    (
+                        zebra_chain::orchard::tree::Root::from_bytes(f.root().as_bytes()),
+                        f.tree_size(),
+                    )
+                }),
+            ),
+        );
+    }
+    (sapling, orchard)
+}
+
 #[derive(Clone)]
 struct ProptestMockchain {
     genesis_segment: ChainSegment,
@@ -476,6 +530,11 @@ struct ProptestMockchain {
             >,
         >,
     >,
+    /// Cached commitment-tree roots keyed by block hash, built lazily in one
+    /// incremental pass. The finalized DB requires real roots (it rejects
+    /// `None`), and recomputing them by folding from genesis on every call was
+    /// O(N) crypto per call → O(N²) across a sync; this makes lookups O(1).
+    commitment_roots_cache: Arc<std::sync::OnceLock<std::collections::HashMap<BlockHash, CommitmentRoots>>>,
 }
 
 impl ProptestMockchain {
@@ -585,22 +644,29 @@ impl BlockchainSource for ProptestMockchain {
         }
     }
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
+    ///
+    /// The NFS sync calls this once per block as it walks the window, so roots
+    /// are precomputed for every block in one incremental pass and cached by
+    /// hash (O(1) lookups). The previous implementation folded the frontier
+    /// from genesis on every call — O(N) cryptographic hashing per call, O(N²)
+    /// across the window walk, which dominated these tests' runtime.
     async fn get_commitment_tree_roots(
         &self,
-        _id: BlockHash,
-    ) -> BlockchainSourceResult<(
-        Option<(zebra_chain::sapling::tree::Root, u64)>,
-        Option<(zebra_chain::orchard::tree::Root, u64)>,
-    )> {
-        // These proptests exercise block/transaction *routing* (NFS window,
-        // finalized DB, validator passthrough), never commitment-tree data.
-        // Rebuilding the Sapling/Orchard frontier from genesis on every call is
-        // O(N) cryptographic hashing per block — O(N²) across the NFS window
-        // walk, which was the dominant (tens-of-seconds) cost of these tests.
-        // Serve no roots: blocks are built with default (empty) tree data,
-        // which these tests don't inspect.
-        Ok((None, None))
+        id: BlockHash,
+    ) -> BlockchainSourceResult<CommitmentRoots> {
+        let roots = self.commitment_roots_cache.get_or_init(|| {
+            let mut map = std::collections::HashMap::new();
+            // Genesis segment, then each branch continuing from the genesis-end
+            // frontier — one incremental fold over the whole tree.
+            let (sapling, orchard) =
+                fold_commitment_roots(self.genesis_segment.iter(), None, None, &mut map);
+            for branch in self.branching_segments.iter() {
+                fold_commitment_roots(branch.iter(), sapling.clone(), orchard.clone(), &mut map);
+            }
+            map
+        });
+        Ok(roots.get(&id).cloned().unwrap_or((None, None)))
     }
 
     /// Returns the sapling and orchard treestate by hash
