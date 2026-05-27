@@ -155,7 +155,7 @@ async fn load_with_settings(
     loop {
         let nfs_ready = match index_reader.snapshot_nonfinalized_state().await {
             Ok(snap) => snap
-                .get_nfs_snapshot()
+                .resolved_nfs_snapshot()
                 .is_some_and(|nfs| nfs.best_tip.height.0 == expected_nfs_tip),
             Err(_) => false,
         };

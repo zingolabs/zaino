@@ -120,7 +120,7 @@ async fn tip_converges_after_burst_mine() {
                 .snapshot_nonfinalized_state()
                 .await
                 .ok()?
-                .get_nfs_snapshot()?
+                .resolved_nfs_snapshot()?
                 .best_tip
                 .height
                 .0;
@@ -133,7 +133,7 @@ async fn tip_converges_after_burst_mine() {
         .snapshot_nonfinalized_state()
         .await
         .unwrap()
-        .get_nfs_snapshot()
+        .resolved_nfs_snapshot()
         .unwrap()
         .best_tip
         .height

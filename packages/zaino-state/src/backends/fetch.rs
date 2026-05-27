@@ -75,7 +75,7 @@ use crate::{
     BackendType,
 };
 use crate::{
-    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
+    chain_index::{non_finalised_state::SnapshotAvailability, NonFinalizedSnapshot},
     ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
@@ -500,7 +500,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
 
     async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+        let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
             return Ok(self.fetcher.get_chain_tips().await?);
         };
 
@@ -881,11 +881,12 @@ impl ZcashIndexer for FetchServiceSubscriber {
 impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        match self.indexer.snapshot_nonfinalized_state().await? {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => Ok(non_finalized_snapshot.best_tip.to_wire()),
-            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        match snapshot.availability() {
+            SnapshotAvailability::Resolved { .. } => {
+                Ok(snapshot.get_nfs_snapshot().best_tip.to_wire())
+            }
+            SnapshotAvailability::Provisional { .. } => {
                 // TODO: This probably shouldn't be an error.
                 // this is an improvement over previous behaviour of reporting
                 // the genesis block
@@ -923,7 +924,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             }
         };
 
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+        let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
             // TODO: This probably shouldn't be an error.
             // this is an improvement over previous behaviour of
             // acting as if we are only synced to the genesis block
@@ -999,7 +1000,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 }
             }
         };
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+        let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
             // TODO: This probably shouldn't be an error.
             // this is an improvement over previous behaviour of
             // acting as if we are only synced to the genesis block
@@ -1096,7 +1097,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout_result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
                         // acting as if we are only synced to the genesis block
@@ -1229,7 +1230,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout_result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
                         // acting as if we are only synced to the genesis block
@@ -1366,7 +1367,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
                 None => {
                     let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
                         // acting as if we are only synced to the genesis block
@@ -1722,7 +1723,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
                         // acting as if we are only synced to the genesis block

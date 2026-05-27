@@ -41,42 +41,50 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
 }
 
 #[derive(Debug, Clone)]
-/// A snapshot of the chain index
+/// A consistent snapshot of the chain index's non-finalized state.
 ///
-/// If zaino has synced above the validator's finalized tip,
-/// this contains a snapshot of the non-finalized state.
-///
-/// If zaino is still syncing, this contains only the height
-/// of the validator's finalized tip as of snapshot creation,
-/// which is used to determine how high we can pass through
-/// calls to the backing validator without serving nonfinalized
-/// data.
-pub enum ChainIndexSnapshot {
-    /// Zaino is ready to serve non-finalized data.
-    NonFinalizedStateExists {
-        /// The snapshot of the non_finalized state.
-        #[allow(private_interfaces)]
-        // Rust doesn't support private fields of enum variants
-        // The type of this field being private gives us something like it, though
-        non_finalized_snapshot: Arc<NonfinalizedBlockCacheSnapshot>,
-    },
-    /// Zaino is not ready to serve non-finalized data.
-    StillSyncingFinalizedState {
-        /// The height the validater had last finalized as of snapshot creation.
-        validator_finalized_height: Height,
-    },
+/// The non-finalized state always exists — it is built eagerly at chain-index
+/// creation — so a snapshot always carries a [`NonfinalizedBlockCacheSnapshot`].
+/// Whether that window has been validated against the finalized chain yet (the
+/// finalized DB has reached its seam) is its [`SnapshotAvailability`]: while
+/// `Provisional`, reads that need finalized data pass through to the validator.
+pub struct ChainIndexSnapshot {
+    #[allow(private_interfaces)]
+    non_finalized_snapshot: Arc<NonfinalizedBlockCacheSnapshot>,
 }
 
 impl ChainIndexSnapshot {
-    /// Convenience fn to go from ChainIndexSnapshot to Option<NonFinalizedBlockCacheSnapshot>,
-    /// throwing away the validator_finalized_height in the None case. For ease of mapping, etc.
-    pub(crate) fn get_nfs_snapshot(&self) -> Option<&NonfinalizedBlockCacheSnapshot> {
-        match self {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => Some(non_finalized_snapshot),
-            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
+    pub(crate) fn new(non_finalized_snapshot: Arc<NonfinalizedBlockCacheSnapshot>) -> Self {
+        Self {
+            non_finalized_snapshot,
         }
+    }
+
+    /// The non-finalized snapshot. Always present: the NFS is eagerly
+    /// constructed and never absent.
+    pub(crate) fn get_nfs_snapshot(&self) -> &NonfinalizedBlockCacheSnapshot {
+        &self.non_finalized_snapshot
+    }
+
+    /// Whether the finalized DB has caught up to this window's seam, and (when
+    /// it has) the seam's absolute-chainwork base.
+    pub(crate) fn availability(&self) -> SnapshotAvailability {
+        self.non_finalized_snapshot.availability
+    }
+
+    /// True once a sync pass has validated this window against the finalized
+    /// chain (the finalized DB reached the seam). While false, reads needing
+    /// finalized data must pass through to the validator.
+    pub(crate) fn is_resolved(&self) -> bool {
+        matches!(self.availability(), SnapshotAvailability::Resolved)
+    }
+
+    /// The non-finalized snapshot, but only once it is `Resolved` (validated
+    /// against the finalized chain). `None` while `Provisional`, so callers
+    /// that need authoritative data fall back (e.g. to the validator) then.
+    /// Distinct from [`Self::get_nfs_snapshot`], which is unconditional.
+    pub(crate) fn resolved_nfs_snapshot(&self) -> Option<&NonfinalizedBlockCacheSnapshot> {
+        self.is_resolved().then(|| self.get_nfs_snapshot())
     }
 }
 
@@ -98,14 +106,12 @@ pub(crate) enum SnapshotAvailability {
         /// The finalized-tip height passthrough may serve up to.
         validator_finalized_height: Height,
     },
-    /// The finalized DB has reached the seam: the window is validated, and each
-    /// block's absolute chainwork is `cumulative_chainwork_base + relative`
-    /// (the base is the seam block's absolute cumulative work, from the FS).
-    Resolved {
-        /// The seam's absolute cumulative work, the base for resolving any
-        /// window block's absolute chainwork.
-        cumulative_chainwork_base: ChainWork,
-    },
+    /// The finalized DB has reached the seam: the window is validated against
+    /// the finalized chain. (The seam's absolute-chainwork base — needed to
+    /// resolve window blocks' *absolute* chainwork = `base + relative` — is
+    /// reattached by the resolution-promotion step, #1096, alongside its
+    /// reader; it isn't carried yet.)
+    Resolved,
 }
 
 #[derive(Debug, Clone)]
@@ -774,16 +780,10 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .heights_to_hashes
             .contains_key(&finalized_height)
         {
-            let cumulative_chainwork_base = finalized_db
-                .to_reader()
-                .get_chain_block_by_height(finalized_height)
-                .await
-                .map_err(|_e| UpdateError::FinalizedStateCorruption)?
-                .map(|seam_block| *seam_block.chainwork())
-                .ok_or(UpdateError::FinalizedStateCorruption)?;
-            SnapshotAvailability::Resolved {
-                cumulative_chainwork_base,
-            }
+            // Seam overlap: the finalized DB has reached the window's floor.
+            // (The seam's absolute-chainwork base is fetched by the resolution
+            // promotion, #1096, when its reader exists.)
+            SnapshotAvailability::Resolved
         } else {
             SnapshotAvailability::Provisional {
                 validator_finalized_height: finalized_height,

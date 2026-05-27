@@ -114,7 +114,7 @@ fn passthrough_test(
             .await;
             let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
             assert_eq!(snapshot.max_serviceable_height().0 as usize, expected_max_serviceable_height);
-            assert!(matches!(snapshot, ChainIndexSnapshot::StillSyncingFinalizedState { .. }));
+            assert!(!snapshot.is_resolved());
 
             test(&mockchain, index_reader, &snapshot).await;
 
@@ -408,12 +408,12 @@ fn make_chain() {
                 Duration::from_millis(25),
                 || async {
                     let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
-                    (snapshot.get_nfs_snapshot()?.blocks.len() == expected_block_count)
+                    (snapshot.resolved_nfs_snapshot()?.blocks.len() == expected_block_count)
                         .then_some(snapshot)
                 },
             )
             .await;
-            let non_finalized_snapshot = snapshot.get_nfs_snapshot().expect("not synced");
+            let non_finalized_snapshot = snapshot.resolved_nfs_snapshot().expect("not synced");
             let best_tip_hash = non_finalized_snapshot.best_tip.hash;
             let best_tip_block = non_finalized_snapshot
                 .get_chainblock_by_hash(&best_tip_hash)

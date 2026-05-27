@@ -11,19 +11,18 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
+use crate::chain_index::non_finalised_state::{ChainIndexSnapshot, SnapshotAvailability};
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError};
+use crate::{CompactBlockStream, NamedAtomicStatus, StatusType, SyncError};
 use crate::{IndexedBlock, Outpoint, TransactionHash, TxOutCompact};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
-use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
 use hex::FromHex as _;
 use non_finalised_state::{NonfinalizedBlockCacheSnapshot, ProvisionalBlock};
@@ -321,6 +320,12 @@ impl ChainBlock {
 ///
 /// When a call asks for info (e.g. a block), Zaino selects sources in this order:
 #[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
+// Interim (#1096): this pub trait's surface references in-crate types — the
+// `Snapshot: NonFinalizedSnapshot` bound and the `ChainBlock` returned by
+// `get_indexed_block_by_*` are `pub(crate)`. Keeping those types in-crate is
+// the intended minimum visibility; the lint resolves when the resolution
+// promotion turns `ChainBlock` into `IndexedBlock`.
+#[allow(private_interfaces, private_bounds)]
 pub trait ChainIndex {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
@@ -363,10 +368,6 @@ pub trait ChainIndex {
     ///
     /// **NOTE: This Method is currently not "passthrough aware", cumulative
     /// chain work must be made optional to enable this.**
-    // Interim return type while the NFS holds provisional blocks: a finalized
-    // hit is an `IndexedBlock`, a non-finalized hit a `ProvisionalBlock`. Once
-    // the FS is fully synced (Resolved), these resolve to `IndexedBlock` (#1096).
-    #[allow(private_interfaces)]
     fn get_indexed_block_by_hash(
         &self,
         snapshot: &Self::Snapshot,
@@ -379,7 +380,6 @@ pub trait ChainIndex {
     ///
     /// **NOTE: This Method is currently not "passthrough aware", cumulative
     /// chain work must be made optional to enable this.**
-    #[allow(private_interfaces)]
     fn get_indexed_block_by_height(
         &self,
         snapshot: &Self::Snapshot,
@@ -696,7 +696,7 @@ pub trait ChainIndex {
 pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
-    non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
+    non_finalized_state: Arc<crate::NonFinalizedState<Source>>,
     finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
@@ -790,13 +790,21 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             .map_err(crate::InitError::MempoolInitialzationError)
             .await?;
 
+        let network = config.network.to_zebra_network();
+        // The non-finalized state is built eagerly so it always exists. It
+        // seeds Provisional from the validator (genesis); the sync loop extends
+        // it, and the finalized DB catching up to the seam flips it to Resolved.
+        let non_finalized_state = Arc::new(
+            crate::NonFinalizedState::initialize(source.clone(), network.clone(), None).await?,
+        );
+
         let mut chain_index = Self {
             mempool: std::sync::Arc::new(mempool_state),
-            non_finalized_state: Arc::new(ArcSwapOption::empty()),
+            non_finalized_state,
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
-            network: config.network.to_zebra_network(),
+            network,
             source,
             sync_timings,
             cancel_token: CancellationToken::new(),
@@ -859,7 +867,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
         let source = self.source.clone();
-        let network = self.network.clone();
         let timings = self.sync_timings;
         let cancel_token = self.cancel_token.clone();
 
@@ -875,7 +882,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
             loop {
                 let source = source.clone();
-                let network = network.clone();
                 if cancel_token.is_cancelled() {
                     return Ok(());
                 }
@@ -916,34 +922,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         .await
                         .map_err(source_error)?;
 
-                    let intermediate_nfs_for_scoping = nfs.load();
-                    let non_finalized_state = match *intermediate_nfs_for_scoping {
-                        Some(ref nfs) => nfs,
-                        None => {
-                            nfs.store(Some(Arc::new(
-                                NonFinalizedState::initialize(
-                                    source,
-                                    network,
-                                    fs.to_reader()
-                                        .get_chain_block_by_height(finalised_height)
-                                        .await
-                                        .expect("todo"),
-                                )
-                                .await
-                                .expect("todo"),
-                            )));
-                            &nfs.load_full().expect("just set to Some")
-                        }
-                    };
-
-                    // Sync nfs to the iter-committed `chain_height`, trimming
-                    // blocks to finalized tip. Passing `chain_height` rather
-                    // than letting NFS extend until `get_block` returns None
-                    // bounds the iter against mid-iter source advances (#1126).
-                    non_finalized_state
-                        .sync(fs.clone(), chain_height.into())
-                        .await?;
-                    std::mem::drop(intermediate_nfs_for_scoping);
+                    // Sync the (always-present) nfs to the iter-committed
+                    // `chain_height`, trimming blocks to the finalized tip.
+                    // Passing `chain_height` rather than letting the NFS extend
+                    // until `get_block` returns None bounds the iter against
+                    // mid-iter source advances (#1126).
+                    nfs.sync(fs.clone(), chain_height.into()).await?;
 
                     Ok(())
                     } => r,
@@ -1030,7 +1014,7 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 #[derive(Clone, Debug)]
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
     mempool: mempool::MempoolSubscriber,
-    non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
+    non_finalized_state: Arc<crate::NonFinalizedState<Source>>,
     finalized_state: finalised_state::reader::DbReader,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
@@ -1231,14 +1215,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
 
     // Get the height of the mempool
     fn get_mempool_height(&self, snapshot: &ChainIndexSnapshot) -> Option<types::Height> {
-        let ChainIndexSnapshot::NonFinalizedStateExists {
-            non_finalized_snapshot,
-        } = snapshot
-        else {
-            return None;
-        };
-
-        non_finalized_snapshot
+        // The mempool tip is a recent block; if it's in the always-present NFS
+        // window we can report its height (no absolute chainwork needed).
+        snapshot
+            .get_nfs_snapshot()
             .blocks
             .iter()
             .find(|(hash, _block)| **hash == self.mempool.mempool_chain_tip())
@@ -1259,6 +1239,9 @@ impl<Source: BlockchainSource> Status for NodeBackedChainIndexSubscriber<Source>
     }
 }
 
+// Interim (#1096): `get_indexed_block_by_*` return the in-crate `ChainBlock`
+// (collapses to `IndexedBlock` once resolution promotion lands). See the trait.
+#[allow(private_interfaces)]
 impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Source> {
     type Snapshot = ChainIndexSnapshot;
     type Error = ChainIndexError;
@@ -1269,26 +1252,11 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// methods take a snapshot. The query will check the index
     /// it existed at the moment the snapshot was taken.
     async fn snapshot_nonfinalized_state(&self) -> Result<Self::Snapshot, Self::Error> {
-        match self.non_finalized_state.load().as_ref() {
-            Some(non_finalised_state) => Ok(ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot: non_finalised_state.get_snapshot(),
-            }),
-            None => {
-                let height = self
-                    .source
-                    .get_best_block_height()
-                    .await
-                    .map_err(ChainIndexError::backing_validator)?
-                    .ok_or(ChainIndexError::database_hole(
-                        "validator has no best block",
-                        None,
-                    ))?;
-                let validator_finalized_height = finalized_height_floor(height.0);
-                Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
-                    validator_finalized_height,
-                })
-            }
-        }
+        // The non-finalized state always exists; a snapshot is infallible. Its
+        // own `availability` says whether the window is validated yet.
+        Ok(ChainIndexSnapshot::new(
+            self.non_finalized_state.get_snapshot(),
+        ))
     }
 
     // ********** Block methods **********
@@ -1308,17 +1276,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // todo: possible efficiency boost by checking mempool for a negative?
 
         // ChainIndex steps 2-4:
-        match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => {
-                self.get_indexed_block_height(non_finalized_snapshot, hash)
+        match snapshot.availability() {
+            SnapshotAvailability::Resolved => {
+                self.get_indexed_block_height(snapshot.get_nfs_snapshot(), hash)
                     .await
             }
-            ChainIndexSnapshot::StillSyncingFinalizedState {
+            SnapshotAvailability::Provisional {
                 validator_finalized_height,
             } => {
-                self.get_block_height_passthrough(validator_finalized_height, hash)
+                self.get_block_height_passthrough(&validator_finalized_height, hash)
                     .await
             } // ChainIndex step 5
         }
@@ -1333,10 +1299,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         height: types::Height,
     ) -> Result<Option<types::BlockHash>, Self::Error> {
         // First check non-finalised state.
-        match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => match non_finalized_snapshot
+        match snapshot.availability() {
+            SnapshotAvailability::Resolved => match snapshot
+                .get_nfs_snapshot()
                 .heights_to_hashes
                 .get(&height)
                 .copied()
@@ -1350,10 +1315,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .map_err(Into::into),
             },
 
-            ChainIndexSnapshot::StillSyncingFinalizedState {
+            SnapshotAvailability::Provisional {
                 validator_finalized_height,
             } => {
-                if height <= *validator_finalized_height {
+                if height <= validator_finalized_height {
                     // If still syncing try to fetch from backing validator (*passthrough*).
                     //
                     // Note this requires fetching the full block from the backing node.
@@ -1511,41 +1476,30 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
-        match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => {
-                if height <= non_finalized_snapshot.best_tip.height {
-                    Ok(Some(match snapshot.get_chainblock_by_height(&height) {
-                        Some(block) => compact_block_with_pool_types(
-                            block.to_compact_block(),
-                            &pool_types.to_pool_types_vector(),
-                        ),
-                        None => match self
-                            .finalized_state
-                            .get_compact_block(height, pool_types)
-                            .await
-                        {
-                            Ok(block) => block,
-                            Err(e) => {
-                                return Err(ChainIndexError::database_hole(
-                                    height,
-                                    Some(Box::new(e)),
-                                ))
-                            }
-                        },
-                    }))
-                } else {
-                    Ok(None)
-                }
-            }
-
-            ChainIndexSnapshot::StillSyncingFinalizedState {
-                validator_finalized_height: _,
-                //TODO: Once we make chainwork an option field we should be able to
-                // support passthrougth for this
-            } => Ok(None),
+        // Compact blocks carry no absolute chainwork, so this serves from the
+        // always-present NFS regardless of availability. Only a height below
+        // the NFS floor that the finalized DB has not ingested yet (possible
+        // while Provisional) falls through to the finalized DB.
+        let non_finalized_snapshot = snapshot.get_nfs_snapshot();
+        if height > non_finalized_snapshot.best_tip.height {
+            return Ok(None);
         }
+        Ok(Some(match snapshot.get_chainblock_by_height(&height) {
+            Some(block) => compact_block_with_pool_types(
+                block.to_compact_block(),
+                &pool_types.to_pool_types_vector(),
+            ),
+            None => match self
+                .finalized_state
+                .get_compact_block(height, pool_types)
+                .await
+            {
+                Ok(block) => block,
+                // Finalized-gap while Provisional: #1066 — fall back to the
+                // validator here once passthrough lands.
+                Err(e) => return Err(ChainIndexError::database_hole(height, Some(Box::new(e)))),
+            },
+        }))
     }
 
     /// Streams *compact* blocks for an inclusive height range.
@@ -1775,12 +1729,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 // if the tranasction isn't on the best chain
                 // check our indexes. We need to find out the height from our index
                 // to determine the consensus branch ID
-                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-                    // If we don't have a block containing the transaction
-                    // locally and the transaction's not on the validator's
-                    // best chain, we can't determine its consensus branch ID
+                if !snapshot.is_resolved() {
+                    // Provisional: the window isn't validated against the
+                    // finalized chain yet, so we can't determine the block's
+                    // consensus branch ID locally.
                     return Ok(None);
-                };
+                }
+                let non_finalized_snapshot = snapshot.get_nfs_snapshot();
 
                 match self
                     .blocks_containing_transaction(non_finalized_snapshot, txid.0)
@@ -1815,10 +1770,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<(Option<BestChainLocation>, HashSet<NonBestChainLocation>), ChainIndexError> {
-        match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => {
+        match snapshot.availability() {
+            SnapshotAvailability::Resolved => {
+                let non_finalized_snapshot = snapshot.get_nfs_snapshot();
                 let blocks_containing_transaction = self
                     .blocks_containing_transaction(non_finalized_snapshot, txid.0)
                     .await?
@@ -1876,10 +1830,11 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     } else {
                         // the best chain and the mempool have divergent tip hashes
                         // get a new snapshot and use it to find the height of the mempool
-                        if let ChainIndexSnapshot::NonFinalizedStateExists {
-                            non_finalized_snapshot: new_snapshot,
-                        } = self.snapshot_nonfinalized_state().await?
                         {
+                            // The NFS always exists; take a fresh snapshot to
+                            // locate the mempool's tip block.
+                            let fresh_snapshot = self.snapshot_nonfinalized_state().await?;
+                            let new_snapshot = fresh_snapshot.get_nfs_snapshot();
                             let target_height =
                                 new_snapshot.blocks.iter().find_map(|(hash, block)| {
                                     if *hash == mempool_tip_hash {
@@ -1896,7 +1851,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
                 Ok((best_chain_block, non_best_chain_blocks))
             }
-            ChainIndexSnapshot::StillSyncingFinalizedState {
+            SnapshotAvailability::Provisional {
                 validator_finalized_height,
             } => {
                 if let Some((_transaction, GetTransactionLocation::BestChain(height))) = self
@@ -1905,7 +1860,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     .await
                     .map_err(ChainIndexError::backing_validator)?
                 {
-                    if height <= *validator_finalized_height {
+                    if height <= validator_finalized_height {
                         if let Some(block) = self
                             .source()
                             .get_block(HashOrHeight::Height(height))
@@ -1970,13 +1925,11 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         snapshot: Option<&Self::Snapshot>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>> {
         let non_finalized_snapshot = match snapshot {
-            Some(s) => match s {
-                ChainIndexSnapshot::NonFinalizedStateExists {
-                    non_finalized_snapshot,
-                } => Some(non_finalized_snapshot),
-                // If we're still syncing the finalized state, the chain tip
-                // is newer than the snapshot's tip. Return None.
-                ChainIndexSnapshot::StillSyncingFinalizedState { .. } => return None,
+            Some(s) => match s.availability() {
+                SnapshotAvailability::Resolved => Some(s.get_nfs_snapshot()),
+                // While Provisional the chain tip is newer than the snapshot's
+                // tip, so there's no settled tip to anchor the stream to.
+                SnapshotAvailability::Provisional { .. } => return None,
             },
             None => None,
         };
@@ -2052,10 +2005,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // mempool blocks have no canon height, guaranteed to return None
         // todo: possible efficiency boost by checking mempool for a negative?
 
-        match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => {
+        match snapshot.availability() {
+            SnapshotAvailability::Resolved => {
+                let non_finalized_snapshot = snapshot.get_nfs_snapshot();
                 match non_finalized_snapshot.get_chainblock_by_hash(hash) {
                     Some(block) => {
                         // At this point, we know that
@@ -2093,7 +2045,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     }
                 }
             }
-            ChainIndexSnapshot::StillSyncingFinalizedState {
+            SnapshotAvailability::Provisional {
                 validator_finalized_height,
             } => {
                 // We're not fully synced, so we pass through.
@@ -2115,7 +2067,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             Some(height) => {
                                 // The VALIDATOR returned a block with a height.
                                 // However, there is as of yet no guaranteed the Block is FINALIZED
-                                if height <= *validator_finalized_height {
+                                if height <= validator_finalized_height {
                                     Ok(Some((
                                         types::BlockHash::from(block.hash()),
                                         types::Height::from(height),
@@ -2231,36 +2183,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     }
 
     async fn best_chaintip(&self, snapshot: &Self::Snapshot) -> Result<BlockIndex, Self::Error> {
-        Ok(match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => non_finalized_snapshot.best_tip,
-
-            ChainIndexSnapshot::StillSyncingFinalizedState {
-                validator_finalized_height,
-            } => {
-                BlockIndex {
-                    height: *validator_finalized_height,
-                    hash: self
-                        .source()
-                        // TODO: do something more efficient than getting the whole block
-                        .get_block(HashOrHeight::Height((*validator_finalized_height).into()))
-                        .await
-                        .map_err(|e| {
-                            ChainIndexError::database_hole(
-                                validator_finalized_height,
-                                Some(Box::new(e)),
-                            )
-                        })?
-                        .ok_or(ChainIndexError::database_hole(
-                            validator_finalized_height,
-                            None,
-                        ))?
-                        .hash()
-                        .into(),
-                }
-            }
-        })
+        // The best tip is read directly from the always-present NFS in every
+        // availability state — no validator round-trip, so no database_hole.
+        Ok(snapshot.get_nfs_snapshot().best_tip)
     }
 
     async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
@@ -2273,11 +2198,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let snapshot = self.snapshot_nonfinalized_state().await?;
         let best_tip = self.best_chaintip(&snapshot).await?;
 
-        let non_finalized_snapshot = match &snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => non_finalized_snapshot,
-            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
+        let non_finalized_snapshot = match snapshot.availability() {
+            SnapshotAvailability::Resolved => snapshot.get_nfs_snapshot(),
+            SnapshotAvailability::Provisional { .. } => {
                 // Accumulator invariants are not established until the finalised state catches
                 // up. Match zcashd's "stats collection failed" empty-object shape.
                 return Ok(GetTxOutSetInfoResponse::Empty(EmptyTxOutSetInfo {}));
@@ -2528,32 +2451,22 @@ impl NonFinalizedSnapshot for NonfinalizedBlockCacheSnapshot {
 
 impl NonFinalizedSnapshot for ChainIndexSnapshot {
     fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&ProvisionalBlock> {
-        match self {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => non_finalized_snapshot.get_chainblock_by_hash(target_hash),
-
-            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
-        }
+        // The NFS always exists; block lookup needs no absolute chainwork.
+        self.get_nfs_snapshot().get_chainblock_by_hash(target_hash)
     }
 
     fn get_chainblock_by_height(&self, target_height: &types::Height) -> Option<&ProvisionalBlock> {
-        match self {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => non_finalized_snapshot.get_chainblock_by_height(target_height),
-
-            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
-        }
+        self.get_nfs_snapshot()
+            .get_chainblock_by_height(target_height)
     }
 
     fn max_serviceable_height(&self) -> &types::Height {
-        match self {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => non_finalized_snapshot.max_serviceable_height(),
-
-            ChainIndexSnapshot::StillSyncingFinalizedState {
+        let nfs = self.get_nfs_snapshot();
+        match &nfs.availability {
+            // Resolved: serve up to the non-finalized tip.
+            SnapshotAvailability::Resolved => &nfs.best_tip.height,
+            // Provisional: only the finalized range is serviceable via passthrough.
+            SnapshotAvailability::Provisional {
                 validator_finalized_height,
             } => validator_finalized_height,
         }

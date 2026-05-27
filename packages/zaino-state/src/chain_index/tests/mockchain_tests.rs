@@ -39,7 +39,7 @@ async fn wait_for_indexer_tip(
                 .snapshot_nonfinalized_state()
                 .await
                 .ok()?
-                .get_nfs_snapshot()?
+                .resolved_nfs_snapshot()?
                 .best_tip
                 .height
                 .0;
@@ -176,7 +176,7 @@ async fn sync_blocks_after_startup() {
             .snapshot_nonfinalized_state()
             .await
             .unwrap()
-            .get_nfs_snapshot()
+            .resolved_nfs_snapshot()
             .unwrap()
             .best_tip
     )
@@ -195,7 +195,7 @@ async fn sync_blocks_after_startup() {
             .snapshot_nonfinalized_state()
             .await
             .unwrap()
-            .get_nfs_snapshot()
+            .resolved_nfs_snapshot()
             .unwrap()
             .best_tip
     )
