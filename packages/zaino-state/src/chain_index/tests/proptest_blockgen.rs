@@ -470,11 +470,15 @@ fn fold_commitment_roots<'a>(
         for transaction in &block.transactions {
             for sap in transaction.sapling_note_commitments() {
                 let node = sapling_crypto::Node::from_bytes(sap.to_bytes()).unwrap();
-                sapling.get_or_insert_with(SaplingFrontier::empty).append(node);
+                sapling
+                    .get_or_insert_with(SaplingFrontier::empty)
+                    .append(node);
             }
             for orc in transaction.orchard_note_commitments() {
                 let node = zebra_chain::orchard::tree::Node::from(*orc);
-                orchard.get_or_insert_with(OrchardFrontier::empty).append(node);
+                orchard
+                    .get_or_insert_with(OrchardFrontier::empty)
+                    .append(node);
             }
         }
         map.insert(
@@ -534,7 +538,8 @@ struct ProptestMockchain {
     /// incremental pass. The finalized DB requires real roots (it rejects
     /// `None`), and recomputing them by folding from genesis on every call was
     /// O(N) crypto per call → O(N²) across a sync; this makes lookups O(1).
-    commitment_roots_cache: Arc<std::sync::OnceLock<std::collections::HashMap<BlockHash, CommitmentRoots>>>,
+    commitment_roots_cache:
+        Arc<std::sync::OnceLock<std::collections::HashMap<BlockHash, CommitmentRoots>>>,
 }
 
 impl ProptestMockchain {

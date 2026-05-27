@@ -89,7 +89,10 @@ async fn resolved_snapshot_serves_every_block() {
             .unwrap_or_else(|| panic!("no block served at height {}", height.0));
 
         assert_eq!(
-            index_reader.get_block_height(&snapshot, hash).await.unwrap(),
+            index_reader
+                .get_block_height(&snapshot, hash)
+                .await
+                .unwrap(),
             Some(height),
             "get_block_height round-trip at height {}",
             height.0,
