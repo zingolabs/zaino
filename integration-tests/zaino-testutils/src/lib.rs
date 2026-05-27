@@ -117,10 +117,12 @@ pub trait PollableTip: Status + Sync {
 
 impl PollableTip for FetchServiceSubscriber {
     async fn tip_height(&self) -> u64 {
+        // A not-yet-ready backend reports tip 0 (poll keeps waiting) rather
+        // than panicking.
         self.get_latest_block()
             .await
-            .expect("PollableTip: FetchServiceSubscriber::get_latest_block failed")
-            .height
+            .map(|block| block.height)
+            .unwrap_or(0)
     }
 }
 
@@ -128,23 +130,20 @@ impl PollableTip for StateServiceSubscriber {
     async fn tip_height(&self) -> u64 {
         self.get_latest_block()
             .await
-            .expect("PollableTip: StateServiceSubscriber::get_latest_block failed")
-            .height
+            .map(|block| block.height)
+            .unwrap_or(0)
     }
 }
 
 impl<Source: BlockchainSource> PollableTip for NodeBackedChainIndexSubscriber<Source> {
     async fn tip_height(&self) -> u64 {
-        let snapshot = self
-            .snapshot_nonfinalized_state()
-            .await
-            .expect("PollableTip: chain-index snapshot_nonfinalized_state failed");
-        u64::from(u32::from(
-            self.best_chaintip(&snapshot)
-                .await
-                .expect("PollableTip: chain-index best_chaintip failed")
-                .height,
-        ))
+        let Ok(snapshot) = self.snapshot_nonfinalized_state().await else {
+            return 0;
+        };
+        match self.best_chaintip(&snapshot).await {
+            Ok(tip) => u64::from(u32::from(tip.height)),
+            Err(_) => 0,
+        }
     }
 }
 

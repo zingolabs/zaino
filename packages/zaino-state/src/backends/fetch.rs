@@ -74,10 +74,7 @@ use crate::{
     utils::{get_build_info, ServiceMetadata},
     BackendType,
 };
-use crate::{
-    chain_index::non_finalised_state::SnapshotAvailability, ChainIndex, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber,
-};
+use crate::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
 ///
@@ -886,16 +883,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        match snapshot.availability() {
-            SnapshotAvailability::Resolved => Ok(snapshot.get_nfs_snapshot().best_tip.to_wire()),
-            SnapshotAvailability::Provisional => {
-                // TODO: This probably shouldn't be an error.
-                // this is an improvement over previous behaviour of reporting
-                // the genesis block
-                Err(FetchServiceError::UnavailableNotSyncedEnough)
-            }
-        }
-        // dbg!(&tip);
+        Ok(snapshot.get_nfs_snapshot().best_tip.to_wire())
     }
 
     /// Return the compact block corresponding to the given block identifier
@@ -926,12 +914,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             }
         };
 
-        let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
-            // TODO: This probably shouldn't be an error.
-            // this is an improvement over previous behaviour of
-            // acting as if we are only synced to the genesis block
-            return Err(FetchServiceError::UnavailableNotSyncedEnough);
-        };
+        let non_finalized_snapshot = snapshot.get_nfs_snapshot();
 
         match self
             .indexer
@@ -1002,12 +985,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 }
             }
         };
-        let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
-            // TODO: This probably shouldn't be an error.
-            // this is an improvement over previous behaviour of
-            // acting as if we are only synced to the genesis block
-            return Err(FetchServiceError::UnavailableNotSyncedEnough);
-        };
+        let non_finalized_snapshot = snapshot.get_nfs_snapshot();
         match self
             .indexer
             .get_compact_block(&snapshot, types::Height(height), PoolTypeFilter::default())
@@ -1099,20 +1077,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout_result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        if let Err(e) = channel_tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "zaino not yet synced".to_string(),
-                            )))
-                            .await
-                        {
-                            warn!("GetBlockRange channel closed unexpectedly: {}", e);
-                        };
-                        return;
-                    };
+                    let non_finalized_snapshot = snapshot.get_nfs_snapshot();
                     // Use the snapshot tip directly, as this function doesn't support passthrough
                     let chain_height = non_finalized_snapshot.best_tip.height.0;
 
@@ -1232,20 +1197,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout_result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        if let Err(e) = channel_tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "zaino not yet synced".to_string(),
-                            )))
-                            .await
-                        {
-                            warn!("GetBlockRangeNullifiers channel closed unexpectedly: {}", e);
-                        };
-                        return;
-                    };
+                    let non_finalized_snapshot = snapshot.get_nfs_snapshot();
 
                     // Use the snapshot tip directly, as this function doesn't support passthrough
                     let chain_height = non_finalized_snapshot.best_tip.height.0;
@@ -1369,12 +1321,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 // Zebra returns None for mempool transactions, convert to `Mempool Height`.
                 None => {
                     let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        return Err(FetchServiceError::UnavailableNotSyncedEnough);
-                    };
+                    let non_finalized_snapshot = snapshot.get_nfs_snapshot();
                     non_finalized_snapshot.best_tip.height.0 as u64
                 }
             };
@@ -1725,20 +1672,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.resolved_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        if let Err(e) = channel_tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "zaino not yet synced".to_string(),
-                            )))
-                            .await
-                        {
-                            warn!("GetMempoolStream channel closed unexpectedly: {}", e);
-                        };
-                        return;
-                    };
+                    let non_finalized_snapshot = snapshot.get_nfs_snapshot();
                     let mempool_height = non_finalized_snapshot.best_tip.height.0;
                     match indexer.get_mempool_stream(None) {
                         Some(mut mempool_stream) => {
