@@ -22,7 +22,10 @@
 //! red driver for that elimination — is now a passing regression that pins
 //! `best_chaintip` reading the snapshot's `best_tip` directly.
 
-use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
+use super::{
+    cold_gated_active_chain_index, load_test_vectors_and_sync_chain_index, poll::poll_until,
+    MockchainMode,
+};
 use crate::chain_index::{finalization_ceiling, ChainIndex};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -105,6 +108,54 @@ async fn resolved_snapshot_serves_every_block() {
             .unwrap_or_else(|| panic!("no fork point served at height {}", height.0));
         assert_eq!(fork_point, (hash, height));
     }
+}
+
+/// Head-on cold Provisional → Resolved transition. Starting with the finalized
+/// DB pinned at genesis (sync cap = 0), the validator-sourced NFS leads to the
+/// chain tip while the snapshot stays **Provisional** (the finalized DB hasn't
+/// reached the seam). Releasing the cap lets the finalized DB catch up to the
+/// seam, at which point the snapshot flips to **Resolved**. The seeded harness
+/// can't demonstrate this — its DB starts already at the seam — so this builds
+/// a cold, gated index.
+#[tokio::test(flavor = "multi_thread")]
+async fn finalized_db_converges_provisional_to_resolved() {
+    let (_indexer, index_reader, source, _temp_dir) = cold_gated_active_chain_index(0).await;
+    let tip = source.active_height();
+
+    // Provisional: the NFS reaches the tip while the finalized DB is pinned at
+    // genesis, so the snapshot is not yet Resolved.
+    poll_until(
+        "NFS to lead to the tip while the snapshot is Provisional",
+        Duration::from_secs(30),
+        Duration::from_millis(25),
+        || async {
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+            (snapshot.get_nfs_snapshot().best_tip.height.0 == tip && !snapshot.is_resolved())
+                .then_some(())
+        },
+    )
+    .await;
+
+    // Release the finalized DB; it catches up to the seam and the snapshot
+    // resolves.
+    source.set_finalized_sync_cap(u32::MAX);
+
+    let resolved = poll_until(
+        "finalized DB to catch up to the seam and resolve",
+        Duration::from_secs(30),
+        Duration::from_millis(25),
+        || async {
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+            snapshot
+                .resolved_nfs_snapshot()
+                .is_some()
+                .then_some(snapshot)
+        },
+    )
+    .await;
+
+    assert!(resolved.is_resolved());
+    assert_eq!(resolved.get_nfs_snapshot().best_tip.height.0, tip);
 }
 
 /// **D**: A block in the NFS is evicted once the finalized DB advances

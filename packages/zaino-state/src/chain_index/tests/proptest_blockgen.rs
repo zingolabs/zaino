@@ -363,6 +363,62 @@ fn passthrough_get_block_range() {
     })
 }
 
+/// Explicit test of the catch-up gap: while Provisional, a height *between* the
+/// finalized DB tip and the seam (the NFS window floor) is in neither layer —
+/// not the NFS window, not the finalized DB — yet it is still served. The only
+/// path that can serve it is reorg-safe validator passthrough. (The harness
+/// holds the finalized DB at genesis, so every sub-seam height is in the gap.)
+#[test]
+fn passthrough_serves_the_gap() {
+    passthrough_test(async |mockchain, index_reader, snapshot| {
+        let seam = snapshot_finalization_ceiling(snapshot).0;
+        // A height squarely in the gap: below the NFS window floor (the seam)
+        // and above the genesis-pinned finalized DB tip.
+        let gap_height = crate::Height(seam / 2);
+
+        // It is genuinely in neither own-data layer.
+        assert!(
+            !snapshot
+                .get_nfs_snapshot()
+                .heights_to_hashes
+                .contains_key(&gap_height),
+            "gap height {} must be below the NFS window floor {seam}",
+            gap_height.0,
+        );
+        assert_eq!(
+            index_reader
+                .finalized_state
+                .get_block_hash(gap_height)
+                .await
+                .unwrap(),
+            None,
+            "gap height {} must not be in the finalized DB",
+            gap_height.0,
+        );
+
+        // The source's block at that height — what passthrough must return.
+        let expected = mockchain
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(
+                gap_height.0,
+            )))
+            .await
+            .unwrap()
+            .expect("source has the gap block")
+            .hash();
+
+        // Served — reachable only via validator passthrough.
+        assert_eq!(
+            index_reader
+                .get_block_hash(snapshot, gap_height)
+                .await
+                .unwrap(),
+            Some(expected.into()),
+            "gap block at height {} must be served via passthrough",
+            gap_height.0,
+        );
+    })
+}
+
 #[test]
 fn make_chain() {
     init_tracing();

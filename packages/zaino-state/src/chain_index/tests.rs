@@ -168,6 +168,50 @@ async fn load_with_settings(
     (blocks, indexer, index_reader, source)
 }
 
+/// Build an Active-mode test-vector chain index with a **cold** finalized DB (no
+/// seed copy) whose sync cap is held at `cap`. With `cap == 0` the finalized DB
+/// is pinned at genesis, so the always-leading NFS reaches the tip while the
+/// snapshot stays Provisional; the caller releases the cap via
+/// [`MockchainSource::set_finalized_sync_cap`] to observe the Provisional →
+/// Resolved transition head-on (the seeded harness can't — its DB starts at the
+/// seam).
+///
+/// Returns the indexer (keep it alive — dropping it cancels the sync loop), the
+/// subscriber, the source (to release the cap), and the `TempDir` (keep it
+/// alive — a cold DB is written during the background sync, unlike the seeded
+/// harness whose pre-built DB is only read).
+async fn cold_gated_active_chain_index(
+    cap: u32,
+) -> (
+    NodeBackedChainIndex<MockchainSource>,
+    NodeBackedChainIndexSubscriber<MockchainSource>,
+    MockchainSource,
+    TempDir,
+) {
+    init_tracing();
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = build_active_mockchain_source(150, blocks);
+    source.set_finalized_sync_cap(cap);
+
+    let temp_dir: TempDir = tempfile::tempdir().unwrap();
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+    let indexer = NodeBackedChainIndex::new(source.clone(), config)
+        .await
+        .unwrap();
+    let index_reader = indexer.subscriber();
+    (indexer, index_reader, source, temp_dir)
+}
+
 /// Process-wide cached, fully-synced v1 finalised-state databases — one per
 /// `MockchainMode`. The two modes target different heights (Active → 50,
 /// Static → 100), so they need distinct seeds.

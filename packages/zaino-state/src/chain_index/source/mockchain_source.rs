@@ -170,6 +170,12 @@ pub(crate) struct MockchainSource {
     /// neither know nor care how many `mine_blocks` events occurred
     /// between wakes.
     blocks_received_broadcaster: tokio::sync::watch::Sender<()>,
+    /// Caps the height the finalized DB may sync to, surfaced via
+    /// [`BlockchainSource::finalized_sync_cap`]. `u32::MAX` (the default) means
+    /// no cap. Holding it below the seam lets a test pin the snapshot
+    /// Provisional and then release it to observe the cold Provisional →
+    /// Resolved transition deterministically.
+    finalized_sync_cap: Arc<AtomicU32>,
 }
 
 impl MockchainSource {
@@ -236,7 +242,14 @@ impl MockchainSource {
             )),
             get_block_hook: Arc::new(Mutex::new(None)),
             blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
+            finalized_sync_cap: Arc::new(AtomicU32::new(u32::MAX)),
         }
+    }
+
+    /// Cap the height the finalized DB may sync to (`u32::MAX` releases the
+    /// cap). Test hook for exercising the Provisional → Resolved transition.
+    pub(crate) fn set_finalized_sync_cap(&self, height: u32) {
+        self.finalized_sync_cap.store(height, Ordering::SeqCst);
     }
 
     /// When set to true, `get_best_block_height` and `get_best_block_hash`
@@ -937,6 +950,13 @@ impl BlockchainSource for MockchainSource {
 
     fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         Some(self.blocks_received_broadcaster.subscribe())
+    }
+
+    fn finalized_sync_cap(&self) -> Option<crate::Height> {
+        match self.finalized_sync_cap.load(Ordering::SeqCst) {
+            u32::MAX => None,
+            cap => Some(crate::Height(cap)),
+        }
     }
 }
 
