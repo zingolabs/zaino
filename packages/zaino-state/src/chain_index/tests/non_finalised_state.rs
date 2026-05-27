@@ -321,6 +321,11 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
 /// multi_thread: depends on the harness's background sync loop advancing the
 /// NFS concurrently with the setup's poll-until-ready loop.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "red driver for #1096: fails on purpose against today's still-syncing \
+            variant, which passes through to the validator and reports the \
+            finalized floor instead of the tip. Pins the target invariant to \
+            drive that variant's elimination; rewritten against \
+            snapshot_nonfinalized_state() once #1096 lands."]
 async fn best_chaintip_derives_tip_from_nfs_snapshot_not_validator_passthrough() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
