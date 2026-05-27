@@ -1,7 +1,12 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
+use crate::chain_index::types::db::{
+    legacy::{BlockData, CompactTxData},
+    CommitmentTreeData,
+};
 use crate::{
     chain_index::types::{
-        self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
+        self, BlockContext, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height,
+        TreeRootData,
     },
     error::FinalisedStateError,
     ChainWork, IndexedBlock,
@@ -92,6 +97,142 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
     pub best_tip: BlockIndex,
+}
+
+/// Cumulative work measured *relative to the seam*, header-derived.
+///
+/// A distinct type from [`ChainWork`] (which is ABSOLUTE) precisely so the two
+/// cannot be confused at a call site: passing relative work where absolute is
+/// required — or writing it into an [`IndexedBlock`]'s `chainwork` field — is a
+/// type error, not merely a naming convention. This is the misattribution
+/// guard in the type system.
+///
+/// Relative work is a sound best-tip ordering within the non-finalized window:
+/// under the assumption that no reorg exceeds [`NON_FINALIZED_DEPTH`], the seam
+/// is a stable common ancestor of every competing chain, so relative ordering
+/// matches absolute ordering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ProvisionalCumulativeWork(ChainWork);
+
+impl ProvisionalCumulativeWork {
+    /// Relative work at the seam: zero by definition (the seam is the base).
+    pub(crate) fn seam() -> Self {
+        Self(ChainWork::from_u256(U256::zero()))
+    }
+
+    /// Accumulate one block's own (header-derived) work onto the running
+    /// relative total.
+    pub(crate) fn add_block_work(&self, block_work: &ChainWork) -> Self {
+        Self(self.0.add(block_work))
+    }
+
+    /// Resolve to ABSOLUTE chainwork given the seam's absolute base
+    /// (`absolute = seam_base + relative`). Only callable once the base is
+    /// known — i.e. at the resolution boundary.
+    pub(crate) fn resolve(&self, seam_base: &ChainWork) -> ChainWork {
+        seam_base.add(&self.0)
+    }
+}
+
+/// A non-finalized block as held by the NFS.
+///
+/// It is deliberately **not** an [`IndexedBlock`]. "Indexed" means the block
+/// has been placed in the validated chain with its *absolute* cumulative
+/// chainwork — and that absolute value is unknowable while the finalized
+/// state has not yet caught up to the seam (the validator does not expose
+/// chainwork, and the finalized DB has not reached the floor). A provisional
+/// block instead carries [`Self::provisional_cumulative_work`]: cumulative
+/// work measured *relative to the seam*, derived from block headers alone.
+///
+/// Relative work is sufficient to choose the best tip within the
+/// non-finalized window: under the assumption that no reorg exceeds
+/// [`NON_FINALIZED_DEPTH`], the seam is a stable common ancestor of every
+/// competing window chain, so ordering by relative work matches ordering by
+/// absolute work.
+///
+/// A provisional block becomes an [`IndexedBlock`] only at the resolution
+/// boundary, via [`Self::into_indexed`], when the seam's absolute work is
+/// known: `absolute = seam_base + provisional_cumulative_work`. The relative
+/// value lives only here and is never written into
+/// [`IndexedBlock`]'s absolute `chainwork` field, so the two cannot be
+/// misattributed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProvisionalBlock {
+    /// Height + hash of this block.
+    index: BlockIndex,
+    /// Parent block hash as *claimed by this block's header*.
+    ///
+    /// UNTRUSTED while the snapshot is provisional: the linkage it asserts is
+    /// not validated against the finalized chain until the seam connects, so
+    /// it must not be used for trusted chain-walks (e.g. fork-point recursion)
+    /// during the provisional stage.
+    parent_hash: BlockHash,
+    /// Cumulative work relative to the seam, header-derived. Never absolute —
+    /// the type enforces that (see [`ProvisionalCumulativeWork`]).
+    provisional_cumulative_work: ProvisionalCumulativeWork,
+    /// Header and auxiliary block data.
+    data: BlockData,
+    /// Compact representations of the block's transactions.
+    transactions: Vec<CompactTxData>,
+    /// Commitment tree data for the chain after this block is applied.
+    commitment_tree_data: CommitmentTreeData,
+}
+
+impl ProvisionalBlock {
+    /// The block hash.
+    pub(crate) fn hash(&self) -> &BlockHash {
+        &self.index.hash
+    }
+
+    /// The block height.
+    pub(crate) fn height(&self) -> Height {
+        self.index.height
+    }
+
+    /// The parent block hash as claimed by the header. UNTRUSTED while
+    /// provisional — see the field doc; do not use for validated chain-walks.
+    pub(crate) fn parent_hash(&self) -> &BlockHash {
+        &self.parent_hash
+    }
+
+    /// Cumulative work relative to the seam. Use this — never an absolute
+    /// chainwork — for best-tip selection within the non-finalized window.
+    pub(crate) fn provisional_cumulative_work(&self) -> &ProvisionalCumulativeWork {
+        &self.provisional_cumulative_work
+    }
+
+    /// The compact transactions in this block.
+    pub(crate) fn transactions(&self) -> &[CompactTxData] {
+        &self.transactions
+    }
+
+    /// Header and auxiliary block data.
+    pub(crate) fn data(&self) -> &BlockData {
+        &self.data
+    }
+
+    /// Commitment tree data after this block.
+    pub(crate) fn commitment_tree_data(&self) -> &CommitmentTreeData {
+        &self.commitment_tree_data
+    }
+
+    /// Promote to an [`IndexedBlock`] once the seam's absolute cumulative work
+    /// is known (the resolution boundary). The absolute chainwork is
+    /// `seam_base + provisional_cumulative_work`.
+    pub(crate) fn into_indexed(self, seam_base: &ChainWork) -> IndexedBlock {
+        let chainwork = self.provisional_cumulative_work.resolve(seam_base);
+        IndexedBlock::new(
+            BlockContext::new(
+                self.index.hash,
+                self.parent_hash,
+                chainwork,
+                self.index.height,
+            ),
+            self.data,
+            self.transactions,
+            self.commitment_tree_data,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -621,6 +762,83 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// Get a snapshot of the block cache
     pub(super) fn get_snapshot(&self) -> Arc<NonfinalizedBlockCacheSnapshot> {
         self.current.load_full()
+    }
+
+    /// Build a [`ProvisionalBlock`] from a source block, accumulating its
+    /// header work onto the parent's relative total. Mirrors
+    /// [`Self::block_to_chainblock`] but produces a provisional (not indexed)
+    /// block: no absolute chainwork is computed or required.
+    async fn block_to_provisional_block(
+        &self,
+        parent_work: &ProvisionalCumulativeWork,
+        block: &zebra_chain::block::Block,
+    ) -> Result<ProvisionalBlock, SyncError> {
+        let tree_roots = self
+            .get_tree_roots_from_source(block.hash().into())
+            .await
+            .map_err(|e| {
+                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                    Box::new(InvalidData(format!("{}", e))),
+                ))
+            })?;
+
+        Self::provisional_block_from_parts(block, &tree_roots, parent_work, self.network.clone())
+            .map_err(|e| {
+                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                    Box::new(InvalidData(e)),
+                ))
+            })
+    }
+
+    /// Assemble a [`ProvisionalBlock`] from already-fetched parts. Reuses the
+    /// shared `BlockWithMetadata` extractors (`extract_block_data`,
+    /// `extract_transactions`, `create_commitment_tree_data`, `block_work`);
+    /// the only divergence from the indexed path is that work is accumulated
+    /// *relative to the seam* instead of into an absolute `BlockContext`.
+    fn provisional_block_from_parts(
+        block: &zebra_chain::block::Block,
+        tree_roots: &TreeRootData,
+        parent_work: &ProvisionalCumulativeWork,
+        network: Network,
+    ) -> Result<ProvisionalBlock, String> {
+        let (sapling_root, sapling_size, orchard_root, orchard_size) =
+            tree_roots.clone().extract_with_defaults();
+
+        // `parent_chainwork` is unused for a provisional block (it feeds only
+        // `create_block_context`, which we never call here); a zero placeholder
+        // keeps the throwaway `BlockMetadata` shape without touching absolute
+        // work. The relative total is tracked separately, below.
+        let metadata = BlockMetadata::new(
+            sapling_root,
+            sapling_size as u32,
+            orchard_root,
+            orchard_size as u32,
+            ChainWork::from_u256(U256::zero()),
+            network,
+        );
+        let block_with_metadata = BlockWithMetadata::new(block, metadata);
+
+        let data = block_with_metadata.extract_block_data()?;
+        let transactions = block_with_metadata.extract_transactions()?;
+        let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
+        let provisional_cumulative_work =
+            parent_work.add_block_work(&block_with_metadata.block_work()?);
+
+        let hash = BlockHash::from(block.hash());
+        let parent_hash = BlockHash::from(block.header.previous_block_hash);
+        let height = block
+            .coinbase_height()
+            .map(|height| Height(height.0))
+            .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
+
+        Ok(ProvisionalBlock {
+            index: BlockIndex { height, hash },
+            parent_hash,
+            provisional_cumulative_work,
+            data,
+            transactions,
+            commitment_tree_data,
+        })
     }
 
     async fn block_to_chainblock(
