@@ -5,8 +5,7 @@ use crate::chain_index::types::db::{
 };
 use crate::{
     chain_index::types::{
-        self, BlockContext, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height,
-        TreeRootData,
+        self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
     },
     error::FinalisedStateError,
     ChainWork, IndexedBlock,
@@ -125,13 +124,6 @@ impl ProvisionalCumulativeWork {
     pub(crate) fn add_block_work(&self, block_work: &ChainWork) -> Self {
         Self(self.0.add(block_work))
     }
-
-    /// Resolve to ABSOLUTE chainwork given the seam's absolute base
-    /// (`absolute = seam_base + relative`). Only callable once the base is
-    /// known — i.e. at the resolution boundary.
-    pub(crate) fn resolve(&self, seam_base: &ChainWork) -> ChainWork {
-        seam_base.add(&self.0)
-    }
 }
 
 /// A non-finalized block as held by the NFS.
@@ -150,12 +142,11 @@ impl ProvisionalCumulativeWork {
 /// competing window chain, so ordering by relative work matches ordering by
 /// absolute work.
 ///
-/// A provisional block becomes an [`IndexedBlock`] only at the resolution
-/// boundary, via [`Self::into_indexed`], when the seam's absolute work is
-/// known: `absolute = seam_base + provisional_cumulative_work`. The relative
-/// value lives only here and is never written into
-/// [`IndexedBlock`]'s absolute `chainwork` field, so the two cannot be
-/// misattributed.
+/// A provisional block is promoted to an [`IndexedBlock`] only at the
+/// resolution boundary, when the seam's absolute work becomes known
+/// (`absolute = seam_base + provisional_cumulative_work`). The relative value
+/// lives only here and is never written into [`IndexedBlock`]'s absolute
+/// `chainwork` field, so the two cannot be misattributed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProvisionalBlock {
     /// Height + hash of this block.
@@ -244,24 +235,6 @@ impl ProvisionalBlock {
             transactions: indexed.transactions,
             commitment_tree_data: indexed.commitment_tree_data,
         }
-    }
-
-    /// Promote to an [`IndexedBlock`] once the seam's absolute cumulative work
-    /// is known (the resolution boundary). The absolute chainwork is
-    /// `seam_base + provisional_cumulative_work`.
-    pub(crate) fn into_indexed(self, seam_base: &ChainWork) -> IndexedBlock {
-        let chainwork = self.provisional_cumulative_work.resolve(seam_base);
-        IndexedBlock::new(
-            BlockContext::new(
-                self.index.hash,
-                self.parent_hash,
-                chainwork,
-                self.index.height,
-            ),
-            self.data,
-            self.transactions,
-            self.commitment_tree_data,
-        )
     }
 }
 
