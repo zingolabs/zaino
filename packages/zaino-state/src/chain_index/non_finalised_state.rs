@@ -80,6 +80,34 @@ impl ChainIndexSnapshot {
     }
 }
 
+/// Whether a published snapshot's non-finalized window is anchored to the
+/// validated finalized chain yet.
+///
+/// The snapshot always exists and always carries blocks; this says whether the
+/// finalized DB has caught up to the seam. Flipped to `Resolved` inside
+/// `update`, atomically with the `compare_and_swap` that publishes the
+/// snapshot (the value rides in the snapshot, so the flip is not separable
+/// from the block contents).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SnapshotAvailability {
+    /// The finalized DB has not reached the seam. The window's prev-hash
+    /// linkage is unvalidated and its blocks have no absolute chainwork; reads
+    /// that need finalized data fall back to the validator, serving up to
+    /// `validator_finalized_height`.
+    Provisional {
+        /// The finalized-tip height passthrough may serve up to.
+        validator_finalized_height: Height,
+    },
+    /// The finalized DB has reached the seam: the window is validated, and each
+    /// block's absolute chainwork is `cumulative_chainwork_base + relative`
+    /// (the base is the seam block's absolute cumulative work, from the FS).
+    Resolved {
+        /// The seam's absolute cumulative work, the base for resolving any
+        /// window block's absolute chainwork.
+        cumulative_chainwork_base: ChainWork,
+    },
+}
+
 #[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
 pub(crate) struct NonfinalizedBlockCacheSnapshot {
@@ -96,6 +124,10 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
     pub best_tip: BlockIndex,
+    /// Whether the finalized DB has caught up to this window's seam, and (when
+    /// it has) the seam's absolute-chainwork base. Set atomically with the
+    /// snapshot publish in `update`.
+    pub availability: SnapshotAvailability,
 }
 
 /// Cumulative work measured *relative to the seam*, header-derived.
@@ -358,6 +390,11 @@ impl NonfinalizedBlockCacheSnapshot {
             blocks,
             heights_to_hashes,
             best_tip,
+            // Newly seeded from the seam block: the finalized DB has not yet
+            // caught up to it. `update` flips this to `Resolved` once it has.
+            availability: SnapshotAvailability::Provisional {
+                validator_finalized_height: height,
+            },
         }
     }
 
@@ -726,6 +763,32 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.handle_reorg(&mut new_snapshot, best_block)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
+
+        // Resolve availability atomically with the publish below. The finalized
+        // DB has caught up iff the trimmed window still contains a block at the
+        // FS tip (the seam overlaps); when it does, the FS holds that block's
+        // absolute cumulative work, which is the base for the window's
+        // relative work. Until then the window floats free of the finalized
+        // chain — Provisional.
+        new_snapshot.availability = if new_snapshot
+            .heights_to_hashes
+            .contains_key(&finalized_height)
+        {
+            let cumulative_chainwork_base = finalized_db
+                .to_reader()
+                .get_chain_block_by_height(finalized_height)
+                .await
+                .map_err(|_e| UpdateError::FinalizedStateCorruption)?
+                .map(|seam_block| *seam_block.chainwork())
+                .ok_or(UpdateError::FinalizedStateCorruption)?;
+            SnapshotAvailability::Resolved {
+                cumulative_chainwork_base,
+            }
+        } else {
+            SnapshotAvailability::Provisional {
+                validator_finalized_height: finalized_height,
+            }
+        };
 
         // Need to get best hash at some point in this process
         let stored = self
