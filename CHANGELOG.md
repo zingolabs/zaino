@@ -8,11 +8,18 @@ and this library adheres to Rust's notion of
 ## Unreleased
 - [943] Zallet regtest fixes
 - [1065] Move functionality to BlockChainSource: t-address rpcs
+- `gettxoutsetinfo` is now served indexer-side. Both `FetchService` and
+  `StateService` compute the response from Zaino's own UTXO-set accumulator
+  (finalised state + non-finalised state) instead of forwarding to the backing
+  validator.
 
 ### Added
 - `zaino-state::chain_index::source::BlockchainSource` and
   `zaino-state::chain_index::ChainIndex` now expose transparent-address query
   methods for deltas, balances, txids, and UTXOs.
+- `ChainIndex::get_tx_out_set_info` — combines the finalised
+  `FinalisedTxOutSetInfoAccumulator` with the non-finalised state to produce
+  the full `GetTxOutSetInfoResponse`.
 ### Changed
 - Integration tests now use `corez`, with Zcash, Zebra, and Zingo dependencies
   updated to releases and companion branches that no longer depend on the

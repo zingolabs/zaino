@@ -42,7 +42,7 @@ use zaino_fetch::{
                 DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
-            GetSpentInfoResponse, GetSubtreesResponse, GetTxOutResponse,
+            GetSpentInfoResponse, GetSubtreesResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
     },
 };
@@ -1378,69 +1378,83 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
-        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let fallback_hash_or_height = hash_or_height.clone();
+        let local_result: Result<GetTreestateResponse, Self::Error> = async {
+            let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
-        let block_data = match hash_or_height_struct {
-            HashOrHeight::Hash(hash) => self
-                .indexer
-                .get_indexed_block_by_hash(&snapshot, &hash.into())
-                .await
-                .map_err(|_error| {
-                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+            let block_data = match hash_or_height_struct {
+                HashOrHeight::Hash(hash) => self
+                    .indexer
+                    .get_indexed_block_by_hash(&snapshot, &hash.into())
+                    .await?
+                    .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
                         zebra_rpc::server::error::LegacyCode::InvalidParameter,
                         "Failed to fetch block data.",
-                    ))
-                })?
-                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch block data.",
-                )))?,
-            HashOrHeight::Height(height) => self
-                .indexer
-                .get_indexed_block_by_height(&snapshot, &height.into())
-                .await
-                .map_err(|_error| {
-                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    )))?,
+                HashOrHeight::Height(height) => self
+                    .indexer
+                    .get_indexed_block_by_height(&snapshot, &height.into())
+                    .await?
+                    .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
                         zebra_rpc::server::error::LegacyCode::InvalidParameter,
                         "Failed to fetch block data.",
-                    ))
-                })?
-                .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch block data.",
-                )))?,
-        };
+                    )))?,
+            };
 
-        let (sapling, orchard) = self
-            .indexer
-            .get_treestate(block_data.hash())
+            let (sapling, orchard) = self.indexer.get_treestate(block_data.hash()).await?;
+            let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+                StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Block time is out of range for u32.",
+                ))
+            })?;
+
+            #[allow(deprecated)]
+            Ok(GetTreestateResponse::from_parts(
+                (*block_data.hash()).into(),
+                block_data.height().into(),
+                time,
+                sapling,
+                orchard,
+            ))
+        }
+        .await;
+
+        if let Ok(response) = local_result {
+            return Ok(response);
+        }
+
+        self.rpc_client
+            .get_treestate(fallback_hash_or_height)
             .await
             .map_err(|_error| {
                 StateServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
                     "Failed to fetch treestate.",
                 ))
-            })?;
-        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
-            StateServiceError::RpcError(RpcError::new_from_legacycode(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                "Block time is out of range for u32.",
-            ))
-        })?;
-
-        #[allow(deprecated)]
-        Ok(GetTreestateResponse::from_parts(
-            (*block_data.hash()).into(),
-            block_data.height().into(),
-            time,
-            sapling,
-            orchard,
-        ))
+            })
+            .and_then(|treestate| {
+                treestate.try_into().map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to parse treestate.",
+                    ))
+                })
+            })
     }
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
         Ok(self.rpc_client.get_mining_info().await?)
+    }
+
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+        Ok(self.indexer.get_tx_out_set_info().await?)
     }
 
     // No request parameters.
@@ -1905,7 +1919,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
         match self
             .indexer
-            .get_compact_block(&snapshot, block_height, PoolTypeFilter::default())
+            .get_compact_block(&snapshot, block_height, PoolTypeFilter::includes_all())
             .await
         {
             Ok(Some(block)) => Ok(block),
@@ -1970,7 +1984,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
         match self
             .indexer
-            .get_compact_block(&snapshot, block_height, PoolTypeFilter::default())
+            .get_compact_block(&snapshot, block_height, PoolTypeFilter::includes_all())
             .await
         {
             Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),

@@ -7,10 +7,32 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.1] - 2026-05-19
 
 ### Added
-- `ValidatedBlockRangeRequest` type that encapsulates validations of the
-  `GetBlockRange` RPC request
-- utils submodule to handle `PoolType` conversions
-- `PoolTypeError` defines conversion errors between i32 and known `PoolType` variants
-- `PoolTypeFilter` indicates which pools need to be returned in a compact block.
+- Cargo feature `heavy` (enabled by `default`) — gates the optional
+  `zebra-state`, `zebra-chain`, and `which` dependencies behind a
+  feature flag so consumers that only need the generated wire types
+  can disable default features.
+- Cargo feature `grpc_proxy_server` — when enabled, re-exports `prost`
+  and `tonic` from the crate root so downstream proxy-server crates
+  can depend on a single zaino-proto version of those dependencies.
+- Build wiring updated to `tonic-prost` / `tonic-prost-build` 0.14
+  (`tonic-build` dropped).
+
+## [0.1.0] - 2026-03-25
+
+Initial release on crates.io. Previous `v0.1.2` (Aug 2025) was yanked.
+
+Contents include the generated `compact_tx_streamer_server::CompactTxStreamer`
+service trait (with `GetTaddressTransactions`), the `utils` module
+(`PoolType` conversion helpers, `PoolTypeError`, `PoolTypeFilter`,
+`blockid_to_hashorheight`), `ValidatedBlockRangeRequest`,
+`GetMempoolTxRequest`, and the proto schema synced with upstream
+`lightwalletd` (`PoolType` enum, `BlockRange.poolTypes`).

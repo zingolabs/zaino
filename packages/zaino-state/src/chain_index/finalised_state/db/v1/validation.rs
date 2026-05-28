@@ -185,7 +185,6 @@ impl DbV1 {
         };
 
         // *** transparent ***
-        #[cfg(feature = "transparent_address_history_experimental")]
         let transparent_tx_list = {
             let raw = ro.get(self.transparent, &height_key)?;
             let entry = StoredEntryVar::<TransparentTxList>::from_bytes(raw)
@@ -287,7 +286,65 @@ impl DbV1 {
             return Err(fail("merkle root mismatch"));
         }
 
-        // *** spent + addrhist validation ***
+        // *** spent  ***
+        let validate_spent_index = {
+            let metadata_key = b"metadata";
+
+            let raw = ro
+                .get(self.metadata, metadata_key)
+                .map_err(FinalisedStateError::LmdbError)?;
+
+            let entry = StoredEntryFixed::<DbMetadata>::from_bytes(raw)
+                .map_err(|e| FinalisedStateError::Custom(format!("metadata corrupt data: {e}")))?;
+
+            if !entry.verify(metadata_key) {
+                return Err(FinalisedStateError::Custom(
+                    "metadata checksum mismatch".to_string(),
+                ));
+            }
+
+            entry.inner().version
+                >= DbVersion {
+                    major: 1,
+                    minor: 2,
+                    patch: 0,
+                }
+        };
+        if validate_spent_index {
+            let tx_list = transparent_tx_list.inner().tx();
+
+            for (tx_index, tx_opt) in tx_list.iter().enumerate() {
+                let tx_index = tx_index as u16;
+                let txid_index = TxLocation::new(height.0, tx_index);
+
+                let Some(tx) = tx_opt else { continue };
+
+                // Inputs: check spent + addrhist input record
+                for input in tx.inputs().iter() {
+                    // Continue if coinbase.
+                    if input.is_null_prevout() {
+                        continue;
+                    }
+
+                    // Check spent record
+                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                    let outpoint_bytes = outpoint.to_bytes()?;
+                    let val = ro.get(self.spent, &outpoint_bytes).map_err(|_| {
+                        fail(&format!("missing spent index for outpoint {outpoint:?}"))
+                    })?;
+                    let entry = StoredEntryFixed::<TxLocation>::from_bytes(val)
+                        .map_err(|e| fail(&format!("corrupt spent entry: {e}")))?;
+                    if !entry.verify(&outpoint_bytes) {
+                        return Err(fail("spent entry checksum mismatch"));
+                    }
+                    if entry.inner() != &txid_index {
+                        return Err(fail("spent entry has wrong TxLocation"));
+                    }
+                }
+            }
+        }
+
+        // *** addrhist validation ***
         #[cfg(feature = "transparent_address_history_experimental")]
         {
             let tx_list = transparent_tx_list.inner().tx();
@@ -334,21 +391,6 @@ impl DbV1 {
                     // Continue if coinbase.
                     if input.is_null_prevout() {
                         continue;
-                    }
-
-                    // Check spent record
-                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-                    let outpoint_bytes = outpoint.to_bytes()?;
-                    let val = ro.get(self.spent, &outpoint_bytes).map_err(|_| {
-                        fail(&format!("missing spent index for outpoint {outpoint:?}"))
-                    })?;
-                    let entry = StoredEntryFixed::<TxLocation>::from_bytes(val)
-                        .map_err(|e| fail(&format!("corrupt spent entry: {e}")))?;
-                    if !entry.verify(&outpoint_bytes) {
-                        return Err(fail("spent entry checksum mismatch"));
-                    }
-                    if entry.inner() != &txid_index {
-                        return Err(fail("spent entry has wrong TxLocation"));
                     }
 
                     // Check addrhist input record

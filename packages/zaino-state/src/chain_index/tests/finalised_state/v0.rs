@@ -12,10 +12,10 @@ use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
-    build_mockchain_source, load_test_vectors, TestVectorBlockData, TestVectorData,
+    build_mockchain_source, indexed_block_chain, load_test_vectors, TestVectorData,
 };
 use crate::error::FinalisedStateError;
-use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
+use crate::{BlockCacheConfig, Height};
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,
@@ -225,51 +225,12 @@ async fn get_compact_blocks() {
     let (TestVectorData { blocks, .. }, _db_dir, _zaino_db, db_reader) =
         load_vectors_v0db_and_reader().await;
 
-    let mut parent_chain_work = ChainWork::from_u256(0.into());
-
-    for TestVectorBlockData {
-        height,
-        zebra_block,
-        sapling_root,
-        sapling_tree_size,
-        orchard_root,
-        orchard_tree_size,
-        ..
-    } in blocks.iter()
-    {
-        let metadata = BlockMetadata::new(
-            *sapling_root,
-            *sapling_tree_size as u32,
-            *orchard_root,
-            *orchard_tree_size as u32,
-            parent_chain_work,
-            zebra_chain::parameters::Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
-                    nu6_1: None,
-                    nu7: None,
-                }
-                .into(),
-            ),
-        );
-
-        let chain_block =
-            IndexedBlock::try_from(BlockWithMetadata::new(zebra_block, metadata)).unwrap();
-
+    for chain_block in indexed_block_chain(&blocks) {
+        let height = chain_block.context.index.height;
         let compact_block = chain_block.to_compact_block();
 
-        parent_chain_work = chain_block.context.chainwork;
-
         let reader_compact_block_default = db_reader
-            .get_compact_block(Height(*height), PoolTypeFilter::default())
+            .get_compact_block(height, PoolTypeFilter::default())
             .await
             .unwrap();
         let default_compact_block = compact_block_with_pool_types(
@@ -279,7 +240,7 @@ async fn get_compact_blocks() {
         assert_eq!(default_compact_block, reader_compact_block_default);
 
         let reader_compact_block_all_data = db_reader
-            .get_compact_block(Height(*height), PoolTypeFilter::includes_all())
+            .get_compact_block(height, PoolTypeFilter::includes_all())
             .await
             .unwrap();
         let all_data_compact_block = compact_block_with_pool_types(
@@ -288,7 +249,7 @@ async fn get_compact_blocks() {
         );
         assert_eq!(all_data_compact_block, reader_compact_block_all_data);
 
-        println!("CompactBlock at height {height} OK");
+        println!("CompactBlock at height {} OK", height.0);
     }
 }
 

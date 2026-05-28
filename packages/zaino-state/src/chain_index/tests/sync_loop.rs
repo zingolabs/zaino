@@ -1,5 +1,6 @@
 use super::{
     load_test_vectors_and_sync_chain_index, load_test_vectors_and_sync_chain_index_with_timings,
+    MockchainMode,
 };
 use crate::chain_index::{ChainIndex, SyncTimings};
 use std::time::Instant;
@@ -20,7 +21,7 @@ use zaino_common::status::{Status as _, StatusType};
 #[tokio::test(flavor = "multi_thread")]
 async fn survives_transient_source_failure() {
     let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(true).await;
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
     let start = Instant::now();
     mockchain.set_failing(true);
@@ -50,7 +51,7 @@ async fn survives_transient_source_failure() {
 async fn escalates_to_critical_after_persistent_failure() {
     let timings = SyncTimings::fast();
     let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index_with_timings(true, timings).await;
+        load_test_vectors_and_sync_chain_index_with_timings(MockchainMode::Active, timings).await;
 
     let start = Instant::now();
     mockchain.set_failing(true);
@@ -98,7 +99,7 @@ async fn escalates_to_critical_after_persistent_failure() {
 #[tokio::test(flavor = "multi_thread")]
 async fn tip_converges_after_burst_mine() {
     let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(true).await;
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
     let initial_tip = mockchain.active_height();
     mockchain.mine_blocks(20);

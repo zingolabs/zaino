@@ -1,6 +1,8 @@
 //! Test vector creation and validity tests, MockchainSource creation.
 
 use corez::io::{self, Read};
+use std::collections::HashMap;
+use std::fs;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +14,7 @@ use zebra_rpc::methods::GetAddressUtxos;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::{
     read_u32_le, read_u64_le, BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, CompactSize,
-    IndexedBlock,
+    CompactTxData, IndexedBlock,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,27 +48,55 @@ pub async fn sync_db_with_blockdata(
     vector_data: Vec<TestVectorBlockData>,
     height_limit: Option<u32>,
 ) {
-    let mut parent_chain_work = ChainWork::from_u256(0.into());
-    for TestVectorBlockData {
-        height,
-        zebra_block,
-        sapling_root,
-        sapling_tree_size,
-        orchard_root,
-        orchard_tree_size,
-        ..
-    } in vector_data
-    {
+    for chain_block in indexed_block_chain(&vector_data) {
         if let Some(h) = height_limit {
-            if height > h {
+            if chain_block.context.index.height.0 > h {
                 break;
             }
         }
+        db.write_block(chain_block).await.unwrap();
+    }
+}
+
+/// Recursively copies `src` into `dst`, creating `dst` if it does not exist.
+/// Used by tests to seed a fresh tempdir from a pre-built fixture DB so each
+/// test gets an isolated, writable copy without paying for a fresh ingest.
+pub(in crate::chain_index::tests) fn copy_dir_recursive(
+    src: &Path,
+    dst: &Path,
+) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Sole source of truth for materialising the regtest `IndexedBlock` chain
+/// from a sequence of test-vector blocks: builds each block's `BlockMetadata`
+/// (regtest activation heights, all NUs through NU6 active at height 1) and
+/// threads cumulative chainwork between successive blocks. Returned lazily so
+/// each call site picks its own consumption strategy (by-value iteration,
+/// collection, accumulator updates, etc.) without duplicating the metadata
+/// boilerplate.
+pub(in crate::chain_index::tests) fn indexed_block_chain(
+    blocks: &[TestVectorBlockData],
+) -> impl Iterator<Item = IndexedBlock> + '_ {
+    let mut parent_chain_work = ChainWork::from_u256(0.into());
+    blocks.iter().map(move |vector| {
         let metadata = BlockMetadata::new(
-            sapling_root,
-            sapling_tree_size as u32,
-            orchard_root,
-            orchard_tree_size as u32,
+            vector.sapling_root,
+            vector.sapling_tree_size as u32,
+            vector.orchard_root,
+            vector.orchard_tree_size as u32,
             parent_chain_work,
             zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
@@ -85,13 +115,30 @@ pub async fn sync_db_with_blockdata(
                 .into(),
             ),
         );
+        let chain_block =
+            IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata)).unwrap();
+        parent_chain_work = chain_block.context.chainwork;
+        chain_block
+    })
+}
 
-        let block_with_metadata = BlockWithMetadata::new(&zebra_block, metadata);
-        let chain_block = IndexedBlock::try_from(block_with_metadata).unwrap();
-        parent_chain_work = *chain_block.chainwork();
-
-        db.write_block(chain_block).await.unwrap();
+/// Materialises the `IndexedBlock` chain into a `Vec` and a flat
+/// `(block_height, tx_index) → CompactTxData` lookup, so a spender-symmetry
+/// test can walk the chain once for its outpoint scan and then resolve
+/// `(height, tx_index)` spender references in O(1).
+pub(in crate::chain_index::tests) fn index_test_vector_blocks(
+    blocks: &[TestVectorBlockData],
+) -> (Vec<IndexedBlock>, HashMap<(u32, u64), CompactTxData>) {
+    let mut indexed_blocks = Vec::with_capacity(blocks.len());
+    let mut tx_by_index: HashMap<(u32, u64), CompactTxData> = HashMap::new();
+    for chain_block in indexed_block_chain(blocks) {
+        let block_height = chain_block.context.index.height.0;
+        for tx in chain_block.transactions() {
+            tx_by_index.insert((block_height, tx.index()), tx.clone());
+        }
+        indexed_blocks.push(chain_block);
     }
+    (indexed_blocks, tx_by_index)
 }
 
 // TODO: Add custom MockChain block data structs to simplify unit test interface

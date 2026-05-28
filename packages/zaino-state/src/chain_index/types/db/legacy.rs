@@ -1194,7 +1194,7 @@ impl IndexedBlock {
         let orchard_commitment_tree_size = self.commitment_tree_data().sizes().orchard();
 
         zaino_proto::proto::compact_formats::CompactBlock {
-            proto_version: 4,
+            proto_version: 0,
             height,
             hash,
             prev_hash,

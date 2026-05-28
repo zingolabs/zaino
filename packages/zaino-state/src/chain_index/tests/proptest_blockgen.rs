@@ -27,6 +27,7 @@ use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
     chain_index::{
+        finalized_height_floor,
         non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
@@ -260,9 +261,8 @@ fn passthrough_best_chaintip() {
                 .last()
                 .unwrap()
                 .coinbase_height()
+                .map(|h| finalized_height_floor(h.0).0)
                 .unwrap()
-                .0
-                .saturating_sub(100)
         );
     })
 }
@@ -400,9 +400,19 @@ fn make_chain() {
             let indexer = NodeBackedChainIndex::new(mockchain.clone(), config)
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_secs(5)).await;
             let index_reader = indexer.subscriber();
-            let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+            let expected_block_count = segment_length * (branch_count + 1);
+            let snapshot = poll_until(
+                "indexer to ingest the full proptest chain",
+                Duration::from_secs(10),
+                Duration::from_millis(25),
+                || async {
+                    let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+                    (snapshot.get_nfs_snapshot()?.blocks.len() == expected_block_count)
+                        .then_some(snapshot)
+                },
+            )
+            .await;
             let non_finalized_snapshot = snapshot.get_nfs_snapshot().expect("not synced");
             let best_tip_hash = non_finalized_snapshot.best_tip.hash;
             let best_tip_block = non_finalized_snapshot
