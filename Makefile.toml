@@ -278,11 +278,35 @@ info "-- IMAGE             = ${IMAGE_NAME}"
 info "-- TAG               = $TAG"
 # info "-- TEST_BINARIES_DIR = ${TEST_BINARIES_DIR}"
 
+# Run podman in foreground with proper signal handling
 # Set container name for cleanup. Suffix with $$ (script PID) so concurrent
 # `makers container-test` invocations on the same host don't collide on the
 # `zaino-testing` name. The base-script cleanup trap reads CONTAINER_NAME
 # from script scope and stops the right container on EXIT/INT/TERM.
 CONTAINER_NAME="zaino-testing-$$"
+
+# Capture git info on the host and forward it into the container so the
+# build script does not need to shell out to git from within the bind
+# mount. In a worktree the bind-mounted .git is a file pointing to a
+# host-only path, so an in-container `git rev-parse` returns empty and
+# (worse) a missing-path `cargo:rerun-if-changed` invalidates every
+# build. Reading these from env vars keeps the container build
+# deterministic across runs.
+GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+
+# Conditionally mount a local infras checkout if one exists at the
+# expected sibling path. integration-tests/Cargo.toml may carry
+# path-based deps like `../../../infras/dev/zcash_local_net` that only
+# resolve when this directory is present inside the container at the
+# matching location. If the host doesn't have an infras checkout the
+# mount is skipped and any path-dep error surfaces as it would today.
+EXTRA_MOUNTS=()
+if [[ -d "$PWD/../../infras/dev" ]]; then
+  INFRAS_HOST_PATH="$(cd "$PWD/../../infras/dev" && pwd -P)"
+  info "-- INFRAS_MOUNT      = ${INFRAS_HOST_PATH} -> /home/infras/dev"
+  EXTRA_MOUNTS+=(-v "${INFRAS_HOST_PATH}:/home/infras/dev")
+fi
 
 # Run podman in foreground with proper signal handling.
 #
@@ -301,10 +325,13 @@ podman run --rm \
   -v zaino-container-target:/home/container_user/zaino/target:U \
   -v zaino-cargo-git:/usr/local/cargo/git:U \
   -v zaino-cargo-registry:/usr/local/cargo/registry:U \
+  ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"} \
   -e "TEST_BINARIES_DIR=${TEST_BINARIES_DIR}" \
   -e "NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1" \
   -e "ZAINOLOG_FORMAT=${ZAINOLOG_FORMAT:-stream}" \
   -e "RUST_LOG=${RUST_LOG:-}" \
+  -e "GIT_COMMIT=${GIT_COMMIT}" \
+  -e "BRANCH=${BRANCH}" \
   -w /home/container_user/zaino \
   -u container_user \
   "${IMAGE_NAME}:$TAG" \

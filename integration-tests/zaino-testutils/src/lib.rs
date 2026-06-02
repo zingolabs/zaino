@@ -36,6 +36,7 @@ use zcash_local_net::{
     error::LaunchError,
     validator::zcashd::{Zcashd, ZcashdConfig},
 };
+use zcash_local_net::network::pick_unused_port;
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zebra_chain::parameters::NetworkKind;
 #[cfg(test)]
@@ -58,7 +59,7 @@ fn binary_path(binary_name: &str) -> Option<PathBuf> {
 }
 
 /// Create local URI from port.
-pub fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
+pub fn make_uri(indexer_port: u16) -> http::Uri {
     format!("http://127.0.0.1:{indexer_port}")
         .try_into()
         .unwrap()
@@ -487,10 +488,20 @@ where
             zaino_json_listen_address,
             zaino_json_server_cookie_dir,
         ) = if enable_zaino {
-            let zaino_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
+            // Was `portpicker::pick_unused_port()` — that helper samples
+            // randomly from `15000..25000` and bind-checks, a 10 000-port
+            // range that suffers measurable birthday-paradox collisions
+            // when many test subprocesses run in parallel (the in-the-wild
+            // `ConnectionRefused` flakes on `zebrad::get::*`,
+            // `zebra::lightwallet_indexer::*`, etc., all reproduce here).
+            // `zcash_local_net::network::pick_unused_port` lets the kernel
+            // assign an ephemeral instead — sequential allocation in the
+            // 32768+ range, TIME_WAIT-cooled, effectively zero-collision
+            // even across test subprocesses.
+            let zaino_grpc_listen_port = pick_unused_port(None);
             let zaino_grpc_listen_address =
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_grpc_listen_port);
-            let zaino_json_listen_port = portpicker::pick_unused_port().expect("No ports free");
+            let zaino_json_listen_port = pick_unused_port(None);
             let zaino_json_listen_address =
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_json_listen_port);
             debug!(
