@@ -8,6 +8,13 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `rpc::grpc_routes` helper function to expose routes
+  without callers needing direct `zaino-proto` dependency
+- `rpc::jsonrpc::service::ZcashIndexerRpc` new trait methods:
+  - `get_tx_out_set_info`
+  - `get_chain_tips`
+  - `get_tx_out`
+  - `get_spent_info`
 ### Changed
 ### Deprecated
 ### Removed
