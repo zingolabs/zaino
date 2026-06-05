@@ -518,13 +518,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         // Callers should provide None. Used for self-recursion case only
-        mut target_height: Option<Height>,
+        height_to_recurse_to: Option<Height>,
     ) -> Result<(), SyncError> {
-        target_height = Some(target_height.unwrap_or(working_snapshot.best_tip.height));
+        let target_height = height_to_recurse_to.unwrap_or(working_snapshot.best_tip.height);
         match self
             .source
             .get_block(HashOrHeight::Height(zebra_chain::block::Height(u32::from(
-                target_height.expect("deterministically Some at this point"),
+                target_height,
             ))))
             .await
             .map_err(|e| {
@@ -540,8 +540,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 Ok(())
             }
             None => {
-                target_height = target_height.map(|h| h - 1);
-                Box::pin(self.check_for_nonhigher_reorgs(working_snapshot, target_height)).await
+                Box::pin(self.check_for_nonhigher_reorgs(working_snapshot, Some(target_height - 1)))
+                    .await
             }
         }
     }
