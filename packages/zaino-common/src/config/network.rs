@@ -154,6 +154,10 @@ impl From<ConfiguredActivationHeights> for ActivationHeights {
             nu5,
             nu6,
             nu6_1,
+            // TODO: zaino's `ActivationHeights` doesn't yet model `Nu6_2`; drop
+            // it on the floor for now so we stay compatible with `zebra-chain
+            // >= 9.0`. Wire it through alongside any future `nu6_2` support.
+            nu6_2: _,
             nu7,
         }: ConfiguredActivationHeights,
     ) -> Self {
@@ -196,6 +200,8 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
             nu5,
             nu6,
             nu6_1,
+            // TODO: see note above — no `Nu6_2` support on the zaino side yet.
+            nu6_2: None,
             nu7,
         }
     }
@@ -236,6 +242,7 @@ impl Network {
             nu5: Some(1),
             nu6: Some(1),
             nu6_1: None,
+            nu6_2: None,
             nu7: None,
         }
     }
@@ -311,6 +318,10 @@ impl From<zebra_chain::parameters::Network> for Network {
                             zebra_chain::parameters::NetworkUpgrade::Nu6_1 => {
                                 activation_heights.nu6_1 = Some(height.0)
                             }
+                            // TODO: no `Nu6_2` field on zaino's `ActivationHeights`
+                            // yet; drop the height on the floor so we stay
+                            // compatible with `zebra-chain >= 9.0`.
+                            zebra_chain::parameters::NetworkUpgrade::Nu6_2 => (),
                             zebra_chain::parameters::NetworkUpgrade::Nu7 => {
                                 activation_heights.nu7 = Some(height.0)
                             }

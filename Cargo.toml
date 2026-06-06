@@ -32,17 +32,17 @@ zingo_common_components =  "0.3.0"
 
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.11"
-zcash_keys = "0.13"
-zcash_protocol = "0.8"
-zcash_primitives = "0.27"
-zcash_transparent = "0.7"
-zcash_client_backend = "0.22"
+zcash_address = "0.12"
+zcash_keys = "0.14"
+zcash_protocol = "0.9"
+zcash_primitives = "0.28"
+zcash_transparent = "0.8"
+zcash_client_backend = "0.23"
 
 # Zebra
-zebra-chain = "7.0.0"
-zebra-state = "6.0.0"
-zebra-rpc = "7.0.0"
+zebra-chain = "9.0.0"
+zebra-state = "8.0.0"
+zebra-rpc = "9.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
