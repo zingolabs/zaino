@@ -7,6 +7,8 @@
 //!    - Built using Zebra's ReadStateService for efficient chain access.
 
 #![warn(missing_docs)]
+// `u32::is_multiple_of` stabilised in 1.88; keep `% == 0` to avoid raising MSRV.
+#![allow(clippy::manual_is_multiple_of)]
 #![forbid(unsafe_code)]
 
 // Zaino's Indexer library frontend.
