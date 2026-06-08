@@ -27,10 +27,10 @@ zainod = { path = "../packages/zainod" }
 
 # Zingo
 zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "63bf5d9171d36e180acbeb6d9182d9c7a93c57b6", features = ["back_compatible"] }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "37eb567a6fc3746e431426b80c6811c2c456506e", features = [
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zingolib_v4.0.0", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "37eb567a6fc3746e431426b80c6811c2c456506e" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", tag = "zingolib_v4.0.0" }
 zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
 zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
 
