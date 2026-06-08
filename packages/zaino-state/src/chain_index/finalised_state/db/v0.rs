@@ -47,7 +47,7 @@ use crate::{
         },
         types::GENESIS_HEIGHT,
     },
-    config::BlockCacheConfig,
+    config::ChainIndexConfig,
     error::FinalisedStateError,
     status::{NamedAtomicStatus, StatusType},
     CompactBlockStream, Height, IndexedBlock,
@@ -272,7 +272,7 @@ pub struct DbV0 {
     status: NamedAtomicStatus,
 
     /// Configuration snapshot used for path/network selection and sizing parameters.
-    config: BlockCacheConfig,
+    config: ChainIndexConfig,
 }
 
 impl DbV0 {
@@ -287,7 +287,7 @@ impl DbV0 {
     ///
     /// # Errors
     /// Returns `FinalisedStateError` on any filesystem, LMDB, or task-spawn failure.
-    pub(crate) async fn spawn(config: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
         info!("Launching ZainoDB");
 
         // Prepare database details and path.

@@ -181,7 +181,7 @@ use crate::{
         source::BlockchainSource,
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, GENESIS_HEIGHT},
     },
-    config::BlockCacheConfig,
+    config::ChainIndexConfig,
     error::FinalisedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, Outpoint,
     TransactionHash, TransparentCompactTx, TxLocation, ZainoVersionedSerde as _,
@@ -264,8 +264,8 @@ pub trait Migration<T: BlockchainSource> {
     /// Use this for migrations where no LMDB data layout changes are required.
     async fn migrate(
         &self,
-        router: Arc<Router>,
-        _cfg: BlockCacheConfig,
+        router: Arc<Router<T>>,
+        _cfg: ChainIndexConfig,
         _source: T,
     ) -> Result<(), FinalisedStateError> {
         info!(
@@ -305,10 +305,10 @@ pub trait Migration<T: BlockchainSource> {
 /// The router is shared so that migration steps can use the primary/shadow routing model.
 pub(super) struct MigrationManager<T: BlockchainSource> {
     /// Router controlling primary/shadow backends and capability routing.
-    pub(super) router: Arc<Router>,
+    pub(super) router: Arc<Router<T>>,
 
     /// Block-cache configuration (paths, network, configured target DB version, etc.).
-    pub(super) cfg: BlockCacheConfig,
+    pub(super) cfg: ChainIndexConfig,
 
     /// The on-disk version currently detected/opened.
     pub(super) current_version: DbVersion,
@@ -392,8 +392,8 @@ impl MigrationStep {
 
     async fn migrate<T: BlockchainSource>(
         &self,
-        router: Arc<Router>,
-        cfg: BlockCacheConfig,
+        router: Arc<Router<T>>,
+        cfg: ChainIndexConfig,
         source: T,
     ) -> Result<(), FinalisedStateError> {
         match self {
@@ -446,8 +446,8 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
     /// shadow metadata is marked `Complete`.
     async fn migrate(
         &self,
-        router: Arc<Router>,
-        cfg: BlockCacheConfig,
+        router: Arc<Router<T>>,
+        cfg: ChainIndexConfig,
         source: T,
     ) -> Result<(), FinalisedStateError> {
         info!("Starting v0 to v1 migration.");
@@ -661,8 +661,8 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 
     async fn migrate(
         &self,
-        router: Arc<Router>,
-        _cfg: BlockCacheConfig,
+        router: Arc<Router<T>>,
+        _cfg: ChainIndexConfig,
         _source: T,
     ) -> Result<(), FinalisedStateError> {
         const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
@@ -674,7 +674,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
         router.limit_primary_caps(Capability::TRANSPARENT_HIST_EXT);
 
         let backend = router.backend(CapabilityRequest::WriteCore)?;
-        let env = backend.env();
+        let env = backend.env()?;
         let metadata_db = backend.metadata_db()?;
         let spent_db = backend.spent_db()?;
         let tx_out_set_info_accumulator_db = backend.tx_out_set_info_accumulator_db()?;
@@ -865,7 +865,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                                     )
                                     .await?
                             }
-                            DbBackend::V0(_) => {
+                            DbBackend::V0(_) | DbBackend::Stateless(_) => {
                                 return Err(FinalisedStateError::FeatureUnavailable(
                                     "v1 txout-set accumulator migration",
                                 ));

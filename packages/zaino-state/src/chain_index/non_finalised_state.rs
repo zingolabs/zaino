@@ -362,7 +362,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
     pub(super) async fn sync(
         &self,
-        finalized_db: Arc<ZainoDB>,
+        finalized_db: Arc<ZainoDB<Source>>,
         chain_height: Height,
     ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
@@ -552,7 +552,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalised tip.
     pub(super) async fn update(
         &self,
-        finalized_db: Arc<ZainoDB>,
+        finalized_db: Arc<ZainoDB<Source>>,
         initial_state: Arc<NonfinalizedBlockCacheSnapshot>,
         mut new_snapshot: NonfinalizedBlockCacheSnapshot,
     ) -> Result<(), UpdateError> {

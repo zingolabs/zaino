@@ -53,6 +53,7 @@
 //! Keep unsupported methods explicit: if a DB version does not provide a feature, return
 //! `FinalisedStateError::FeatureUnavailable(...)` rather than silently degrading semantics.
 
+pub(crate) mod stateless;
 pub(crate) mod v0;
 pub(crate) mod v1;
 
@@ -62,17 +63,21 @@ use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::{
     chain_index::{
-        finalised_state::capability::{
-            BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
-            DbMetadata, DbRead, DbWrite, IndexedBlockExt, TransparentHistExt,
+        finalised_state::{
+            capability::{
+                BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
+                DbMetadata, DbRead, DbWrite, IndexedBlockExt, TransparentHistExt,
+            },
+            db::stateless::StatelessFinalisedState,
         },
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
     },
-    config::BlockCacheConfig,
+    config::ChainIndexConfig,
     error::FinalisedStateError,
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
-    NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
+    BlockHash, BlockHeaderData, BlockchainSource, CommitmentTreeData, CompactBlockStream, Height,
+    IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
+    SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact,
+    TxidList,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -217,22 +222,25 @@ pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
 ///
 /// Capability reporting is provided by [`DbBackend::capability`] and must match the methods that
 /// successfully dispatch in the extension trait implementations below.
-pub(crate) enum DbBackend {
+pub(crate) enum DbBackend<T: BlockchainSource> {
     /// Legacy schema backend.
     V0(DbV0),
 
     /// Current schema backend.
     V1(DbV1),
+
+    /// Stateless finalised state, DB disabled.
+    Stateless(StatelessFinalisedState<T>),
 }
 
 // ***** Core database functionality *****
 
-impl DbBackend {
+impl<T: BlockchainSource> DbBackend<T> {
     /// Spawn a v0 database backend.
     ///
     /// This constructs and initializes the legacy schema implementation and returns it wrapped in
     /// [`DbBackend::V0`].
-    pub(crate) async fn spawn_v0(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v0(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
         Ok(Self::V0(DbV0::spawn(cfg).await?))
     }
 
@@ -240,8 +248,13 @@ impl DbBackend {
     ///
     /// This constructs and initializes the current schema implementation and returns it wrapped in
     /// [`DbBackend::V1`].
-    pub(crate) async fn spawn_v1(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v1(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
         Ok(Self::V1(DbV1::spawn(cfg).await?))
+    }
+
+    /// Spawns a "stateless" finalised state.
+    pub(crate) fn stateless(source: T, network: zebra_chain::parameters::Network) -> Self {
+        Self::Stateless(StatelessFinalisedState::new(source, network))
     }
 
     /// Wait until the database backend reports [`StatusType::Ready`].
@@ -275,14 +288,26 @@ impl DbBackend {
                 Capability::READ_CORE | Capability::WRITE_CORE | Capability::COMPACT_BLOCK_EXT
             }
             Self::V1(_) => Capability::LATEST,
+            Self::Stateless(_) => {
+                Capability::READ_CORE
+                    | Capability::WRITE_CORE
+                    | Capability::BLOCK_CORE_EXT
+                    | Capability::BLOCK_TRANSPARENT_EXT
+                    | Capability::BLOCK_SHIELDED_EXT
+                    | Capability::COMPACT_BLOCK_EXT
+                    | Capability::CHAIN_BLOCK_EXT
+            }
         }
     }
 
     /// Return an arc clone of the underlying LMDB environment, used during some DB migrations.
-    pub(crate) fn env(&self) -> Arc<Environment> {
+    pub(crate) fn env(&self) -> Result<Arc<Environment>, FinalisedStateError> {
         match self {
-            Self::V1(db) => Arc::clone(db.env()),
-            Self::V0(db) => Arc::clone(db.env()),
+            Self::V1(db) => Ok(Arc::clone(db.env())),
+            Self::V0(db) => Ok(Arc::clone(db.env())),
+            Self::Stateless(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "no LMDB environment available",
+            )),
         }
     }
 
@@ -291,7 +316,9 @@ impl DbBackend {
     pub(crate) fn metadata_db(&self) -> Result<Database, FinalisedStateError> {
         match self {
             Self::V1(db) => Ok(db.metadata_db()),
-            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("v1 metadata db")),
+            Self::V0(_) | Self::Stateless(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 metadata db not available",
+            )),
         }
     }
 
@@ -299,7 +326,9 @@ impl DbBackend {
     pub(crate) fn spent_db(&self) -> Result<Database, FinalisedStateError> {
         match self {
             Self::V1(db) => Ok(db.spent_db()),
-            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("v1 spent db")),
+            Self::V0(_) | Self::Stateless(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 spent db not available",
+            )),
         }
     }
 
@@ -307,29 +336,36 @@ impl DbBackend {
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
         match self {
             Self::V1(database) => Ok(database.tx_out_set_info_accumulator_db()),
-            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 tx_out_set_info_accumulator db",
+            Self::V0(_) | Self::Stateless(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 tx_out_set_info_accumulator db not available",
             )),
         }
     }
 }
 
-impl From<DbV0> for DbBackend {
+impl<T: BlockchainSource> From<DbV0> for DbBackend<T> {
     /// Wrap an already-constructed v0 database backend.
     fn from(value: DbV0) -> Self {
         Self::V0(value)
     }
 }
 
-impl From<DbV1> for DbBackend {
+impl<T: BlockchainSource> From<DbV1> for DbBackend<T> {
     /// Wrap an already-constructed v1 database backend.
     fn from(value: DbV1) -> Self {
         Self::V1(value)
     }
 }
 
+impl<T: BlockchainSource> From<StatelessFinalisedState<T>> for DbBackend<T> {
+    /// Wrap an already-constructed stateless finalised state backend.
+    fn from(value: StatelessFinalisedState<T>) -> Self {
+        Self::Stateless(value)
+    }
+}
+
 #[async_trait]
-impl DbCore for DbBackend {
+impl<T: BlockchainSource> DbCore for DbBackend<T> {
     /// Return the current status of the backend.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
@@ -337,6 +373,7 @@ impl DbCore for DbBackend {
         match self {
             Self::V0(db) => DbCore::status(db),
             Self::V1(db) => DbCore::status(db),
+            Self::Stateless(stateless) => DbCore::status(stateless),
         }
     }
 
@@ -347,12 +384,13 @@ impl DbCore for DbBackend {
         match self {
             Self::V0(db) => DbCore::shutdown(db).await,
             Self::V1(db) => DbCore::shutdown(db).await,
+            Self::Stateless(stateless) => DbCore::shutdown(stateless).await,
         }
     }
 }
 
 #[async_trait]
-impl DbRead for DbBackend {
+impl<T: BlockchainSource> DbRead for DbBackend<T> {
     /// Return the highest stored height in the database, if present.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
@@ -360,6 +398,7 @@ impl DbRead for DbBackend {
         match self {
             Self::V0(db) => db.db_height().await,
             Self::V1(db) => db.db_height().await,
+            Self::Stateless(stateless) => stateless.db_height().await,
         }
     }
 
@@ -373,6 +412,7 @@ impl DbRead for DbBackend {
         match self {
             Self::V0(db) => db.get_block_height(hash).await,
             Self::V1(db) => db.get_block_height(hash).await,
+            Self::Stateless(stateless) => stateless.get_block_height(hash).await,
         }
     }
 
@@ -386,6 +426,7 @@ impl DbRead for DbBackend {
         match self {
             Self::V0(db) => db.get_block_hash(height).await,
             Self::V1(db) => db.get_block_hash(height).await,
+            Self::Stateless(stateless) => stateless.get_block_hash(height).await,
         }
     }
 
@@ -397,12 +438,13 @@ impl DbRead for DbBackend {
         match self {
             Self::V0(db) => db.get_metadata().await,
             Self::V1(db) => db.get_metadata().await,
+            Self::Stateless(stateless) => stateless.get_metadata().await,
         }
     }
 }
 
 #[async_trait]
-impl DbWrite for DbBackend {
+impl<T: BlockchainSource> DbWrite for DbBackend<T> {
     /// Write a fully-indexed block into the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
@@ -410,6 +452,7 @@ impl DbWrite for DbBackend {
         match self {
             Self::V0(db) => db.write_block(block).await,
             Self::V1(db) => db.write_block(block).await,
+            Self::Stateless(_stateless) => Ok(()),
         }
     }
 
@@ -420,6 +463,7 @@ impl DbWrite for DbBackend {
         match self {
             Self::V0(db) => db.delete_block_at_height(height).await,
             Self::V1(db) => db.delete_block_at_height(height).await,
+            Self::Stateless(_stateless) => Ok(()),
         }
     }
 
@@ -430,6 +474,7 @@ impl DbWrite for DbBackend {
         match self {
             Self::V0(db) => db.delete_block(block).await,
             Self::V1(db) => db.delete_block(block).await,
+            Self::Stateless(_stateless) => Ok(()),
         }
     }
 
@@ -440,6 +485,7 @@ impl DbWrite for DbBackend {
         match self {
             Self::V0(db) => db.update_metadata(metadata).await,
             Self::V1(db) => db.update_metadata(metadata).await,
+            Self::Stateless(_stateless) => Ok(()),
         }
     }
 }
@@ -453,13 +499,14 @@ impl DbWrite for DbBackend {
 // These names must remain consistent with the capability wiring in `capability.rs`.
 
 #[async_trait]
-impl BlockCoreExt for DbBackend {
+impl<T: BlockchainSource> BlockCoreExt for DbBackend<T> {
     async fn get_block_header(
         &self,
         height: Height,
     ) -> Result<BlockHeaderData, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_header(height).await,
+            Self::Stateless(db) => db.get_block_header(height).await,
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
@@ -471,6 +518,7 @@ impl BlockCoreExt for DbBackend {
     ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_headers(start, end).await,
+            Self::Stateless(db) => db.get_block_range_headers(start, end).await,
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
@@ -478,6 +526,8 @@ impl BlockCoreExt for DbBackend {
     async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_txids(height).await,
+            Self::Stateless(db) => db.get_block_txids(height).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
@@ -489,6 +539,8 @@ impl BlockCoreExt for DbBackend {
     ) -> Result<Vec<TxidList>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_txids(start, end).await,
+            Self::Stateless(db) => db.get_block_range_txids(start, end).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
@@ -499,6 +551,8 @@ impl BlockCoreExt for DbBackend {
     ) -> Result<TransactionHash, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_txid(tx_location).await,
+            Self::Stateless(db) => db.get_txid(tx_location).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
@@ -509,19 +563,23 @@ impl BlockCoreExt for DbBackend {
     ) -> Result<Option<TxLocation>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_tx_location(txid).await,
+            Self::Stateless(db) => db.get_tx_location(txid).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
 }
 
 #[async_trait]
-impl BlockTransparentExt for DbBackend {
+impl<T: BlockchainSource> BlockTransparentExt for DbBackend<T> {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_transparent(tx_location).await,
+            Self::Stateless(db) => db.get_transparent(tx_location).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
@@ -532,6 +590,8 @@ impl BlockTransparentExt for DbBackend {
     ) -> Result<TransparentTxList, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_transparent(height).await,
+            Self::Stateless(db) => db.get_block_transparent(height).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
@@ -543,6 +603,8 @@ impl BlockTransparentExt for DbBackend {
     ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_transparent(start, end).await,
+            Self::Stateless(db) => db.get_block_range_transparent(start, end).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
@@ -553,19 +615,28 @@ impl BlockTransparentExt for DbBackend {
     ) -> Result<TxOutCompact, FinalisedStateError> {
         match self {
             Self::V1(db) => <DbV1 as BlockTransparentExt>::get_previous_output(db, outpoint).await,
+            Self::Stateless(db) => {
+                <StatelessFinalisedState<T> as BlockTransparentExt>::get_previous_output(
+                    db, outpoint,
+                )
+                .await
+            }
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 }
 
 #[async_trait]
-impl BlockShieldedExt for DbBackend {
+impl<T: BlockchainSource> BlockShieldedExt for DbBackend<T> {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_sapling(tx_location).await,
+            Self::Stateless(db) => db.get_sapling(tx_location).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
@@ -573,6 +644,8 @@ impl BlockShieldedExt for DbBackend {
     async fn get_block_sapling(&self, h: Height) -> Result<SaplingTxList, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_sapling(h).await,
+            Self::Stateless(db) => db.get_block_sapling(h).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
@@ -584,6 +657,8 @@ impl BlockShieldedExt for DbBackend {
     ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_sapling(start, end).await,
+            Self::Stateless(db) => db.get_block_range_sapling(start, end).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
@@ -594,6 +669,8 @@ impl BlockShieldedExt for DbBackend {
     ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_orchard(tx_location).await,
+            Self::Stateless(db) => db.get_orchard(tx_location).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
@@ -601,6 +678,8 @@ impl BlockShieldedExt for DbBackend {
     async fn get_block_orchard(&self, h: Height) -> Result<OrchardTxList, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_orchard(h).await,
+            Self::Stateless(db) => db.get_block_orchard(h).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
@@ -612,6 +691,8 @@ impl BlockShieldedExt for DbBackend {
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_orchard(start, end).await,
+            Self::Stateless(db) => db.get_block_range_orchard(start, end).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
@@ -622,6 +703,8 @@ impl BlockShieldedExt for DbBackend {
     ) -> Result<CommitmentTreeData, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_commitment_tree_data(height).await,
+            Self::Stateless(db) => db.get_block_commitment_tree_data(height).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
@@ -633,13 +716,15 @@ impl BlockShieldedExt for DbBackend {
     ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_block_range_commitment_tree_data(start, end).await,
+            Self::Stateless(db) => db.get_block_range_commitment_tree_data(start, end).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 }
 
 #[async_trait]
-impl CompactBlockExt for DbBackend {
+impl<T: BlockchainSource> CompactBlockExt for DbBackend<T> {
     async fn get_compact_block(
         &self,
         height: Height,
@@ -649,6 +734,8 @@ impl CompactBlockExt for DbBackend {
         match self {
             Self::V0(db) => db.get_compact_block(height, pool_types).await,
             Self::V1(db) => db.get_compact_block(height, pool_types).await,
+            Self::Stateless(db) => db.get_compact_block(height, pool_types).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("compact_block")),
         }
     }
@@ -669,26 +756,33 @@ impl CompactBlockExt for DbBackend {
                 db.get_compact_block_stream(start_height, end_height, pool_types)
                     .await
             }
+            Self::Stateless(db) => {
+                db.get_compact_block_stream(start_height, end_height, pool_types)
+                    .await
+            }
+
             _ => Err(FinalisedStateError::FeatureUnavailable("compact_block")),
         }
     }
 }
 
 #[async_trait]
-impl IndexedBlockExt for DbBackend {
+impl<T: BlockchainSource> IndexedBlockExt for DbBackend<T> {
     async fn get_chain_block(
         &self,
         height: Height,
     ) -> Result<Option<IndexedBlock>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.get_chain_block(height).await,
+            Self::Stateless(db) => db.get_chain_block(height).await,
+
             _ => Err(FinalisedStateError::FeatureUnavailable("chain_block")),
         }
     }
 }
 
 #[async_trait]
-impl TransparentHistExt for DbBackend {
+impl<T: BlockchainSource> TransparentHistExt for DbBackend<T> {
     #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_records(
         &self,
@@ -798,12 +892,12 @@ impl TransparentHistExt for DbBackend {
 }
 
 #[cfg(test)]
-impl DbBackend {
+impl<T: BlockchainSource> DbBackend<T> {
     /// Spawn a test-only v1 backend initialized as a v1.0.0 database.
     ///
     /// Used by migration tests to create a historical v1.0.0 database fixture before reopening it
     /// through the current startup / migration path.
-    pub(crate) async fn spawn_v1_0_0(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v1_0_0(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
         Ok(Self::V1(DbV1::spawn_v1_0_0(cfg).await?))
     }
 
@@ -820,7 +914,7 @@ impl DbBackend {
     ) -> Result<(), FinalisedStateError> {
         match self {
             Self::V1(db) => db.write_block_v1_0_0(block).await,
-            Self::V0(_) => Err(FinalisedStateError::Custom(
+            Self::V0(_) | Self::Stateless(_) => Err(FinalisedStateError::Custom(
                 "v1.0.0 test fixture writer requires a v1 backend".to_string(),
             )),
         }

@@ -419,6 +419,7 @@ fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
             .unwrap_or_else(|| "xxxxxx".to_string()),
         service: cfg.service,
         storage: cfg.storage,
+        ephemeral_finalised_state: false,
         network: cfg.network,
         donation_address: cfg.donation_address,
         indexer_version: env!("CARGO_PKG_VERSION").to_string(),

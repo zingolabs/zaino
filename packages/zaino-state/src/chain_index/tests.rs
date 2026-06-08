@@ -39,7 +39,7 @@ use crate::{
         },
         ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, SyncTimings,
     },
-    BlockCacheConfig,
+    ChainIndexConfig,
 };
 
 /// Selects which factory the test setup uses to build its `MockchainSource`,
@@ -124,7 +124,7 @@ async fn load_with_settings(
     let seed = v1_finalised_seed_dir(mode).await;
     copy_dir_recursive(seed, &db_path).unwrap();
 
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -193,7 +193,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
         let target = finalized_height_floor(source.active_height()).0;
 
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
-        let config = BlockCacheConfig {
+        let config = ChainIndexConfig {
             storage: StorageConfig {
                 database: DatabaseConfig {
                     path: temp_dir.path().to_path_buf(),

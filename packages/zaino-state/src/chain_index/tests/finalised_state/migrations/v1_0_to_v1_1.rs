@@ -13,7 +13,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
-use crate::{BlockCacheConfig, Height};
+use crate::{ChainIndexConfig, Height};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn v1_0_to_v1_1_metadata_migration() {
@@ -24,7 +24,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v1_config = BlockCacheConfig {
+    let v1_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -85,7 +85,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v1_config = BlockCacheConfig {
+    let v1_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,

@@ -21,7 +21,7 @@ use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
-use crate::{BlockCacheConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
+use crate::{ChainIndexConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
 
 const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
 
@@ -349,7 +349,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = BlockCacheConfig {
+    let database_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: database_path,
@@ -416,7 +416,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = BlockCacheConfig {
+    let database_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: database_path,

@@ -52,9 +52,9 @@ use crate::{
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
     },
     error::FinalisedStateError,
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
+    BlockHash, BlockHeaderData, BlockchainSource, CommitmentTreeData, CompactBlockStream, Height,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -81,12 +81,12 @@ use std::sync::Arc;
 ///
 /// ## Cloning and sharing
 /// `DbReader` is cheap to clone; clones share the underlying `Arc<ZainoDB>`.
-pub(crate) struct DbReader {
+pub(crate) struct DbReader<T: BlockchainSource> {
     /// Shared handle to the running `ZainoDB` instance.
-    pub(crate) inner: Arc<ZainoDB>,
+    pub(crate) inner: Arc<ZainoDB<T>>,
 }
 
-impl DbReader {
+impl<T: BlockchainSource> DbReader<T> {
     /// Resolves the backend that should serve `cap` right now.
     ///
     /// This is the single routing choke-point for all `DbReader` methods. It delegates to
@@ -96,8 +96,14 @@ impl DbReader {
     /// Returns `FinalisedStateError::FeatureUnavailable(...)` if no currently-open backend
     /// advertises the requested capability.
     #[inline(always)]
-    fn db(&self, cap: CapabilityRequest) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    fn db(&self, cap: CapabilityRequest) -> Result<Arc<DbBackend<T>>, FinalisedStateError> {
         self.inner.backend_for_cap(cap)
+    }
+
+    /// Returns `true` if `db_result` is a feature-unavailable routing result.
+    #[inline(always)]
+    fn is_feature_unavailable(db_result: &Result<Arc<DbBackend<T>>, FinalisedStateError>) -> bool {
+        matches!(db_result, Err(FinalisedStateError::FeatureUnavailable(_)))
     }
 
     // ***** DB Core Read *****
