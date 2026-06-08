@@ -26,7 +26,6 @@ zaino-fetch = { path = "../packages/zaino-fetch" }
 zainod = { path = "../packages/zainod" }
 
 # Zingo
-zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "63bf5d9171d36e180acbeb6d9182d9c7a93c57b6", features = ["back_compatible"] }
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "zingolib_v4.0.0", features = [
     "testutils",
 ] }

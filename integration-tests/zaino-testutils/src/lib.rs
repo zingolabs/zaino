@@ -39,7 +39,6 @@ use zcash_local_net::{
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zebra_chain::parameters::NetworkKind;
 #[cfg(test)]
-use zingo_netutils::{GetClientError, GrpcIndexer};
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
@@ -716,12 +715,6 @@ impl<C: Validator, Service: LightWalletService + Send + Sync + 'static> Drop
         };
         debug!("[TEST] Test environment shutdown complete");
     }
-}
-
-/// Builds a client for creating RPC requests to the indexer/light-node
-#[cfg(test)]
-async fn build_client(uri: http::Uri) -> Result<CompactTxStreamerClient<Channel>, GetClientError> {
-    GrpcIndexer::new(uri)?.get_zcb_client().await
 }
 
 #[cfg(test)]
