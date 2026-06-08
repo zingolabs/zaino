@@ -34,7 +34,7 @@ use crate::{
         types::BestChainLocation,
         NonFinalizedSnapshot,
     },
-    BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
+    BlockHash, BlockchainSource, ChainIndex, ChainIndexConfig, NodeBackedChainIndex,
     NodeBackedChainIndexSubscriber, TransactionHash,
 };
 
@@ -76,7 +76,7 @@ fn passthrough_test(
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
 
-            let config = BlockCacheConfig {
+            let config = ChainIndexConfig {
                 storage: StorageConfig {
                     database: DatabaseConfig {
                         path: db_path,
@@ -384,7 +384,7 @@ fn make_chain() {
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
 
-            let config = BlockCacheConfig {
+            let config = ChainIndexConfig {
                 storage: StorageConfig {
                     database: DatabaseConfig {
                         path: db_path,

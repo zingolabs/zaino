@@ -190,7 +190,7 @@ use crate::{
         finalised_state::db::v1::DB_VERSION_V1, source::BlockchainSourceError,
         types::GENESIS_HEIGHT,
     },
-    config::BlockCacheConfig,
+    config::ChainIndexConfig,
     error::FinalisedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, StatusType,
 };
@@ -230,16 +230,16 @@ use super::source::BlockchainSource;
 /// - determine network-specific on-disk paths,
 /// - select a target database version (`cfg.db_version`),
 /// - and compute per-block metadata (e.g., network selection for `BlockMetadata`).
-pub(crate) struct ZainoDB {
-    // Capability router for the active database backend(s).
+pub(crate) struct ZainoDB<T: BlockchainSource> {
+    /// Capability router for the active database backend(s).
     ///
     /// - In steady state, all requests route to the primary backend.
     /// - During a major migration, some or all capabilities may route to a shadow backend until
     ///   promotion completes.
-    db: Arc<Router>,
+    db: Arc<Router<T>>,
 
     /// Immutable configuration snapshot used for sync and metadata construction.
-    cfg: BlockCacheConfig,
+    cfg: ChainIndexConfig,
 }
 
 /// Lifecycle, migration control, and core read/write API for the finalised database.
@@ -248,7 +248,7 @@ pub(crate) struct ZainoDB {
 /// - version selection and migration orchestration lives in [`ZainoDB::spawn`],
 /// - the storage engine details are encapsulated behind [`DbBackend`] and the capability traits,
 /// - higher-level query routing is provided by [`DbReader`].
-impl ZainoDB {
+impl<T: BlockchainSource> ZainoDB<T> {
     // ***** DB control *****
 
     /// Spawns a `ZainoDB` instance.
@@ -280,76 +280,83 @@ impl ZainoDB {
     /// - opening or creating the database fails,
     /// - or any migration step fails.
     #[instrument(name = "ZainoDB::spawn", skip(cfg, source), fields(db_version = cfg.db_version))]
-    pub(crate) async fn spawn<T>(
-        cfg: BlockCacheConfig,
+    pub(crate) async fn spawn(
+        cfg: ChainIndexConfig,
         source: T,
-    ) -> Result<Self, FinalisedStateError>
-    where
-        T: BlockchainSource,
-    {
-        let version_opt = Self::try_find_current_db_version(&cfg).await;
+    ) -> Result<Self, FinalisedStateError> {
+        if cfg.ephemeral {
+            return Ok(Self {
+                db: Arc::new(Router::new(Arc::new(DbBackend::stateless(
+                    source,
+                    cfg.network.into(),
+                )))),
+                cfg,
+            });
+        } else {
+            let version_opt = Self::try_find_current_db_version(&cfg).await;
 
-        let target_version = match cfg.db_version {
-            0 => DbVersion {
-                major: 0,
-                minor: 0,
-                patch: 0,
-            },
-            1 => DB_VERSION_V1,
-            x => {
-                return Err(FinalisedStateError::Custom(format!(
-                    "unsupported database version: DbV{x}"
-                )));
-            }
-        };
-
-        let backend = match version_opt {
-            Some(version) => {
-                info!(version, "Opening ZainoDB from file");
-                match version {
-                    0 => DbBackend::spawn_v0(&cfg).await?,
-                    1 => DbBackend::spawn_v1(&cfg).await?,
-                    _ => {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "unsupported database version: DbV{version}"
-                        )));
-                    }
+            let target_version = match cfg.db_version {
+                0 => DbVersion {
+                    major: 0,
+                    minor: 0,
+                    patch: 0,
+                },
+                1 => DB_VERSION_V1,
+                x => {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "unsupported database version: DbV{x}"
+                    )));
                 }
-            }
-            None => {
-                info!(version = %target_version, "Creating new ZainoDB");
-                match target_version.major() {
-                    0 => DbBackend::spawn_v0(&cfg).await?,
-                    1 => DbBackend::spawn_v1(&cfg).await?,
-                    _ => {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "unsupported database version: DbV{target_version}"
-                        )));
-                    }
-                }
-            }
-        };
-        let current_version = backend.get_metadata().await?.version();
-
-        let router = Arc::new(Router::new(Arc::new(backend)));
-
-        if version_opt.is_some() && current_version < target_version {
-            info!(
-                from_version = %current_version,
-                to_version = %target_version,
-                "Starting ZainoDB migration"
-            );
-            let mut migration_manager = MigrationManager {
-                router: Arc::clone(&router),
-                cfg: cfg.clone(),
-                current_version,
-                target_version,
-                source,
             };
-            migration_manager.migrate().await?;
-        }
 
-        Ok(Self { db: router, cfg })
+            let backend = match version_opt {
+                Some(version) => {
+                    info!(version, "Opening ZainoDB from file");
+                    match version {
+                        0 => DbBackend::spawn_v0(&cfg).await?,
+                        1 => DbBackend::spawn_v1(&cfg).await?,
+                        _ => {
+                            return Err(FinalisedStateError::Custom(format!(
+                                "unsupported database version: DbV{version}"
+                            )));
+                        }
+                    }
+                }
+                None => {
+                    info!(version = %target_version, "Creating new ZainoDB");
+                    match target_version.major() {
+                        0 => DbBackend::spawn_v0(&cfg).await?,
+                        1 => DbBackend::spawn_v1(&cfg).await?,
+                        _ => {
+                            return Err(FinalisedStateError::Custom(format!(
+                                "unsupported database version: DbV{target_version}"
+                            )));
+                        }
+                    }
+                }
+            };
+            let current_version = backend.get_metadata().await?.version();
+
+            let router = Arc::new(Router::new(Arc::new(backend)));
+
+            if version_opt.is_some() && current_version < target_version {
+                info!(
+                    from_version = %current_version,
+                    to_version = %target_version,
+                    "Starting ZainoDB migration"
+                );
+                let mut migration_manager = MigrationManager {
+                    router: Arc::clone(&router),
+                    cfg: cfg.clone(),
+                    current_version,
+                    target_version,
+                    source,
+                };
+                migration_manager.migrate().await?;
+            }
+
+            Ok(Self { db: router, cfg })
+        }
     }
 
     /// Gracefully shuts down the running database backend(s).
@@ -396,7 +403,7 @@ impl ZainoDB {
     ///
     /// All chain fetches should be performed through [`DbReader`] rather than calling read methods
     /// directly on `ZainoDB`.
-    pub(crate) fn to_reader(self: &Arc<Self>) -> DbReader {
+    pub(crate) fn to_reader(self: &Arc<Self>) -> DbReader<T> {
         DbReader {
             inner: Arc::clone(self),
         }
@@ -424,7 +431,7 @@ impl ZainoDB {
     /// Returns:
     /// - `Some(version)` if a compatible database directory is found,
     /// - `None` if no database is detected (fresh DB creation case).
-    async fn try_find_current_db_version(cfg: &BlockCacheConfig) -> Option<u32> {
+    async fn try_find_current_db_version(cfg: &ChainIndexConfig) -> Option<u32> {
         let legacy_dir = match cfg.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
@@ -469,7 +476,7 @@ impl ZainoDB {
     pub(crate) fn backend_for_cap(
         &self,
         cap: CapabilityRequest,
-    ) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    ) -> Result<Arc<DbBackend<T>>, FinalisedStateError> {
         self.db.backend(cap)
     }
 
@@ -501,14 +508,11 @@ impl ZainoDB {
     /// - commitment tree roots are missing for Sapling or Orchard,
     /// - constructing an [`IndexedBlock`] fails,
     /// - or any underlying database write fails.
-    pub(crate) async fn sync_to_height<T>(
+    pub(crate) async fn sync_to_height(
         &self,
         height: Height,
         source: &T,
-    ) -> Result<(), FinalisedStateError>
-    where
-        T: BlockchainSource,
-    {
+    ) -> Result<(), FinalisedStateError> {
         let network = self.cfg.network;
         let db_height_opt = self.db_height().await?;
         let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
@@ -748,7 +752,7 @@ impl ZainoDB {
 }
 
 #[cfg(test)]
-impl ZainoDB {
+impl<T: BlockchainSource> ZainoDB<T> {
     /// Returns the internal router.
     ///
     /// This is a test-only escape hatch for unit and integration tests that need direct access to
@@ -757,7 +761,7 @@ impl ZainoDB {
     ///
     /// Production code should use the public `ZainoDB` API instead of depending on the router
     /// directly.
-    pub(crate) fn router(&self) -> &Router {
+    pub(crate) fn router(&self) -> &Router<T> {
         &self.db
     }
 
@@ -778,14 +782,11 @@ impl ZainoDB {
     /// This is useful when a test needs to start from a known old database version and assert that
     /// migrations stop at a specific target version rather than always migrating to the latest
     /// supported version.
-    pub(crate) async fn spawn_with_target_version<T>(
-        cfg: BlockCacheConfig,
+    pub(crate) async fn spawn_with_target_version(
+        cfg: ChainIndexConfig,
         source: T,
         target_version: DbVersion,
-    ) -> Result<Self, FinalisedStateError>
-    where
-        T: BlockchainSource,
-    {
+    ) -> Result<Self, FinalisedStateError> {
         if target_version.major() > DB_VERSION_V1.major() {
             return Err(FinalisedStateError::Custom(format!(
                 "unsupported database version: {target_version}"
@@ -865,13 +866,10 @@ impl ZainoDB {
     /// - a best block height,
     /// - every block from genesis through that height, and
     /// - Sapling and Orchard commitment tree roots for each block.
-    pub(crate) async fn build_clean_v1_0_0<T>(
-        cfg: &BlockCacheConfig,
+    pub(crate) async fn build_clean_v1_0_0(
+        cfg: &ChainIndexConfig,
         source: T,
-    ) -> Result<DbBackend, FinalisedStateError>
-    where
-        T: BlockchainSource,
-    {
+    ) -> Result<DbBackend<T>, FinalisedStateError> {
         let db = DbBackend::spawn_v1_0_0(cfg).await?;
         db.wait_until_ready().await;
 
@@ -945,14 +943,11 @@ impl ZainoDB {
     /// Use this helper when a test wants a fully initialized [`ZainoDB`] at a specific version after
     /// exercising the migration path from v1.0.0. The target version must be at least v1.0.0 and no
     /// newer than the current compiled [`DB_VERSION_V1`].
-    pub(crate) async fn build_db_to_version<T>(
-        cfg: BlockCacheConfig,
+    pub(crate) async fn build_db_to_version(
+        cfg: ChainIndexConfig,
         source: T,
         target_version: DbVersion,
-    ) -> Result<Self, FinalisedStateError>
-    where
-        T: BlockchainSource,
-    {
+    ) -> Result<Self, FinalisedStateError> {
         let v1_0_0 = DbVersion::new(1, 0, 0);
         if target_version < v1_0_0 {
             return Err(FinalisedStateError::Custom(format!(

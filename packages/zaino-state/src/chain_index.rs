@@ -659,7 +659,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
-    finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
+    finalized_db: std::sync::Arc<finalised_state::ZainoDB<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
@@ -732,7 +732,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// Currently this is a ReadStateService or JsonRpSeeConnector
     pub async fn new(
         source: Source,
-        config: crate::config::BlockCacheConfig,
+        config: crate::config::ChainIndexConfig,
     ) -> Result<Self, crate::InitError> {
         Self::new_with_sync_timings(source, config, SyncTimings::default()).await
     }
@@ -741,7 +741,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// tests that exercise the backoff path and need a faster schedule.
     pub(crate) async fn new_with_sync_timings(
         source: Source,
-        config: crate::config::BlockCacheConfig,
+        config: crate::config::ChainIndexConfig,
         sync_timings: SyncTimings,
     ) -> Result<Self, crate::InitError> {
         use futures::TryFutureExt as _;
@@ -993,7 +993,7 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
-    finalized_state: finalised_state::reader::DbReader,
+    finalized_state: finalised_state::reader::DbReader<Source>,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
     source: Source,

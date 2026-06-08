@@ -24,7 +24,7 @@ use crate::chain_index::types::TransactionHash;
 
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::error::FinalisedStateError;
-use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
+use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, ChainWork, Height, IndexedBlock};
 
 use crate::{AddrScript, Outpoint};
 
@@ -34,7 +34,7 @@ pub(crate) async fn spawn_v1_zaino_db(
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -149,7 +149,7 @@ async fn save_db_to_file_and_reload() {
 
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -227,7 +227,7 @@ async fn load_db_backend_from_file() {
     let db_path = temp_dir.path().join("v1_test_db");
     copy_dir_recursive(&fixture_db_path, &db_path).unwrap();
 
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path.clone(),

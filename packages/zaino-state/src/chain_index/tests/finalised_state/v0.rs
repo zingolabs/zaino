@@ -15,7 +15,7 @@ use crate::chain_index::tests::vectors::{
     build_mockchain_source, indexed_block_chain, load_test_vectors, TestVectorData,
 };
 use crate::error::FinalisedStateError;
-use crate::{BlockCacheConfig, Height};
+use crate::{ChainIndexConfig, Height};
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,
@@ -23,7 +23,7 @@ pub(crate) async fn spawn_v0_zaino_db(
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -137,7 +137,7 @@ async fn save_db_to_file_and_reload() {
 
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,

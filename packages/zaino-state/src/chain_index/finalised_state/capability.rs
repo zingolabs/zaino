@@ -120,6 +120,9 @@ bitflags! {
     pub(crate) struct Capability: u32 {
         /* ------ core database functionality ------ */
 
+        /// Backend advertises no supported capability bits.
+        const NONE                  = 0;
+
         /// Backend implements [`DbRead`].
         ///
         /// This includes:

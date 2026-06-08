@@ -36,7 +36,7 @@ use crate::{
         },
         types::{TransactionHash, GENESIS_HEIGHT},
     },
-    config::BlockCacheConfig,
+    config::ChainIndexConfig,
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _,
@@ -283,7 +283,7 @@ pub(crate) struct DbV1 {
     status: NamedAtomicStatus,
 
     /// BlockCache config data.
-    config: BlockCacheConfig,
+    config: ChainIndexConfig,
 }
 
 /// Inherent implementation for [`DbV1`].
@@ -303,7 +303,7 @@ impl DbV1 {
     /// - opens or creates all V1 named databases,
     /// - validates or initializes the `"metadata"` record (schema hash + version), and
     /// - spawns the background validator / maintenance task.
-    pub(crate) async fn spawn(config: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
         info!("Launching ZainoDB");
 
         // Prepare database details and path.
@@ -835,7 +835,7 @@ impl DbV1 {
     /// [`DbV1::check_schema_version`], because that would initialize fresh metadata using the
     /// current [`DB_VERSION_V1`] value instead of the historical v1.0.0 value required by the tests.
     pub(crate) async fn spawn_v1_0_0(
-        config: &BlockCacheConfig,
+        config: &ChainIndexConfig,
     ) -> Result<Self, FinalisedStateError> {
         info!("Launching ZainoDB");
 

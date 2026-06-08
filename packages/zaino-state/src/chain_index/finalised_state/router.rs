@@ -72,7 +72,7 @@ use super::{
 
 use crate::{
     chain_index::finalised_state::capability::CapabilityRequest, error::FinalisedStateError,
-    BlockHash, Height, IndexedBlock, StatusType,
+    BlockHash, BlockchainSource, Height, IndexedBlock, StatusType,
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -104,14 +104,14 @@ use std::sync::{
 /// ## Intended usage
 /// The shadow-related APIs (`set_shadow`, `extend_shadow_caps`, `promote_shadow`) are intended to be
 /// used only by the migration manager to support low-downtime rebuild-style migrations.
-pub(crate) struct Router {
+pub(crate) struct Router<T: BlockchainSource> {
     /// Primary active database backend.
     ///
     /// This is the default backend used for any capability bit that is not explicitly routed to the
     /// shadow backend via [`Router::shadow_mask`].
     ///
     /// Stored behind [`ArcSwap`] so it can be replaced atomically during promotion without locking.
-    primary: ArcSwap<DbBackend>,
+    primary: ArcSwap<DbBackend<T>>,
 
     /// Shadow database backend (optional).
     ///
@@ -119,7 +119,7 @@ pub(crate) struct Router {
     /// capability groups can be routed to the shadow by setting bits in [`Router::shadow_mask`].
     ///
     /// Outside of migrations this should remain `None`.
-    shadow: ArcSwapOption<DbBackend>,
+    shadow: ArcSwapOption<DbBackend<T>>,
 
     /// Capability mask for the primary backend.
     ///
@@ -151,7 +151,7 @@ pub(crate) struct Router {
 /// - Backend selection is lock-free and safe for concurrent use.
 /// - Promotion swaps the primary backend atomically; in-flight operations remain valid because they
 ///   hold their own `Arc<DbBackend>` clones.
-impl Router {
+impl<T: BlockchainSource> Router<T> {
     // ***** Router creation *****
 
     /// Creates a new [`Router`] with `primary` installed as the active backend.
@@ -162,7 +162,7 @@ impl Router {
     /// ## Notes
     /// - The router does not validate that `primary.capability()` matches the masks that may later be
     ///   set by migration code; migration orchestration must keep the masks conservative.
-    pub(crate) fn new(primary: Arc<DbBackend>) -> Self {
+    pub(crate) fn new(primary: Arc<DbBackend<T>>) -> Self {
         let cap = primary.capability();
         Self {
             primary: ArcSwap::from(primary),
@@ -190,7 +190,7 @@ impl Router {
     pub(crate) fn backend(
         &self,
         cap: CapabilityRequest,
-    ) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    ) -> Result<Arc<DbBackend<T>>, FinalisedStateError> {
         let bit = cap.as_capability().bits();
 
         if self.shadow_mask.load(Ordering::Acquire) & bit != 0 {
@@ -219,7 +219,7 @@ impl Router {
     /// ## Ordering
     /// The shadow backend pointer is stored first, then the shadow mask is published with `Release`
     /// ordering. Readers use `Acquire` to observe both consistently.
-    pub(crate) fn set_shadow(&self, shadow: Arc<DbBackend>, caps: Capability) {
+    pub(crate) fn set_shadow(&self, shadow: Arc<DbBackend<T>>, caps: Capability) {
         self.shadow.store(Some(shadow));
         self.shadow_mask.store(caps.bits(), Ordering::Release);
     }
@@ -251,7 +251,7 @@ impl Router {
     ///
     /// # Errors
     /// Returns [`FinalisedStateError::Critical`] if no shadow backend is currently installed.
-    pub(crate) fn promote_shadow(&self) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    pub(crate) fn promote_shadow(&self) -> Result<Arc<DbBackend<T>>, FinalisedStateError> {
         let Some(new_primary) = self.shadow.swap(None) else {
             return Err(FinalisedStateError::Critical(
                 "shadow not found!".to_string(),
@@ -303,7 +303,7 @@ impl Router {
 /// - `status()` consults the backend that currently serves `READ_CORE`.
 /// - `shutdown()` attempts to shut down both primary and shadow backends (if present).
 #[async_trait]
-impl DbCore for Router {
+impl<T: BlockchainSource> DbCore for Router<T> {
     /// Returns the runtime status of the database system.
     ///
     /// This is derived from whichever backend currently serves `READ_CORE`. If `READ_CORE` is not
@@ -345,7 +345,7 @@ impl DbCore for Router {
 /// During migrations this allows writers to remain on the old backend until the new backend is ready
 /// (or to be switched deliberately by migration orchestration).
 #[async_trait]
-impl DbWrite for Router {
+impl<T: BlockchainSource> DbWrite for Router<T> {
     /// Writes a block via the backend currently serving `WRITE_CORE`.
     async fn write_block(&self, blk: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.backend(CapabilityRequest::WriteCore)?
@@ -383,7 +383,7 @@ impl DbWrite for Router {
 /// During migrations this allows reads to continue from the old backend unless/until explicitly
 /// moved.
 #[async_trait]
-impl DbRead for Router {
+impl<T: BlockchainSource> DbRead for Router<T> {
     /// Returns the database tip height via the backend currently serving `READ_CORE`.
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
         self.backend(CapabilityRequest::ReadCore)?.db_height().await

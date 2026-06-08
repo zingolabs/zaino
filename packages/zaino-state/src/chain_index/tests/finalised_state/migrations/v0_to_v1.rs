@@ -12,7 +12,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, load_test_vectors, TestVectorData,
 };
-use crate::BlockCacheConfig;
+use crate::ChainIndexConfig;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn v0_to_v1_full() {
@@ -23,7 +23,7 @@ async fn v0_to_v1_full() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v0_config = BlockCacheConfig {
+    let v0_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path.clone(),
@@ -34,7 +34,7 @@ async fn v0_to_v1_full() {
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };
-    let v1_config = BlockCacheConfig {
+    let v1_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -82,7 +82,7 @@ async fn v0_to_v1_interrupted() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v0_config = BlockCacheConfig {
+    let v0_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path.clone(),
@@ -93,7 +93,7 @@ async fn v0_to_v1_interrupted() {
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };
-    let v1_config = BlockCacheConfig {
+    let v1_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -149,7 +149,7 @@ async fn v0_to_v1_partial() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v0_config = BlockCacheConfig {
+    let v0_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path.clone(),
@@ -160,7 +160,7 @@ async fn v0_to_v1_partial() {
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };
-    let v1_config = BlockCacheConfig {
+    let v1_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
