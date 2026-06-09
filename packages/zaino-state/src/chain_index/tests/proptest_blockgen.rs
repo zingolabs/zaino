@@ -84,6 +84,7 @@ fn passthrough_test(
                     },
                     ..Default::default()
                 },
+                ephemeral: true,
                 db_version: 1,
                 network,
 
@@ -392,6 +393,7 @@ fn make_chain() {
                     },
                     ..Default::default()
                 },
+                ephemeral: true,
                 db_version: 1,
                 network,
 
