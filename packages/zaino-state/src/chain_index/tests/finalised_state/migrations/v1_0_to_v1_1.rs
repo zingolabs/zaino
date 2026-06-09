@@ -140,7 +140,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
 
     let zaino_db = std::sync::Arc::new(ZainoDB::spawn(v1_config, source.clone()).await.unwrap());
 
-    zaino_db.wait_until_ready().await;
+    zaino_db.wait_until_synced().await;
 
     let migrated_db_height = zaino_db.db_height().await.unwrap().unwrap();
     assert_eq!(
@@ -153,7 +153,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         .await
         .unwrap();
 
-    zaino_db.wait_until_ready().await;
+    zaino_db.wait_until_synced().await;
 
     let synced_db_height = zaino_db.db_height().await.unwrap().unwrap();
     assert_eq!(synced_db_height, target_height);

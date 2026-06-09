@@ -128,7 +128,7 @@ use crate::{
 use arc_swap::{ArcSwap, ArcSwapOption};
 use async_trait::async_trait;
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use tokio::runtime::Handle;
@@ -217,6 +217,24 @@ where
     }
 }
 
+/// Scope guard for an in-progress background operation (sync or migration).
+///
+/// Returned by [`Router::begin_background_op`], which increments the router's `background_ops`
+/// counter in the foreground. The guard is moved into the spawned background task; dropping it
+/// (when that task finishes, on any path) decrements the counter. Holding the guard for the whole
+/// lifetime of the task is what lets [`ZainoDB::wait_until_synced`] observe that the operation is
+/// still running.
+pub(super) struct BackgroundOpGuard<T: BlockchainSource> {
+    /// Router whose `background_ops` counter this guard holds a claim on.
+    router: Arc<Router<T>>,
+}
+
+impl<T: BlockchainSource> Drop for BackgroundOpGuard<T> {
+    fn drop(&mut self) {
+        self.router.background_ops.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Capability-based database router.
 ///
 /// `Router` is the internal dispatch layer used by `ZainoDB`. It routes operations to either:
@@ -300,6 +318,15 @@ pub(crate) struct Router<T: BlockchainSource> {
     /// This mask is empty in steady state, read-only during [`StatelessMode::ReadOnly`], and full
     /// stateless capability during [`StatelessMode::Full`].
     stateless_mask: AtomicU32,
+
+    /// Number of in-progress background operations (sync and migration).
+    ///
+    /// Incremented synchronously in the foreground by [`Router::begin_background_op`] before a
+    /// background task is spawned, and decremented when the returned [`BackgroundOpGuard`] is
+    /// dropped (i.e. when the spawned task completes). This is the source of truth for
+    /// [`ZainoDB::wait_until_synced`], which waits for finalised-state sync/migration to finish
+    /// without conflating it with serving-readiness ([`StatusType::Ready`]).
+    background_ops: AtomicUsize,
 }
 
 /// Database capability router.
@@ -330,6 +357,7 @@ impl<T: BlockchainSource> Router<T> {
             stateless_full_reference_count: AtomicU32::new(0),
             primary_mask: AtomicU32::new(cap.bits()),
             stateless_mask: AtomicU32::new(0),
+            background_ops: AtomicUsize::new(0),
         }
     }
 
@@ -748,6 +776,25 @@ impl<T: BlockchainSource> Router<T> {
     /// after `ZainoDB::spawn` has already returned.
     pub(crate) fn store_primary_status(&self, status: StatusType) {
         self.primary.load_full().store_status(status);
+    }
+
+    /// Registers the start of a background operation (sync or migration).
+    ///
+    /// This increments the `background_ops` counter immediately, in the caller's (foreground) task,
+    /// and returns a [`BackgroundOpGuard`] that decrements it on drop. Callers must create the guard
+    /// *before* spawning the background task and move it into the spawned future, so the counter is
+    /// non-zero from before the spawning method returns until the task completes. That ordering is
+    /// what makes [`ZainoDB::wait_until_synced`] race-free.
+    pub(super) fn begin_background_op(self: &Arc<Self>) -> BackgroundOpGuard<T> {
+        self.background_ops.fetch_add(1, Ordering::AcqRel);
+        BackgroundOpGuard {
+            router: Arc::clone(self),
+        }
+    }
+
+    /// Returns `true` while at least one background operation (sync or migration) is in progress.
+    pub(super) fn has_background_ops(&self) -> bool {
+        self.background_ops.load(Ordering::Acquire) != 0
     }
 }
 

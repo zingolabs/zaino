@@ -353,7 +353,14 @@ impl<T: BlockchainSource> ZainoDB<T> {
                 let migration_cfg = cfg.clone();
                 let migration_source = source.clone();
 
+                // Register the migration in the foreground, before spawning, so `wait_until_synced`
+                // blocks until the background migration completes (or fails). The guard is moved into
+                // the task and drops when it finishes, on either path.
+                let op_guard = router.begin_background_op();
+
                 tokio::spawn(async move {
+                    let _op_guard = op_guard;
+
                     let mut migration_manager = MigrationManager {
                         router: migration_router.clone(),
                         cfg: migration_cfg,
@@ -409,6 +416,34 @@ impl<T: BlockchainSource> ZainoDB<T> {
         loop {
             ticker.tick().await;
             if self.db.status() == StatusType::Ready {
+                break;
+            }
+        }
+    }
+
+    /// Waits until all in-progress background sync/migration work has finished.
+    ///
+    /// Unlike [`ZainoDB::wait_until_ready`], which reflects serving-readiness (the database serves
+    /// reads from the source while it syncs/migrates in the background), this waits for the
+    /// persistent database to actually reach its sync/migration target. It returns once no background
+    /// operation is in progress *and* the database has settled into a terminal serving state.
+    ///
+    /// Breaking on [`StatusType::CriticalError`] (as well as [`StatusType::Ready`]) ensures this does
+    /// not hang if a background migration fails.
+    ///
+    /// This polls the router at a fixed interval (100ms) using the same `MissedTickBehavior::Delay`
+    /// timer as [`ZainoDB::wait_until_ready`].
+    pub(crate) async fn wait_until_synced(&self) {
+        let mut ticker = interval(Duration::from_millis(100));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            if !self.db.has_background_ops()
+                && matches!(
+                    self.db.status(),
+                    StatusType::Ready | StatusType::CriticalError
+                )
+            {
                 break;
             }
         }
@@ -543,6 +578,11 @@ impl<T: BlockchainSource> ZainoDB<T> {
         let cfg = self.cfg.clone();
         let source = source.clone();
 
+        // Register the background sync in the foreground, before spawning, so `wait_until_synced`
+        // cannot observe a "no work in progress" state between this method returning and the spawned
+        // task starting. The guard is moved into the task and drops when it completes.
+        let op_guard = router.begin_background_op();
+
         if sync_is_long_running {
             let stateless_reference = router
                 .init_or_take_stateless(
@@ -554,6 +594,7 @@ impl<T: BlockchainSource> ZainoDB<T> {
                 .await?;
 
             tokio::spawn(async move {
+                let _op_guard = op_guard;
                 let _stateless_reference = stateless_reference;
 
                 if router.has_full_stateless_reference() {
@@ -568,6 +609,8 @@ impl<T: BlockchainSource> ZainoDB<T> {
             });
         } else {
             tokio::spawn(async move {
+                let _op_guard = op_guard;
+
                 if router.has_full_stateless_reference() {
                     return;
                 }

@@ -98,7 +98,7 @@ async fn sync_to_height() {
 
     zaino_db.sync_to_height(Height(200), &source).await.unwrap();
 
-    zaino_db.wait_until_ready().await;
+    zaino_db.wait_until_synced().await;
     dbg!(zaino_db.status());
     let built_db_height = dbg!(zaino_db.db_height().await.unwrap()).unwrap();
 
