@@ -2,7 +2,7 @@
 //! chain when the FinalisedState is syncing, migrating, or switched off.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use primitive_types::U256;
@@ -16,7 +16,6 @@ use zebra_state::HashOrHeight;
 use crate::chain_index::finalised_state::capability::{DbCore, DbWrite};
 use crate::chain_index::finalised_state::DbMetadata;
 use crate::chain_index::source::BlockchainSourceError;
-use crate::chain_index::NON_FINALIZED_DEPTH;
 use crate::chain_index::{
     finalised_state::capability::{
         BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbRead,
@@ -39,17 +38,86 @@ use crate::{chain_index::types::AddrEventBytes, AddrScript};
 
 const STATELESS_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Source-backed finalised-state backend used when persistent finalised-state storage is not
+/// serving normal requests.
+///
+/// `StatelessFinalisedState` does not own or mutate an on-disk database. Instead, it answers
+/// finalised-state read requests by querying the backing [`BlockchainSource`] directly and building
+/// the database-facing response types on demand.
+///
+/// This backend has two intended roles:
+///
+/// - In ephemeral mode, it is the real finalised-state backend. No persistent database exists, so
+///   [`DbRead::db_height`] reports zero via `db_height == None`.
+/// - During sync or migration, it is a temporary service-routing backend. Reads are served from the
+///   backing source while the persistent database is being written, rebuilt, or migrated elsewhere.
+///   In this mode, `db_height` tracks the actual persistent database height so routed callers still
+///   observe progress relative to the on-disk database rather than the source tip.
+///
+/// The struct is cloneable because several async tasks and streaming calls may need handles to the
+/// same source-backed backend. Shared runtime state is stored behind [`Arc`] so clones observe the
+/// same status, shutdown signal, status-poll task handle, and reported persistent database height.
 #[derive(Debug, Clone)]
 pub(crate) struct StatelessFinalisedState<T: BlockchainSource> {
+    /// Backing blockchain source used to answer finalised-state reads.
+    ///
+    /// This is typically a validator/source service. Stateless read methods fetch blocks,
+    /// transactions, commitment tree data, and chain metadata from this source and convert them into
+    /// the same response types exposed by persistent database backends.
     source: T,
+
+    /// Network whose consensus rules are used when reconstructing finalised-state data.
+    ///
+    /// This is required for network-upgrade checks, especially when deciding whether Sapling or
+    /// Orchard commitment tree data is expected for a block.
     network: zebra_chain::parameters::Network,
+
+    /// Current runtime status of the stateless backend.
+    ///
+    /// The background status-poll task updates this value by periodically checking whether the
+    /// backing [`BlockchainSource`] is reachable. [`DbCore::status`] returns this value directly.
     status: NamedAtomicStatus,
+
+    /// Shared shutdown signal for the stateless backend.
+    ///
+    /// This flag is set by [`DbCore::shutdown`] and by [`Drop`]. The background status-poll task
+    /// observes it and exits when shutdown has been requested.
     shutdown_requested: Arc<AtomicBool>,
+
+    /// Handle for the background status-poll task.
+    ///
+    /// The task periodically probes the backing source and updates [`Self::status`]. The handle is
+    /// stored behind a Tokio mutex so async shutdown can take and await or abort the task exactly
+    /// once, even when multiple clones of the stateless backend exist.
     status_poll_task_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+
+    /// Reported height of the persistent on-disk database.
+    ///
+    /// This value is deliberately independent of the backing source height. The source may be ahead
+    /// of the persistent finalised-state database, especially during sync or migration, so reporting
+    /// source-derived finalised height would make routed callers observe a database height that has
+    /// not actually been persisted.
+    ///
+    /// `None` means there is no persistent database height to report. This is the expected value
+    /// when stateless is the real backend, for example in ephemeral mode. In that case
+    /// [`DbRead::db_height`] reports zero.
+    ///
+    /// `Some(height)` means stateless is temporarily serving requests while a persistent backend
+    /// exists elsewhere. Sync and migration code should update this value after successful
+    /// persistent writes or rebuild progress so routed callers observe the actual on-disk database
+    /// height.
+    ///
+    /// The value is stored behind [`Arc<RwLock<_>>`] so all clones share the same reported height and
+    /// progress updates can be made safely from other threads.
+    db_height: Arc<RwLock<Option<Height>>>,
 }
 
 impl<T: BlockchainSource> StatelessFinalisedState<T> {
-    pub(crate) fn new(source: T, network: zebra_chain::parameters::Network) -> Self {
+    pub(crate) fn new(
+        source: T,
+        network: zebra_chain::parameters::Network,
+        db_height: Option<Height>,
+    ) -> Self {
         let status = NamedAtomicStatus::new("stateless-finalised-state", StatusType::Spawning);
 
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -91,7 +159,51 @@ impl<T: BlockchainSource> StatelessFinalisedState<T> {
             status,
             shutdown_requested,
             status_poll_task_handle: Arc::new(Mutex::new(Some(status_poll_task_handle))),
+            db_height: Arc::new(RwLock::new(db_height)),
         }
+    }
+
+    /// Returns the persistent database height reported by this stateless backend.
+    ///
+    /// This value is independent of the backing source height. It is used when stateless
+    /// is temporarily serving requests during sync or migration while the persistent
+    /// database continues to progress separately.
+    pub(crate) fn reported_db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+        let db_height_guard = self.db_height.read().map_err(|error| {
+            FinalisedStateError::Custom(format!(
+                "stateless finalised state db height lock poisoned: {error}"
+            ))
+        })?;
+
+        Ok(*db_height_guard)
+    }
+
+    /// Updates the persistent database height reported by this stateless backend.
+    ///
+    /// `None` means no persistent database height is available, which is the expected
+    /// value when stateless is used as the real backend in ephemeral mode.
+    pub(crate) fn update_db_height(
+        &self,
+        db_height: Option<Height>,
+    ) -> Result<(), FinalisedStateError> {
+        let mut db_height_guard = self.db_height.write().map_err(|error| {
+            FinalisedStateError::Custom(format!(
+                "stateless finalised state db height lock poisoned: {error}"
+            ))
+        })?;
+
+        *db_height_guard = db_height;
+
+        Ok(())
+    }
+
+    /// Stores a new runtime status for this stateless backend.
+    ///
+    /// This uses the same status hook exposed through [`DbCore::status`]. It is intended for router or
+    /// backend-level orchestration code that needs to report a background failure through the existing
+    /// database status path.
+    pub(crate) fn store_status(&self, status: StatusType) {
+        self.status.store(status);
     }
 
     fn feature_unavailable(feature_name: &'static str) -> FinalisedStateError {
@@ -297,18 +409,7 @@ impl<T: BlockchainSource> DbWrite for StatelessFinalisedState<T> {
 #[async_trait]
 impl<T: BlockchainSource> DbRead for StatelessFinalisedState<T> {
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
-        Ok(Some(Height(
-            self.source
-                .get_best_block_height()
-                .await?
-                .ok_or(FinalisedStateError::BlockchainSourceError(
-                    BlockchainSourceError::Unrecoverable(
-                        "could not fetch best block hash from validator".to_string(),
-                    ),
-                ))?
-                .0
-                .saturating_sub(NON_FINALIZED_DEPTH),
-        )))
+        Ok(Some(self.reported_db_height()?.unwrap_or(Height(0))))
     }
 
     async fn get_block_height(
