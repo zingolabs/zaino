@@ -69,7 +69,7 @@ async fn v0_to_v1_full() {
 
     // Open v1 database and check migration.
     let zaino_db_2 = ZainoDB::spawn(v1_config, source).await.unwrap();
-    zaino_db_2.wait_until_ready().await;
+    zaino_db_2.wait_until_synced().await;
     dbg!(zaino_db_2.status());
     let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
     assert_eq!(db_height.0, 200);
