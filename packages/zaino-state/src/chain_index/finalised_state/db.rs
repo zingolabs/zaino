@@ -253,8 +253,12 @@ impl<T: BlockchainSource> DbBackend<T> {
     }
 
     /// Spawns a "stateless" finalised state.
-    pub(crate) fn stateless(source: T, network: zebra_chain::parameters::Network) -> Self {
-        Self::Stateless(StatelessFinalisedState::new(source, network))
+    pub(crate) fn stateless(
+        source: T,
+        network: zebra_chain::parameters::Network,
+        db_height: Option<Height>,
+    ) -> Self {
+        Self::Stateless(StatelessFinalisedState::new(source, network, db_height))
     }
 
     /// Wait until the database backend reports [`StatusType::Ready`].
@@ -275,6 +279,18 @@ impl<T: BlockchainSource> DbBackend<T> {
             if self.status() == StatusType::Ready {
                 break;
             }
+        }
+    }
+
+    /// Stores a new runtime status in the concrete backend.
+    ///
+    /// This is used by router-level background orchestration, for example to report an asynchronous
+    /// migration failure after `ZainoDB::spawn` has already returned.
+    pub(crate) fn store_status(&self, status: StatusType) {
+        match self {
+            Self::V0(database) => database.status_atomic().store(status),
+            Self::V1(database) => database.status_atomic().store(status),
+            Self::Stateless(stateless) => stateless.store_status(status),
         }
     }
 

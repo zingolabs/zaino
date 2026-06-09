@@ -187,8 +187,10 @@ use zebra_chain::parameters::NetworkKind;
 
 use crate::{
     chain_index::{
-        finalised_state::db::v1::DB_VERSION_V1, source::BlockchainSourceError,
+        finalised_state::{db::v1::DB_VERSION_V1, router::StatelessMode},
+        source::BlockchainSourceError,
         types::GENESIS_HEIGHT,
+        NON_FINALIZED_DEPTH,
     },
     config::ChainIndexConfig,
     error::FinalisedStateError,
@@ -289,6 +291,7 @@ impl<T: BlockchainSource> ZainoDB<T> {
                 db: Arc::new(Router::new(Arc::new(DbBackend::stateless(
                     source,
                     cfg.network.into(),
+                    None,
                 )))),
                 cfg,
             });
@@ -343,16 +346,28 @@ impl<T: BlockchainSource> ZainoDB<T> {
                 info!(
                     from_version = %current_version,
                     to_version = %target_version,
-                    "Starting ZainoDB migration"
+                    "Starting ZainoDB migration in background"
                 );
-                let mut migration_manager = MigrationManager {
-                    router: Arc::clone(&router),
-                    cfg: cfg.clone(),
-                    current_version,
-                    target_version,
-                    source,
-                };
-                migration_manager.migrate().await?;
+
+                let migration_router = Arc::clone(&router);
+                let migration_cfg = cfg.clone();
+                let migration_source = source.clone();
+
+                tokio::spawn(async move {
+                    let mut migration_manager = MigrationManager {
+                        router: migration_router.clone(),
+                        cfg: migration_cfg,
+                        current_version,
+                        target_version,
+                        source: migration_source,
+                    };
+
+                    if let Err(error) = migration_manager.migrate().await {
+                        tracing::error!("ZainoDB migration failed: {error}");
+
+                        migration_router.store_primary_status(StatusType::CriticalError);
+                    }
+                });
             }
 
             Ok(Self { db: router, cfg })
@@ -482,91 +497,165 @@ impl<T: BlockchainSource> ZainoDB<T> {
 
     // ***** Db Core Write *****
 
-    /// Sync the database up to and including `height` using a [`BlockchainSource`].
+    /// Starts syncing the persistent database up to and including `height`.
     ///
-    /// This method is a convenience ingestion loop that:
-    /// - determines the current database tip height,
-    /// - fetches each missing block from the source,
-    /// - fetches Sapling and Orchard commitment tree roots for each block,
-    /// - constructs [`BlockMetadata`] and an [`IndexedBlock`],
-    /// - and appends the block via [`ZainoDB::write_block`].
+    /// This method only launches sync work; it does not wait for sync completion.
     ///
-    /// ## Chainwork handling
-    /// For database versions that expose `capability::BlockCoreExt`, chainwork is retrieved from
-    /// stored header data and threaded through `BlockMetadata`.
+    /// Sync is skipped when:
+    /// - the primary backend is stateless, meaning there is no persistent database to sync, or
+    /// - a full-mode stateless reference is active, meaning migration/maintenance currently owns the
+    ///   persistent database path.
     ///
-    /// Legacy v0 databases do not expose header/chainwork APIs; in that case, chainwork is set to
-    /// zero. This is safe only insofar as v0 consumers do not rely on chainwork-dependent features.
+    /// If the requested sync range is more than `NON_FINALIZED_DEPTH` blocks ahead of the current
+    /// persistent database height, read-only stateless routing is installed for the duration of the
+    /// background sync. This keeps finalised-state reads served by the source while normal routed
+    /// writes continue appending to primary.
     ///
-    /// ## Invariants
-    /// - Blocks are written strictly in height order.
-    /// - This method assumes the source provides consistent block and commitment tree data.
-    ///
-    /// ## Errors
-    /// Returns [`FinalisedStateError`] if:
-    /// - a block is missing from the source at a required height,
-    /// - commitment tree roots are missing for Sapling or Orchard,
-    /// - constructing an [`IndexedBlock`] fails,
-    /// - or any underlying database write fails.
+    /// If the requested sync range is within `NON_FINALIZED_DEPTH`, sync runs against the normal routed
+    /// database path without installing stateless routing.
     pub(crate) async fn sync_to_height(
         &self,
         height: Height,
         source: &T,
-    ) -> Result<(), FinalisedStateError> {
-        let network = self.cfg.network;
-        let db_height_opt = self.db_height().await?;
+    ) -> Result<(), FinalisedStateError>
+    where
+        T: Send + Sync + 'static,
+    {
+        if self.db.primary_is_stateless() {
+            return Ok(());
+        }
+
+        if self.db.has_full_stateless_reference() {
+            return Ok(());
+        }
+
+        let primary = self.db.primary_backend();
+        let db_height_opt = primary.db_height().await?;
+        let db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
+
+        if height <= db_height {
+            return Ok(());
+        }
+
+        let sync_is_long_running = height.0.saturating_sub(db_height.0) > NON_FINALIZED_DEPTH;
+
+        let router = Arc::clone(&self.db);
+        let cfg = self.cfg.clone();
+        let source = source.clone();
+
+        if sync_is_long_running {
+            let stateless_reference = router
+                .init_or_take_stateless(
+                    source.clone(),
+                    cfg.network.to_zebra_network(),
+                    StatelessMode::ReadOnly,
+                    db_height_opt,
+                )
+                .await?;
+
+            tokio::spawn(async move {
+                let _stateless_reference = stateless_reference;
+
+                if router.has_full_stateless_reference() {
+                    return;
+                }
+
+                if let Err(error) =
+                    Self::sync_to_height_background(router, cfg, height, source).await
+                {
+                    tracing::error!("ZainoDB background sync_to_height failed: {error}");
+                }
+            });
+        } else {
+            tokio::spawn(async move {
+                if router.has_full_stateless_reference() {
+                    return;
+                }
+
+                if let Err(error) =
+                    Self::sync_to_height_background(router, cfg, height, source).await
+                {
+                    tracing::error!("ZainoDB background sync_to_height failed: {error}");
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn sync_to_height_background(
+        router: Arc<Router<T>>,
+        cfg: ChainIndexConfig,
+        height: Height,
+        source: T,
+    ) -> Result<(), FinalisedStateError>
+    where
+        T: Send + Sync + 'static,
+    {
+        if router.primary_is_stateless() {
+            return Ok(());
+        }
+
+        if router.has_full_stateless_reference() {
+            return Ok(());
+        }
+
+        let network = cfg.network;
+
+        let primary = router.primary_backend();
+        let db_height_opt = primary.db_height().await?;
         let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
 
+        if height <= db_height {
+            return Ok(());
+        }
+
         let zebra_network = network.to_zebra_network();
+
         let sapling_activation_height = zebra_chain::parameters::NetworkUpgrade::Sapling
             .activation_height(&zebra_network)
             .expect("Sapling activation height must be set");
+
         let nu5_activation_height =
             zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&zebra_network);
 
         let mut parent_chainwork = if db_height_opt.is_none() {
             ChainWork::from_u256(0.into())
         } else {
-            db_height.0 += 1;
-            match self
-                .db
-                .backend(CapabilityRequest::BlockCoreExt)?
-                .get_block_header(height)
-                .await
-            {
+            let previous_height = db_height;
+
+            db_height = db_height + 1;
+
+            match primary.get_block_header(previous_height).await {
                 Ok(header) => header.context.chainwork,
-                // V0 does not hold or use chainwork, and does not serve header data,
-                // can we handle this better?
-                //
-                // can we get this data from zebra blocks?
                 Err(_) => ChainWork::from_u256(0.into()),
             }
         };
 
-        // Track last time we emitted an info log so we only print every 10s.
         let current_height = Arc::new(AtomicU64::new(db_height.0 as u64));
         let target_height = height.0 as u64;
 
-        // Shutdown signal for the reporter task.
         let (shutdown_tx, shutdown_rx) = watch::channel(());
-        // Spawn reporter task that logs every 10 seconds, even while write_block() is running.
+
         let reporter_current = Arc::clone(&current_height);
         let reporter_network = network;
         let mut reporter_shutdown = shutdown_rx.clone();
+
         let reporter_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
+
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let cur = reporter_current.load(Ordering::Relaxed);
+                        let current = reporter_current.load(Ordering::Relaxed);
+
                         tracing::info!(
                             "sync_to_height: syncing height {current} / {target} on network = {:?}",
                             reporter_network,
-                            current = cur,
+                            current = current,
                             target = target_height
                         );
                     }
-                    // stop when we receive a shutdown signal
                     _ = reporter_shutdown.changed() => {
                         break;
                     }
@@ -574,11 +663,12 @@ impl<T: BlockchainSource> ZainoDB<T> {
             }
         });
 
-        // Run the main sync logic inside an inner async block so we always get
-        // a chance to shutdown the reporter task regardless of how this block exits.
-        let result: Result<(), FinalisedStateError> = (async {
-            for height_int in (db_height.0)..=height.0 {
-                // Update the shared progress value as soon as we start processing this height.
+        let result: Result<(), FinalisedStateError> = async {
+            for height_int in db_height.0..=height.0 {
+                if router.has_full_stateless_reference() {
+                    return Ok(());
+                }
+
                 current_height.store(height_int as u64, Ordering::Relaxed);
 
                 let block = match source
@@ -591,8 +681,7 @@ impl<T: BlockchainSource> ZainoDB<T> {
                     None => {
                         return Err(FinalisedStateError::BlockchainSourceError(
                             BlockchainSourceError::Unrecoverable(format!(
-                                "error fetching block at height {} from validator",
-                                height.0
+                                "error fetching block at height {height_int} from validator"
                             )),
                         ));
                     }
@@ -600,12 +689,14 @@ impl<T: BlockchainSource> ZainoDB<T> {
 
                 let block_hash = BlockHash::from(block.hash().0);
 
-                // Fetch sapling / orchard commitment tree data if above relevant network upgrade.
                 let (sapling_opt, orchard_opt) =
                     source.get_commitment_tree_roots(block_hash).await?;
+
                 let is_sapling_active = height_int >= sapling_activation_height.0;
+
                 let is_orchard_active = nu5_activation_height
                     .is_some_and(|nu5_activation_height| height_int >= nu5_activation_height.0);
+
                 let (sapling_root, sapling_size) = if is_sapling_active {
                     sapling_opt.ok_or_else(|| {
                         FinalisedStateError::BlockchainSourceError(
@@ -640,30 +731,29 @@ impl<T: BlockchainSource> ZainoDB<T> {
                 );
 
                 let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
-                let chain_block = match IndexedBlock::try_from(block_with_metadata) {
-                    Ok(block) => block,
-                    Err(_) => {
-                        return Err(FinalisedStateError::BlockchainSourceError(
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "error building block data at height {}",
-                                height.0
-                            )),
-                        ));
-                    }
-                };
+
+                let chain_block = IndexedBlock::try_from(block_with_metadata).map_err(|_| {
+                    FinalisedStateError::BlockchainSourceError(
+                        BlockchainSourceError::Unrecoverable(format!(
+                            "error building block data at height {height_int}"
+                        )),
+                    )
+                })?;
+
+                let chain_block_height = chain_block.height();
+
                 parent_chainwork = chain_block.context.chainwork;
 
-                self.write_block(chain_block).await?;
+                router.write_block(chain_block).await?;
+
+                router.update_stateless_db_height(Some(chain_block_height))?;
             }
 
             Ok(())
-        })
+        }
         .await;
 
-        // Signal the reporter to shut down and wait for it to finish.
-        // Ignore send error if receiver already dropped.
         let _ = shutdown_tx.send(());
-        // Await the reporter to ensure clean shutdown; ignore errors if it panicked/was aborted.
         let _ = reporter_handle.await;
 
         result
