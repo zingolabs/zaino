@@ -30,7 +30,7 @@ use crate::{AddrScript, Outpoint};
 
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockchainSource,
-) -> Result<(TempDir, ZainoDB), FinalisedStateError> {
+) -> Result<(TempDir, ZainoDB<MockchainSource>), FinalisedStateError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
@@ -42,6 +42,7 @@ pub(crate) async fn spawn_v1_zaino_db(
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -52,7 +53,7 @@ pub(crate) async fn spawn_v1_zaino_db(
 }
 
 pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
-) -> (TestVectorData, TempDir, ZainoDB) {
+) -> (TestVectorData, TempDir, ZainoDB<MockchainSource>) {
     let test_vector_data = load_test_vectors().unwrap();
     let blocks = test_vector_data.blocks.clone();
 
@@ -68,8 +69,12 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
     (test_vector_data, db_dir, zaino_db)
 }
 
-pub(crate) async fn load_vectors_v1db_and_reader(
-) -> (TestVectorData, TempDir, std::sync::Arc<ZainoDB>, DbReader) {
+pub(crate) async fn load_vectors_v1db_and_reader() -> (
+    TestVectorData,
+    TempDir,
+    std::sync::Arc<ZainoDB<MockchainSource>>,
+    DbReader<MockchainSource>,
+) {
     let (test_vector_data, db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
 
     let zaino_db = std::sync::Arc::new(zaino_db);
@@ -157,6 +162,7 @@ async fn save_db_to_file_and_reload() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -235,10 +241,12 @@ async fn load_db_backend_from_file() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
-    let finalized_state_backend = DbBackend::spawn_v1(&config).await.unwrap();
+    let finalized_state_backend: DbBackend<MockchainSource> =
+        DbBackend::spawn_v1(&config).await.unwrap();
 
     let mut prev_hash = None;
     for height in 0..=100 {

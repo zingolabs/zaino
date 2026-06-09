@@ -16,6 +16,7 @@ use crate::chain_index::finalised_state::db::v1::{
 use crate::chain_index::finalised_state::db::DbBackend;
 use crate::chain_index::finalised_state::entry::StoredEntryFixed;
 use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
@@ -41,7 +42,7 @@ fn v1_2_0() -> DbVersion {
     }
 }
 
-async fn assert_v1_2_migration_complete(zaino_database: &ZainoDB) {
+async fn assert_v1_2_migration_complete(zaino_database: &ZainoDB<MockchainSource>) {
     let metadata = zaino_database.get_metadata().await.unwrap();
 
     assert_eq!(metadata.version, v1_2_0());
@@ -58,10 +59,10 @@ async fn assert_v1_2_migration_complete(zaino_database: &ZainoDB) {
 }
 
 async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
-    database_backend: &DbBackend,
+    database_backend: &DbBackend<MockchainSource>,
     resume_height: Height,
 ) {
-    let environment = database_backend.env();
+    let environment = database_backend.env().unwrap();
     let metadata_database = database_backend.metadata_db().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
     let tx_out_set_info_accumulator_database =
@@ -162,8 +163,10 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
     environment.sync(true).unwrap();
 }
 
-async fn assert_spent_index_matches_transparent_data(database_backend: &DbBackend) {
-    let environment = database_backend.env();
+async fn assert_spent_index_matches_transparent_data(
+    database_backend: &DbBackend<MockchainSource>,
+) {
+    let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
 
     let database_height = database_backend.db_height().await.unwrap().unwrap();
@@ -230,10 +233,10 @@ async fn assert_spent_index_matches_transparent_data(database_backend: &DbBacken
 }
 
 async fn expected_tx_out_set_info_accumulator(
-    database_backend: &DbBackend,
+    database_backend: &DbBackend<MockchainSource>,
     max_height: Height,
 ) -> FinalisedTxOutSetInfoAccumulator {
-    let environment = database_backend.env();
+    let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
 
     let mut expected_accumulator = FinalisedTxOutSetInfoAccumulator::empty();
@@ -321,7 +324,9 @@ async fn expected_tx_out_set_info_accumulator(
     expected_accumulator
 }
 
-async fn assert_tx_out_set_info_accumulator_matches_transparent_data(database_backend: &DbBackend) {
+async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
+    database_backend: &DbBackend<MockchainSource>,
+) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
     let expected_accumulator =
@@ -357,6 +362,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -424,6 +430,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };

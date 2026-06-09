@@ -19,7 +19,7 @@ use crate::{ChainIndexConfig, Height};
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,
-) -> Result<(TempDir, ZainoDB), FinalisedStateError> {
+) -> Result<(TempDir, ZainoDB<MockchainSource>), FinalisedStateError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
@@ -31,6 +31,7 @@ pub(crate) async fn spawn_v0_zaino_db(
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -41,7 +42,7 @@ pub(crate) async fn spawn_v0_zaino_db(
 }
 
 pub(crate) async fn load_vectors_and_spawn_and_sync_v0_zaino_db(
-) -> (TestVectorData, TempDir, ZainoDB) {
+) -> (TestVectorData, TempDir, ZainoDB<MockchainSource>) {
     let test_data = load_test_vectors().unwrap();
 
     let source = build_mockchain_source(test_data.blocks.clone());
@@ -58,8 +59,12 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v0_zaino_db(
     (test_data, db_dir, zaino_db)
 }
 
-pub(crate) async fn load_vectors_v0db_and_reader(
-) -> (TestVectorData, TempDir, std::sync::Arc<ZainoDB>, DbReader) {
+pub(crate) async fn load_vectors_v0db_and_reader() -> (
+    TestVectorData,
+    TempDir,
+    std::sync::Arc<ZainoDB<MockchainSource>>,
+    DbReader<MockchainSource>,
+) {
     let (test_data, db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v0_zaino_db().await;
 
     let zaino_db = std::sync::Arc::new(zaino_db);
@@ -145,6 +150,7 @@ async fn save_db_to_file_and_reload() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };

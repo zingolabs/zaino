@@ -1241,9 +1241,12 @@ listen_address = "127.0.0.1:8137"
 
         assert!(config.ephemeral_finalised_state);
 
-        let fetch_config = FetchServiceConfig::try_from(config)
-            .expect("FetchServiceConfig conversion should succeed");
+        #[allow(deprecated)]
+        {
+            let fetch_config = FetchServiceConfig::try_from(config)
+                .expect("FetchServiceConfig conversion should succeed");
 
-        assert!(fetch_config.common.ephemeral_finalised_state);
+            assert!(fetch_config.common.ephemeral_finalised_state);
+        }
     }
 }

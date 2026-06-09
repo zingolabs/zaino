@@ -8,6 +8,7 @@ use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use crate::chain_index::finalised_state::capability::DbCore as _;
 use crate::chain_index::finalised_state::db::DbBackend;
 use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, load_test_vectors, TestVectorData,
@@ -31,6 +32,7 @@ async fn v0_to_v1_full() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -42,6 +44,7 @@ async fn v0_to_v1_full() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -90,6 +93,7 @@ async fn v0_to_v1_interrupted() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -101,6 +105,7 @@ async fn v0_to_v1_interrupted() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -123,7 +128,7 @@ async fn v0_to_v1_interrupted() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     // Partial build v1 database.
-    let zaino_db = DbBackend::spawn_v1(&v1_config).await.unwrap();
+    let zaino_db: DbBackend<MockchainSource> = DbBackend::spawn_v1(&v1_config).await.unwrap();
     crate::chain_index::tests::vectors::sync_db_with_blockdata(&zaino_db, blocks.clone(), Some(50))
         .await;
 
@@ -157,6 +162,7 @@ async fn v0_to_v1_partial() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 0,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -168,6 +174,7 @@ async fn v0_to_v1_partial() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -191,7 +198,7 @@ async fn v0_to_v1_partial() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     // Partial build v1 database.
-    let zaino_db = DbBackend::spawn_v1(&v1_config).await.unwrap();
+    let zaino_db: DbBackend<MockchainSource> = DbBackend::spawn_v1(&v1_config).await.unwrap();
     crate::chain_index::tests::vectors::sync_db_with_blockdata(&zaino_db, blocks.clone(), None)
         .await;
 

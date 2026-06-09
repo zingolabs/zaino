@@ -32,6 +32,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -93,6 +94,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
