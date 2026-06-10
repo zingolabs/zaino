@@ -1,4 +1,4 @@
-use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
+use super::{finalised_state::FinalisedState, source::BlockchainSource, NON_FINALIZED_DEPTH};
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -371,7 +371,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
     pub(super) async fn sync(
         &self,
-        finalized_db: Arc<ZainoDB<Source>>,
+        finalized_db: Arc<FinalisedState<Source>>,
         chain_height: Height,
     ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
@@ -561,7 +561,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalised tip.
     pub(super) async fn update(
         &self,
-        finalized_db: Arc<ZainoDB<Source>>,
+        finalized_db: Arc<FinalisedState<Source>>,
         initial_state: Arc<NonfinalizedBlockCacheSnapshot>,
         mut new_snapshot: NonfinalizedBlockCacheSnapshot,
     ) -> Result<(), UpdateError> {

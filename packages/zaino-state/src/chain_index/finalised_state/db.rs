@@ -53,7 +53,7 @@
 //! Keep unsupported methods explicit: if a DB version does not provide a feature, return
 //! `FinalisedStateError::FeatureUnavailable(...)` rather than silently degrading semantics.
 
-pub(crate) mod stateless;
+pub(crate) mod ephemeral;
 pub(crate) mod v0;
 pub(crate) mod v1;
 
@@ -68,7 +68,7 @@ use crate::{
                 BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
                 DbMetadata, DbRead, DbWrite, IndexedBlockExt, TransparentHistExt,
             },
-            db::stateless::StatelessFinalisedState,
+            db::ephemeral::EphemeralFinalisedState,
         },
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
     },
@@ -230,7 +230,7 @@ pub(crate) enum DbBackend<T: BlockchainSource> {
     V1(DbV1),
 
     /// Stateless finalised state, DB disabled.
-    Stateless(StatelessFinalisedState<T>),
+    Stateless(EphemeralFinalisedState<T>),
 }
 
 // ***** Core database functionality *****
@@ -258,7 +258,7 @@ impl<T: BlockchainSource> DbBackend<T> {
         network: zebra_chain::parameters::Network,
         db_height: Option<Height>,
     ) -> Self {
-        Self::Stateless(StatelessFinalisedState::new(source, network, db_height))
+        Self::Stateless(EphemeralFinalisedState::new(source, network, db_height))
     }
 
     /// Wait until the database backend reports [`StatusType::Ready`].
@@ -373,9 +373,9 @@ impl<T: BlockchainSource> From<DbV1> for DbBackend<T> {
     }
 }
 
-impl<T: BlockchainSource> From<StatelessFinalisedState<T>> for DbBackend<T> {
+impl<T: BlockchainSource> From<EphemeralFinalisedState<T>> for DbBackend<T> {
     /// Wrap an already-constructed stateless finalised state backend.
-    fn from(value: StatelessFinalisedState<T>) -> Self {
+    fn from(value: EphemeralFinalisedState<T>) -> Self {
         Self::Stateless(value)
     }
 }
@@ -632,7 +632,7 @@ impl<T: BlockchainSource> BlockTransparentExt for DbBackend<T> {
         match self {
             Self::V1(db) => <DbV1 as BlockTransparentExt>::get_previous_output(db, outpoint).await,
             Self::Stateless(db) => {
-                <StatelessFinalisedState<T> as BlockTransparentExt>::get_previous_output(
+                <EphemeralFinalisedState<T> as BlockTransparentExt>::get_previous_output(
                     db, outpoint,
                 )
                 .await

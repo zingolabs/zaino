@@ -30,7 +30,7 @@ use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageC
 
 use crate::{
     chain_index::{
-        finalised_state::ZainoDB,
+        finalised_state::FinalisedState,
         finalized_height_floor,
         source::mockchain_source::MockchainSource,
         tests::vectors::{
@@ -207,7 +207,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             network: Network::Regtest(ActivationHeights::default()),
         };
 
-        let zaino_db = ZainoDB::spawn(config, source).await.unwrap();
+        let zaino_db = FinalisedState::spawn(config, source).await.unwrap();
         sync_db_with_blockdata(zaino_db.router(), blocks, Some(target)).await;
         zaino_db.wait_until_ready().await;
         zaino_db.shutdown().await.unwrap();

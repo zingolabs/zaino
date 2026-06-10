@@ -6,7 +6,7 @@ pub(crate) mod v1;
 use std::future::Future;
 use tempfile::TempDir;
 
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
@@ -21,7 +21,7 @@ use crate::BlockchainSource;
 async fn assert_shutdown_returns_promptly<F, Fut, T>(version_label: &str, spawn_fn: F)
 where
     F: FnOnce(MockchainSource) -> Fut,
-    Fut: Future<Output = Result<(TempDir, ZainoDB<T>), FinalisedStateError>>,
+    Fut: Future<Output = Result<(TempDir, FinalisedState<T>), FinalisedStateError>>,
     T: BlockchainSource,
 {
     init_tracing();

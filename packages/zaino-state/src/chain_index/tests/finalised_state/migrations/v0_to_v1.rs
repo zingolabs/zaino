@@ -7,7 +7,7 @@ use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::DbCore as _;
 use crate::chain_index::finalised_state::db::DbBackend;
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
@@ -52,7 +52,9 @@ async fn v0_to_v1_full() {
     let source = build_mockchain_source(blocks.clone());
 
     // Build v0 database.
-    let zaino_db = ZainoDB::spawn(v0_config, source.clone()).await.unwrap();
+    let zaino_db = FinalisedState::spawn(v0_config, source.clone())
+        .await
+        .unwrap();
     crate::chain_index::tests::vectors::sync_db_with_blockdata(
         zaino_db.router(),
         blocks.clone(),
@@ -68,7 +70,7 @@ async fn v0_to_v1_full() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     // Open v1 database and check migration.
-    let zaino_db_2 = ZainoDB::spawn(v1_config, source).await.unwrap();
+    let zaino_db_2 = FinalisedState::spawn(v1_config, source).await.unwrap();
     zaino_db_2.wait_until_synced().await;
     dbg!(zaino_db_2.status());
     let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
@@ -113,7 +115,9 @@ async fn v0_to_v1_interrupted() {
     let source = build_mockchain_source(blocks.clone());
 
     // Build v0 database.
-    let zaino_db = ZainoDB::spawn(v0_config, source.clone()).await.unwrap();
+    let zaino_db = FinalisedState::spawn(v0_config, source.clone())
+        .await
+        .unwrap();
     crate::chain_index::tests::vectors::sync_db_with_blockdata(
         zaino_db.router(),
         blocks.clone(),
@@ -137,7 +141,7 @@ async fn v0_to_v1_interrupted() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     // Open v1 database and check migration.
-    let zaino_db_2 = ZainoDB::spawn(v1_config, source).await.unwrap();
+    let zaino_db_2 = FinalisedState::spawn(v1_config, source).await.unwrap();
     zaino_db_2.wait_until_ready().await;
     dbg!(zaino_db_2.status());
     let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
@@ -182,7 +186,9 @@ async fn v0_to_v1_partial() {
     let source = build_mockchain_source(blocks.clone());
 
     // Build v0 database.
-    let zaino_db = ZainoDB::spawn(v0_config, source.clone()).await.unwrap();
+    let zaino_db = FinalisedState::spawn(v0_config, source.clone())
+        .await
+        .unwrap();
     crate::chain_index::tests::vectors::sync_db_with_blockdata(
         zaino_db.router(),
         blocks.clone(),
@@ -207,7 +213,7 @@ async fn v0_to_v1_partial() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     // Open v1 database and check migration.
-    let zaino_db_2 = ZainoDB::spawn(v1_config, source).await.unwrap();
+    let zaino_db_2 = FinalisedState::spawn(v1_config, source).await.unwrap();
     zaino_db_2.wait_until_ready().await;
     dbg!(zaino_db_2.status());
     let db_height = dbg!(zaino_db_2.db_height().await.unwrap()).unwrap();
