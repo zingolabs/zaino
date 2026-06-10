@@ -1,5 +1,5 @@
 #!/bin/bash
-set -efuo pipefail 
+set -efuo pipefail
 
 function main
 {
@@ -22,13 +22,15 @@ function fix
 
 function reject
 {
-  local F="$(mktemp --tmpdir zingolib-trailing-whitespace.XXX)"
+  local F
+  F="$(mktemp --tmpdir zingolib-trailing-whitespace.XXX)"
 
   process-well-known-text-files grep -E --with-filename ' +$' \
     | sed 's/$/\\n/' \
     | tee "$F"
 
-  local NOISE="$(cat "$F" | wc -l)"
+  local NOISE
+  NOISE="$(wc -l < "$F")"
   rm "$F"
 
   if [ "$NOISE" -eq 0 ]

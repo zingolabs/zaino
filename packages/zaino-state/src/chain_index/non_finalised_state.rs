@@ -982,7 +982,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         };
         let parent_work = *prev_block.provisional_cumulative_work();
         let provisional_block = block.to_provisional_block(&parent_work, self).await?;
-        working_snapshot.add_block(provisional_block.clone());
+        working_snapshot
+            .blocks
+            .insert(*provisional_block.hash(), provisional_block.clone());
         Ok(provisional_block)
     }
 }

@@ -20,13 +20,14 @@
 //! omitted: that variant is being eliminated, and pinning its shape
 //! would create immediate test churn at the refactor PR.
 //!
-//! The one exception is the trailing **red driver** for #1096
-//! (`best_chaintip_derives_tip_from_nfs_snapshot_not_validator_passthrough`).
+//! The one exception is the trailing **bug-characterization tripwire** for
+//! #1096 (`best_chaintip_derives_tip_from_nfs_snapshot_not_validator_passthrough`).
 //! Unlike the characterization tests above — which pin behavior that must
-//! survive the refactor unchanged — that test is *failing on purpose* and is
-//! expected to be rewritten when the still-syncing variant is removed. It
-//! pins cold-start shape precisely because it is driving that variant's
-//! elimination, so the churn it incurs is the point, not an accident.
+//! survive the refactor unchanged — that test is `#[should_panic]`: it asserts
+//! the *target* invariant and documents that the assertion does not hold today,
+//! because the cold-start variant passes through to the validator. It passes
+//! now and goes red the moment #1096 removes the still-syncing variant, which
+//! is the signal to rewrite it against `snapshot_nonfinalized_state()`.
 
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
 use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
@@ -296,13 +297,21 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
     );
 }
 
-/// **Red driver for #1096** (NOT a surviving characterization test — see the
-/// module-level doc; this one is *failing on purpose* and is expected to be
-/// rewritten when the still-syncing variant is removed).
+/// **Bug-characterization tripwire for #1096** (NOT a surviving
+/// characterization test — see the module-level doc; this one is
+/// `#[should_panic]` and is expected to be rewritten when the still-syncing
+/// variant is removed).
 ///
 /// Target invariant: `best_chaintip` must derive the chain tip from the
 /// non-finalized snapshot in *every* availability state — it must never fall
 /// back to a validator passthrough.
+///
+/// The body asserts that invariant directly. It does not hold today, so the
+/// assertion panics — hence `#[should_panic]`: the test is green now precisely
+/// *because* the cold-start variant is still broken. When #1096 removes the
+/// still-syncing variant, `best_chaintip` reports the real tip, the assertion
+/// passes, the expected panic never fires, and this test goes red — the signal
+/// to rewrite it against a `snapshot_nonfinalized_state()` result.
 ///
 /// Today the lazy design hands out
 /// [`ChainIndexSnapshot::StillSyncingFinalizedState`] during the cold-start
@@ -321,6 +330,7 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
 /// multi_thread: depends on the harness's background sync loop advancing the
 /// NFS concurrently with the setup's poll-until-ready loop.
 #[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "passes through to the validator and reports the finalized floor")]
 async fn best_chaintip_derives_tip_from_nfs_snapshot_not_validator_passthrough() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;

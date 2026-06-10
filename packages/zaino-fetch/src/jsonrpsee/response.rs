@@ -454,7 +454,9 @@ impl ResponseToError for GetTxOutSetInfoResponse {
 
 #[cfg(test)]
 mod get_tx_out_set_info_tests {
-    use super::{EmptyTxOutSetInfo, GetTxOutSetInfo, GetTxOutSetInfoResponse};
+    use super::{
+        EmptyTxOutSetInfo, GetBlockchainInfoResponse, GetTxOutSetInfo, GetTxOutSetInfoResponse,
+    };
 
     #[test]
     fn parses_zcashd_stats_response() {
@@ -512,6 +514,52 @@ mod get_tx_out_set_info_tests {
         let parsed: GetTxOutSetInfoResponse = serde_json::from_str("{}").unwrap();
 
         assert_eq!(parsed, GetTxOutSetInfoResponse::Empty(EmptyTxOutSetInfo {}));
+    }
+
+    #[test]
+    fn parses_get_blockchain_info_with_nu6_2_upgrade() {
+        let json = r#"{
+            "chain": "regtest",
+            "blocks": 2,
+            "bestblockhash": "0000000000000000000000000000000000000000000000000000000000000002",
+            "estimatedheight": 2,
+            "chainSupply": {
+                "chainValue": 0.0,
+                "chainValueZat": 0
+            },
+            "upgrades": {
+                "5437f330": {
+                    "name": "NU6.2",
+                    "activationheight": 2,
+                    "status": "active"
+                }
+            },
+            "valuePools": [
+                { "id": "transparent", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sapling", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "deferred", "chainValue": 0.0, "chainValueZat": 0 }
+            ],
+            "consensus": {
+                "chaintip": "5437f330",
+                "nextblock": "5437f330"
+            }
+        }"#;
+
+        let parsed: GetBlockchainInfoResponse = serde_json::from_str(json).unwrap();
+        let (name, activation_height, status) = parsed
+            .upgrades
+            .values()
+            .next()
+            .unwrap()
+            .clone()
+            .into_parts();
+
+        assert_eq!(name, zebra_chain::parameters::NetworkUpgrade::Nu6_2);
+        assert_eq!(activation_height, zebra_chain::block::Height(2));
+        assert_eq!(status, zebra_rpc::methods::NetworkUpgradeStatus::Active);
+        assert_eq!(parsed.consensus.into_parts(), (0x5437f330, 0x5437f330));
     }
 }
 

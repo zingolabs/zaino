@@ -72,6 +72,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
                 nu5: activation_heights.nu5(),
                 nu6: activation_heights.nu6(),
                 nu6_1: activation_heights.nu6_1(),
+                nu6_2: activation_heights.nu6_2(),
                 nu7: activation_heights.nu7(),
             }
         }),

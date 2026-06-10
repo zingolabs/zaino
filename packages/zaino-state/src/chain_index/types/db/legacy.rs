@@ -1215,7 +1215,7 @@ pub(crate) fn compact_block_from_parts(
     let orchard_commitment_tree_size = commitment_tree_data.sizes().orchard();
 
     zaino_proto::proto::compact_formats::CompactBlock {
-        proto_version: 4,
+        proto_version: 0,
         height,
         hash,
         prev_hash,

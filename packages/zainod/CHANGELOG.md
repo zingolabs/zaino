@@ -9,10 +9,20 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- New `allow_unencrypted_public_json_rpc_bind` build feature. The JSON-RPC
+  interface has no transport encryption and is now restricted to private /
+  loopback bind addresses by default; this feature lifts that restriction for
+  deployments on trusted private networks where encryption is handled
+  externally. It logs a `WARN` on startup when enabled.
 ### Changed
 ### Deprecated
 ### Removed
 ### Fixed
+- `check_config` now rejects JSON-RPC bind addresses that are not private or
+  loopback (matching the existing gRPC enforcement). Previously no bind-scope
+  check was applied to the JSON-RPC server, so an operator could expose the
+  unencrypted interface on a public address with no warning (Z-02 /
+  Zellic #48480).
 
 ## [0.3.1] - 2026-05-22
 

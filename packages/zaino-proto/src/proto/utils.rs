@@ -360,6 +360,8 @@ pub fn compact_block_with_pool_types(
 pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
     for ctransaction in &mut block.vtx {
         ctransaction.outputs = Vec::new();
+        ctransaction.vin = Vec::new();
+        ctransaction.vout = Vec::new();
         for caction in &mut ctransaction.actions {
             *caction = CompactOrchardAction {
                 nullifier: caction.nullifier.clone(),
