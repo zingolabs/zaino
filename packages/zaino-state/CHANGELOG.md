@@ -11,9 +11,21 @@ and this library adheres to Rust's notion of
 - `rpc::grpc::service.rs`, `backends::fetch::get_taddress_transactions`:
     - these functions implement the GetTaddressTransactions GRPC method of
       lightclient-protocol v0.4.0 which replaces `GetTaddressTxids`
+- Optional ("ephemeral") finalised state: with `ChainIndexConfig::ephemeral`,
+  no finalised database is opened. Finalised reads are served by a stateless
+  passthrough (`finalised_source::ephemeral::EphemeralFinalisedState`) directly
+  from the backing `BlockchainSource`; `sync_to_height` is a no-op and
+  `db_height` reports `0`.
+- Background finalised-state sync and migration: `FinalisedState::sync_to_height`
+  runs inline for small ranges but spawns for large ones, and version migrations
+  run in the background, in both cases serving reads from a stateless passthrough
+  meanwhile. Failed background work retries and escalates to `CriticalError`.
+- `FinalisedState::wait_until_synced` — waits for in-progress background
+  sync/migration to reach its target (distinct from `wait_until_ready`, which
+  reflects serving-readiness).
 - `chain_index`
-  - `::finalised_state::db::v0::get_compact_block_stream`
-  - `::finalised_state::db::v1::get_compact_block_stream`
+  - `::finalised_state::finalised_source::v0::get_compact_block_stream`
+  - `::finalised_state::finalised_source::v1::get_compact_block_stream`
   - `::types::db::legacy`:
     - `compact_vin`
     - `compact_vout`
@@ -82,8 +94,19 @@ and this library adheres to Rust's notion of
   - `ChainIndexError::internal` constructor.
 ### Changed
 - `get_mempool_tx` now takes `GetMempoolTxRequest` as parameter
+- `chain_index::finalised_state` renames (internal, `pub(crate)`):
+  - facade type `ZainoDB` -> `FinalisedState`
+  - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
+    (variant `Stateless` -> `Ephemeral`), reflecting that the backing source is
+    not necessarily a database
+  - stateless impl `StatelessFinalisedState` -> `EphemeralFinalisedState`
+    (`db/stateless.rs` -> `finalised_source/ephemeral.rs`)
+- `chain_index::non_finalised_state` now caps in-memory retention at
+  `MAX_NFS_DEPTH` blocks below the tip, so the cache cannot grow unbounded when
+  the finalised `db_height` lags (background sync) or is pinned at `0`
+  (ephemeral mode).
 - `chain_index::finalised_state`
-  - `::db`
+  - `::finalised_source`
     - `::v0`
       - `get_compact_block` now takes a `PoolTypeFilter` parameter
     - `::v1`

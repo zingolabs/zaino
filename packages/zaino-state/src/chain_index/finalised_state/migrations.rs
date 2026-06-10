@@ -1,8 +1,8 @@
 //! Database version migration framework and implementations
 //!
-//! This file defines how `ZainoDB` migrates on-disk databases between database versions.
+//! This file defines how `FinalisedState` migrates on-disk databases between database versions.
 //!
-//! Migrations are orchestrated by [`MigrationManager`], which is invoked from `ZainoDB::spawn` when
+//! Migrations are orchestrated by [`MigrationManager`], which is invoked from `FinalisedState::spawn` when
 //! `current_version < target_version`.
 //!
 //! The migration model is **stepwise**:
@@ -115,7 +115,7 @@
 //! ## v1.0.0 → v1.1.0
 //!
 //! `Migration1_0_0To1_1_0` is a **minor version bump** with **on disk schema changes**, but does
-//! not include changes to the external ZainoDB API.
+//! not include changes to the external FinalisedState API.
 //!
 //! Important changes in v1.1.0:
 //! - ZainoVersionedSerde had a bug which stopped varifying the checksum of older serde formats,
@@ -165,7 +165,7 @@
 
 use super::{
     capability::{BlockCoreExt, DbCore as _, DbRead, DbVersion, DbWrite, MigrationStatus},
-    db::DbBackend,
+    finalised_source::FinalisedSource,
     router::Router,
 };
 
@@ -173,8 +173,8 @@ use crate::{
     chain_index::{
         finalised_state::{
             capability::{BlockTransparentExt as _, DbMetadata},
-            db::v1::{DB_VERSION_V1, TX_OUT_SET_INFO_ACCUMULATOR_KEY},
             entry::StoredEntryFixed,
+            finalised_source::v1::{DB_VERSION_V1, TX_OUT_SET_INFO_ACCUMULATOR_KEY},
             router::StatelessMode,
         },
         source::BlockchainSource,
@@ -288,7 +288,8 @@ pub trait Migration<T: BlockchainSource> {
         let mut metadata: DbMetadata = router.get_metadata().await?;
 
         metadata.version = Self::TO_VERSION;
-        metadata.schema_hash = crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
+        metadata.schema_hash =
+            crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
         metadata.migration_status = MigrationStatus::Empty;
 
         router.update_metadata(metadata).await?;
@@ -305,7 +306,7 @@ pub trait Migration<T: BlockchainSource> {
 
 /// Orchestrates a sequence of migration steps until `target_version` is reached.
 ///
-/// `MigrationManager` is constructed by `ZainoDB::spawn` when it detects that the on-disk database
+/// `MigrationManager` is constructed by `FinalisedState::spawn` when it detects that the on-disk database
 /// is older than the configured target version.
 ///
 /// The manager:
@@ -399,6 +400,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
             (0, 0, 0) => Ok(MigrationStep::Migration0To1(Migration0To1)),
             (1, 0, 0) => Ok(MigrationStep::Migration1_0_0To1_1_0(Migration1_0_0To1_1_0)),
             (1, 1, 0) => Ok(MigrationStep::Migration1_1_0To1_2_0(Migration1_1_0To1_2_0)),
+            (1, 2, 0) => Ok(MigrationStep::Migration1_2_0To1_2_1(Migration1_2_0To1_2_1)),
             (_, _, _) => Err(FinalisedStateError::Custom(format!(
                 "Missing migration from version {}",
                 self.current_version
@@ -416,6 +418,7 @@ enum MigrationStep {
     Migration0To1(Migration0To1),
     Migration1_0_0To1_1_0(Migration1_0_0To1_1_0),
     Migration1_1_0To1_2_0(Migration1_1_0To1_2_0),
+    Migration1_2_0To1_2_1(Migration1_2_0To1_2_1),
 }
 
 impl MigrationStep {
@@ -427,6 +430,9 @@ impl MigrationStep {
             }
             MigrationStep::Migration1_1_0To1_2_0(_step) => {
                 <Migration1_1_0To1_2_0 as Migration<T>>::TO_VERSION
+            }
+            MigrationStep::Migration1_2_0To1_2_1(_step) => {
+                <Migration1_2_0To1_2_1 as Migration<T>>::TO_VERSION
             }
         }
     }
@@ -442,6 +448,9 @@ impl MigrationStep {
             MigrationStep::Migration1_1_0To1_2_0(step) => {
                 <Migration1_1_0To1_2_0 as Migration<T>>::migration_type(step)
             }
+            MigrationStep::Migration1_2_0To1_2_1(step) => {
+                <Migration1_2_0To1_2_1 as Migration<T>>::migration_type(step)
+            }
         }
     }
 
@@ -455,6 +464,7 @@ impl MigrationStep {
             MigrationStep::Migration0To1(step) => step.migrate(router, cfg, source).await,
             MigrationStep::Migration1_0_0To1_1_0(step) => step.migrate(router, cfg, source).await,
             MigrationStep::Migration1_1_0To1_2_0(step) => step.migrate(router, cfg, source).await,
+            MigrationStep::Migration1_2_0To1_2_1(step) => step.migrate(router, cfg, source).await,
         }
     }
 }
@@ -468,7 +478,7 @@ impl MigrationStep {
 /// once all handles are dropped.
 ///
 /// This was previously documented as `v0.0.0 → v1.0.0`, but that was incorrect: the shadow backend
-/// is created with `DbBackend::spawn_v1`, which opens or creates the latest supported v1 schema
+/// is created with `FinalisedSource::spawn_v1`, which opens or creates the latest supported v1 schema
 /// identified by `DB_VERSION_V1`.
 ///
 /// See the module-level documentation for the detailed rationale and mechanics.
@@ -496,7 +506,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
         info!("Starting v0 to v1 migration.");
 
         let old_primary = router.primary_backend();
-        let replacement = Arc::new(DbBackend::spawn_v1(&cfg).await?);
+        let replacement = Arc::new(FinalisedSource::spawn_v1(&cfg).await?);
 
         let migration_status = replacement.get_metadata().await?.migration_status();
 
@@ -875,7 +885,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                         }
 
                         let tx_out_set_info_accumulator = match backend.as_ref() {
-                            DbBackend::V1(database) => {
+                            FinalisedSource::V1(database) => {
                                 let transactions: Vec<(
                                     TransactionHash,
                                     Option<TransparentCompactTx>,
@@ -893,7 +903,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                                     )
                                     .await?
                             }
-                            DbBackend::V0(_) | DbBackend::Stateless(_) => {
+                            FinalisedSource::V0(_) | FinalisedSource::Ephemeral(_) => {
                                 return Err(FinalisedStateError::FeatureUnavailable(
                                     "v1 txout-set accumulator migration",
                                 ));
@@ -1006,7 +1016,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 
                     metadata.version = <Self as Migration<T>>::TO_VERSION;
                     metadata.schema_hash =
-                        crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
+                        crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
                     metadata.migration_status = MigrationStatus::Empty;
 
                     backend.update_metadata(metadata).await?;
@@ -1020,4 +1030,31 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 
         Ok(())
     }
+}
+
+/// Patch migration: v1.2.0 → v1.2.1.
+///
+/// This is a **metadata-only** version marker. It records that the database was opened by a build
+/// that supports optional ("ephemeral") finalised state and background (non-blocking) finalised-state
+/// sync and migration. None of that behaviour changes the on-disk layout: the persisted tables, key
+/// and value encodings, checksums, and `DB_SCHEMA_V1_HASH` are byte-for-byte identical to v1.2.0.
+///
+/// Because there is no data change, it uses the trait's default `migration_type` ([`MigrationType::Patch`])
+/// and default `migrate` implementation, which only advances `DbMetadata::version` (and re-stamps the
+/// unchanged schema checksum). It is idempotent, builds no shadow database, and rebuilds no indices.
+struct Migration1_2_0To1_2_1;
+
+#[async_trait]
+impl<T: BlockchainSource> Migration<T> for Migration1_2_0To1_2_1 {
+    const CURRENT_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 2,
+        patch: 0,
+    };
+
+    const TO_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 2,
+        patch: 1,
+    };
 }

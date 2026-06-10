@@ -1,4 +1,4 @@
-//! ZainoDB::V1 DB validation and varification functionality.
+//! FinalisedState::V1 DB validation and varification functionality.
 //!
 //! The finalised-state database supports **incremental, concurrency-safe validation** of blocks that
 //! have already been written to LMDB.

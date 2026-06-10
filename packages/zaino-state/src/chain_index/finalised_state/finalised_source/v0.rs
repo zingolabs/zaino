@@ -1,4 +1,4 @@
-//! ZainoDB V0 Implementation
+//! Finalised State persistent database (Schema V0)
 //!
 //! WARNING: This is a legacy development database and should not be used in production environments.
 //!
@@ -288,7 +288,7 @@ impl DbV0 {
     /// # Errors
     /// Returns `FinalisedStateError` on any filesystem, LMDB, or task-spawn failure.
     pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        info!("Launching ZainoDB");
+        info!("Launching FinalisedState");
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
@@ -327,14 +327,14 @@ impl DbV0 {
         let hashes_to_blocks =
             super::open_or_create_db(&env, "hashes_to_blocks", DatabaseFlags::empty()).await?;
 
-        // Create ZainoDB
+        // Create FinalisedState
         let mut zaino_db = Self {
             env: Arc::new(env),
             heights_to_hashes,
             hashes_to_blocks,
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),
-            status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+            status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
             config: config.clone(),
         };
 
@@ -468,7 +468,7 @@ impl DbV0 {
         };
         let post_result = tokio::task::spawn_blocking(move || {
             // let post_result: Result<(), FinalisedStateError> = (async {
-            // Write block to ZainoDB
+            // Write block to FinalisedState
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
             txn.put(

@@ -1,4 +1,4 @@
-//! Zaino-State ChainIndex Finalised State (ZainoDB) unit tests.
+//! Zaino-State ChainIndex Finalised State (FinalisedState) unit tests.
 mod migrations;
 mod v0;
 pub(crate) mod v1;
@@ -15,7 +15,7 @@ use crate::BlockchainSource;
 
 /// Regression helper for zingolabs/zaino#1032.
 ///
-/// Spawns a `ZainoDB` with the provided version-specific spawner, waits for
+/// Spawns a `FinalisedState` with the provided version-specific spawner, waits for
 /// ready, then asserts that `shutdown()` returns in well under 5 s — i.e. the
 /// background handle is awaited, not padded with an unconditional sleep.
 async fn assert_shutdown_returns_promptly<F, Fut, T>(version_label: &str, spawn_fn: F)

@@ -6,7 +6,7 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::DbCore as _;
-use crate::chain_index::finalised_state::db::DbBackend;
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
@@ -132,7 +132,8 @@ async fn v0_to_v1_interrupted() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     // Partial build v1 database.
-    let zaino_db: DbBackend<MockchainSource> = DbBackend::spawn_v1(&v1_config).await.unwrap();
+    let zaino_db: FinalisedSource<MockchainSource> =
+        FinalisedSource::spawn_v1(&v1_config).await.unwrap();
     crate::chain_index::tests::vectors::sync_db_with_blockdata(&zaino_db, blocks.clone(), Some(50))
         .await;
 
@@ -204,7 +205,8 @@ async fn v0_to_v1_partial() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     // Partial build v1 database.
-    let zaino_db: DbBackend<MockchainSource> = DbBackend::spawn_v1(&v1_config).await.unwrap();
+    let zaino_db: FinalisedSource<MockchainSource> =
+        FinalisedSource::spawn_v1(&v1_config).await.unwrap();
     crate::chain_index::tests::vectors::sync_db_with_blockdata(&zaino_db, blocks.clone(), None)
         .await;
 

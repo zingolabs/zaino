@@ -66,7 +66,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
     assert_eq!(metadata.migration_status, MigrationStatus::Empty);
     assert_eq!(
         metadata.schema_hash,
-        crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH
+        crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH
     );
 
     let db_height = zaino_db.db_height().await.unwrap().unwrap();

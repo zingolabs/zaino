@@ -79,7 +79,7 @@ pub(crate) async fn load_vectors_v0db_and_reader() -> (
     (test_data, db_dir, zaino_db, db_reader)
 }
 
-// *** ZainoDB Tests ***
+// *** FinalisedState Tests ***
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_returns_promptly() {

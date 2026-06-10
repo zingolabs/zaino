@@ -1,4 +1,4 @@
-//! ZainoDB::V1 core block indexing functionality.
+//! FinalisedState::V1 core block indexing functionality.
 
 use super::*;
 

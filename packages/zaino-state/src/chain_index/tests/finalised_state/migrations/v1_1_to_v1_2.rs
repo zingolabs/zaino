@@ -10,11 +10,11 @@ use crate::chain_index::finalised_state::capability::{
     BlockCoreExt as _, BlockTransparentExt as _, CapabilityRequest, DbRead as _, DbVersion,
     MigrationStatus, TransparentHistExt as _,
 };
-use crate::chain_index::finalised_state::db::v1::{
+use crate::chain_index::finalised_state::entry::StoredEntryFixed;
+use crate::chain_index::finalised_state::finalised_source::v1::{
     DB_SCHEMA_V1_HASH, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
-use crate::chain_index::finalised_state::db::DbBackend;
-use crate::chain_index::finalised_state::entry::StoredEntryFixed;
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
@@ -59,7 +59,7 @@ async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<Mockchai
 }
 
 async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
     resume_height: Height,
 ) {
     let environment = database_backend.env().unwrap();
@@ -164,7 +164,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
 }
 
 async fn assert_spent_index_matches_transparent_data(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
 ) {
     let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
@@ -233,7 +233,7 @@ async fn assert_spent_index_matches_transparent_data(
 }
 
 async fn expected_tx_out_set_info_accumulator(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
     max_height: Height,
 ) -> FinalisedTxOutSetInfoAccumulator {
     let environment = database_backend.env().unwrap();
@@ -325,7 +325,7 @@ async fn expected_tx_out_set_info_accumulator(
 }
 
 async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 

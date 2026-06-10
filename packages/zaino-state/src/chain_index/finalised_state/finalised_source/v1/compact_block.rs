@@ -1,4 +1,4 @@
-//! ZainoDB::V1 compact block indexing functionality.
+//! FinalisedState::V1 compact block indexing functionality.
 
 use super::*;
 
