@@ -66,7 +66,7 @@ use super::{
         IndexedBlockExt, TransparentHistExt,
     },
     db::DbBackend,
-    ZainoDB,
+    FinalisedState,
 };
 
 use std::sync::Arc;
@@ -83,7 +83,7 @@ use std::sync::Arc;
 /// `DbReader` is cheap to clone; clones share the underlying `Arc<ZainoDB>`.
 pub(crate) struct DbReader<T: BlockchainSource> {
     /// Shared handle to the running `ZainoDB` instance.
-    pub(crate) inner: Arc<ZainoDB<T>>,
+    pub(crate) inner: Arc<FinalisedState<T>>,
 }
 
 impl<T: BlockchainSource> DbReader<T> {

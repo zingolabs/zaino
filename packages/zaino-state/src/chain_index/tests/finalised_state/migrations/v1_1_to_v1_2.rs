@@ -15,7 +15,7 @@ use crate::chain_index::finalised_state::db::v1::{
 };
 use crate::chain_index::finalised_state::db::DbBackend;
 use crate::chain_index::finalised_state::entry::StoredEntryFixed;
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
@@ -42,7 +42,7 @@ fn v1_2_0() -> DbVersion {
     }
 }
 
-async fn assert_v1_2_migration_complete(zaino_database: &ZainoDB<MockchainSource>) {
+async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<MockchainSource>) {
     let metadata = zaino_database.get_metadata().await.unwrap();
 
     assert_eq!(metadata.version, v1_2_0());
@@ -428,7 +428,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
 
     let old_database =
-        ZainoDB::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
+        FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
             .await
             .unwrap();
 
@@ -445,10 +445,13 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     old_database.shutdown().await.unwrap();
     drop(old_database);
 
-    let migrated_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
+    let migrated_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
 
     migrated_database.wait_until_ready().await;
 
@@ -497,7 +500,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
 
     let old_database =
-        ZainoDB::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
+        FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
             .await
             .unwrap();
 
@@ -511,10 +514,13 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     old_database.shutdown().await.unwrap();
     drop(old_database);
 
-    let complete_migration_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
+    let complete_migration_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
 
     complete_migration_database.wait_until_ready().await;
 
@@ -536,10 +542,13 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     complete_migration_database.shutdown().await.unwrap();
     drop(complete_migration_database);
 
-    let resumed_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
+    let resumed_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
 
     resumed_database.wait_until_ready().await;
 

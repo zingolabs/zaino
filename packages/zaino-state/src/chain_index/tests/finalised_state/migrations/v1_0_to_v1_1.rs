@@ -8,7 +8,7 @@ use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use crate::chain_index::finalised_state::capability::{
     DbCore as _, DbRead as _, DbVersion, MigrationStatus,
 };
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
@@ -39,7 +39,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
 
     let source = build_active_mockchain_source(150, blocks.clone());
 
-    let zaino_db = ZainoDB::build_db_to_version(
+    let zaino_db = FinalisedState::build_db_to_version(
         v1_config,
         source,
         DbVersion {
@@ -101,7 +101,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
 
-    let old_db = ZainoDB::build_clean_v1_0_0(&v1_config, source.clone())
+    let old_db = FinalisedState::build_clean_v1_0_0(&v1_config, source.clone())
         .await
         .unwrap();
 
@@ -138,7 +138,11 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         "mock chain source must advance beyond the old v1.0.0 database height"
     );
 
-    let zaino_db = std::sync::Arc::new(ZainoDB::spawn(v1_config, source.clone()).await.unwrap());
+    let zaino_db = std::sync::Arc::new(
+        FinalisedState::spawn(v1_config, source.clone())
+            .await
+            .unwrap(),
+    );
 
     zaino_db.wait_until_synced().await;
 

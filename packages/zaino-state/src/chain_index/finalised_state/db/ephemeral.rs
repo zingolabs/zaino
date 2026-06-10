@@ -36,7 +36,7 @@ use zaino_proto::proto::utils::PoolTypeFilter;
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrScript};
 
-const STATELESS_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Source-backed finalised-state backend used when persistent finalised-state storage is not
 /// serving normal requests.
@@ -58,7 +58,7 @@ const STATELESS_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_
 /// same source-backed backend. Shared runtime state is stored behind [`Arc`] so clones observe the
 /// same status, shutdown signal, status-poll task handle, and reported persistent database height.
 #[derive(Debug, Clone)]
-pub(crate) struct StatelessFinalisedState<T: BlockchainSource> {
+pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
     /// Backing blockchain source used to answer finalised-state reads.
     ///
     /// This is typically a validator/source service. Stateless read methods fetch blocks,
@@ -112,7 +112,7 @@ pub(crate) struct StatelessFinalisedState<T: BlockchainSource> {
     db_height: Arc<RwLock<Option<Height>>>,
 }
 
-impl<T: BlockchainSource> StatelessFinalisedState<T> {
+impl<T: BlockchainSource> EphemeralFinalisedState<T> {
     pub(crate) fn new(
         source: T,
         network: zebra_chain::parameters::Network,
@@ -140,7 +140,7 @@ impl<T: BlockchainSource> StatelessFinalisedState<T> {
                 status_poll_status.store(status);
 
                 tokio::select! {
-                    _ = tokio::time::sleep(STATELESS_FINALISED_STATE_STATUS_POLL_INTERVAL) => {}
+                    _ = tokio::time::sleep(EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL) => {}
 
                     _ = async {
                         while !status_poll_shutdown_requested.load(Ordering::SeqCst) {
@@ -317,7 +317,7 @@ impl<T: BlockchainSource> StatelessFinalisedState<T> {
 }
 
 #[async_trait]
-impl<T> DbCore for StatelessFinalisedState<T>
+impl<T> DbCore for EphemeralFinalisedState<T>
 where
     T: BlockchainSource + Clone + Send + Sync + 'static,
 {
@@ -358,7 +358,7 @@ where
     }
 }
 
-impl<T> Drop for StatelessFinalisedState<T>
+impl<T> Drop for EphemeralFinalisedState<T>
 where
     T: BlockchainSource,
 {
@@ -376,7 +376,7 @@ where
 }
 
 #[async_trait]
-impl<T: BlockchainSource> DbWrite for StatelessFinalisedState<T> {
+impl<T: BlockchainSource> DbWrite for EphemeralFinalisedState<T> {
     /// Write a fully-indexed block into the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
@@ -407,7 +407,7 @@ impl<T: BlockchainSource> DbWrite for StatelessFinalisedState<T> {
 }
 
 #[async_trait]
-impl<T: BlockchainSource> DbRead for StatelessFinalisedState<T> {
+impl<T: BlockchainSource> DbRead for EphemeralFinalisedState<T> {
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
         Ok(Some(self.reported_db_height()?.unwrap_or(Height(0))))
     }
@@ -442,7 +442,7 @@ impl<T: BlockchainSource> DbRead for StatelessFinalisedState<T> {
 }
 
 #[async_trait]
-impl<T: BlockchainSource> BlockCoreExt for StatelessFinalisedState<T> {
+impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
     async fn get_block_header(
         &self,
         height: Height,
@@ -544,7 +544,7 @@ impl<T: BlockchainSource> BlockCoreExt for StatelessFinalisedState<T> {
 }
 
 #[async_trait]
-impl<T: BlockchainSource> BlockTransparentExt for StatelessFinalisedState<T> {
+impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
@@ -632,7 +632,7 @@ impl<T: BlockchainSource> BlockTransparentExt for StatelessFinalisedState<T> {
 }
 
 #[async_trait]
-impl<T: BlockchainSource> BlockShieldedExt for StatelessFinalisedState<T> {
+impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
@@ -752,7 +752,7 @@ impl<T: BlockchainSource> BlockShieldedExt for StatelessFinalisedState<T> {
 }
 
 #[async_trait]
-impl<T: BlockchainSource> CompactBlockExt for StatelessFinalisedState<T> {
+impl<T: BlockchainSource> CompactBlockExt for EphemeralFinalisedState<T> {
     async fn get_compact_block(
         &self,
         height: Height,
@@ -807,7 +807,7 @@ impl<T: BlockchainSource> CompactBlockExt for StatelessFinalisedState<T> {
 }
 
 #[async_trait]
-impl<T: BlockchainSource> IndexedBlockExt for StatelessFinalisedState<T> {
+impl<T: BlockchainSource> IndexedBlockExt for EphemeralFinalisedState<T> {
     async fn get_chain_block(
         &self,
         height: Height,

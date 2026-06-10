@@ -659,7 +659,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
-    finalized_db: std::sync::Arc<finalised_state::ZainoDB<Source>>,
+    finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
@@ -747,7 +747,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         use futures::TryFutureExt as _;
 
         let finalized_db =
-            Arc::new(finalised_state::ZainoDB::spawn(config.clone(), source.clone()).await?);
+            Arc::new(finalised_state::FinalisedState::spawn(config.clone(), source.clone()).await?);
         let mempool_state = mempool::Mempool::spawn(source.clone(), None)
             .map_err(crate::InitError::MempoolInitialzationError)
             .await?;

@@ -239,11 +239,11 @@ const BACKGROUND_SYNC_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 /// correct routing (especially during migrations).
 ///
 /// ## Configuration
-/// `ZainoDB` stores the [`BlockCacheConfig`] used to:
+/// `ZainoDB` stores the [`ChainIndexConfig`] used to:
 /// - determine network-specific on-disk paths,
 /// - select a target database version (`cfg.db_version`),
 /// - and compute per-block metadata (e.g., network selection for `BlockMetadata`).
-pub(crate) struct ZainoDB<T: BlockchainSource> {
+pub(crate) struct FinalisedState<T: BlockchainSource> {
     /// Capability router for the active database backend(s).
     ///
     /// - In steady state, all requests route to the primary backend.
@@ -261,7 +261,7 @@ pub(crate) struct ZainoDB<T: BlockchainSource> {
 /// - version selection and migration orchestration lives in [`ZainoDB::spawn`],
 /// - the storage engine details are encapsulated behind [`DbBackend`] and the capability traits,
 /// - higher-level query routing is provided by [`DbReader`].
-impl<T: BlockchainSource> ZainoDB<T> {
+impl<T: BlockchainSource> FinalisedState<T> {
     // ***** DB control *****
 
     /// Spawns a `ZainoDB` instance.
@@ -928,7 +928,7 @@ impl<T: BlockchainSource> ZainoDB<T> {
 }
 
 #[cfg(test)]
-impl<T: BlockchainSource> ZainoDB<T> {
+impl<T: BlockchainSource> FinalisedState<T> {
     /// Returns the internal router.
     ///
     /// This is a test-only escape hatch for unit and integration tests that need direct access to
