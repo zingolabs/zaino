@@ -14,7 +14,8 @@ pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeigh
     canopy: Some(1),
     nu5: Some(2),
     nu6: Some(2),
-    nu6_1: Some(1000),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
     nu7: None,
 };
 
@@ -104,6 +105,9 @@ pub struct ActivationHeights {
     /// see <https://zips.z.cash/#nu6-1-candidate-zips> for info on NU6.1
     #[serde(rename = "NU6.1")]
     pub nu6_1: Option<u32>,
+    /// Activation height for `NU6.2` network upgrade.
+    #[serde(rename = "NU6.2")]
+    pub nu6_2: Option<u32>,
     /// Activation height for `NU7` network upgrade.
     #[serde(rename = "NU7")]
     pub nu7: Option<u32>,
@@ -121,6 +125,7 @@ impl Default for ActivationHeights {
             nu5: Some(2),
             nu6: Some(2),
             nu6_1: Some(2),
+            nu6_2: Some(2),
             nu7: None,
         }
     }
@@ -137,6 +142,7 @@ impl From<ActivationHeights> for zingo_common_components::protocol::ActivationHe
             .set_nu5(val.nu5)
             .set_nu6(val.nu6)
             .set_nu6_1(val.nu6_1)
+            .set_nu6_2(val.nu6_2)
             .set_nu7(val.nu7)
             .build()
     }
@@ -154,6 +160,7 @@ impl From<ConfiguredActivationHeights> for ActivationHeights {
             nu5,
             nu6,
             nu6_1,
+            nu6_2,
             nu7,
         }: ConfiguredActivationHeights,
     ) -> Self {
@@ -167,6 +174,7 @@ impl From<ConfiguredActivationHeights> for ActivationHeights {
             nu5,
             nu6,
             nu6_1,
+            nu6_2,
             nu7,
         }
     }
@@ -183,6 +191,7 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
             nu5,
             nu6,
             nu6_1,
+            nu6_2,
             nu7,
         }: ActivationHeights,
     ) -> Self {
@@ -196,6 +205,7 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
             nu5,
             nu6,
             nu6_1,
+            nu6_2,
             nu7,
         }
     }
@@ -213,6 +223,7 @@ impl From<zingo_common_components::protocol::ActivationHeights> for ActivationHe
             nu5: activation_heights.nu5(),
             nu6: activation_heights.nu6(),
             nu6_1: activation_heights.nu6_1(),
+            nu6_2: activation_heights.nu6_2(),
             nu7: activation_heights.nu7(),
         }
     }
@@ -236,6 +247,7 @@ impl Network {
             nu5: Some(1),
             nu6: Some(1),
             nu6_1: None,
+            nu6_2: None,
             nu7: None,
         }
     }
@@ -279,6 +291,7 @@ impl From<zebra_chain::parameters::Network> for Network {
                         nu5: None,
                         nu6: None,
                         nu6_1: None,
+                        nu6_2: None,
                         nu7: None,
                     };
                     for (height, upgrade) in parameters.activation_heights().iter() {
@@ -311,6 +324,9 @@ impl From<zebra_chain::parameters::Network> for Network {
                             zebra_chain::parameters::NetworkUpgrade::Nu6_1 => {
                                 activation_heights.nu6_1 = Some(height.0)
                             }
+                            zebra_chain::parameters::NetworkUpgrade::Nu6_2 => {
+                                activation_heights.nu6_2 = Some(height.0)
+                            }
                             zebra_chain::parameters::NetworkUpgrade::Nu7 => {
                                 activation_heights.nu7 = Some(height.0)
                             }
@@ -340,5 +356,35 @@ impl From<Network> for zebra_chain::parameters::Network {
 impl From<&Network> for zebra_chain::parameters::Network {
     fn from(val: &Network) -> Self {
         (*val).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ActivationHeights;
+
+    #[test]
+    fn activation_heights_round_trip_nu6_2() {
+        let heights = ActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: Some(1),
+            nu6_2: Some(2),
+            nu7: Some(1000),
+        };
+
+        let zebra_heights: zebra_chain::parameters::testnet::ConfiguredActivationHeights =
+            heights.into();
+        assert_eq!(zebra_heights.nu6_2, Some(2));
+
+        let zingo_heights: zingo_common_components::protocol::ActivationHeights = heights.into();
+        let heights = ActivationHeights::from(zingo_heights);
+        assert_eq!(heights.nu6_2, Some(2));
     }
 }

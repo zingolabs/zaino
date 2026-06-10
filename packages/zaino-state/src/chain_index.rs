@@ -14,12 +14,15 @@
 use crate::chain_index::non_finalised_state::{ChainIndexSnapshot, SnapshotAvailability};
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
+use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeRootData};
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
-use crate::{CompactBlockStream, NamedAtomicStatus, StatusType, SyncError};
-use crate::{IndexedBlock, Outpoint, TransactionHash, TxOutCompact};
+use crate::{
+    ChainWork, CompactBlockStream, IndexedBlock, NamedAtomicStatus, Outpoint, StatusType,
+    SyncError, TransactionHash, TxOutCompact,
+};
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
@@ -182,30 +185,36 @@ fn branch_len_to_active_chain(
 /// Interim shape: once the Availability/Resolved work lands, a resolved NFS
 /// block promotes to `IndexedBlock` (via `into_indexed`), and these methods
 /// return `IndexedBlock` directly — see issue #1096.
-pub(crate) enum ChainBlock {
-    Finalized(IndexedBlock),
-    NonFinalized(ProvisionalBlock),
+pub enum ChainBlock {
+    /// We have indexed all blocks from this block down to the genesis block.
+    /// We know the chain's entire cumulative chainwork as of this block.
+    Reified(IndexedBlock),
+    /// We have not indexed some blocks below this block.
+    /// We know the sum of chainwork from this block down to the finalized tip,
+    /// which is sufficient for determining the best chain, but do not know
+    /// the absolute cumulative chainwork.
+    Provisional(ProvisionalBlock),
 }
 
 impl ChainBlock {
     pub(crate) fn hash(&self) -> &types::BlockHash {
         match self {
-            ChainBlock::Finalized(block) => block.hash(),
-            ChainBlock::NonFinalized(block) => block.hash(),
+            ChainBlock::Reified(block) => block.hash(),
+            ChainBlock::Provisional(block) => block.hash(),
         }
     }
 
     pub(crate) fn height(&self) -> types::Height {
         match self {
-            ChainBlock::Finalized(block) => block.height(),
-            ChainBlock::NonFinalized(block) => block.height(),
+            ChainBlock::Reified(block) => block.height(),
+            ChainBlock::Provisional(block) => block.height(),
         }
     }
 
     pub(crate) fn data(&self) -> &types::db::legacy::BlockData {
         match self {
-            ChainBlock::Finalized(block) => block.data(),
-            ChainBlock::NonFinalized(block) => block.data(),
+            ChainBlock::Reified(block) => block.data(),
+            ChainBlock::Provisional(block) => block.data(),
         }
     }
 }
@@ -1035,6 +1044,79 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
     source: Source,
 }
 
+async fn compact_block_from_source<Source: BlockchainSource>(
+    source: &Source,
+    network: ZebraNetwork,
+    height: types::Height,
+    pool_types: &PoolTypeFilter,
+) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, ChainIndexError> {
+    let Some(block) = source
+        .get_block(HashOrHeight::Height(zebra_chain::block::Height(height.0)))
+        .await
+        .map_err(ChainIndexError::backing_validator)?
+    else {
+        return Ok(None);
+    };
+
+    let block_height = block
+        .coinbase_height()
+        .map(|height| types::Height(height.0))
+        .ok_or_else(|| {
+            ChainIndexError::backing_validator(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "validator returned a block without a height",
+            ))
+        })?;
+    if block_height != height {
+        return Err(ChainIndexError::backing_validator(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "validator returned block at height {}, expected {}",
+                block_height.0, height.0
+            ),
+        )));
+    }
+
+    let tree_roots = source
+        .get_commitment_tree_roots(types::BlockHash::from(block.hash()))
+        .await
+        .map_err(ChainIndexError::backing_validator)?;
+    let (sapling_root, sapling_size, orchard_root, orchard_size) =
+        TreeRootData::new(tree_roots.0, tree_roots.1).extract_with_defaults();
+
+    let metadata = BlockMetadata::new(
+        sapling_root,
+        sapling_size.try_into().map_err(|_| {
+            ChainIndexError::backing_validator(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "sapling commitment tree size overflow",
+            ))
+        })?,
+        orchard_root,
+        orchard_size.try_into().map_err(|_| {
+            ChainIndexError::backing_validator(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "orchard commitment tree size overflow",
+            ))
+        })?,
+        // TODO: Define an empty value https://github.com/zingolabs/zaino/issues/1158
+        ChainWork::from_u256(0.into()),
+        network,
+    );
+    let indexed_block =
+        IndexedBlock::try_from(BlockWithMetadata::new(&block, metadata)).map_err(|error| {
+            ChainIndexError::backing_validator(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error,
+            ))
+        })?;
+
+    Ok(Some(compact_block_with_pool_types(
+        indexed_block.to_compact_block(),
+        &pool_types.to_pool_types_vector(),
+    )))
+}
+
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     fn source(&self) -> &Source {
         &self.source
@@ -1120,6 +1202,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             .transpose()
     }
 
+    async fn get_compact_block_from_node(
+        &self,
+        height: types::Height,
+        pool_types: &PoolTypeFilter,
+    ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, ChainIndexError> {
+        compact_block_from_source(self.source(), self.network.clone(), height, pool_types).await
+    }
+
     async fn get_indexed_block_height(
         &self,
         snapshot: &NonfinalizedBlockCacheSnapshot,
@@ -1172,12 +1262,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             None => None,
         }
         .into_iter()
-        .map(ChainBlock::Finalized);
+        .map(ChainBlock::Reified);
         let non_finalized_blocks_containing_transaction =
             snapshot.blocks.values().filter_map(move |block| {
                 block.transactions().iter().find_map(|transaction| {
                     if transaction.txid().0 == txid {
-                        Some(ChainBlock::NonFinalized(block.clone()))
+                        Some(ChainBlock::Provisional(block.clone()))
                     } else {
                         None
                     }
@@ -1339,13 +1429,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         target_hash: &types::BlockHash,
     ) -> Result<Option<ChainBlock>, Self::Error> {
         match snapshot.get_chainblock_by_hash(target_hash) {
-            Some(block) => Ok(Some(ChainBlock::NonFinalized(block.clone()))),
+            Some(block) => Ok(Some(ChainBlock::Provisional(block.clone()))),
             None => match self.get_block_height(snapshot, *target_hash).await {
                 Ok(Some(height)) => Ok(self
                     .finalized_state
                     .get_chain_block_by_height(height)
                     .await?
-                    .map(ChainBlock::Finalized)),
+                    .map(ChainBlock::Reified)),
                 Ok(None) => Ok(None),
                 Err(e) => Err(e),
             },
@@ -1364,12 +1454,12 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         target_height: &types::Height,
     ) -> Result<Option<ChainBlock>, Self::Error> {
         match snapshot.get_chainblock_by_height(target_height) {
-            Some(block) => Ok(Some(ChainBlock::NonFinalized(block.clone()))),
+            Some(block) => Ok(Some(ChainBlock::Provisional(block.clone()))),
             None => Ok(self
                 .finalized_state
                 .get_chain_block_by_height(*target_height)
                 .await?
-                .map(ChainBlock::Finalized)),
+                .map(ChainBlock::Reified)),
         }
     }
 
@@ -1487,13 +1577,16 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             ),
             None => match self
                 .finalized_state
-                .get_compact_block(height, pool_types)
+                .get_compact_block(height, pool_types.clone())
                 .await
             {
                 Ok(block) => block,
                 // Finalized-gap while Provisional: #1066 — fall back to the
                 // validator here once passthrough lands.
-                Err(e) => return Err(ChainIndexError::database_hole(height, Some(Box::new(e)))),
+                Err(e) => self
+                    .get_compact_block_from_node(height, &pool_types)
+                    .await?
+                    .ok_or(ChainIndexError::database_hole(height, Some(Box::new(e))))?,
             },
         }))
     }
@@ -1598,6 +1691,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         };
 
         let nonfinalized_snapshot = nonfinalized_snapshot.clone();
+        let source = self.source.clone();
+        let network = self.network.clone();
+        let pool_types_for_node = pool_types.clone();
         // TODO: Investigate whether channel size should be changed, added to config, or set dynamically based on resources.
         let (channel_sender, channel_receiver) = tokio::sync::mpsc::channel(128);
 
@@ -1620,12 +1716,35 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                     let Some(indexed_block) = nonfinalized_snapshot
                         .get_chainblock_by_height(&types::Height(height_value))
                     else {
-                        let _ = channel_sender
-                        .send(Err(tonic::Status::internal(format!(
-                            "Internal error, missing nonfinalized block at height [{height_value}].",
-                        ))))
-                        .await;
-                        return;
+                        match compact_block_from_source(
+                            &source,
+                            network.clone(),
+                            types::Height(height_value),
+                            &pool_types_for_node,
+                        )
+                        .await
+                        {
+                            Ok(Some(compact_block)) => {
+                                if channel_sender.send(Ok(compact_block)).await.is_err() {
+                                    return;
+                                }
+                                continue;
+                            }
+                            Ok(None) => {
+                                let _ = channel_sender
+                                    .send(Err(tonic::Status::internal(format!(
+                                        "Internal error, missing nonfinalized block at height [{height_value}].",
+                                    ))))
+                                    .await;
+                                return;
+                            }
+                            Err(error) => {
+                                let _ = channel_sender
+                                    .send(Err(tonic::Status::internal(error.to_string())))
+                                    .await;
+                                return;
+                            }
+                        }
                     };
                     let compact_block = compact_block_with_pool_types(
                         indexed_block.to_compact_block(),
@@ -1654,12 +1773,35 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         let Some(indexed_block) = nonfinalized_snapshot
                             .get_chainblock_by_height(&types::Height(height_value))
                         else {
-                            let _ = channel_sender
-                            .send(Err(tonic::Status::internal(format!(
-                                "Internal error, missing nonfinalized block at height [{height_value}].",
-                            ))))
-                            .await;
-                            return;
+                            match compact_block_from_source(
+                                &source,
+                                network.clone(),
+                                types::Height(height_value),
+                                &pool_types_for_node,
+                            )
+                            .await
+                            {
+                                Ok(Some(compact_block)) => {
+                                    if channel_sender.send(Ok(compact_block)).await.is_err() {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                Ok(None) => {
+                                    let _ = channel_sender
+                                        .send(Err(tonic::Status::internal(format!(
+                                            "Internal error, missing nonfinalized block at height [{height_value}].",
+                                        ))))
+                                        .await;
+                                    return;
+                                }
+                                Err(error) => {
+                                    let _ = channel_sender
+                                        .send(Err(tonic::Status::internal(error.to_string())))
+                                        .await;
+                                    return;
+                                }
+                            }
                         };
                         let compact_block = compact_block_with_pool_types(
                             indexed_block.to_compact_block(),
@@ -2387,7 +2529,7 @@ where
 }
 
 /// A snapshot of the non-finalized state, for consistent queries
-pub(crate) trait NonFinalizedSnapshot {
+pub trait NonFinalizedSnapshot {
     /// Hash -> block
     fn get_chainblock_by_hash(&self, target_hash: &types::BlockHash) -> Option<&ProvisionalBlock>;
     /// Height -> block

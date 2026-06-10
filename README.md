@@ -77,6 +77,30 @@ LICENSE                            Apache-2.0 license text
 .gitignore                         Git ignore patterns
 ```
 
+## Server network exposure
+
+Zaino exposes two servers, with different defaults reflecting their transport
+security:
+
+- **gRPC** (`[grpc_settings]`): may bind to a public address only when TLS is
+  configured (`[grpc_settings.tls]` with `cert_path` / `key_path`). Binding to a
+  non-private address without TLS is rejected at startup. The
+  `no_tls_use_unencrypted_traffic` build feature disables this enforcement (and
+  logs a startup warning) — for testing or trusted networks only.
+- **JSON-RPC** (`[json_server_settings]`): has **no transport encryption** and
+  is intended for loopback or trusted private networks only. By default it may
+  bind only to private/loopback addresses (RFC1918, IPv6 ULA, or loopback);
+  public or unspecified (`0.0.0.0` / `::`) bind addresses are rejected at
+  startup. The `allow_unencrypted_public_json_rpc_bind` build feature lifts this
+  restriction (and logs a startup warning) for deployments on trusted private
+  networks where encryption is handled externally (e.g. containers behind a
+  service mesh or proxy that terminates TLS).
+
+**Security implication:** the JSON-RPC interface transmits unencrypted traffic.
+Do not expose it to untrusted networks, and only enable
+`allow_unencrypted_public_json_rpc_bind` when an external layer secures the
+connection.
+
 ## Documentation
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
 - [Testing](./docs/testing.md): Holds instructions for running tests.

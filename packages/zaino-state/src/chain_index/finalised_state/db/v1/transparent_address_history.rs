@@ -19,6 +19,252 @@ enum AccumulatorDirection {
     Reverse,
 }
 
+/// Applies a list of UTXO entries to the multiset commitment fields of the accumulator.
+///
+/// For each entry the digest is XORed into `hash_serialized` (XOR is self-inverse, so the same
+/// call site works for both add and remove). The integer fields `total_zatoshis` and
+/// `bytes_serialized` move in the direction selected by `adding`.
+fn apply_tx_out_set_entries_delta(
+    accumulator: &mut FinalisedTxOutSetInfoAccumulator,
+    entries: &[(Outpoint, TxOutCompact)],
+    adding: bool,
+) -> Result<(), FinalisedStateError> {
+    for (outpoint, out) in entries {
+        let digest = tx_out_set_entry_digest(outpoint, out);
+        for (dst, src) in accumulator.hash_serialized.iter_mut().zip(digest.iter()) {
+            *dst ^= *src;
+        }
+
+        if adding {
+            accumulator.total_zatoshis = accumulator
+                .total_zatoshis
+                .checked_add(out.value())
+                .ok_or_else(|| {
+                    FinalisedStateError::Custom(
+                        "txout-set accumulator total_zatoshis overflow".to_string(),
+                    )
+                })?;
+            accumulator.bytes_serialized = accumulator
+                .bytes_serialized
+                .checked_add(ZAINO_TXOUTSET_ENTRY_LEN)
+                .ok_or_else(|| {
+                    FinalisedStateError::Custom(
+                        "txout-set accumulator bytes_serialized overflow".to_string(),
+                    )
+                })?;
+        } else {
+            accumulator.total_zatoshis = accumulator
+                .total_zatoshis
+                .checked_sub(out.value())
+                .ok_or_else(|| {
+                    FinalisedStateError::Custom(
+                        "txout-set accumulator total_zatoshis underflow".to_string(),
+                    )
+                })?;
+            accumulator.bytes_serialized = accumulator
+                .bytes_serialized
+                .checked_sub(ZAINO_TXOUTSET_ENTRY_LEN)
+                .ok_or_else(|| {
+                    FinalisedStateError::Custom(
+                        "txout-set accumulator bytes_serialized underflow".to_string(),
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+/// Applies the in-block portion of the accumulator update.
+///
+/// Handles both the bulk `transaction_outputs` delta and the per-tx 0↔>0 transition that
+/// counts a same-block transaction as entering (apply) or leaving (reverse) the UTXO set.
+/// The positional bound check (`spent_index >= created_count`) uses the *full* output
+/// count via `spent_indices_by_tx`; the UTXO-set membership transition uses
+/// `spendable_spent_count_by_tx` which excludes unspendable outputs.
+fn apply_in_block_transitions(
+    accumulator: &mut FinalisedTxOutSetInfoAccumulator,
+    created_counts: &HashMap<TransactionHash, u32>,
+    spendable_counts: &HashMap<TransactionHash, u32>,
+    spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
+    spendable_spent_count_by_tx: &HashMap<TransactionHash, u32>,
+    spent_total_outputs: u64,
+    direction: AccumulatorDirection,
+) -> Result<(), FinalisedStateError> {
+    let created_total = spendable_counts
+        .values()
+        .try_fold(0u64, |total, output_count| {
+            total.checked_add(u64::from(*output_count)).ok_or_else(|| {
+                FinalisedStateError::Custom(
+                    "txout-set accumulator created output count overflow".to_string(),
+                )
+            })
+        })?;
+
+    accumulator.transaction_outputs = match direction {
+        AccumulatorDirection::Apply => accumulator
+            .transaction_outputs
+            .checked_add(created_total)
+            .and_then(|v| v.checked_sub(spent_total_outputs)),
+        AccumulatorDirection::Reverse => accumulator
+            .transaction_outputs
+            .checked_sub(created_total)
+            .and_then(|v| v.checked_add(spent_total_outputs)),
+    }
+    .ok_or_else(|| {
+        FinalisedStateError::Custom(
+            "txout-set accumulator transaction output count underflow or overflow".to_string(),
+        )
+    })?;
+
+    for (transaction_hash, created_count) in created_counts {
+        let spent_indices = spent_indices_by_tx.get(transaction_hash);
+
+        if let Some(spent_indices) = spent_indices {
+            for spent_index in spent_indices {
+                if spent_index >= created_count {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "txout-set accumulator cannot be calculated: transaction {transaction_hash:?} spends same-block output index {spent_index}, but the transaction only has {created_count} transparent outputs"
+                    )));
+                }
+            }
+        }
+
+        let spent_count = spendable_spent_count_by_tx
+            .get(transaction_hash)
+            .copied()
+            .unwrap_or(0);
+
+        let spendable_count = spendable_counts.get(transaction_hash).copied().unwrap_or(0);
+
+        if spendable_count > spent_count {
+            accumulator.transactions = match direction {
+                AccumulatorDirection::Apply => accumulator.transactions.checked_add(1),
+                AccumulatorDirection::Reverse => accumulator.transactions.checked_sub(1),
+            }
+            .ok_or_else(|| {
+                FinalisedStateError::Custom(
+                    "txout-set accumulator transaction count underflow or overflow".to_string(),
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Applies the per-entry deltas to `hash_serialized`, `bytes_serialized` and
+/// `total_zatoshis`.
+///
+/// Both `created_entries` and `spent_entries` must already be filtered to exclude
+/// unspendable outputs — they were never in the UTXO set.
+fn apply_entry_deltas(
+    accumulator: &mut FinalisedTxOutSetInfoAccumulator,
+    created_entries: &[(Outpoint, TxOutCompact)],
+    spent_entries: &[(Outpoint, TxOutCompact)],
+    direction: AccumulatorDirection,
+) -> Result<(), FinalisedStateError> {
+    let (created_adding, spent_adding) = match direction {
+        AccumulatorDirection::Apply => (true, false),
+        AccumulatorDirection::Reverse => (false, true),
+    };
+
+    apply_tx_out_set_entries_delta(accumulator, created_entries, created_adding)?;
+    apply_tx_out_set_entries_delta(accumulator, spent_entries, spent_adding)?;
+
+    Ok(())
+}
+
+/// Builds the per-transaction output count maps used by the accumulator helpers.
+///
+/// Returns `(total_count_by_tx, spendable_count_by_tx)`:
+/// - `total_count_by_tx` counts every transparent output and is used for positional
+///   consensus bound checks.
+/// - `spendable_count_by_tx` excludes provably-unspendable outputs (see
+///   [`is_unspendable_tx_out`]) and is what drives UTXO-set deltas.
+#[allow(clippy::type_complexity)]
+fn index_created_outputs(
+    transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
+) -> Result<(HashMap<TransactionHash, u32>, HashMap<TransactionHash, u32>), FinalisedStateError> {
+    let mut total_by_tx: HashMap<TransactionHash, u32> = HashMap::with_capacity(transactions.len());
+    let mut spendable_by_tx: HashMap<TransactionHash, u32> =
+        HashMap::with_capacity(transactions.len());
+
+    for (transaction_hash, transparent_transaction) in transactions {
+        let (total, spendable) = transparent_transaction
+            .as_ref()
+            .map(|tx| {
+                let total = tx.outputs().len();
+                let spendable = tx
+                    .outputs()
+                    .iter()
+                    .filter(|o| !is_unspendable_tx_out(o))
+                    .count();
+                (total, spendable)
+            })
+            .unwrap_or((0, 0));
+
+        let total = u32::try_from(total).map_err(|_| {
+            FinalisedStateError::Custom(
+                "txout-set accumulator cannot be calculated: transparent output count does not fit into u32"
+                    .to_string(),
+            )
+        })?;
+        let spendable = u32::try_from(spendable).map_err(|_| {
+            FinalisedStateError::Custom(
+                "txout-set accumulator cannot be calculated: spendable output count does not fit into u32"
+                    .to_string(),
+            )
+        })?;
+
+        if total_by_tx.insert(*transaction_hash, total).is_some() {
+            return Err(FinalisedStateError::Custom(format!(
+                "txout-set accumulator cannot be calculated: duplicate transaction hash in block: {transaction_hash:?}"
+            )));
+        }
+        spendable_by_tx.insert(*transaction_hash, spendable);
+    }
+
+    Ok((total_by_tx, spendable_by_tx))
+}
+
+/// Groups a block's spent outpoints by the transaction they spend from.
+///
+/// Returns `(spent_indices_by_tx, spent_outpoints_with_locations)`. The forward path
+/// projects out just the outpoints; the reverse path needs the locations to verify the
+/// spent index points to this block.
+#[allow(clippy::type_complexity)]
+fn index_spent_outpoints(
+    spent_map: &HashMap<Outpoint, TxLocation>,
+) -> Result<
+    (
+        HashMap<TransactionHash, HashSet<u32>>,
+        Vec<(Outpoint, TxLocation)>,
+    ),
+    FinalisedStateError,
+> {
+    let mut by_tx: HashMap<TransactionHash, HashSet<u32>> = HashMap::new();
+    let mut outpoints = Vec::with_capacity(spent_map.len());
+
+    for (outpoint, tx_location) in spent_map.iter() {
+        let previous_transaction_hash = TransactionHash::from(*outpoint.prev_txid());
+
+        let inserted = by_tx
+            .entry(previous_transaction_hash)
+            .or_default()
+            .insert(outpoint.prev_index());
+
+        if !inserted {
+            return Err(FinalisedStateError::Custom(format!(
+                "txout-set accumulator cannot be calculated: duplicate transparent spend for outpoint {outpoint:?}"
+            )));
+        }
+
+        outpoints.push((*outpoint, *tx_location));
+    }
+
+    Ok((by_tx, outpoints))
+}
+
 /// [`TransparentHistExt`] capability implementation for [`DbV1`].
 ///
 /// Provides address history queries built over the LMDB `DUP_SORT`/`DUP_FIXED` address-history
@@ -1072,61 +1318,6 @@ impl DbV1 {
         None
     }
 
-    /// Applies a list of UTXO entries to the multiset commitment fields of the accumulator.
-    ///
-    /// For each entry the digest is XORed into `hash_serialized` (XOR is self-inverse, so the same
-    /// call site works for both add and remove). The integer fields `total_zatoshis` and
-    /// `bytes_serialized` move in the direction selected by `adding`.
-    fn apply_tx_out_set_entries_delta(
-        accumulator: &mut FinalisedTxOutSetInfoAccumulator,
-        entries: &[(Outpoint, TxOutCompact)],
-        adding: bool,
-    ) -> Result<(), FinalisedStateError> {
-        for (outpoint, out) in entries {
-            let digest = tx_out_set_entry_digest(outpoint, out);
-            for (dst, src) in accumulator.hash_serialized.iter_mut().zip(digest.iter()) {
-                *dst ^= *src;
-            }
-
-            if adding {
-                accumulator.total_zatoshis = accumulator
-                    .total_zatoshis
-                    .checked_add(out.value())
-                    .ok_or_else(|| {
-                        FinalisedStateError::Custom(
-                            "txout-set accumulator total_zatoshis overflow".to_string(),
-                        )
-                    })?;
-                accumulator.bytes_serialized = accumulator
-                    .bytes_serialized
-                    .checked_add(ZAINO_TXOUTSET_ENTRY_LEN)
-                    .ok_or_else(|| {
-                        FinalisedStateError::Custom(
-                            "txout-set accumulator bytes_serialized overflow".to_string(),
-                        )
-                    })?;
-            } else {
-                accumulator.total_zatoshis = accumulator
-                    .total_zatoshis
-                    .checked_sub(out.value())
-                    .ok_or_else(|| {
-                        FinalisedStateError::Custom(
-                            "txout-set accumulator total_zatoshis underflow".to_string(),
-                        )
-                    })?;
-                accumulator.bytes_serialized = accumulator
-                    .bytes_serialized
-                    .checked_sub(ZAINO_TXOUTSET_ENTRY_LEN)
-                    .ok_or_else(|| {
-                        FinalisedStateError::Custom(
-                            "txout-set accumulator bytes_serialized underflow".to_string(),
-                        )
-                    })?;
-            }
-        }
-        Ok(())
-    }
-
     /// Resolves each spent outpoint to its previous [`TxOutCompact`].
     ///
     /// Same-block spends are resolved from the in-block `transactions` slice via the
@@ -1164,179 +1355,6 @@ impl DbV1 {
         }
 
         Ok(resolved)
-    }
-
-    /// Builds the per-transaction output count maps used by the accumulator helpers.
-    ///
-    /// Returns `(total_count_by_tx, spendable_count_by_tx)`:
-    /// - `total_count_by_tx` counts every transparent output and is used for positional
-    ///   consensus bound checks.
-    /// - `spendable_count_by_tx` excludes provably-unspendable outputs (see
-    ///   [`is_unspendable_tx_out`]) and is what drives UTXO-set deltas.
-    #[allow(clippy::type_complexity)]
-    fn index_created_outputs(
-        transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-    ) -> Result<(HashMap<TransactionHash, u32>, HashMap<TransactionHash, u32>), FinalisedStateError>
-    {
-        let mut total_by_tx: HashMap<TransactionHash, u32> =
-            HashMap::with_capacity(transactions.len());
-        let mut spendable_by_tx: HashMap<TransactionHash, u32> =
-            HashMap::with_capacity(transactions.len());
-
-        for (transaction_hash, transparent_transaction) in transactions {
-            let (total, spendable) = transparent_transaction
-                .as_ref()
-                .map(|tx| {
-                    let total = tx.outputs().len();
-                    let spendable = tx
-                        .outputs()
-                        .iter()
-                        .filter(|o| !is_unspendable_tx_out(o))
-                        .count();
-                    (total, spendable)
-                })
-                .unwrap_or((0, 0));
-
-            let total = u32::try_from(total).map_err(|_| {
-                FinalisedStateError::Custom(
-                    "txout-set accumulator cannot be calculated: transparent output count does not fit into u32"
-                        .to_string(),
-                )
-            })?;
-            let spendable = u32::try_from(spendable).map_err(|_| {
-                FinalisedStateError::Custom(
-                    "txout-set accumulator cannot be calculated: spendable output count does not fit into u32"
-                        .to_string(),
-                )
-            })?;
-
-            // Duplicate txids would make the transaction-level accumulator ambiguous.
-            if total_by_tx.insert(*transaction_hash, total).is_some() {
-                return Err(FinalisedStateError::Custom(format!(
-                    "txout-set accumulator cannot be calculated: duplicate transaction hash in block: {transaction_hash:?}"
-                )));
-            }
-            spendable_by_tx.insert(*transaction_hash, spendable);
-        }
-
-        Ok((total_by_tx, spendable_by_tx))
-    }
-
-    /// Groups a block's spent outpoints by the transaction they spend from.
-    ///
-    /// Returns `(spent_indices_by_tx, spent_outpoints_with_locations)`. The forward path
-    /// projects out just the outpoints; the reverse path needs the locations to verify the
-    /// spent index points to this block.
-    #[allow(clippy::type_complexity)]
-    fn index_spent_outpoints(
-        spent_map: &HashMap<Outpoint, TxLocation>,
-    ) -> Result<
-        (
-            HashMap<TransactionHash, HashSet<u32>>,
-            Vec<(Outpoint, TxLocation)>,
-        ),
-        FinalisedStateError,
-    > {
-        let mut by_tx: HashMap<TransactionHash, HashSet<u32>> = HashMap::new();
-        let mut outpoints = Vec::with_capacity(spent_map.len());
-
-        for (outpoint, tx_location) in spent_map.iter() {
-            let previous_transaction_hash = TransactionHash::from(*outpoint.prev_txid());
-
-            let inserted = by_tx
-                .entry(previous_transaction_hash)
-                .or_default()
-                .insert(outpoint.prev_index());
-
-            if !inserted {
-                return Err(FinalisedStateError::Custom(format!(
-                    "txout-set accumulator cannot be calculated: duplicate transparent spend for outpoint {outpoint:?}"
-                )));
-            }
-
-            outpoints.push((*outpoint, *tx_location));
-        }
-
-        Ok((by_tx, outpoints))
-    }
-
-    /// Applies the in-block portion of the accumulator update.
-    ///
-    /// Handles both the bulk `transaction_outputs` delta and the per-tx 0↔>0 transition that
-    /// counts a same-block transaction as entering (apply) or leaving (reverse) the UTXO set.
-    /// The positional bound check (`spent_index >= created_count`) uses the *full* output
-    /// count; the transition compares against the *spendable* count.
-    fn apply_in_block_transitions(
-        accumulator: &mut FinalisedTxOutSetInfoAccumulator,
-        created_counts: &HashMap<TransactionHash, u32>,
-        spendable_counts: &HashMap<TransactionHash, u32>,
-        spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
-        spent_total_outputs: u64,
-        direction: AccumulatorDirection,
-    ) -> Result<(), FinalisedStateError> {
-        let created_total = spendable_counts
-            .values()
-            .try_fold(0u64, |total, output_count| {
-                total.checked_add(u64::from(*output_count)).ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator created output count overflow".to_string(),
-                    )
-                })
-            })?;
-
-        accumulator.transaction_outputs = match direction {
-            AccumulatorDirection::Apply => accumulator
-                .transaction_outputs
-                .checked_add(created_total)
-                .and_then(|v| v.checked_sub(spent_total_outputs)),
-            AccumulatorDirection::Reverse => accumulator
-                .transaction_outputs
-                .checked_sub(created_total)
-                .and_then(|v| v.checked_add(spent_total_outputs)),
-        }
-        .ok_or_else(|| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator transaction output count underflow or overflow".to_string(),
-            )
-        })?;
-
-        for (transaction_hash, created_count) in created_counts {
-            let spent_indices = spent_indices_by_tx.get(transaction_hash);
-
-            if let Some(spent_indices) = spent_indices {
-                for spent_index in spent_indices {
-                    if spent_index >= created_count {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "txout-set accumulator cannot be calculated: transaction {transaction_hash:?} spends same-block output index {spent_index}, but the transaction only has {created_count} transparent outputs"
-                        )));
-                    }
-                }
-            }
-
-            let spent_count = spent_indices.map(|s| s.len()).unwrap_or(0);
-            let spent_count = u32::try_from(spent_count).map_err(|_| {
-                FinalisedStateError::Custom(
-                    "txout-set accumulator same-block spent output count does not fit into u32"
-                        .to_string(),
-                )
-            })?;
-
-            let spendable_count = spendable_counts.get(transaction_hash).copied().unwrap_or(0);
-
-            if spendable_count > spent_count {
-                accumulator.transactions = match direction {
-                    AccumulatorDirection::Apply => accumulator.transactions.checked_add(1),
-                    AccumulatorDirection::Reverse => accumulator.transactions.checked_sub(1),
-                }
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator transaction count underflow or overflow".to_string(),
-                    )
-                })?;
-            }
-        }
-
-        Ok(())
     }
 
     /// Applies the prior-block portion of the accumulator update.
@@ -1430,20 +1448,27 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Applies the per-entry deltas to `hash_serialized`, `bytes_serialized` and
-    /// `total_zatoshis`.
+    /// Resolves and filters the created and spent entry lists for accumulator updates.
     ///
-    /// Created outputs come from the paired `transactions` slice; spent prev outputs are
-    /// resolved via [`Self::resolve_spent_outpoints_for_set_info`] (same-block from the slice,
-    /// prior-block from the database). NonStandard outputs are skipped on both sides — they
-    /// were never in the UTXO set.
-    async fn apply_entry_deltas(
+    /// Created entries are collected from the block's transactions, excluding unspendable
+    /// outputs. Spent entries are resolved (same-block from `transactions`, prior-block from
+    /// the database) and likewise filtered to exclude unspendable outputs.
+    ///
+    /// Returns `(created_entries, spent_entries, spendable_spent_count_by_tx)`.
+    /// `spendable_spent_count_by_tx` counts only spendable same-block spends per source tx.
+    #[allow(clippy::type_complexity)]
+    fn build_entry_data(
         &self,
-        accumulator: &mut FinalisedTxOutSetInfoAccumulator,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
-        direction: AccumulatorDirection,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<
+        (
+            Vec<(Outpoint, TxOutCompact)>,
+            Vec<(Outpoint, TxOutCompact)>,
+            HashMap<TransactionHash, u32>,
+        ),
+        FinalisedStateError,
+    > {
         let mut created_entries: Vec<(Outpoint, TxOutCompact)> = Vec::new();
         let mut txid_to_block_index: HashMap<TransactionHash, usize> =
             HashMap::with_capacity(transactions.len());
@@ -1466,21 +1491,25 @@ impl DbV1 {
             }
         }
 
-        let spent_entries = self.resolve_spent_outpoints_for_set_info(
+        let resolved = self.resolve_spent_outpoints_for_set_info(
             spent_map,
             &txid_to_block_index,
             transactions,
         )?;
 
-        let (created_adding, spent_adding) = match direction {
-            AccumulatorDirection::Apply => (true, false),
-            AccumulatorDirection::Reverse => (false, true),
-        };
+        let mut spent_entries = Vec::with_capacity(resolved.len());
+        let mut spendable_spent_count_by_tx: HashMap<TransactionHash, u32> = HashMap::new();
 
-        Self::apply_tx_out_set_entries_delta(accumulator, &created_entries, created_adding)?;
-        Self::apply_tx_out_set_entries_delta(accumulator, &spent_entries, spent_adding)?;
+        for (outpoint, out) in resolved {
+            if is_unspendable_tx_out(&out) {
+                continue;
+            }
+            let prev_txid = TransactionHash::from(*outpoint.prev_txid());
+            *spendable_spent_count_by_tx.entry(prev_txid).or_default() += 1;
+            spent_entries.push((outpoint, out));
+        }
 
-        Ok(())
+        Ok((created_entries, spent_entries, spendable_spent_count_by_tx))
     }
 
     /// Calculates the finalised txout-set accumulator after applying the block currently being written.
@@ -1520,13 +1549,8 @@ impl DbV1 {
                 Err(error) => return Err(error),
             };
 
-        let (created_counts, spendable_counts) = Self::index_created_outputs(transactions)?;
-        let (spent_indices_by_tx, spent_outpoints) = Self::index_spent_outpoints(spent_map)?;
-        let spent_total_outputs = u64::try_from(spent_outpoints.len()).map_err(|_| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator spent output count does not fit into u64".to_string(),
-            )
-        })?;
+        let (created_counts, spendable_counts) = index_created_outputs(transactions)?;
+        let (spent_indices_by_tx, spent_outpoints) = index_spent_outpoints(spent_map)?;
 
         // Forward-direction validation: outpoints spent by this block must not already be
         // spent in finalised state (same-block spends are not in the finalised spent table
@@ -1549,11 +1573,21 @@ impl DbV1 {
             }
         }
 
-        Self::apply_in_block_transitions(
+        let (created_entries, spent_entries, spendable_spent_count_by_tx) =
+            self.build_entry_data(transactions, spent_map)?;
+
+        let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
+            FinalisedStateError::Custom(
+                "txout-set accumulator spent output count does not fit into u64".to_string(),
+            )
+        })?;
+
+        apply_in_block_transitions(
             &mut accumulator,
             &created_counts,
             &spendable_counts,
             &spent_indices_by_tx,
+            &spendable_spent_count_by_tx,
             spent_total_outputs,
             AccumulatorDirection::Apply,
         )?;
@@ -1564,13 +1598,12 @@ impl DbV1 {
             AccumulatorDirection::Apply,
         )
         .await?;
-        self.apply_entry_deltas(
+        apply_entry_deltas(
             &mut accumulator,
-            transactions,
-            spent_map,
+            &created_entries,
+            &spent_entries,
             AccumulatorDirection::Apply,
-        )
-        .await?;
+        )?;
 
         Ok(accumulator)
     }
@@ -1597,13 +1630,8 @@ impl DbV1 {
                 Err(error) => return Err(error),
             };
 
-        let (created_counts, spendable_counts) = Self::index_created_outputs(transactions)?;
-        let (spent_indices_by_tx, spent_outpoints) = Self::index_spent_outpoints(spent_map)?;
-        let spent_total_outputs = u64::try_from(spent_outpoints.len()).map_err(|_| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator spent output count does not fit into u64".to_string(),
-            )
-        })?;
+        let (created_counts, spendable_counts) = index_created_outputs(transactions)?;
+        let (spent_indices_by_tx, spent_outpoints) = index_spent_outpoints(spent_map)?;
 
         // Reverse-direction validation: every spent outpoint from this block must be in the
         // finalised spent index and must point to this block's TxLocation.
@@ -1627,11 +1655,21 @@ impl DbV1 {
             }
         }
 
-        Self::apply_in_block_transitions(
+        let (created_entries, spent_entries, spendable_spent_count_by_tx) =
+            self.build_entry_data(transactions, spent_map)?;
+
+        let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
+            FinalisedStateError::Custom(
+                "txout-set accumulator spent output count does not fit into u64".to_string(),
+            )
+        })?;
+
+        apply_in_block_transitions(
             &mut accumulator,
             &created_counts,
             &spendable_counts,
             &spent_indices_by_tx,
+            &spendable_spent_count_by_tx,
             spent_total_outputs,
             AccumulatorDirection::Reverse,
         )?;
@@ -1642,14 +1680,202 @@ impl DbV1 {
             AccumulatorDirection::Reverse,
         )
         .await?;
-        self.apply_entry_deltas(
+        apply_entry_deltas(
             &mut accumulator,
-            transactions,
-            spent_map,
+            &created_entries,
+            &spent_entries,
             AccumulatorDirection::Reverse,
-        )
-        .await?;
+        )?;
 
         Ok(accumulator)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain_index::types::db::metadata::{
+        FinalisedTxOutSetInfoAccumulator, ZAINO_TXOUTSET_ENTRY_LEN,
+    };
+
+    fn p2pkh_out(value: u64) -> TxOutCompact {
+        TxOutCompact::new(value, [0x11; 20], 0).expect("P2PKH script_type should be valid")
+    }
+
+    fn outpoint(txid_byte: u8, index: u32) -> Outpoint {
+        Outpoint::new([txid_byte; 32], index)
+    }
+
+    #[test]
+    fn entries_delta_add_then_remove_roundtrips() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let entries = vec![
+            (outpoint(0x01, 0), p2pkh_out(100)),
+            (outpoint(0x02, 1), p2pkh_out(200)),
+        ];
+
+        apply_tx_out_set_entries_delta(&mut acc, &entries, true).expect("add should succeed");
+
+        assert_eq!(acc.total_zatoshis, 300);
+        assert_eq!(acc.bytes_serialized, 2 * ZAINO_TXOUTSET_ENTRY_LEN);
+
+        apply_tx_out_set_entries_delta(&mut acc, &entries, false).expect("remove should succeed");
+
+        assert_eq!(acc, FinalisedTxOutSetInfoAccumulator::empty());
+    }
+
+    #[test]
+    fn entries_delta_remove_on_empty_returns_underflow_error() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let entries = vec![(outpoint(0xAA, 0), p2pkh_out(500))];
+
+        let err = apply_tx_out_set_entries_delta(&mut acc, &entries, false);
+
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("underflow"), "expected underflow, got: {msg}");
+    }
+
+    #[test]
+    fn entries_delta_ignores_empty_slice() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        acc.total_zatoshis = 999;
+        acc.bytes_serialized = 65;
+        acc.transaction_outputs = 1;
+
+        let snapshot = acc;
+        apply_tx_out_set_entries_delta(&mut acc, &[], true).expect("empty add should succeed");
+        assert_eq!(acc, snapshot);
+
+        apply_tx_out_set_entries_delta(&mut acc, &[], false).expect("empty remove should succeed");
+        assert_eq!(acc, snapshot);
+    }
+
+    #[test]
+    fn in_block_transitions_spendable_only() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let tx_hash = TransactionHash([0xAB; 32]);
+
+        let created_counts = HashMap::from([(tx_hash, 3)]);
+        let spendable_counts = HashMap::from([(tx_hash, 2)]);
+        let spent_indices_by_tx = HashMap::from([(tx_hash, HashSet::from([0]))]);
+        let spendable_spent_count_by_tx = HashMap::from([(tx_hash, 1)]);
+
+        apply_in_block_transitions(
+            &mut acc,
+            &created_counts,
+            &spendable_counts,
+            &spent_indices_by_tx,
+            &spendable_spent_count_by_tx,
+            1,
+            AccumulatorDirection::Apply,
+        )
+        .expect("apply should succeed");
+
+        assert_eq!(acc.transaction_outputs, 1, "2 created - 1 spent = 1");
+        assert_eq!(
+            acc.transactions, 1,
+            "tx enters UTXO set: 2 spendable > 1 spent"
+        );
+    }
+
+    #[test]
+    fn in_block_transitions_unspendable_spend_does_not_inflate_count() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let tx_hash = TransactionHash([0xCC; 32]);
+
+        // Tx has 2 total outputs, 1 spendable (P2PKH at idx 0) + 1 unspendable (NonStandard at idx 1).
+        // The unspendable output is spent in the same block, but after filtering it's excluded.
+        let created_counts = HashMap::from([(tx_hash, 2)]);
+        let spendable_counts = HashMap::from([(tx_hash, 1)]);
+        // Full indices include the unspendable spend for positional check.
+        let spent_indices_by_tx = HashMap::from([(tx_hash, HashSet::from([1]))]);
+        // After filtering: no spendable outputs were spent.
+        let spendable_spent_count_by_tx = HashMap::new();
+
+        apply_in_block_transitions(
+            &mut acc,
+            &created_counts,
+            &spendable_counts,
+            &spent_indices_by_tx,
+            &spendable_spent_count_by_tx,
+            0,
+            AccumulatorDirection::Apply,
+        )
+        .expect("apply should succeed");
+
+        assert_eq!(
+            acc.transaction_outputs, 1,
+            "1 spendable created - 0 spendable spent"
+        );
+        assert_eq!(
+            acc.transactions, 1,
+            "tx enters UTXO set: 1 spendable > 0 spent"
+        );
+    }
+
+    #[test]
+    fn in_block_transitions_all_spendable_spent_same_block() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let tx_hash = TransactionHash([0xDD; 32]);
+
+        let created_counts = HashMap::from([(tx_hash, 2)]);
+        let spendable_counts = HashMap::from([(tx_hash, 2)]);
+        let spent_indices_by_tx = HashMap::from([(tx_hash, HashSet::from([0, 1]))]);
+        let spendable_spent_count_by_tx = HashMap::from([(tx_hash, 2)]);
+
+        apply_in_block_transitions(
+            &mut acc,
+            &created_counts,
+            &spendable_counts,
+            &spent_indices_by_tx,
+            &spendable_spent_count_by_tx,
+            2,
+            AccumulatorDirection::Apply,
+        )
+        .expect("apply should succeed");
+
+        assert_eq!(acc.transaction_outputs, 0, "2 created - 2 spent = 0");
+        assert_eq!(acc.transactions, 0, "tx never enters UTXO set: 2 == 2");
+    }
+
+    #[test]
+    fn in_block_transitions_reverse_direction() {
+        let tx_hash = TransactionHash([0xEE; 32]);
+
+        let created_counts = HashMap::from([(tx_hash, 2)]);
+        let spendable_counts = HashMap::from([(tx_hash, 2)]);
+        let spent_indices_by_tx = HashMap::new();
+        let spendable_spent_count_by_tx = HashMap::new();
+
+        // Simulate state after writing a block that created 2 spendable outputs.
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        apply_in_block_transitions(
+            &mut acc,
+            &created_counts,
+            &spendable_counts,
+            &spent_indices_by_tx,
+            &spendable_spent_count_by_tx,
+            0,
+            AccumulatorDirection::Apply,
+        )
+        .expect("forward apply should succeed");
+
+        assert_eq!(acc.transaction_outputs, 2);
+        assert_eq!(acc.transactions, 1);
+
+        // Reverse should return to empty.
+        apply_in_block_transitions(
+            &mut acc,
+            &created_counts,
+            &spendable_counts,
+            &spent_indices_by_tx,
+            &spendable_spent_count_by_tx,
+            0,
+            AccumulatorDirection::Reverse,
+        )
+        .expect("reverse should succeed");
+
+        assert_eq!(acc, FinalisedTxOutSetInfoAccumulator::empty());
     }
 }

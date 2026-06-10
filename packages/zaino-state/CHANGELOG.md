@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased not landing in 0.4.0]
+### Added
+- `chain_index::ChainBlock`
+- `chain_index::non_finalized_state::ProvisionalBlock`,
+
+### Changed
+- `chain_index::ChainIndex` methods now return `ChainBlock`s in
+  place of `IndexedBlock`s. ChainBlock enum may not contain ChainWork.
+- `chain_index::NonFinalizedSnapshot` trait methods now return
+- `ProvisionalBlock`s instead of `ChainBlocks`. TODO: Before release,
+  this will return `ChainBlock`s, where they are reified as `IndexedBlocks`
+  after sync completes
+
 ## [Unreleased]
 
 ### Added

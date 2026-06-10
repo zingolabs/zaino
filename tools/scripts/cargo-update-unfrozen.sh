@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Re-resolve every package in Cargo.lock *except* the LRZ / zebra / sapling-crypto
-# subgraph pinned to yanked `core2 0.3.x`.
+# Re-resolve every package in Cargo.lock *except* the LRZ / zebra /
+# sapling-crypto subgraph pinned to yanked `core2 0.3.x`.
 #
 # Why: `core2` 0.3.0–0.3.3 was yanked from crates.io on 2026-04-17. Upstream
 # migrated to `corez` (zcash/librustzcash merge d8491512, zcash/sapling-crypto
@@ -15,7 +15,10 @@
 set -euo pipefail
 
 # Frozen subgraph — transitive closure of `core2 0.3.x` consumers.
-FROZEN_RE='^(core2|equihash|orchard|sapling-crypto|zcash_(address|client_backend|encoding|keys|note_encryption|primitives|proofs|protocol|transparent)|zebra-.*)$'
+FROZEN_RE='^(core2|equihash|orchard|sapling-crypto'
+FROZEN_RE+='|zcash_(address|client_backend|encoding|keys|note_encryption'
+FROZEN_RE+='|primitives|proofs|protocol|transparent)'
+FROZEN_RE+='|zebra-.*)$'
 
 cd "$(git rev-parse --show-toplevel)"
 

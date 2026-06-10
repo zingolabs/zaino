@@ -184,25 +184,25 @@ impl ProvisionalCumulativeWork {
 /// lives only here and is never written into [`IndexedBlock`]'s absolute
 /// `chainwork` field, so the two cannot be misattributed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProvisionalBlock {
+pub struct ProvisionalBlock {
     /// Height + hash of this block.
-    index: BlockIndex,
+    pub index: BlockIndex,
     /// Parent block hash as *claimed by this block's header*.
     ///
     /// UNTRUSTED while the snapshot is provisional: the linkage it asserts is
     /// not validated against the finalized chain until the seam connects, so
     /// it must not be used for trusted chain-walks (e.g. fork-point recursion)
     /// during the provisional stage.
-    parent_hash: BlockHash,
+    pub parent_hash: BlockHash,
     /// Cumulative work relative to the seam, header-derived. Never absolute —
     /// the type enforces that (see [`ProvisionalCumulativeWork`]).
-    provisional_cumulative_work: ProvisionalCumulativeWork,
+    pub(crate) provisional_cumulative_work: ProvisionalCumulativeWork,
     /// Header and auxiliary block data.
-    data: BlockData,
+    pub data: BlockData,
     /// Compact representations of the block's transactions.
-    transactions: Vec<CompactTxData>,
+    pub transactions: Vec<CompactTxData>,
     /// Commitment tree data for the chain after this block is applied.
-    commitment_tree_data: CommitmentTreeData,
+    pub commitment_tree_data: CommitmentTreeData,
 }
 
 impl ProvisionalBlock {
@@ -1051,7 +1051,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         };
         let parent_work = *prev_block.provisional_cumulative_work();
         let provisional_block = block.to_provisional_block(&parent_work, self).await?;
-        working_snapshot.add_block(provisional_block.clone());
+        working_snapshot
+            .blocks
+            .insert(*provisional_block.hash(), provisional_block.clone());
         Ok(provisional_block)
     }
 }

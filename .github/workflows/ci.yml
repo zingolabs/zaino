@@ -23,6 +23,40 @@ env:
   INSECURE_CACHE: true
 
 jobs:
+  hadolint:
+    name: Hadolint
+    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
+    # executes on pull requests, unlike the build/test jobs below which are
+    # skipped on PRs until a self-hosted runner is available. The hadolint
+    # image is pinned by digest for supply-chain integrity; .hadolint.yaml at
+    # the repo root sets the policy (DL3008 apt-version pinning is enforced).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lint Dockerfiles
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            --entrypoint hadolint \
+            hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e \
+            Dockerfile integration-tests/test_environment/Containerfile
+
+  fmt:
+    name: Rustfmt
+    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
+    # executes on pull requests, unlike the build/test jobs below which are
+    # skipped on PRs until a self-hosted runner is available. cargo fmt
+    # auto-installs the toolchain and rustfmt component pinned in
+    # rust-toolchain.toml on first use.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+        
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
 
