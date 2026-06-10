@@ -58,7 +58,7 @@ mod chain_query_interface {
             source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
             ShieldedPool,
         },
-        test_dependencies::{chain_index::ChainIndex, BlockCacheConfig},
+        test_dependencies::{chain_index::ChainIndex, ChainIndexConfig},
         FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
@@ -161,12 +161,13 @@ mod chain_query_interface {
                             ..Default::default()
                         },
                     },
+                    false,
                     network.into(),
                     None,
                 ))
                 .await
                 .unwrap();
-                let config = BlockCacheConfig {
+                let config = ChainIndexConfig {
                     storage: StorageConfig {
                         database: DatabaseConfig {
                             path: test_manager
@@ -178,6 +179,7 @@ mod chain_query_interface {
                         },
                         ..Default::default()
                     },
+                    ephemeral: false,
                     db_version: 1,
                     network: zaino_common::Network::Regtest(ActivationHeights::from(
                         test_manager.local_net.get_activation_heights().await,
@@ -208,7 +210,7 @@ mod chain_query_interface {
                 )
             }
             ValidatorKind::Zcashd => {
-                let config = BlockCacheConfig {
+                let config = ChainIndexConfig {
                     storage: StorageConfig {
                         database: DatabaseConfig {
                             path: test_manager
@@ -220,6 +222,7 @@ mod chain_query_interface {
                         },
                         ..Default::default()
                     },
+                    ephemeral: false,
                     db_version: 1,
                     network: zaino_common::Network::Regtest(
                         test_manager.local_net.get_activation_heights().await.into(),

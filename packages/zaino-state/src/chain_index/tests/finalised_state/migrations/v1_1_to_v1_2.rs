@@ -61,7 +61,9 @@ async fn assert_v1_2_migration_complete(zaino_database: &ZainoDB<MockchainSource
 /// Verifies the `txid_location` reverse index round-trips: every transaction's location resolves to
 /// its txid (via `get_txid`), and that txid resolves back to the same location (via
 /// `get_tx_location`, which reads the `txid_location` table).
-async fn assert_txid_location_index_matches_block_data(database_backend: &DbBackend) {
+async fn assert_txid_location_index_matches_block_data(
+    database_backend: &DbBackend<MockchainSource>,
+) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
     for height_raw in 0..=database_height.0 {
@@ -88,8 +90,8 @@ async fn assert_txid_location_index_matches_block_data(database_backend: &DbBack
 
 /// Empties the `txid_location` table, simulating a 0.4.0-alpha.1 cache that finished the old
 /// migration without ever building the reverse index.
-fn clear_txid_location_index(database_backend: &DbBackend) {
-    let environment = database_backend.env();
+fn clear_txid_location_index(database_backend: &DbBackend<MockchainSource>) {
+    let environment = database_backend.env().unwrap();
     let txid_location_database = database_backend.txid_location_db().unwrap();
 
     let keys: Vec<Vec<u8>> = {
@@ -572,7 +574,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = BlockCacheConfig {
+    let database_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: database_path,
@@ -580,6 +582,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };

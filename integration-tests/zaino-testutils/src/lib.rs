@@ -520,6 +520,7 @@ where
                         ..Default::default()
                     },
                 },
+                ephemeral_finalised_state: false,
                 zebra_db_path,
                 network: zaino_network_kind,
                 donation_address: None,
