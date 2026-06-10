@@ -15,6 +15,15 @@ use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
 
+/// Hard cap on how many blocks below the tip the non-finalised state retains in memory.
+///
+/// [`NonFinalizedState::update`] normally trims everything below the finalised database height,
+/// but that height can lag far behind the tip while the finalised DB syncs in the background, and
+/// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
+/// block per new block indefinitely. This caps retention to a fixed window regardless, a small
+/// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
+const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
+
 /// Holds the block cache
 #[derive(Debug)]
 pub struct NonFinalizedState<Source: BlockchainSource> {
@@ -563,7 +572,18 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map_err(|_e| UpdateError::FinalizedStateCorruption)?
             .unwrap_or(Height(0));
 
-        new_snapshot.remove_finalized_blocks(finalized_height);
+        // Trim below the finalised height, but never retain more than `MAX_NFS_DEPTH` blocks below
+        // the tip even when `db_height` under-reports (background sync) or is `0` (ephemeral mode).
+        // This bounds NFS memory to a fixed window; the `max` keeps the normal finalised-height
+        // floor in healthy operation, where it sits above the tip-relative cap.
+        let tip_height = new_snapshot.best_tip.height.0;
+        let trim_height = Height(
+            finalized_height
+                .0
+                .max(tip_height.saturating_sub(MAX_NFS_DEPTH)),
+        );
+
+        new_snapshot.remove_finalized_blocks(trim_height);
         let best_block = &new_snapshot
             .blocks
             .values()

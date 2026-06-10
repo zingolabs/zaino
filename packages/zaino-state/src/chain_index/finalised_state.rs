@@ -190,7 +190,6 @@ use crate::{
         finalised_state::{db::v1::DB_VERSION_V1, router::StatelessMode},
         source::BlockchainSourceError,
         types::GENESIS_HEIGHT,
-        NON_FINALIZED_DEPTH,
     },
     config::ChainIndexConfig,
     error::FinalisedStateError,
@@ -210,6 +209,18 @@ use tokio::{
 };
 
 use super::source::BlockchainSource;
+
+/// A sync wider than this many blocks runs in the background (with stateless
+/// passthrough serving reads); anything within it runs to completion inline so
+/// callers that read straight back (e.g. ChainIndex NFS init) observe the data.
+const LONG_RUNNING_SYNC_THRESHOLD: u32 = 10;
+
+/// Maximum attempts a background sync makes before escalating to
+/// [`StatusType::CriticalError`].
+const MAX_BACKGROUND_SYNC_RETRIES: u32 = 5;
+
+/// Delay between background-sync retry attempts.
+const BACKGROUND_SYNC_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 /// Handle to the finalised on-disk chain index.
@@ -532,22 +543,26 @@ impl<T: BlockchainSource> ZainoDB<T> {
 
     // ***** Db Core Write *****
 
-    /// Starts syncing the persistent database up to and including `height`.
-    ///
-    /// This method only launches sync work; it does not wait for sync completion.
+    /// Syncs the persistent database up to and including `height`.
     ///
     /// Sync is skipped when:
     /// - the primary backend is stateless, meaning there is no persistent database to sync, or
     /// - a full-mode stateless reference is active, meaning migration/maintenance currently owns the
-    ///   persistent database path.
+    ///   persistent database path, or
+    /// - the database is non-empty and already at or above `height`.
     ///
-    /// If the requested sync range is more than `NON_FINALIZED_DEPTH` blocks ahead of the current
-    /// persistent database height, read-only stateless routing is installed for the duration of the
-    /// background sync. This keeps finalised-state reads served by the source while normal routed
-    /// writes continue appending to primary.
+    /// An *empty* database is never treated as already holding genesis: it must always sync so the
+    /// origin block is written.
     ///
-    /// If the requested sync range is within `NON_FINALIZED_DEPTH`, sync runs against the normal routed
-    /// database path without installing stateless routing.
+    /// If the requested sync range is more than [`LONG_RUNNING_SYNC_THRESHOLD`] blocks ahead of the
+    /// current persistent database height, the sync runs in the **background**: read-only stateless
+    /// routing is installed for its duration (keeping finalised-state reads served by the source while
+    /// normal routed writes continue appending to primary), and this method returns immediately.
+    /// Completion can be awaited via [`ZainoDB::wait_until_synced`].
+    ///
+    /// If the requested sync range is within [`LONG_RUNNING_SYNC_THRESHOLD`], the sync runs **inline**
+    /// and this method only returns once every block has been written, so callers that read straight
+    /// back (e.g. ChainIndex NFS initialisation) observe the data.
     pub(crate) async fn sync_to_height(
         &self,
         height: Height,
@@ -566,24 +581,29 @@ impl<T: BlockchainSource> ZainoDB<T> {
 
         let primary = self.db.primary_backend();
         let db_height_opt = primary.db_height().await?;
-        let db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
 
-        if height <= db_height {
-            return Ok(());
+        // Short-circuit only when the DB already holds blocks at/above target; an empty DB
+        // (`db_height_opt == None`) must still sync so the origin block is written.
+        if let Some(existing) = db_height_opt {
+            if height <= existing {
+                return Ok(());
+            }
         }
 
-        let sync_is_long_running = height.0.saturating_sub(db_height.0) > NON_FINALIZED_DEPTH;
+        let db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
+        let sync_is_long_running =
+            height.0.saturating_sub(db_height.0) > LONG_RUNNING_SYNC_THRESHOLD;
 
         let router = Arc::clone(&self.db);
         let cfg = self.cfg.clone();
         let source = source.clone();
 
-        // Register the background sync in the foreground, before spawning, so `wait_until_synced`
-        // cannot observe a "no work in progress" state between this method returning and the spawned
-        // task starting. The guard is moved into the task and drops when it completes.
-        let op_guard = router.begin_background_op();
-
         if sync_is_long_running {
+            // Register the background sync in the foreground, before spawning, so `wait_until_synced`
+            // cannot observe a "no work in progress" state between this method returning and the
+            // spawned task starting. The guard is moved into the task and drops when it completes.
+            let op_guard = router.begin_background_op();
+
             let stateless_reference = router
                 .init_or_take_stateless(
                     source.clone(),
@@ -597,33 +617,51 @@ impl<T: BlockchainSource> ZainoDB<T> {
                 let _op_guard = op_guard;
                 let _stateless_reference = stateless_reference;
 
-                if router.has_full_stateless_reference() {
-                    return;
-                }
+                // Retry transient failures so a background sync does not fail silently; surface a
+                // recoverable status between attempts and escalate to a terminal status once the
+                // retry budget is exhausted.
+                let mut attempt: u32 = 0;
+                loop {
+                    if router.has_full_stateless_reference() {
+                        return;
+                    }
 
-                if let Err(error) =
-                    Self::sync_to_height_background(router, cfg, height, source).await
-                {
-                    tracing::error!("ZainoDB background sync_to_height failed: {error}");
+                    match Self::sync_to_height_background(
+                        router.clone(),
+                        cfg.clone(),
+                        height,
+                        source.clone(),
+                    )
+                    .await
+                    {
+                        Ok(()) => return,
+                        Err(error) => {
+                            attempt += 1;
+                            if attempt >= MAX_BACKGROUND_SYNC_RETRIES {
+                                tracing::error!(
+                                    "ZainoDB background sync_to_height failed after {attempt} \
+                                     attempts, giving up: {error}"
+                                );
+                                router.store_primary_status(StatusType::CriticalError);
+                                return;
+                            }
+                            tracing::warn!(
+                                "ZainoDB background sync_to_height failed (attempt \
+                                 {attempt}/{MAX_BACKGROUND_SYNC_RETRIES}), retrying: {error}"
+                            );
+                            router.store_primary_status(StatusType::RecoverableError);
+                            tokio::time::sleep(BACKGROUND_SYNC_RETRY_BACKOFF).await;
+                        }
+                    }
                 }
             });
+
+            Ok(())
         } else {
-            tokio::spawn(async move {
-                let _op_guard = op_guard;
-
-                if router.has_full_stateless_reference() {
-                    return;
-                }
-
-                if let Err(error) =
-                    Self::sync_to_height_background(router, cfg, height, source).await
-                {
-                    tracing::error!("ZainoDB background sync_to_height failed: {error}");
-                }
-            });
+            // Short sync: run to completion inline so the written blocks are visible to callers that
+            // read straight back. Errors propagate to the caller rather than being swallowed.
+            Self::sync_to_height_background(router, cfg, height, source).await
         }
-
-        Ok(())
     }
 
     async fn sync_to_height_background(
@@ -647,11 +685,16 @@ impl<T: BlockchainSource> ZainoDB<T> {
 
         let primary = router.primary_backend();
         let db_height_opt = primary.db_height().await?;
-        let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
 
-        if height <= db_height {
-            return Ok(());
+        // Short-circuit only when the DB already holds blocks at/above target; an empty DB must
+        // still sync so the origin block is written.
+        if let Some(existing) = db_height_opt {
+            if height <= existing {
+                return Ok(());
+            }
         }
+
+        let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
 
         let zebra_network = network.to_zebra_network();
 

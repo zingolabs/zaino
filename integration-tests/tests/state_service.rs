@@ -98,6 +98,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             },
             ..Default::default()
         },
+        false,
         network_type,
         None,
     ))
@@ -140,6 +141,7 @@ async fn create_test_manager_and_services<V: ValidatorExt>(
             },
             ..Default::default()
         },
+        false,
         network_type,
         None,
     ))
