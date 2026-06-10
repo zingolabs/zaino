@@ -1,13 +1,13 @@
 //! Capability-based database router with optional stateless service routing.
 //!
-//! This module implements [`Router`], the internal dispatch layer used by `ZainoDB` to route
+//! This module implements [`Router`], the internal dispatch layer used by `FinalisedState` to route
 //! finalised-state operations to:
 //! - the **primary** database backend, which owns the persistent finalised-state database, or
 //! - an optional **stateless** backend, which serves requests from a backing [`BlockchainSource`]
 //!   while the persistent database is syncing or migrating.
 //!
 //! The router is designed to separate **service routing** from **maintenance writes**:
-//! - normal `ZainoDB` reads and writes are routed through [`Router::backend`],
+//! - normal `FinalisedState` reads and writes are routed through [`Router::backend`],
 //! - long-running sync uses [`StatelessMode::ReadOnly`] so reads are served by stateless while
 //!   `WRITE_CORE` remains available on the primary backend,
 //! - migrations use [`StatelessMode::Full`] so all routed service capabilities, including
@@ -27,7 +27,7 @@
 //! - major rebuild migrations,
 //! - background maintenance that must freeze normal writes.
 //!
-//! A stateless backend allows ZainoDB to keep serving finalised-state requests from the backing
+//! A stateless backend allows FinalisedState to keep serving finalised-state requests from the backing
 //! validator/source while persistent database work continues in the background.
 //!
 //! # Routing model
@@ -82,7 +82,7 @@
 //! - a small lifecycle mutex to serialise stateless init/release transitions.
 //!
 //! Backend selection is wait-free and safe for concurrent readers. In-flight operations remain valid
-//! because callers receive an [`Arc<DbBackend>`] before invoking backend methods.
+//! because callers receive an [`Arc<FinalisedSource>`] before invoking backend methods.
 //!
 //! Capability mask updates use explicit memory ordering so routing changes are observed consistently
 //! relative to backend pointer publication/removal.
@@ -100,14 +100,14 @@
 //!
 //! - If a new capability bit is introduced, ensure it is:
 //!   - added to `CapabilityRequest`,
-//!   - implemented by the relevant [`DbBackend`] variants,
+//!   - implemented by the relevant [`FinalisedSource`] variants,
 //!   - included or excluded deliberately in stateless routing policy.
 //!
 //! - Migrations should use [`StatelessMode::Full`] and perform persistent database writes through
 //!   explicit maintenance accessors.
 //!
 //! - Long-running sync should use [`StatelessMode::ReadOnly`] and continue writing through routed
-//!   `ZainoDB::write_block` / `Router::write_block`, so a concurrent full-mode migration can freeze
+//!   `FinalisedState::write_block` / `Router::write_block`, so a concurrent full-mode migration can freeze
 //!   those writes safely.
 //!
 //! - The current simple drop-based full-mode downgrade assumes there is at most one active
@@ -116,7 +116,7 @@
 
 use super::{
     capability::{DbCore, DbMetadata, DbRead, DbWrite},
-    db::DbBackend,
+    finalised_source::FinalisedSource,
 };
 
 use crate::{
@@ -141,7 +141,7 @@ use tokio::runtime::Handle;
 pub(crate) enum StatelessMode {
     /// Route read/query capabilities through stateless while keeping `WRITE_CORE` on primary.
     ///
-    /// This mode is intended for long-running sync. It allows ZainoDB to serve reads from the
+    /// This mode is intended for long-running sync. It allows FinalisedState to serve reads from the
     /// backing source while normal routed writes continue to append to the persistent database,
     /// unless a concurrent [`StatelessMode::Full`] holder upgrades routing and freezes writes.
     ReadOnly,
@@ -174,7 +174,7 @@ where
     /// Reference to the active stateless backend.
     ///
     /// This is wrapped in `Option` so [`Drop`] can take and release it exactly once.
-    stateless: Option<Arc<DbBackend<T>>>,
+    stateless: Option<Arc<FinalisedSource<T>>>,
 
     /// Routing mode requested by this reference.
     mode: StatelessMode,
@@ -184,7 +184,11 @@ impl<T> StatelessReference<T>
 where
     T: BlockchainSource + Send + Sync + 'static,
 {
-    fn new(router: Arc<Router<T>>, stateless: Arc<DbBackend<T>>, mode: StatelessMode) -> Self {
+    fn new(
+        router: Arc<Router<T>>,
+        stateless: Arc<FinalisedSource<T>>,
+        mode: StatelessMode,
+    ) -> Self {
         Self {
             router,
             stateless: Some(stateless),
@@ -192,7 +196,7 @@ where
         }
     }
 
-    pub(crate) fn backend(&self) -> &Arc<DbBackend<T>> {
+    pub(crate) fn backend(&self) -> &Arc<FinalisedSource<T>> {
         self.stateless
             .as_ref()
             .expect("stateless reference missing backend")
@@ -222,7 +226,7 @@ where
 /// Returned by [`Router::begin_background_op`], which increments the router's `background_ops`
 /// counter in the foreground. The guard is moved into the spawned background task; dropping it
 /// (when that task finishes, on any path) decrements the counter. Holding the guard for the whole
-/// lifetime of the task is what lets [`ZainoDB::wait_until_synced`] observe that the operation is
+/// lifetime of the task is what lets [`FinalisedState::wait_until_synced`] observe that the operation is
 /// still running.
 pub(super) struct BackgroundOpGuard<T: BlockchainSource> {
     /// Router whose `background_ops` counter this guard holds a claim on.
@@ -237,7 +241,7 @@ impl<T: BlockchainSource> Drop for BackgroundOpGuard<T> {
 
 /// Capability-based database router.
 ///
-/// `Router` is the internal dispatch layer used by `ZainoDB`. It routes operations to either:
+/// `Router` is the internal dispatch layer used by `FinalisedState`. It routes operations to either:
 /// - the **primary** database backend, which owns persistent finalised-state storage, or
 /// - an optional **stateless** backend, which serves requests from a backing source while the
 ///   persistent database is syncing or migrating.
@@ -261,7 +265,7 @@ impl<T: BlockchainSource> Drop for BackgroundOpGuard<T> {
 /// ## Concurrency model
 ///
 /// Backend pointers are stored using [`ArcSwap`] / [`ArcSwapOption`]. Capability masks are stored in
-/// atomics and checked on every routed lookup. Each routed call receives an [`Arc<DbBackend<T>>`],
+/// atomics and checked on every routed lookup. Each routed call receives an [`Arc<FinalisedSource<T>>`],
 /// so in-flight calls remain valid even if routing changes immediately afterwards.
 #[derive(Debug)]
 pub(crate) struct Router<T: BlockchainSource> {
@@ -274,13 +278,13 @@ pub(crate) struct Router<T: BlockchainSource> {
     /// During [`StatelessMode::Full`], primary is removed from routed service capability so
     /// migrations can work on it through explicit maintenance accessors without normal routed writes
     /// interfering.
-    primary: ArcSwap<DbBackend<T>>,
+    primary: ArcSwap<FinalisedSource<T>>,
 
     /// Optional stateless finalised-state backend.
     ///
     /// This backend is installed while long-running sync or migration work is active. It serves
     /// finalised-state requests from the backing source according to the active [`StatelessMode`].
-    stateless: ArcSwapOption<DbBackend<T>>,
+    stateless: ArcSwapOption<FinalisedSource<T>>,
 
     /// Serialises stateless init/release transitions.
     ///
@@ -324,7 +328,7 @@ pub(crate) struct Router<T: BlockchainSource> {
     /// Incremented synchronously in the foreground by [`Router::begin_background_op`] before a
     /// background task is spawned, and decremented when the returned [`BackgroundOpGuard`] is
     /// dropped (i.e. when the spawned task completes). This is the source of truth for
-    /// [`ZainoDB::wait_until_synced`], which waits for finalised-state sync/migration to finish
+    /// [`FinalisedState::wait_until_synced`], which waits for finalised-state sync/migration to finish
     /// without conflating it with serving-readiness ([`StatusType::Ready`]).
     background_ops: AtomicUsize,
 }
@@ -347,7 +351,7 @@ impl<T: BlockchainSource> Router<T> {
     ///
     /// The router assumes `primary.capability()` accurately describes the capabilities the backend
     /// can serve. Capability routing policy is enforced by mask changes during stateless routing.
-    pub(crate) fn new(primary: Arc<DbBackend<T>>) -> Self {
+    pub(crate) fn new(primary: Arc<FinalisedSource<T>>) -> Self {
         let cap = primary.capability();
         Self {
             primary: ArcSwap::from(primary),
@@ -381,7 +385,7 @@ impl<T: BlockchainSource> Router<T> {
     pub(crate) fn backend(
         &self,
         cap: CapabilityRequest,
-    ) -> Result<Arc<DbBackend<T>>, FinalisedStateError> {
+    ) -> Result<Arc<FinalisedSource<T>>, FinalisedStateError> {
         let bit = cap.as_capability().bits();
 
         if self.stateless_mask.load(Ordering::Acquire) & bit != 0 {
@@ -468,10 +472,10 @@ impl<T: BlockchainSource> Router<T> {
         let stateless = match self.stateless.load_full() {
             Some(stateless) => {
                 match stateless.as_ref() {
-                    DbBackend::Stateless(stateless_backend) => {
+                    FinalisedSource::Ephemeral(stateless_backend) => {
                         stateless_backend.update_db_height(db_height)?;
                     }
-                    DbBackend::V0(_) | DbBackend::V1(_) => {
+                    FinalisedSource::V0(_) | FinalisedSource::V1(_) => {
                         self.decrement_stateless_reference_count(mode);
 
                         return Err(FinalisedStateError::Custom(
@@ -484,7 +488,7 @@ impl<T: BlockchainSource> Router<T> {
                 stateless
             }
             None => {
-                let stateless = Arc::new(DbBackend::stateless(source, network, db_height));
+                let stateless = Arc::new(FinalisedSource::ephemeral(source, network, db_height));
                 self.stateless.store(Some(Arc::clone(&stateless)));
                 stateless
             }
@@ -520,7 +524,7 @@ impl<T: BlockchainSource> Router<T> {
     /// Full mode takes precedence over read-only mode. Multiple full-mode references are supported.
     fn release_stateless_reference(
         &self,
-        stateless_reference: Arc<DbBackend<T>>,
+        stateless_reference: Arc<FinalisedSource<T>>,
         mode: StatelessMode,
     ) where
         T: Send + Sync + 'static,
@@ -596,8 +600,8 @@ impl<T: BlockchainSource> Router<T> {
         };
 
         match stateless.as_ref() {
-            DbBackend::Stateless(stateless) => stateless.update_db_height(db_height),
-            DbBackend::V0(_) | DbBackend::V1(_) => Err(FinalisedStateError::Custom(
+            FinalisedSource::Ephemeral(stateless) => stateless.update_db_height(db_height),
+            FinalisedSource::V0(_) | FinalisedSource::V1(_) => Err(FinalisedStateError::Custom(
                 "router stateless slot contained a persistent database backend".to_string(),
             )),
         }
@@ -608,7 +612,7 @@ impl<T: BlockchainSource> Router<T> {
     /// This is used by callers that need to avoid starting persistent database work when the router is
     /// running in ephemeral/stateless mode.
     pub(crate) fn primary_is_stateless(&self) -> bool {
-        matches!(self.primary.load().as_ref(), DbBackend::Stateless(_))
+        matches!(self.primary.load().as_ref(), FinalisedSource::Ephemeral(_))
     }
 
     /// Returns `true` if at least one full-mode stateless reference is active.
@@ -644,7 +648,7 @@ impl<T: BlockchainSource> Router<T> {
     /// Returns the stateless capability set used for read-only routing.
     ///
     /// This is the stateless backend capability set with `WRITE_CORE` removed.
-    fn read_only_stateless_capability(stateless: &DbBackend<T>) -> Capability {
+    fn read_only_stateless_capability(stateless: &FinalisedSource<T>) -> Capability {
         stateless.capability() & !Capability::WRITE_CORE
     }
 
@@ -662,7 +666,7 @@ impl<T: BlockchainSource> Router<T> {
     ///
     /// [`StatelessMode::Full`] routes all stateless-supported capabilities to stateless and removes
     /// primary from routed service capability.
-    fn apply_stateless_mode(&self, stateless: &DbBackend<T>, mode: StatelessMode) {
+    fn apply_stateless_mode(&self, stateless: &FinalisedSource<T>, mode: StatelessMode) {
         match mode {
             StatelessMode::ReadOnly => {
                 self.stateless_mask.store(
@@ -730,7 +734,7 @@ impl<T: BlockchainSource> Router<T> {
     /// is routed elsewhere.
     ///
     /// Normal read/write service paths should not use this method.
-    pub(crate) fn primary_backend(&self) -> Arc<DbBackend<T>> {
+    pub(crate) fn primary_backend(&self) -> Arc<FinalisedSource<T>> {
         self.primary.load_full()
     }
 
@@ -742,7 +746,10 @@ impl<T: BlockchainSource> Router<T> {
     /// The primary capability mask is updated to the new backend's declared capability set before the
     /// pointer swap. Existing in-flight operations remain valid because they hold [`Arc`] clones of
     /// the old backend.
-    pub(crate) fn replace_primary(&self, new_primary: Arc<DbBackend<T>>) -> Arc<DbBackend<T>> {
+    pub(crate) fn replace_primary(
+        &self,
+        new_primary: Arc<FinalisedSource<T>>,
+    ) -> Arc<FinalisedSource<T>> {
         let _stateless_lifecycle_guard = self
             .stateless_lifecycle_lock
             .lock()
@@ -773,7 +780,7 @@ impl<T: BlockchainSource> Router<T> {
     /// updates only the primary backend's existing status field.
     ///
     /// It is used to report background maintenance failures, such as an asynchronous migration failure,
-    /// after `ZainoDB::spawn` has already returned.
+    /// after `FinalisedState::spawn` has already returned.
     pub(crate) fn store_primary_status(&self, status: StatusType) {
         self.primary.load_full().store_status(status);
     }
@@ -784,7 +791,7 @@ impl<T: BlockchainSource> Router<T> {
     /// and returns a [`BackgroundOpGuard`] that decrements it on drop. Callers must create the guard
     /// *before* spawning the background task and move it into the spawned future, so the counter is
     /// non-zero from before the spawning method returns until the task completes. That ordering is
-    /// what makes [`ZainoDB::wait_until_synced`] race-free.
+    /// what makes [`FinalisedState::wait_until_synced`] race-free.
     pub(super) fn begin_background_op(self: &Arc<Self>) -> BackgroundOpGuard<T> {
         self.background_ops.fetch_add(1, Ordering::AcqRel);
         BackgroundOpGuard {

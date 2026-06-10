@@ -8,6 +8,54 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `rpc::grpc::service.rs`, `backends::fetch::get_taddress_transactions`:
+    - these functions implement the GetTaddressTransactions GRPC method of
+      lightclient-protocol v0.4.0 which replaces `GetTaddressTxids`
+- Optional ("ephemeral") finalised state: with `ChainIndexConfig::ephemeral`,
+  no finalised database is opened. Finalised reads are served by a stateless
+  passthrough (`finalised_source::ephemeral::EphemeralFinalisedState`) directly
+  from the backing `BlockchainSource`; `sync_to_height` is a no-op and
+  `db_height` reports `0`.
+- Background finalised-state sync and migration: `FinalisedState::sync_to_height`
+  runs inline for small ranges but spawns for large ones, and version migrations
+  run in the background, in both cases serving reads from a stateless passthrough
+  meanwhile. Failed background work retries and escalates to `CriticalError`.
+- `FinalisedState::wait_until_synced` — waits for in-progress background
+  sync/migration to reach its target (distinct from `wait_until_ready`, which
+  reflects serving-readiness).
+- `chain_index`
+  - `::finalised_state::finalised_source::v0::get_compact_block_stream`
+  - `::finalised_state::finalised_source::v1::get_compact_block_stream`
+  - `::types::db::legacy`:
+    - `compact_vin`
+    - `compact_vout`
+    - `to_compact`: returns a compactTx from TxInCompact
+  - new type: `non_finalized_state::ChainIndexSnapshot`
+  - `NonFinalizedSnapshot` trait has new method: `max_serviceable_height`
+  - `::types`
+    - new submodule `primitives` with type `BlockIndex { height, hash }`
+      (re-exported as `chain_index::types::BlockIndex`)
+    - new submodule `block_context` with type
+      `BlockContext { index, parent_hash, chainwork }`, constructor
+      `BlockContext::new`, and accessors `hash`/`parent_hash`/`chainwork`/`height`
+      (re-exported as `chain_index::types::BlockContext`)
+    - new submodule `wire` carrying the business↔gRPC conversions:
+      - `BlockIndex::to_wire()` → `proto::BlockId`
+      - `BlockIndex::try_from_wire(proto::BlockId) -> Result<Self, WireBlockIdError>`
+      - new error enum `WireBlockIdError` (`HashWrongLength`, `HeightOverflow`)
+- `local_cache::compact_block_with_pool_types`
+- `source::BlockchainSource` and implementors now expose transparent-address
+  methods:
+  - `get_address_deltas`
+  - `get_address_balance`
+  - `get_address_txids`
+  - `get_address_utxos`
+- `ChainIndex` and `NodeBackedChainIndexSubscriber` now expose transparent-address
+  query methods:
+  - `get_address_deltas`
+  - `get_address_balance`
+  - `get_address_txids`
+  - `get_address_utxos`
 - `gettxoutsetinfo` is now served indexer-side via Zaino's own UTXO-set
   accumulator:
   - `chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator` —
@@ -45,6 +93,42 @@ and this library adheres to Rust's notion of
     changelog for the schema entry.
   - `ChainIndexError::internal` constructor.
 ### Changed
+- `get_mempool_tx` now takes `GetMempoolTxRequest` as parameter
+- `chain_index::finalised_state` renames (internal, `pub(crate)`):
+  - facade type `ZainoDB` -> `FinalisedState`
+  - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
+    (variant `Stateless` -> `Ephemeral`), reflecting that the backing source is
+    not necessarily a database
+  - stateless impl `StatelessFinalisedState` -> `EphemeralFinalisedState`
+    (`db/stateless.rs` -> `finalised_source/ephemeral.rs`)
+- `chain_index::non_finalised_state` now caps in-memory retention at
+  `MAX_NFS_DEPTH` blocks below the tip, so the cache cannot grow unbounded when
+  the finalised `db_height` lags (background sync) or is pinned at `0`
+  (ephemeral mode).
+- `chain_index::finalised_state`
+  - `::finalised_source`
+    - `::v0`
+      - `get_compact_block` now takes a `PoolTypeFilter` parameter
+    - `::v1`
+      - `get_compact_block` now takes a `PoolTypeFilter` parameter
+    - `::reader`:
+      - `get_compact_block` now takes a `PoolTypeFilter` parameter
+- `chain_index::types::db::legacy`:
+  - `to_compact_block()`: now returns transparent data
+- `chain_index`:
+  - `ChainIndex::snapshot_nonfinalized_state` now returns a `Future<Output = Result<Self::Snapshot>>`
+    instead of a `Self::Snapshot`
+  - `NodeBackedChainIndexSubscriber`'s `ChainIndex` implementation:
+      - `Snapshot` associated type is now a `ChainIndexSnapshot`
+      this effects all associated methods.
+  - `non_finalized_state::BestTip` renamed and relocated to
+    `chain_index::types::BlockIndex` (was briefly `non_finalized_state::BlockIdent`
+    earlier in the same unreleased cycle); its inner field is now named `hash`
+    (previously `blockhash`), and it gains `Eq`/`Hash` derives.
+- `FetchService` and `StateService` now serve the get_raw_transaction RPC through
+  `ChainIndex`.
+- `FetchService` and `StateService` now serve the transparent-address RPCs through
+  `ChainIndex`.
 - `FetchService` and `StateService` now serve `gettxoutsetinfo` through
   `ChainIndex` instead of forwarding to the backing validator. Response fields
   `transactions`, `txouts`, `total_amount`, `height` and `bestblock` agree

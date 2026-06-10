@@ -1,6 +1,6 @@
 //! Capability model, versioned metadata, and DB trait surface
 //!
-//! This file defines the **capability- and version-aware interface** that all `ZainoDB` database
+//! This file defines the **capability- and version-aware interface** that all `FinalisedState` database
 //! implementations must conform to.
 //!
 //! The core idea is:

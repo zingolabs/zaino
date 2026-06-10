@@ -89,7 +89,7 @@ pub struct CommonBackendConfig {
     pub storage: StorageConfig,
     /// Ephemeral finalised state:
     ///
-    /// If true, ZainoDB does not write data to disk,
+    /// If true, FinalisedState does not write data to disk,
     /// fetching data  from the backing validator.
     ///
     /// Note that full functionality is not available and
@@ -216,7 +216,7 @@ pub struct ChainIndexConfig {
     pub network: Network,
     /// Ephemeral finalised state:
     ///
-    /// If true, ZainoDB does not write data to disk,
+    /// If true, FinalisedState does not write data to disk,
     /// fetching data  from the backing validator.
     ///
     /// Note that full functionality is not available and

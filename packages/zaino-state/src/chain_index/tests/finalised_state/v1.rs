@@ -10,7 +10,7 @@ use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::capability::IndexedBlockExt;
-use crate::chain_index::finalised_state::db::DbBackend;
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
@@ -89,7 +89,7 @@ pub(crate) async fn load_vectors_v1db_and_reader() -> (
     (test_vector_data, db_dir, zaino_db, db_reader)
 }
 
-// *** ZainoDB Tests ***
+// *** FinalisedState Tests ***
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_returns_promptly() {
@@ -245,8 +245,8 @@ async fn load_db_backend_from_file() {
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
-    let finalized_state_backend: DbBackend<MockchainSource> =
-        DbBackend::spawn_v1(&config).await.unwrap();
+    let finalized_state_backend: FinalisedSource<MockchainSource> =
+        FinalisedSource::spawn_v1(&config).await.unwrap();
 
     let mut prev_hash = None;
     for height in 0..=100 {
@@ -927,7 +927,7 @@ async fn check_recipient_spent_map() {
 async fn tx_out_set_info_accumulator_updates_on_write() {
     init_tracing();
 
-    // Load the regtest vectors, write every vector block into ZainoDB, and wait until the
+    // Load the regtest vectors, write every vector block into FinalisedState, and wait until the
     // finalised state has finished its startup/background validation.
     let (TestVectorData { blocks, .. }, _db_dir, zaino_db) =
         load_vectors_and_spawn_and_sync_v1_zaino_db().await;

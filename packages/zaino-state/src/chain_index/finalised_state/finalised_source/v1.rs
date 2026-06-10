@@ -1,4 +1,4 @@
-//! ZainoDB Finalised State (Schema V1)
+//! Finalised State persistent database (Schema V1)
 //!
 //! This module provides the **V1** implementation of Zaino’s LMDB-backed finalised-state database.
 //! It stores a validated, append-only view of the best chain and exposes a set of capability traits
@@ -133,7 +133,7 @@ pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
 pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
     major: 1,
     minor: 2,
-    patch: 0,
+    patch: 1,
 };
 
 /// LMDB table name for the finalised txout-set accumulator.
@@ -279,7 +279,7 @@ pub(crate) struct DbV1 {
     /// (current and future) wake on a single `cancel()` call.
     cancel_token: CancellationToken,
 
-    /// ZainoDB status.
+    /// FinalisedState status.
     status: NamedAtomicStatus,
 
     /// BlockCache config data.
@@ -304,7 +304,7 @@ impl DbV1 {
     /// - validates or initializes the `"metadata"` record (schema hash + version), and
     /// - spawns the background validator / maintenance task.
     pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        info!("Launching ZainoDB");
+        info!("Launching FinalisedState");
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
@@ -397,7 +397,7 @@ impl DbV1 {
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
                 config: config.clone(),
             };
         }
@@ -421,7 +421,7 @@ impl DbV1 {
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
                 config: config.clone(),
             };
         }
@@ -837,7 +837,7 @@ impl DbV1 {
     pub(crate) async fn spawn_v1_0_0(
         config: &ChainIndexConfig,
     ) -> Result<Self, FinalisedStateError> {
-        info!("Launching ZainoDB");
+        info!("Launching FinalisedState");
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
@@ -927,7 +927,7 @@ impl DbV1 {
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
                 config: config.clone(),
             };
         }
@@ -950,7 +950,7 @@ impl DbV1 {
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
                 config: config.clone(),
             };
         }

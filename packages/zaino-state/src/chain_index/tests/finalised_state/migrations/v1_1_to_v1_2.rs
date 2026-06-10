@@ -10,11 +10,11 @@ use crate::chain_index::finalised_state::capability::{
     BlockCoreExt as _, BlockTransparentExt as _, CapabilityRequest, DbRead as _, DbVersion,
     MigrationStatus, TransparentHistExt as _,
 };
-use crate::chain_index::finalised_state::db::v1::{
+use crate::chain_index::finalised_state::entry::StoredEntryFixed;
+use crate::chain_index::finalised_state::finalised_source::v1::{
     DB_SCHEMA_V1_HASH, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
-use crate::chain_index::finalised_state::db::DbBackend;
-use crate::chain_index::finalised_state::entry::StoredEntryFixed;
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
@@ -62,7 +62,7 @@ async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<Mockchai
 /// its txid (via `get_txid`), and that txid resolves back to the same location (via
 /// `get_tx_location`, which reads the `txid_location` table).
 async fn assert_txid_location_index_matches_block_data(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
@@ -90,7 +90,7 @@ async fn assert_txid_location_index_matches_block_data(
 
 /// Empties the `txid_location` table, simulating a 0.4.0-alpha.1 cache that finished the old
 /// migration without ever building the reverse index.
-fn clear_txid_location_index(database_backend: &DbBackend<MockchainSource>) {
+fn clear_txid_location_index(database_backend: &FinalisedSource<MockchainSource>) {
     let environment = database_backend.env().unwrap();
     let txid_location_database = database_backend.txid_location_db().unwrap();
 
@@ -117,7 +117,7 @@ fn clear_txid_location_index(database_backend: &DbBackend<MockchainSource>) {
 }
 
 async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
     resume_height: Height,
 ) {
     let environment = database_backend.env().unwrap();
@@ -222,7 +222,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
 }
 
 async fn assert_spent_index_matches_transparent_data(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
 ) {
     let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
@@ -291,7 +291,7 @@ async fn assert_spent_index_matches_transparent_data(
 }
 
 async fn expected_tx_out_set_info_accumulator(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
     max_height: Height,
 ) -> FinalisedTxOutSetInfoAccumulator {
     let environment = database_backend.env().unwrap();
@@ -383,7 +383,7 @@ async fn expected_tx_out_set_info_accumulator(
 }
 
 async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
-    database_backend: &DbBackend<MockchainSource>,
+    database_backend: &FinalisedSource<MockchainSource>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
@@ -600,7 +600,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
 
     // Build a healthy, fully-migrated v1.2.0 cache.
     let old_database =
-        ZainoDB::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
+        FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
             .await
             .unwrap();
     old_database.wait_until_ready().await;
@@ -608,7 +608,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
     drop(old_database);
 
     let migrated_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
+        FinalisedState::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
             .await
             .unwrap();
     migrated_database.wait_until_ready().await;
@@ -627,7 +627,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
 
     // Re-open: reconciliation must roll the version back and the migration must rebuild the index.
     let healed_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
+        FinalisedState::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
             .await
             .unwrap();
     healed_database.wait_until_ready().await;

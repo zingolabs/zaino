@@ -1,4 +1,4 @@
-//! StatelessFinalisedState provides access to the finalised portion of the
+//! EphemeralFinalisedState provides access to the finalised portion of the
 //! chain when the FinalisedState is syncing, migrating, or switched off.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +41,7 @@ const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_
 /// Source-backed finalised-state backend used when persistent finalised-state storage is not
 /// serving normal requests.
 ///
-/// `StatelessFinalisedState` does not own or mutate an on-disk database. Instead, it answers
+/// `EphemeralFinalisedState` does not own or mutate an on-disk database. Instead, it answers
 /// finalised-state read requests by querying the backing [`BlockchainSource`] directly and building
 /// the database-facing response types on demand.
 ///

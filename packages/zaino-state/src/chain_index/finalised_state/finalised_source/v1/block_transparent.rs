@@ -1,4 +1,4 @@
-//! ZainoDB::V1 transparent block indexing functionality.
+//! FinalisedState::V1 transparent block indexing functionality.
 
 use super::*;
 
