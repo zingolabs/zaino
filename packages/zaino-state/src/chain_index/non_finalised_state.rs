@@ -157,7 +157,7 @@ impl ProvisionalCumulativeWork {
 /// [`IndexedBlock`]'s absolute `chainwork` field, so the two cannot be
 /// misattributed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProvisionalBlock {
+pub struct ProvisionalBlock {
     /// Height + hash of this block.
     index: BlockIndex,
     /// Parent block hash as *claimed by this block's header*.
