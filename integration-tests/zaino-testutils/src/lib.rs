@@ -7,7 +7,6 @@ use once_cell::sync::Lazy;
 use std::{
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    num::{NonZero, NonZeroU32},
     path::PathBuf,
 };
 #[cfg(test)]
@@ -37,18 +36,14 @@ use zcash_local_net::{
     validator::zcashd::{Zcashd, ZcashdConfig},
 };
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
-use zebra_chain::parameters::NetworkKind;
+use zebra_chain::parameters::{testnet::ConfiguredActivationHeights, NetworkKind};
 #[cfg(test)]
 use zingo_netutils::{GetClientError, GrpcIndexer};
 use zingo_test_vectors::seeds;
 pub use zingolib::get_base_address_macro;
 pub use zingolib::lightclient::LightClient;
 pub use zingolib::testutils::lightclient::from_inputs;
-use zingolib::{config::WalletConfig, wallet::SyncConfig};
 use zingolib_testutils::scenarios::ClientBuilder;
-
-#[cfg(test)]
-use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 
 /// Helper to get the test binary path from the TEST_BINARIES_DIR env var.
 fn binary_path(binary_name: &str) -> Option<PathBuf> {
@@ -213,6 +208,9 @@ pub fn local_network_from_activation_heights(
             .map(zcash_protocol::consensus::BlockHeight::from),
         nu6_1: activation_heights
             .nu6_1
+            .map(zcash_protocol::consensus::BlockHeight::from),
+        nu6_2: activation_heights
+            .nu6_2
             .map(zcash_protocol::consensus::BlockHeight::from),
     }
 }
@@ -556,21 +554,15 @@ where
                 tempfile::tempdir().unwrap(),
             );
 
-            let config = WalletConfig::MnemonicPhrase {
-                mnemonic_phrase: seeds::HOSPITAL_MUSEUM_SEED.to_string(),
-                no_of_accounts: NonZeroU32::new(1).expect("this should not fail"),
-                birthday: 1,
-                wallet_settings: zingolib::wallet::WalletSettings {
-                    sync_config: SyncConfig::default(),
-                    min_confirmations: NonZero::<u32>::new(1).expect("this should not fail"),
-                },
-            };
-            let faucet = client_builder
-                .build_faucet(true, activation_heights.into())
-                .await;
-            let recipient = client_builder
-                .build_client(config, true, activation_heights.into())
-                .await;
+            let configured_activation_heights: ConfiguredActivationHeights =
+                activation_heights.into();
+            let faucet = client_builder.build_faucet(true, configured_activation_heights);
+            let recipient = client_builder.build_client(
+                seeds::HOSPITAL_MUSEUM_SEED.to_string(),
+                1,
+                true,
+                configured_activation_heights,
+            );
             Some(Clients {
                 client_builder,
                 faucet,
@@ -717,8 +709,11 @@ impl<C: Validator, Service: LightWalletService + Send + Sync + 'static> Drop
 
 /// Builds a client for creating RPC requests to the indexer/light-node
 #[cfg(test)]
-async fn build_client(uri: http::Uri) -> Result<CompactTxStreamerClient<Channel>, GetClientError> {
-    GrpcIndexer::new(uri)?.get_zcb_client().await
+async fn build_client(
+    uri: http::Uri,
+) -> Result<zingo_netutils::lightwallet_protocol::CompactTxStreamerClient<Channel>, GetClientError>
+{
+    Ok(GrpcIndexer::new(uri).await?.get_clear_net_client().await)
 }
 
 #[cfg(test)]

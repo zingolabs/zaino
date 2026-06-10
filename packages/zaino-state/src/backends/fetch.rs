@@ -573,51 +573,62 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
-        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let fallback_hash_or_height = hash_or_height.clone();
+        let local_result: Result<GetTreestateResponse, Self::Error> = async {
+            let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
-        let block_data = match hash_or_height_struct {
-            HashOrHeight::Hash(hash) => self
-                .indexer
-                .get_indexed_block_by_hash(&snapshot, &hash.into())
-                .await
-                .map_err(|_error| {
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    ))
-                })?
-                .ok_or(
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    )),
-                )?,
-            HashOrHeight::Height(height) => self
-                .indexer
-                .get_indexed_block_by_height(&snapshot, &height.into())
-                .await
-                .map_err(|_error| {
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    ))
-                })?
-                .ok_or(
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    )),
-                )?,
-        };
+            let block_data = match hash_or_height_struct {
+                HashOrHeight::Hash(hash) => self
+                    .indexer
+                    .get_indexed_block_by_hash(&snapshot, &hash.into())
+                    .await?
+                    .ok_or(
+                        #[allow(deprecated)]
+                        FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                            "Failed to fetch block data.",
+                        )),
+                    )?,
+                HashOrHeight::Height(height) => self
+                    .indexer
+                    .get_indexed_block_by_height(&snapshot, &height.into())
+                    .await?
+                    .ok_or(
+                        #[allow(deprecated)]
+                        FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                            "Failed to fetch block data.",
+                        )),
+                    )?,
+            };
 
-        let (sapling, orchard) = self
-            .indexer
-            .get_treestate(block_data.hash())
+            let (sapling, orchard) = self.indexer.get_treestate(block_data.hash()).await?;
+            let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+                #[allow(deprecated)]
+                FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Block time is out of range for u32.",
+                ))
+            })?;
+
+            #[allow(deprecated)]
+            Ok(GetTreestateResponse::from_parts(
+                (*block_data.hash()).into(),
+                block_data.height().into(),
+                time,
+                sapling,
+                orchard,
+            ))
+        }
+        .await;
+
+        if let Ok(response) = local_result {
+            return Ok(response);
+        }
+
+        self.fetcher
+            .get_treestate(fallback_hash_or_height)
             .await
             .map_err(|_error| {
                 #[allow(deprecated)]
@@ -625,23 +636,16 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
                     "Failed to fetch treestate.",
                 ))
-            })?;
-        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
-            #[allow(deprecated)]
-            FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                "Block time is out of range for u32.",
-            ))
-        })?;
-
-        #[allow(deprecated)]
-        Ok(GetTreestateResponse::from_parts(
-            (*block_data.hash()).into(),
-            block_data.height().into(),
-            time,
-            sapling,
-            orchard,
-        ))
+            })
+            .and_then(|treestate| {
+                treestate.try_into().map_err(|_error| {
+                    #[allow(deprecated)]
+                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to parse treestate.",
+                    ))
+                })
+            })
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.
@@ -932,7 +936,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
         match self
             .indexer
-            .get_compact_block(&snapshot, types::Height(height), PoolTypeFilter::default())
+            .get_compact_block(
+                &snapshot,
+                types::Height(height),
+                PoolTypeFilter::includes_all(),
+            )
             .await
         {
             Ok(Some(block)) => Ok(block),
@@ -1007,7 +1015,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         };
         match self
             .indexer
-            .get_compact_block(&snapshot, types::Height(height), PoolTypeFilter::default())
+            .get_compact_block(
+                &snapshot,
+                types::Height(height),
+                PoolTypeFilter::includes_all(),
+            )
             .await
         {
             Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),
@@ -1853,6 +1865,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
+        super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
@@ -1906,6 +1919,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<UtxoReplyStream, Self::Error> {
+        super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let service_timeout = self.config.common.service.timeout;
@@ -2001,15 +2015,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         )
         .to_string();
 
-        let nu_info = blockchain_info
-            .upgrades()
-            .last()
-            .expect("Expected validator to have a consenus activated.")
-            .1
+        let latest_upgrade = super::latest_network_upgrade(blockchain_info.upgrades())
+            .map_err(FetchServiceError::TonicStatusError)?
             .into_parts();
 
-        let nu_name = nu_info.0;
-        let nu_height = nu_info.1;
+        let nu_name = latest_upgrade.0;
+        let nu_height = latest_upgrade.1;
 
         Ok(LightdInfo {
             version: self.data.build_info().version(),

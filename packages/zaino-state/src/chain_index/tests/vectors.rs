@@ -110,6 +110,7 @@ pub(in crate::chain_index::tests) fn indexed_block_chain(
                     nu6: Some(1),
                     // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
                     nu6_1: None,
+                    nu6_2: None,
                     nu7: None,
                 }
                 .into(),

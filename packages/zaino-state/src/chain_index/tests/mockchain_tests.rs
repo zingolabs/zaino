@@ -116,7 +116,7 @@ async fn get_raw_transaction() {
                     .branch_id()
                     .map(u32::from)
             } else {
-                zebra_chain::parameters::NetworkUpgrade::Nu6_1
+                zebra_chain::parameters::NetworkUpgrade::Nu6_2
                     .branch_id()
                     .map(u32::from)
             }
@@ -246,7 +246,7 @@ async fn get_mempool_transaction() {
         assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
         assert_eq!(
             branch_id,
-            zebra_chain::parameters::NetworkUpgrade::Nu6_1
+            zebra_chain::parameters::NetworkUpgrade::Nu6_2
                 .branch_id()
                 .map(u32::from)
         );

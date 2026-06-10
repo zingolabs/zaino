@@ -1,0 +1,24 @@
+name: Shellcheck
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint shell scripts
+        run: ./tools/scripts/lint-shell.sh

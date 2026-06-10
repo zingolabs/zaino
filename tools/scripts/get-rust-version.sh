@@ -28,8 +28,10 @@ if [[ -z "$channel" ]]; then
 fi
 
 if [[ ! "$channel" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-  echo "get-rust-version.sh: channel '$channel' is not a concrete numeric version (e.g. 1.95 or 1.95.0)" >&2
-  echo "get-rust-version.sh: the CI image requires a pinned rustc; set channel = \"<x.y[.z]>\" in $toolchain_file" >&2
+  echo "get-rust-version.sh: channel '$channel' is not a concrete numeric \
+version (e.g. 1.95 or 1.95.0)" >&2
+  echo "get-rust-version.sh: the CI image requires a pinned rustc; set \
+channel = \"<x.y[.z]>\" in $toolchain_file" >&2
   exit 1
 fi
 

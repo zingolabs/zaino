@@ -7,7 +7,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
-#[cfg(feature = "no_tls_use_unencrypted_traffic")]
+#[cfg(any(
+    feature = "no_tls_use_unencrypted_traffic",
+    feature = "allow_unencrypted_public_json_rpc_bind"
+))]
 use tracing::warn;
 
 use crate::error::IndexerError;
@@ -169,6 +172,28 @@ impl ZainodConfig {
         {
             warn!(
                 "Zaino built using no_tls_use_unencrypted_traffic feature, proceed with caution."
+            );
+        }
+
+        // The JSON-RPC interface is unencrypted and intended for loopback / trusted
+        // private networks only. Reject public bind addresses unless explicitly unlocked.
+        #[cfg(not(feature = "allow_unencrypted_public_json_rpc_bind"))]
+        if let Some(ref json_settings) = self.json_server_settings {
+            if !is_private_listen_addr(&json_settings.json_rpc_listen_address) {
+                return Err(IndexerError::ConfigError(
+                    "JSON-RPC server may only bind to private or loopback addresses. \
+                     Build with the `allow_unencrypted_public_json_rpc_bind` feature to \
+                     override (trusted private networks only)."
+                        .to_string(),
+                ));
+            }
+        }
+
+        #[cfg(feature = "allow_unencrypted_public_json_rpc_bind")]
+        {
+            warn!(
+                "Zaino built with allow_unencrypted_public_json_rpc_bind: the JSON-RPC \
+                 server may bind to public addresses without encryption. Proceed with caution."
             );
         }
 
@@ -1082,5 +1107,84 @@ listen_address = "127.0.0.1:8137"
             format!("{:#?}", state_cfg.common),
             format!("{:#?}", fetch_cfg.common),
         );
+    }
+
+    /// Builds a default config with the JSON-RPC server bound to `addr`.
+    ///
+    /// The default config otherwise passes `check_config` (loopback gRPC,
+    /// private validator), so the JSON-RPC bind address is isolated as the only
+    /// variable under test. A non-default port avoids the gRPC/JSON-RPC
+    /// same-address check.
+    fn json_config_with(addr: &str) -> ZainodConfig {
+        ZainodConfig {
+            json_server_settings: Some(JsonRpcServerConfig {
+                json_rpc_listen_address: addr.parse().expect("test bind address must parse"),
+                cookie_dir: None,
+            }),
+            ..ZainodConfig::default()
+        }
+    }
+
+    #[test]
+    fn json_rpc_loopback_bind_is_accepted() {
+        json_config_with("127.0.0.1:8237")
+            .check_config()
+            .expect("loopback JSON-RPC bind must be accepted");
+    }
+
+    #[test]
+    fn json_rpc_private_ipv4_bind_is_accepted() {
+        json_config_with("192.168.1.10:8237")
+            .check_config()
+            .expect("RFC1918 JSON-RPC bind must be accepted");
+    }
+
+    #[test]
+    fn json_rpc_ipv6_ula_bind_is_accepted() {
+        json_config_with("[fc00::1]:8237")
+            .check_config()
+            .expect("IPv6 ULA JSON-RPC bind must be accepted");
+    }
+
+    #[test]
+    fn no_json_server_settings_is_accepted() {
+        let cfg = ZainodConfig {
+            json_server_settings: None,
+            ..ZainodConfig::default()
+        };
+        cfg.check_config()
+            .expect("config without a JSON-RPC server must be accepted");
+    }
+
+    // The rejection rule is compiled out when the override feature is enabled,
+    // so these tests only apply to the default build.
+    #[cfg(not(feature = "allow_unencrypted_public_json_rpc_bind"))]
+    #[test]
+    fn json_rpc_public_bind_is_rejected() {
+        match json_config_with("8.8.8.8:8237").check_config() {
+            Err(IndexerError::ConfigError(msg)) => assert!(
+                msg.contains("allow_unencrypted_public_json_rpc_bind"),
+                "error should name the override feature, got: {msg}"
+            ),
+            other => panic!("expected ConfigError for public JSON-RPC bind, got {other:?}"),
+        }
+    }
+
+    #[cfg(not(feature = "allow_unencrypted_public_json_rpc_bind"))]
+    #[test]
+    fn json_rpc_unspecified_bind_is_rejected() {
+        // 0.0.0.0 binds all interfaces (including public) and is not private.
+        match json_config_with("0.0.0.0:8237").check_config() {
+            Err(IndexerError::ConfigError(_)) => {}
+            other => panic!("expected ConfigError for unspecified JSON-RPC bind, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "allow_unencrypted_public_json_rpc_bind")]
+    #[test]
+    fn json_rpc_public_bind_allowed_with_feature() {
+        json_config_with("8.8.8.8:8237")
+            .check_config()
+            .expect("public JSON-RPC bind must be accepted under the override feature");
     }
 }

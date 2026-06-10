@@ -371,4 +371,90 @@ mod tests {
         // We just sanity-check the digest is not all zeros.
         assert_ne!(a, [0u8; 32]);
     }
+
+    #[test]
+    fn is_unspendable_filters_non_standard() {
+        let out = TxOutCompact::new(100, [0x00; 20], 0xFF)
+            .expect("script_type 0xFF (NonStandard) should be valid");
+        assert!(is_unspendable_tx_out(&out));
+    }
+
+    #[test]
+    fn is_unspendable_allows_p2pkh() {
+        let out =
+            TxOutCompact::new(100, [0x00; 20], 0).expect("script_type 0 (P2PKH) should be valid");
+        assert!(!is_unspendable_tx_out(&out));
+    }
+
+    #[test]
+    fn is_unspendable_allows_p2sh() {
+        let out =
+            TxOutCompact::new(100, [0x00; 20], 1).expect("script_type 1 (P2SH) should be valid");
+        assert!(!is_unspendable_tx_out(&out));
+    }
+
+    #[test]
+    fn apply_added_then_removed_output_returns_to_empty() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let outpoint = Outpoint::new([0xAA; 32], 0);
+        let out = TxOutCompact::new(50_000, [0x11; 20], 0)
+            .expect("script_type 0 (P2PKH) should be valid");
+
+        acc.apply_added_output(&outpoint, &out)
+            .expect("add should succeed");
+
+        assert_ne!(acc, FinalisedTxOutSetInfoAccumulator::empty());
+        assert_eq!(acc.total_zatoshis, 50_000);
+        assert_eq!(acc.transaction_outputs, 1);
+        assert_eq!(acc.bytes_serialized, ZAINO_TXOUTSET_ENTRY_LEN);
+
+        acc.apply_removed_output(&outpoint, &out)
+            .expect("remove should succeed");
+
+        assert_eq!(acc, FinalisedTxOutSetInfoAccumulator::empty());
+    }
+
+    #[test]
+    fn apply_removed_output_on_empty_underflows() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let outpoint = Outpoint::new([0xBB; 32], 0);
+        let out =
+            TxOutCompact::new(1_000, [0x22; 20], 0).expect("script_type 0 (P2PKH) should be valid");
+
+        let err = acc
+            .apply_removed_output(&outpoint, &out)
+            .expect_err("remove on empty should underflow");
+
+        assert_eq!(err, AccumulatorDeltaError::Underflow("transaction_outputs"));
+    }
+
+    #[test]
+    fn apply_added_output_accumulates_values() {
+        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
+
+        let outpoint_a = Outpoint::new([0x01; 32], 0);
+        let out_a =
+            TxOutCompact::new(100, [0x11; 20], 0).expect("script_type 0 (P2PKH) should be valid");
+
+        let outpoint_b = Outpoint::new([0x02; 32], 1);
+        let out_b =
+            TxOutCompact::new(200, [0x22; 20], 1).expect("script_type 1 (P2SH) should be valid");
+
+        acc.apply_added_output(&outpoint_a, &out_a)
+            .expect("add a should succeed");
+        acc.apply_added_output(&outpoint_b, &out_b)
+            .expect("add b should succeed");
+
+        assert_eq!(acc.total_zatoshis, 300);
+        assert_eq!(acc.transaction_outputs, 2);
+        assert_eq!(acc.bytes_serialized, 2 * ZAINO_TXOUTSET_ENTRY_LEN);
+
+        let digest_a = tx_out_set_entry_digest(&outpoint_a, &out_a);
+        let digest_b = tx_out_set_entry_digest(&outpoint_b, &out_b);
+        let mut expected_hash = [0u8; 32];
+        for i in 0..32 {
+            expected_hash[i] = digest_a[i] ^ digest_b[i];
+        }
+        assert_eq!(acc.hash_serialized, expected_hash);
+    }
 }

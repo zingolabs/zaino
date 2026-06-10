@@ -1,0 +1,11 @@
+# ShellCheck configuration for the zaino repo.
+#
+# external-sources lets ShellCheck follow `source`d files referenced by
+# `# shellcheck source=...` directives (equivalent to passing -x), so checks
+# see helper definitions in tools/scripts/helpers.sh and functions.sh.
+external-sources=true
+
+# Resolve `source=...` directive paths relative to the repo root (where the
+# lint runs from) as well as the script's own directory.
+source-path=.
+source-path=SCRIPTDIR

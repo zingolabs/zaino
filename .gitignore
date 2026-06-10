@@ -12,3 +12,4 @@
 .local/
 .failed-tests
 **/proptest-regressions/**
+/result

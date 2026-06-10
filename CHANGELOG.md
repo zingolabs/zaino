@@ -14,6 +14,9 @@ and this library adheres to Rust's notion of
   validator.
 
 ### Added
+- `zainod` gains an `allow_unencrypted_public_json_rpc_bind` build feature that
+  lifts the new private-only JSON-RPC bind restriction for trusted
+  private-network deployments (logs a `WARN` on startup when enabled).
 - `zaino-state::chain_index::source::BlockchainSource` and
   `zaino-state::chain_index::ChainIndex` now expose transparent-address query
   methods for deltas, balances, txids, and UTXOs.
@@ -21,6 +24,11 @@ and this library adheres to Rust's notion of
   `FinalisedTxOutSetInfoAccumulator` with the non-finalised state to produce
   the full `GetTxOutSetInfoResponse`.
 ### Changed
+- The `zainod` JSON-RPC server now refuses to bind to public or unspecified
+  (`0.0.0.0` / `::`) addresses by default; `check_config` enforces the same
+  private/loopback rule already applied to gRPC. The unencrypted JSON-RPC
+  interface is intended for loopback or trusted private networks only (Z-02 /
+  Zellic #48480).
 - Integration tests now use `corez`, with Zcash, Zebra, and Zingo dependencies
   updated to releases and companion branches that no longer depend on the
   yanked `core2` crate.

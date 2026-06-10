@@ -1,0 +1,12 @@
+# hadolint configuration. https://github.com/hadolint/hadolint
+#
+# Lints the repo's Dockerfile and integration-tests/test_environment/
+# Containerfile. Both are clean at this threshold, so CI fails on `info`,
+# `warning`, and `error` findings to keep them that way (`style` stays
+# advisory).
+#
+# DL3008 (pin apt versions) is intentionally NOT ignored: apt packages are
+# pinned to the candidate versions of each pinned base image for supply-chain
+# reproducibility. When bumping a base image, re-pin the apt versions
+# (`apt-cache policy <pkg>` inside the new base) rather than relaxing this.
+failure-threshold: info
