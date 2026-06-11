@@ -341,12 +341,6 @@ impl ChainBlock {
 ///
 /// When a call asks for info (e.g. a block), Zaino selects sources in this order:
 #[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
-// Interim (#1096): this pub trait's surface references in-crate types — the
-// `Snapshot: NonFinalizedSnapshot` bound and the `ChainBlock` returned by
-// `get_indexed_block_by_*` are `pub(crate)`. Keeping those types in-crate is
-// the intended minimum visibility; the lint resolves when the resolution
-// promotion turns `ChainBlock` into `IndexedBlock`.
-#[allow(private_interfaces, private_bounds)]
 pub trait ChainIndex {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
