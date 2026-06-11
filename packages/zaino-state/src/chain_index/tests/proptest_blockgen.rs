@@ -427,8 +427,8 @@ fn make_chain() {
             for (hash, block) in &non_finalized_snapshot.blocks {
                 if hash != &best_tip_hash {
                     assert!(
-                        block.provisional_cumulative_work()
-                            <= best_tip_block.provisional_cumulative_work()
+                        block.provisional_cumulative_work(non_finalized_snapshot)
+                            <= best_tip_block.provisional_cumulative_work(non_finalized_snapshot)
                     );
                     if non_finalized_snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
                         assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);

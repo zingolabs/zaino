@@ -1,7 +1,10 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
-use crate::chain_index::types::db::{
-    legacy::{compact_block_from_parts, BlockData, CompactTxData},
-    CommitmentTreeData,
+use crate::chain_index::{
+    types::db::{
+        legacy::{compact_block_from_parts, BlockData, CompactTxData},
+        CommitmentTreeData,
+    },
+    NonFinalizedSnapshot,
 };
 use crate::{
     chain_index::types::{
@@ -193,9 +196,8 @@ pub struct ProvisionalBlock {
     /// it must not be used for trusted chain-walks (e.g. fork-point recursion)
     /// during the provisional stage.
     pub parent_hash: BlockHash,
-    /// Cumulative work relative to the seam, header-derived. Never absolute —
-    /// the type enforces that (see [`ProvisionalCumulativeWork`]).
-    pub(crate) provisional_cumulative_work: ProvisionalCumulativeWork,
+    /// This block's individual chainwork
+    chainwork: ChainWork,
     /// Header and auxiliary block data.
     pub data: BlockData,
     /// Compact representations of the block's transactions.
@@ -223,8 +225,17 @@ impl ProvisionalBlock {
 
     /// Cumulative work relative to the seam. Use this — never an absolute
     /// chainwork — for best-tip selection within the non-finalized window.
-    pub(crate) fn provisional_cumulative_work(&self) -> &ProvisionalCumulativeWork {
-        &self.provisional_cumulative_work
+    pub(crate) fn provisional_cumulative_work(
+        &self,
+        snapshot: &NonfinalizedBlockCacheSnapshot,
+    ) -> ProvisionalCumulativeWork {
+        let mut work = ProvisionalCumulativeWork::seam().add_block_work(&self.chainwork);
+        let mut parent_hash = self.parent_hash;
+        while let Some(prev_block) = snapshot.get_chainblock_by_hash(&parent_hash) {
+            work = work.add_block_work(&prev_block.chainwork);
+            parent_hash = prev_block.parent_hash;
+        }
+        work
     }
 
     /// The compact transactions in this block.
@@ -265,7 +276,7 @@ impl ProvisionalBlock {
         Self {
             index: indexed.context.index,
             parent_hash: indexed.context.parent_hash,
-            provisional_cumulative_work: ProvisionalCumulativeWork::seam(),
+            chainwork: ChainWork::from_u256(0.into()),
             data: indexed.data,
             transactions: indexed.transactions,
             commitment_tree_data: indexed.commitment_tree_data,
@@ -609,26 +620,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
-                let parent_work = {
-                    let prev_block = working_snapshot
-                        .blocks
-                        .get(&working_snapshot.best_tip.hash)
-                        .ok_or_else(|| {
-                            SyncError::ReorgFailure(format!(
-                                "found blocks {:?}, expected block {:?}",
-                                working_snapshot
-                                    .blocks
-                                    .values()
-                                    .map(|block| (*block.hash(), block.height()))
-                                    .collect::<Vec<_>>(),
-                                working_snapshot.best_tip
-                            ))
-                        })?;
-                    *prev_block.provisional_cumulative_work()
-                };
-                let chainblock = self
-                    .block_to_provisional_block(&parent_work, &block)
-                    .await?;
+                let chainblock = self.block_to_provisional_block(&block).await?;
                 info!(
                     height = (working_snapshot.best_tip.height + 1).0,
                     hash = %chainblock.hash(),
@@ -667,7 +659,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
     ) -> Result<ProvisionalBlock, SyncError> {
-        let prev_block = match working_snapshot
+        match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
         {
@@ -704,8 +696,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 Box::pin(self.handle_reorg(working_snapshot, &*prev_block)).await?
             }
         };
-        let parent_work = *prev_block.provisional_cumulative_work();
-        let provisional_block = block.to_provisional_block(&parent_work, self).await?;
+        let provisional_block = block.to_provisional_block(self).await?;
         working_snapshot.add_block_new_chaintip(provisional_block.clone());
         Ok(provisional_block)
     }
@@ -780,7 +771,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let best_block = &new_snapshot
             .blocks
             .values()
-            .max_by_key(|block| block.provisional_cumulative_work())
+            .max_by_key(|block| block.provisional_cumulative_work(&new_snapshot))
             .cloned()
             .expect("empty snapshot impossible");
         self.handle_reorg(&mut new_snapshot, best_block)
@@ -860,7 +851,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// block: no absolute chainwork is computed or required.
     async fn block_to_provisional_block(
         &self,
-        parent_work: &ProvisionalCumulativeWork,
         block: &zebra_chain::block::Block,
     ) -> Result<ProvisionalBlock, SyncError> {
         let tree_roots = self
@@ -872,12 +862,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 ))
             })?;
 
-        Self::provisional_block_from_parts(block, &tree_roots, parent_work, self.network.clone())
-            .map_err(|e| {
-                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
-                    Box::new(InvalidData(e)),
-                ))
-            })
+        Self::provisional_block_from_parts(block, &tree_roots, self.network.clone()).map_err(|e| {
+            SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
+                InvalidData(e),
+            )))
+        })
     }
 
     /// Assemble a [`ProvisionalBlock`] from already-fetched parts. Reuses the
@@ -888,7 +877,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     fn provisional_block_from_parts(
         block: &zebra_chain::block::Block,
         tree_roots: &TreeRootData,
-        parent_work: &ProvisionalCumulativeWork,
         network: Network,
     ) -> Result<ProvisionalBlock, String> {
         let (sapling_root, sapling_size, orchard_root, orchard_size) =
@@ -911,8 +899,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let data = block_with_metadata.extract_block_data()?;
         let transactions = block_with_metadata.extract_transactions()?;
         let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
-        let provisional_cumulative_work =
-            parent_work.add_block_work(&block_with_metadata.block_work()?);
+        let chainwork = block_with_metadata.block_work()?;
 
         let hash = BlockHash::from(block.hash());
         let parent_hash = BlockHash::from(block.header.previous_block_hash);
@@ -924,7 +911,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         Ok(ProvisionalBlock {
             index: BlockIndex { height, hash },
             parent_hash,
-            provisional_cumulative_work,
+            chainwork,
             data,
             transactions,
             commitment_tree_data,
@@ -1021,7 +1008,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
     ) -> Result<ProvisionalBlock, SyncError> {
-        let prev_block = match working_snapshot
+        match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
         {
@@ -1048,8 +1035,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 Box::pin(self.add_nonbest_block(working_snapshot, &*prev_block)).await?
             }
         };
-        let parent_work = *prev_block.provisional_cumulative_work();
-        let provisional_block = block.to_provisional_block(&parent_work, self).await?;
+        let provisional_block = block.to_provisional_block(self).await?;
         working_snapshot
             .blocks
             .insert(*provisional_block.hash(), provisional_block.clone());
@@ -1079,12 +1065,9 @@ pub enum UpdateError {
 trait Block {
     fn hash_bytes_serialized_order(&self) -> [u8; 32];
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32];
-    /// Produce the [`ProvisionalBlock`] for this block, accumulating its work
-    /// onto `parent_work` (relative to the seam). Replaces the former
-    /// `to_indexed_block`: the NFS holds provisional, not indexed, blocks.
+    /// Produce the [`ProvisionalBlock`] for this block.
     async fn to_provisional_block<Source: BlockchainSource>(
         &self,
-        parent_work: &ProvisionalCumulativeWork,
         nfs: &NonFinalizedState<Source>,
     ) -> Result<ProvisionalBlock, SyncError>;
 }
@@ -1100,7 +1083,6 @@ impl Block for ProvisionalBlock {
 
     async fn to_provisional_block<Source: BlockchainSource>(
         &self,
-        _parent_work: &ProvisionalCumulativeWork,
         _nfs: &NonFinalizedState<Source>,
     ) -> Result<ProvisionalBlock, SyncError> {
         // Identity: a block already in the snapshot keeps the relative work it
@@ -1119,9 +1101,8 @@ impl Block for zebra_chain::block::Block {
 
     async fn to_provisional_block<Source: BlockchainSource>(
         &self,
-        parent_work: &ProvisionalCumulativeWork,
         nfs: &NonFinalizedState<Source>,
     ) -> Result<ProvisionalBlock, SyncError> {
-        nfs.block_to_provisional_block(parent_work, self).await
+        nfs.block_to_provisional_block(self).await
     }
 }
