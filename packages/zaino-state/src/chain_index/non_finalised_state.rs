@@ -1,5 +1,7 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
 use crate::chain_index::{
+    finalization_ceiling,
+    source::{BlockchainSourceError, BlockchainSourceResult},
     types::db::{
         legacy::{compact_block_from_parts, BlockData, CompactTxData},
         CommitmentTreeData,
@@ -266,22 +268,6 @@ impl ProvisionalBlock {
             self.commitment_tree_data(),
         )
     }
-
-    /// Build the seam anchor from a finalized [`IndexedBlock`]. The anchor's
-    /// relative work is zero by definition ([`ProvisionalCumulativeWork::seam`]);
-    /// the block's absolute chainwork is intentionally dropped — the NFS tracks
-    /// work relative to this seam, and the absolute base is reattached only at
-    /// resolution.
-    pub(crate) fn from_indexed_seam(indexed: IndexedBlock) -> Self {
-        Self {
-            index: indexed.context.index,
-            parent_hash: indexed.context.parent_hash,
-            chainwork: ChainWork::from_u256(0.into()),
-            data: indexed.data,
-            transactions: indexed.transactions,
-            commitment_tree_data: indexed.commitment_tree_data,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -388,26 +374,48 @@ impl BlockIndex {
 }
 
 impl NonfinalizedBlockCacheSnapshot {
-    /// Create initial snapshot from a single block
-    fn from_initial_block(block: IndexedBlock) -> Self {
-        let best_tip = BlockIndex::from_block(&block);
-        let hash = *block.hash();
-        let height = best_tip.height;
+    async fn init_from_blockchain_source(
+        source: &impl BlockchainSource,
+        network: Network,
+    ) -> BlockchainSourceResult<Self> {
+        let tip_height =
+            source
+                .get_best_block_height()
+                .await?
+                .ok_or(BlockchainSourceError::Unrecoverable(String::from(
+                    "source has no blocks",
+                )))?;
+        let start_height = finalization_ceiling(tip_height.0);
+        let start_block = source
+            .get_block(HashOrHeight::Height(start_height.into()))
+            .await?
+            .ok_or(BlockchainSourceError::Unrecoverable(String::from(
+                "source missing block 100 below tio",
+            )))?;
+
+        let provisional_block = block_to_provisional_block(&start_block, source, network)
+            .await
+            .map_err(|e| todo!())?;
 
         let mut blocks = HashMap::new();
         let mut heights_to_hashes = HashMap::new();
 
-        blocks.insert(hash, ProvisionalBlock::from_indexed_seam(block));
-        heights_to_hashes.insert(height, hash);
+        let block_index = BlockIndex {
+            height: provisional_block.height(),
+            hash: *provisional_block.hash(),
+        };
 
-        Self {
+        blocks.insert(block_index.hash, provisional_block);
+        heights_to_hashes.insert(block_index.height, block_index.hash);
+
+        Ok(Self {
             blocks,
             heights_to_hashes,
-            best_tip,
+            best_tip: block_index,
             // Newly seeded from the seam block: the finalized DB has not yet
             // caught up to it. `update` flips this to `Resolved` once it has.
             availability: SnapshotAvailability::Provisional,
-        }
+        })
     }
 
     fn add_block_new_chaintip(&mut self, block: ProvisionalBlock) {
@@ -448,19 +456,14 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// TODO: Currently, we can't initate without an snapshot, we need to create a cache
     /// of at least one block. Should this be tied to the instantiation of the data structure
     /// itself?
-    #[instrument(name = "NonFinalizedState::initialize", skip(source, start_block), fields(network = %network))]
-    pub async fn initialize(
-        source: Source,
-        network: Network,
-        start_block: Option<IndexedBlock>,
-    ) -> Result<Self, InitError> {
+    #[instrument(name = "NonFinalizedState::initialize", skip(source), fields(network = %network))]
+    pub async fn initialize(source: Source, network: Network) -> Result<Self, InitError> {
         info!(network = %network, "Initializing non-finalized state");
 
-        // Resolve the initial block (provided or genesis)
-        let initial_block = Self::resolve_initial_block(&source, &network, start_block).await?;
-
-        // Create initial snapshot from the block
-        let snapshot = NonfinalizedBlockCacheSnapshot::from_initial_block(initial_block);
+        let snapshot =
+            NonfinalizedBlockCacheSnapshot::init_from_blockchain_source(&source, network.clone())
+                .await
+                .map_err(|e| -> InitError { todo!() })?;
 
         // Set up optional listener
         let nfs_change_listener = Self::setup_listener(&source).await;
@@ -583,7 +586,12 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 None => self.fetch_seam_indexed_block(anchor_height).await?,
             };
             self.current.swap(Arc::new(
-                NonfinalizedBlockCacheSnapshot::from_initial_block(seam),
+                NonfinalizedBlockCacheSnapshot::init_from_blockchain_source(
+                    &self.source,
+                    self.network.clone(),
+                )
+                .await
+                .expect("todo error handling"),
             ));
             initial_state = self.get_snapshot();
         }
@@ -620,7 +628,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
-                let chainblock = self.block_to_provisional_block(&block).await?;
+                let chainblock =
+                    block_to_provisional_block(&block, &self.source, self.network.clone()).await?;
                 info!(
                     height = (working_snapshot.best_tip.height + 1).0,
                     hash = %chainblock.hash(),
@@ -845,93 +854,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.current.load_full()
     }
 
-    /// Build a [`ProvisionalBlock`] from a source block, accumulating its
-    /// header work onto the parent's relative total. Mirrors
-    /// [`Self::block_to_chainblock`] but produces a provisional (not indexed)
-    /// block: no absolute chainwork is computed or required.
-    async fn block_to_provisional_block(
-        &self,
-        block: &zebra_chain::block::Block,
-    ) -> Result<ProvisionalBlock, SyncError> {
-        let tree_roots = self
-            .get_tree_roots_from_source(block.hash().into())
-            .await
-            .map_err(|e| {
-                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
-                    Box::new(InvalidData(format!("{}", e))),
-                ))
-            })?;
-
-        Self::provisional_block_from_parts(block, &tree_roots, self.network.clone()).map_err(|e| {
-            SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
-                InvalidData(e),
-            )))
-        })
-    }
-
-    /// Assemble a [`ProvisionalBlock`] from already-fetched parts. Reuses the
-    /// shared `BlockWithMetadata` extractors (`extract_block_data`,
-    /// `extract_transactions`, `create_commitment_tree_data`, `block_work`);
-    /// the only divergence from the indexed path is that work is accumulated
-    /// *relative to the seam* instead of into an absolute `BlockContext`.
-    fn provisional_block_from_parts(
-        block: &zebra_chain::block::Block,
-        tree_roots: &TreeRootData,
-        network: Network,
-    ) -> Result<ProvisionalBlock, String> {
-        let (sapling_root, sapling_size, orchard_root, orchard_size) =
-            tree_roots.clone().extract_with_defaults();
-
-        // `parent_chainwork` is unused for a provisional block (it feeds only
-        // `create_block_context`, which we never call here); a zero placeholder
-        // keeps the throwaway `BlockMetadata` shape without touching absolute
-        // work. The relative total is tracked separately, below.
-        let metadata = BlockMetadata::new(
-            sapling_root,
-            sapling_size as u32,
-            orchard_root,
-            orchard_size as u32,
-            ChainWork::from_u256(U256::zero()),
-            network,
-        );
-        let block_with_metadata = BlockWithMetadata::new(block, metadata);
-
-        let data = block_with_metadata.extract_block_data()?;
-        let transactions = block_with_metadata.extract_transactions()?;
-        let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
-        let chainwork = block_with_metadata.block_work()?;
-
-        let hash = BlockHash::from(block.hash());
-        let parent_hash = BlockHash::from(block.header.previous_block_hash);
-        let height = block
-            .coinbase_height()
-            .map(|height| Height(height.0))
-            .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
-
-        Ok(ProvisionalBlock {
-            index: BlockIndex { height, hash },
-            parent_hash,
-            chainwork,
-            data,
-            transactions,
-            commitment_tree_data,
-        })
-    }
-
-    /// Get commitment tree roots from the blockchain source
-    async fn get_tree_roots_from_source(
-        &self,
-        block_hash: BlockHash,
-    ) -> Result<TreeRootData, super::source::BlockchainSourceError> {
-        let (sapling_root_and_len, orchard_root_and_len) =
-            self.source.get_commitment_tree_roots(block_hash).await?;
-
-        Ok(TreeRootData {
-            sapling: sapling_root_and_len,
-            orchard: orchard_root_and_len,
-        })
-    }
-
     /// Fetch the seam (finalization-ceiling) block from the source and build it
     /// as an [`IndexedBlock`] to anchor the NFS window while the finalized DB is
     /// still catching up. The absolute chainwork is a zero placeholder:
@@ -955,8 +877,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     ))),
                 ))
             })?;
-        let tree_roots = self
-            .get_tree_roots_from_source(block.hash().into())
+        let tree_roots = get_tree_roots_from_source(block.hash().into(), &self.source)
             .await
             .map_err(|e| {
                 SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
@@ -1043,6 +964,90 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 }
 
+/// Build a [`ProvisionalBlock`] from a source block, accumulating its
+/// header work onto the parent's relative total. Mirrors
+/// [`Self::block_to_chainblock`] but produces a provisional (not indexed)
+/// block: no absolute chainwork is computed or required.
+async fn block_to_provisional_block(
+    block: &zebra_chain::block::Block,
+    source: &impl BlockchainSource,
+    network: Network,
+) -> Result<ProvisionalBlock, SyncError> {
+    let tree_roots = get_tree_roots_from_source(block.hash().into(), source)
+        .await
+        .map_err(|e| {
+            SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
+                InvalidData(format!("{}", e)),
+            )))
+        })?;
+
+    provisional_block_from_parts(block, &tree_roots, network).map_err(|e| {
+        SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
+            InvalidData(e),
+        )))
+    })
+}
+/// Assemble a [`ProvisionalBlock`] from already-fetched parts. Reuses the
+/// shared `BlockWithMetadata` extractors (`extract_block_data`,
+/// `extract_transactions`, `create_commitment_tree_data`, `block_work`);
+/// the only divergence from the indexed path is that work is accumulated
+/// *relative to the seam* instead of into an absolute `BlockContext`.
+fn provisional_block_from_parts(
+    block: &zebra_chain::block::Block,
+    tree_roots: &TreeRootData,
+    network: Network,
+) -> Result<ProvisionalBlock, String> {
+    let (sapling_root, sapling_size, orchard_root, orchard_size) =
+        tree_roots.clone().extract_with_defaults();
+
+    // `parent_chainwork` is unused for a provisional block (it feeds only
+    // `create_block_context`, which we never call here); a zero placeholder
+    // keeps the throwaway `BlockMetadata` shape without touching absolute
+    // work. The relative total is tracked separately, below.
+    let metadata = BlockMetadata::new(
+        sapling_root,
+        sapling_size as u32,
+        orchard_root,
+        orchard_size as u32,
+        ChainWork::from_u256(U256::zero()),
+        network,
+    );
+    let block_with_metadata = BlockWithMetadata::new(block, metadata);
+
+    let data = block_with_metadata.extract_block_data()?;
+    let transactions = block_with_metadata.extract_transactions()?;
+    let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
+    let chainwork = block_with_metadata.block_work()?;
+
+    let hash = BlockHash::from(block.hash());
+    let parent_hash = BlockHash::from(block.header.previous_block_hash);
+    let height = block
+        .coinbase_height()
+        .map(|height| Height(height.0))
+        .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
+
+    Ok(ProvisionalBlock {
+        index: BlockIndex { height, hash },
+        parent_hash,
+        chainwork,
+        data,
+        transactions,
+        commitment_tree_data,
+    })
+}
+/// Get commitment tree roots from the blockchain source
+async fn get_tree_roots_from_source(
+    block_hash: BlockHash,
+    source: &impl BlockchainSource,
+) -> Result<TreeRootData, super::source::BlockchainSourceError> {
+    let (sapling_root_and_len, orchard_root_and_len) =
+        source.get_commitment_tree_roots(block_hash).await?;
+
+    Ok(TreeRootData {
+        sapling: sapling_root_and_len,
+        orchard: orchard_root_and_len,
+    })
+}
 /// Errors that occur during a snapshot update
 pub enum UpdateError {
     /// The block reciever disconnected. This should only happen during shutdown.
@@ -1103,6 +1108,6 @@ impl Block for zebra_chain::block::Block {
         &self,
         nfs: &NonFinalizedState<Source>,
     ) -> Result<ProvisionalBlock, SyncError> {
-        nfs.block_to_provisional_block(self).await
+        block_to_provisional_block(self, &nfs.source, nfs.network.clone()).await
     }
 }

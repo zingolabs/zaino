@@ -808,9 +808,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         // The non-finalized state is built eagerly so it always exists. It
         // seeds Provisional from the validator (genesis); the sync loop extends
         // it, and the finalized DB catching up to the seam flips it to Resolved.
-        let non_finalized_state = Arc::new(
-            crate::NonFinalizedState::initialize(source.clone(), network.clone(), None).await?,
-        );
+        let non_finalized_state =
+            Arc::new(crate::NonFinalizedState::initialize(source.clone(), network.clone()).await?);
 
         let mut chain_index = Self {
             mempool: std::sync::Arc::new(mempool_state),
