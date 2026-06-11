@@ -49,7 +49,6 @@ pub struct NonFinalizedState<Source: BlockchainSource> {
 /// finalized DB has reached its seam) is its [`SnapshotAvailability`]: while
 /// `Provisional`, reads that need finalized data pass through to the validator.
 pub struct ChainIndexSnapshot {
-    #[allow(private_interfaces)]
     non_finalized_snapshot: Arc<NonfinalizedBlockCacheSnapshot>,
 }
 
