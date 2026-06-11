@@ -339,10 +339,6 @@ impl From<UpdateError> for SyncError {
 }
 
 #[derive(thiserror::Error, Debug)]
-#[error("Genesis block missing in validator")]
-struct MissingGenesisBlock;
-
-#[derive(thiserror::Error, Debug)]
 #[error("data from validator invalid: {0}")]
 struct InvalidData(String);
 
@@ -361,16 +357,6 @@ pub enum InitError {
     /// the initial block provided was not on the best chain
     #[error("initial block not on best chain")]
     InitalBlockMissingHeight,
-}
-
-/// This is the core of the concurrent block cache.
-impl BlockIndex {
-    /// Create a BlockID from an IndexedBlock
-    fn from_block(block: &IndexedBlock) -> Self {
-        let height = block.height();
-        let hash = *block.hash();
-        Self { height, hash }
-    }
 }
 
 impl NonfinalizedBlockCacheSnapshot {
@@ -474,62 +460,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             network,
             nfs_change_listener,
         })
-    }
-
-    /// Fetch the genesis block and convert it to IndexedBlock
-    async fn get_genesis_indexed_block(
-        source: &Source,
-        network: &Network,
-    ) -> Result<IndexedBlock, InitError> {
-        let genesis_block = source
-            .get_block(HashOrHeight::Height(zebra_chain::block::Height(0)))
-            .await
-            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
-            .ok_or_else(|| InitError::InvalidNodeData(Box::new(MissingGenesisBlock)))?;
-
-        let (sapling_root_and_len, orchard_root_and_len) = source
-            .get_commitment_tree_roots(genesis_block.hash().into())
-            .await
-            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?;
-
-        let tree_roots = TreeRootData {
-            sapling: sapling_root_and_len,
-            orchard: orchard_root_and_len,
-        };
-
-        // For genesis block, chainwork is just the block's own work (no previous blocks)
-        let genesis_work = ChainWork::from(U256::from(
-            genesis_block
-                .header
-                .difficulty_threshold
-                .to_work()
-                .ok_or_else(|| {
-                    InitError::InvalidNodeData(Box::new(InvalidData(
-                        "Invalid work field of genesis block".to_string(),
-                    )))
-                })?
-                .as_u128(),
-        ));
-
-        Self::create_indexed_block_with_optional_roots(
-            genesis_block.as_ref(),
-            &tree_roots,
-            genesis_work,
-            network.clone(),
-        )
-        .map_err(|e| InitError::InvalidNodeData(Box::new(InvalidData(e))))
-    }
-
-    /// Resolve the initial block - either use provided block or fetch genesis
-    async fn resolve_initial_block(
-        source: &Source,
-        network: &Network,
-        start_block: Option<IndexedBlock>,
-    ) -> Result<IndexedBlock, InitError> {
-        match start_block {
-            Some(block) => Ok(block),
-            None => Self::get_genesis_indexed_block(source, network).await,
-        }
     }
 
     /// Set up the optional non-finalized change listener
