@@ -513,6 +513,7 @@ impl ZainoDB {
         // finalized DB may be held below the chain's finalization ceiling,
         // which — since the non-finalized state leads — holds the snapshot
         // Provisional with a deterministic catch-up gap.
+        #[cfg(test)]
         let height = match source.finalized_sync_cap() {
             Some(cap) => height.min(cap),
             None => height,

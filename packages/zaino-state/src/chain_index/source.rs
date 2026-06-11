@@ -233,6 +233,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// non-finalized state is validator-sourced and *leads*, capping the
     /// finalized DB deterministically holds the snapshot Provisional with a
     /// known catch-up gap — without slowing any source call.
+    #[cfg(test)]
     fn finalized_sync_cap(&self) -> Option<crate::Height> {
         None
     }
