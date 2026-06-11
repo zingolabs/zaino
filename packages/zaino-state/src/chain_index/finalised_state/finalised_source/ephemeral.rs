@@ -31,7 +31,7 @@ use crate::{
 };
 use crate::{BlockContext, BlockMetadata, BlockWithMetadata, ChainWork, NamedAtomicStatus};
 
-use zaino_proto::proto::utils::PoolTypeFilter;
+use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrScript};
@@ -61,7 +61,7 @@ const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_
 pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
     /// Backing blockchain source used to answer finalised-state reads.
     ///
-    /// This is typically a validator/source service. Stateless read methods fetch blocks,
+    /// This is typically a validator/source service. Ephemeral read methods fetch blocks,
     /// transactions, commitment tree data, and chain metadata from this source and convert them into
     /// the same response types exposed by persistent database backends.
     source: T,
@@ -72,13 +72,13 @@ pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
     /// Orchard commitment tree data is expected for a block.
     network: zebra_chain::parameters::Network,
 
-    /// Current runtime status of the stateless backend.
+    /// Current runtime status of the ephemeral backend.
     ///
     /// The background status-poll task updates this value by periodically checking whether the
     /// backing [`BlockchainSource`] is reachable. [`DbCore::status`] returns this value directly.
     status: NamedAtomicStatus,
 
-    /// Shared shutdown signal for the stateless backend.
+    /// Shared shutdown signal for the ephemeral backend.
     ///
     /// This flag is set by [`DbCore::shutdown`] and by [`Drop`]. The background status-poll task
     /// observes it and exits when shutdown has been requested.
@@ -88,7 +88,7 @@ pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
     ///
     /// The task periodically probes the backing source and updates [`Self::status`]. The handle is
     /// stored behind a Tokio mutex so async shutdown can take and await or abort the task exactly
-    /// once, even when multiple clones of the stateless backend exist.
+    /// once, even when multiple clones of the ephemeral backend exist.
     status_poll_task_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 
     /// Reported height of the persistent on-disk database.
@@ -99,10 +99,10 @@ pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
     /// not actually been persisted.
     ///
     /// `None` means there is no persistent database height to report. This is the expected value
-    /// when stateless is the real backend, for example in ephemeral mode. In that case
+    /// when ephemeral is the real backend, for example in ephemeral mode. In that case
     /// [`DbRead::db_height`] reports zero.
     ///
-    /// `Some(height)` means stateless is temporarily serving requests while a persistent backend
+    /// `Some(height)` means ephemeral is temporarily serving requests while a persistent backend
     /// exists elsewhere. Sync and migration code should update this value after successful
     /// persistent writes or rebuild progress so routed callers observe the actual on-disk database
     /// height.
@@ -118,7 +118,7 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
         network: zebra_chain::parameters::Network,
         db_height: Option<Height>,
     ) -> Self {
-        let status = NamedAtomicStatus::new("stateless-finalised-state", StatusType::Spawning);
+        let status = NamedAtomicStatus::new("ephemeral-finalised-state", StatusType::Spawning);
 
         let shutdown_requested = Arc::new(AtomicBool::new(false));
 
@@ -163,32 +163,32 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
         }
     }
 
-    /// Returns the persistent database height reported by this stateless backend.
+    /// Returns the persistent database height reported by this ephemeral backend.
     ///
-    /// This value is independent of the backing source height. It is used when stateless
+    /// This value is independent of the backing source height. It is used when ephemeral
     /// is temporarily serving requests during sync or migration while the persistent
     /// database continues to progress separately.
     pub(crate) fn reported_db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
         let db_height_guard = self.db_height.read().map_err(|error| {
             FinalisedStateError::Custom(format!(
-                "stateless finalised state db height lock poisoned: {error}"
+                "ephemeral finalised state db height lock poisoned: {error}"
             ))
         })?;
 
         Ok(*db_height_guard)
     }
 
-    /// Updates the persistent database height reported by this stateless backend.
+    /// Updates the persistent database height reported by this ephemeral backend.
     ///
     /// `None` means no persistent database height is available, which is the expected
-    /// value when stateless is used as the real backend in ephemeral mode.
+    /// value when ephemeral is used as the real backend in ephemeral mode.
     pub(crate) fn update_db_height(
         &self,
         db_height: Option<Height>,
     ) -> Result<(), FinalisedStateError> {
         let mut db_height_guard = self.db_height.write().map_err(|error| {
             FinalisedStateError::Custom(format!(
-                "stateless finalised state db height lock poisoned: {error}"
+                "ephemeral finalised state db height lock poisoned: {error}"
             ))
         })?;
 
@@ -197,7 +197,7 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
         Ok(())
     }
 
-    /// Stores a new runtime status for this stateless backend.
+    /// Stores a new runtime status for this ephemeral backend.
     ///
     /// This uses the same status hook exposed through [`DbCore::status`]. It is intended for router or
     /// backend-level orchestration code that needs to report a background failure through the existing
@@ -347,7 +347,7 @@ where
                 Err(error) => {
                     return Err(FinalisedStateError::BlockchainSourceError(
                         BlockchainSourceError::Unrecoverable(format!(
-                        "stateless finalised state status poll task failed during shutdown: {error}"
+                        "ephemeral finalised state status poll task failed during shutdown: {error}"
                     )),
                     ));
                 }
@@ -756,10 +756,13 @@ impl<T: BlockchainSource> CompactBlockExt for EphemeralFinalisedState<T> {
     async fn get_compact_block(
         &self,
         height: Height,
-        _pool_types: PoolTypeFilter,
+        pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
         let chain_block = self.get_required_chain_block(height).await?;
-        Ok(chain_block.to_compact_block())
+        Ok(compact_block_with_pool_types(
+            chain_block.to_compact_block(),
+            &pool_types.to_pool_types_vector(),
+        ))
     }
 
     async fn get_compact_block_stream(

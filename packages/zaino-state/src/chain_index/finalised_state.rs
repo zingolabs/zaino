@@ -18,7 +18,7 @@
 //! - coordinating **database version migrations** when an on-disk version is older than the
 //!   configured target — in the **background**, while continuing to serve,
 //! - syncing the persistent database up to a target height — in the **background** for large
-//!   ranges, while continuing to serve from a stateless passthrough,
+//!   ranges, while continuing to serve from a ephemeral passthrough,
 //! - exposing a small set of core read/write operations to the rest of `chain_index`,
 //! - and providing a read-only handle (`DbReader`) that should be used for all chain fetches.
 //!
@@ -44,7 +44,7 @@
 //!
 //! - `router`
 //!   - Implements `router::Router`, a capability router that can direct calls to the primary backing
-//!     source, a shadow database during major migrations, or a stateless passthrough during
+//!     source, a shadow database during major migrations, or a ephemeral passthrough during
 //!     background sync.
 //!
 //! - `migrations`
@@ -64,7 +64,7 @@
 //!
 //! ```text
 //! FinalisedState (facade; owns config; exposes simple methods)
-//!   └─ Router (capability routing; primary + optional shadow + optional stateless passthrough)
+//!   └─ Router (capability routing; primary + optional shadow + optional ephemeral passthrough)
 //!       └─ FinalisedSource (enum; V0 / V1 / Ephemeral; implements core + extension traits)
 //!           ├─ finalised_source::v0::DbV0 (legacy persistent schema; compact-block streamer)
 //!           ├─ finalised_source::v1::DbV1 (current persistent schema; full indices incl. transparent history)
@@ -84,10 +84,10 @@
 //!   `BlockchainSource`. `sync_to_height` is a no-op and `db_height` reports `0`.
 //! - **Background sync**: `sync_to_height` runs **inline** for ranges within
 //!   `LONG_RUNNING_SYNC_THRESHOLD` (so a caller that reads straight back sees the data), and
-//!   **spawns** for larger ranges. While a large sync runs, read-only stateless routing is installed
+//!   **spawns** for larger ranges. While a large sync runs, read-only ephemeral routing is installed
 //!   so reads are served from the source; the spawned task retries transient failures and escalates
 //!   to `StatusType::CriticalError` after `MAX_BACKGROUND_SYNC_RETRIES` attempts.
-//! - **Background migration**: a version migration likewise runs in a spawned task while a stateless
+//! - **Background migration**: a version migration likewise runs in a spawned task while a ephemeral
 //!   passthrough serves reads; on failure it sets `StatusType::CriticalError`.
 //!
 //! Readiness has two distinct waits: `FinalisedState::wait_until_ready` reflects *serving*
@@ -95,7 +95,7 @@
 //! `FinalisedState::wait_until_synced` waits for in-progress background sync/migration to actually
 //! finish (the persistent database reaching its target, or a terminal error).
 //!
-//! Caveat during a large background sync/migration: blocks served by the stateless passthrough carry
+//! Caveat during a large background sync/migration: blocks served by the ephemeral passthrough carry
 //! a chainwork of `0`. This is consistent for the non-finalised state's *relative* fork-choice (every
 //! block shares the same baseline) but means absolute chainwork is offset-low until the persistent
 //! database catches up and the anchor is re-seeded. See `chain_index::non_finalised_state`
@@ -230,7 +230,7 @@ use zebra_chain::parameters::NetworkKind;
 
 use crate::{
     chain_index::{
-        finalised_state::{finalised_source::v1::DB_VERSION_V1, router::StatelessMode},
+        finalised_state::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode},
         source::BlockchainSourceError,
         types::GENESIS_HEIGHT,
     },
@@ -253,7 +253,7 @@ use tokio::{
 
 use super::source::BlockchainSource;
 
-/// A sync wider than this many blocks runs in the background (with stateless
+/// A sync wider than this many blocks runs in the background (with ephemeral
 /// passthrough serving reads); anything within it runs to completion inline so
 /// callers that read straight back (e.g. ChainIndex NFS init) observe the data.
 const LONG_RUNNING_SYNC_THRESHOLD: u32 = 10;
@@ -589,8 +589,8 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// Syncs the persistent database up to and including `height`.
     ///
     /// Sync is skipped when:
-    /// - the primary backend is stateless, meaning there is no persistent database to sync, or
-    /// - a full-mode stateless reference is active, meaning migration/maintenance currently owns the
+    /// - the primary backend is ephemeral, meaning there is no persistent database to sync, or
+    /// - a full-mode ephemeral reference is active, meaning migration/maintenance currently owns the
     ///   persistent database path, or
     /// - the database is non-empty and already at or above `height`.
     ///
@@ -598,7 +598,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// origin block is written.
     ///
     /// If the requested sync range is more than `LONG_RUNNING_SYNC_THRESHOLD` blocks ahead of the
-    /// current persistent database height, the sync runs in the **background**: read-only stateless
+    /// current persistent database height, the sync runs in the **background**: read-only ephemeral
     /// routing is installed for its duration (keeping finalised-state reads served by the source while
     /// normal routed writes continue appending to primary), and this method returns immediately.
     /// Completion can be awaited via `FinalisedState::wait_until_synced`.
@@ -614,11 +614,11 @@ impl<T: BlockchainSource> FinalisedState<T> {
     where
         T: Send + Sync + 'static,
     {
-        if self.db.primary_is_stateless() {
+        if self.db.primary_is_ephemeral() {
             return Ok(());
         }
 
-        if self.db.has_full_stateless_reference() {
+        if self.db.has_full_ephemeral_reference() {
             return Ok(());
         }
 
@@ -647,25 +647,25 @@ impl<T: BlockchainSource> FinalisedState<T> {
             // spawned task starting. The guard is moved into the task and drops when it completes.
             let op_guard = router.begin_background_op();
 
-            let stateless_reference = router
-                .init_or_take_stateless(
+            let ephemeral_reference = router
+                .init_or_take_ephemeral(
                     source.clone(),
                     cfg.network.to_zebra_network(),
-                    StatelessMode::ReadOnly,
+                    EphemeralMode::ReadOnly,
                     db_height_opt,
                 )
                 .await?;
 
             tokio::spawn(async move {
                 let _op_guard = op_guard;
-                let _stateless_reference = stateless_reference;
+                let _ephemeral_reference = ephemeral_reference;
 
                 // Retry transient failures so a background sync does not fail silently; surface a
                 // recoverable status between attempts and escalate to a terminal status once the
                 // retry budget is exhausted.
                 let mut attempt: u32 = 0;
                 loop {
-                    if router.has_full_stateless_reference() {
+                    if router.has_full_ephemeral_reference() {
                         return;
                     }
 
@@ -716,11 +716,11 @@ impl<T: BlockchainSource> FinalisedState<T> {
     where
         T: Send + Sync + 'static,
     {
-        if router.primary_is_stateless() {
+        if router.primary_is_ephemeral() {
             return Ok(());
         }
 
-        if router.has_full_stateless_reference() {
+        if router.has_full_ephemeral_reference() {
             return Ok(());
         }
 
@@ -794,7 +794,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
         let result: Result<(), FinalisedStateError> = async {
             for height_int in db_height.0..=height.0 {
-                if router.has_full_stateless_reference() {
+                if router.has_full_ephemeral_reference() {
                     return Ok(());
                 }
 
@@ -875,7 +875,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
                 router.write_block(chain_block).await?;
 
-                router.update_stateless_db_height(Some(chain_block_height))?;
+                router.update_ephemeral_db_height(Some(chain_block_height))?;
             }
 
             Ok(())

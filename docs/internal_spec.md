@@ -159,7 +159,7 @@ Full documentation for `Zaino-Serve` can be found [here](https://zingolabs.githu
     `ephemeral_finalised_state` is set, an ephemeral passthrough that serves
     finalised reads directly from the backing validator and persists nothing.
   - Sync and version migration are **background, non-blocking** operations. Large
-    syncs and migrations run in the background while a stateless passthrough
+    syncs and migrations run in the background while an ephemeral passthrough
     continues serving finalised reads from the source; small syncs run inline.
     Background failures retry and escalate to a critical status.
   - During a large background sync/migration, passthrough-served blocks carry a

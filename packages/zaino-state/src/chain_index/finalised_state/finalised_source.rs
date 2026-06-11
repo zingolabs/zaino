@@ -6,7 +6,7 @@
 //! Concrete backing implementations live in:
 //! - [`v0`]: legacy persistent schema (compact-block streamer)
 //! - [`v1`]: current persistent schema (expanded indices and query surface)
-//! - [`ephemeral`]: stateless passthrough that serves finalised reads directly from the
+//! - [`ephemeral`]: ephemeral passthrough that serves finalised reads directly from the
 //!   [`BlockchainSource`](crate::chain_index::source::BlockchainSource) and persists nothing
 //!   (used for ephemeral mode and as the passthrough during background sync/migration)
 //!
@@ -233,7 +233,7 @@ pub(crate) enum FinalisedSource<T: BlockchainSource> {
     /// Current schema backend.
     V1(DbV1),
 
-    /// Stateless finalised state, DB disabled.
+    /// Ephemeral finalised state, DB disabled.
     Ephemeral(EphemeralFinalisedState<T>),
 }
 
@@ -256,7 +256,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         Ok(Self::V1(DbV1::spawn(cfg).await?))
     }
 
-    /// Spawns a "stateless" finalised state.
+    /// Spawns a "ephemeral" finalised state.
     pub(crate) fn ephemeral(
         source: T,
         network: zebra_chain::parameters::Network,
@@ -294,7 +294,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         match self {
             Self::V0(database) => database.status_atomic().store(status),
             Self::V1(database) => database.status_atomic().store(status),
-            Self::Ephemeral(stateless) => stateless.store_status(status),
+            Self::Ephemeral(ephemeral) => ephemeral.store_status(status),
         }
     }
 
@@ -378,7 +378,7 @@ impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {
 }
 
 impl<T: BlockchainSource> From<EphemeralFinalisedState<T>> for FinalisedSource<T> {
-    /// Wrap an already-constructed stateless finalised state backend.
+    /// Wrap an already-constructed ephemeral finalised state backend.
     fn from(value: EphemeralFinalisedState<T>) -> Self {
         Self::Ephemeral(value)
     }
@@ -393,7 +393,7 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
         match self {
             Self::V0(db) => DbCore::status(db),
             Self::V1(db) => DbCore::status(db),
-            Self::Ephemeral(stateless) => DbCore::status(stateless),
+            Self::Ephemeral(ephemeral) => DbCore::status(ephemeral),
         }
     }
 
@@ -404,7 +404,7 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
         match self {
             Self::V0(db) => DbCore::shutdown(db).await,
             Self::V1(db) => DbCore::shutdown(db).await,
-            Self::Ephemeral(stateless) => DbCore::shutdown(stateless).await,
+            Self::Ephemeral(ephemeral) => DbCore::shutdown(ephemeral).await,
         }
     }
 }
@@ -418,7 +418,7 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.db_height().await,
             Self::V1(db) => db.db_height().await,
-            Self::Ephemeral(stateless) => stateless.db_height().await,
+            Self::Ephemeral(ephemeral) => ephemeral.db_height().await,
         }
     }
 
@@ -432,7 +432,7 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.get_block_height(hash).await,
             Self::V1(db) => db.get_block_height(hash).await,
-            Self::Ephemeral(stateless) => stateless.get_block_height(hash).await,
+            Self::Ephemeral(ephemeral) => ephemeral.get_block_height(hash).await,
         }
     }
 
@@ -446,7 +446,7 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.get_block_hash(height).await,
             Self::V1(db) => db.get_block_hash(height).await,
-            Self::Ephemeral(stateless) => stateless.get_block_hash(height).await,
+            Self::Ephemeral(ephemeral) => ephemeral.get_block_hash(height).await,
         }
     }
 
@@ -458,7 +458,7 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.get_metadata().await,
             Self::V1(db) => db.get_metadata().await,
-            Self::Ephemeral(stateless) => stateless.get_metadata().await,
+            Self::Ephemeral(ephemeral) => ephemeral.get_metadata().await,
         }
     }
 }
@@ -472,7 +472,7 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.write_block(block).await,
             Self::V1(db) => db.write_block(block).await,
-            Self::Ephemeral(_stateless) => Ok(()),
+            Self::Ephemeral(_ephemeral) => Ok(()),
         }
     }
 
@@ -483,7 +483,7 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.delete_block_at_height(height).await,
             Self::V1(db) => db.delete_block_at_height(height).await,
-            Self::Ephemeral(_stateless) => Ok(()),
+            Self::Ephemeral(_ephemeral) => Ok(()),
         }
     }
 
@@ -494,7 +494,7 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.delete_block(block).await,
             Self::V1(db) => db.delete_block(block).await,
-            Self::Ephemeral(_stateless) => Ok(()),
+            Self::Ephemeral(_ephemeral) => Ok(()),
         }
     }
 
@@ -505,7 +505,7 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
         match self {
             Self::V0(db) => db.update_metadata(metadata).await,
             Self::V1(db) => db.update_metadata(metadata).await,
-            Self::Ephemeral(_stateless) => Ok(()),
+            Self::Ephemeral(_ephemeral) => Ok(()),
         }
     }
 }

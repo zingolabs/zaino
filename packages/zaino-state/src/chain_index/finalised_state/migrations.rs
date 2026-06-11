@@ -175,7 +175,7 @@ use crate::{
             capability::{BlockTransparentExt as _, DbMetadata},
             entry::StoredEntryFixed,
             finalised_source::v1::{DB_VERSION_V1, TX_OUT_SET_INFO_ACCUMULATOR_KEY},
-            router::StatelessMode,
+            router::EphemeralMode,
         },
         source::BlockchainSource,
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, GENESIS_HEIGHT},
@@ -252,8 +252,8 @@ pub trait Migration<T: BlockchainSource> {
     /// Patch migrations run directly against the current routed primary state and use the default
     /// metadata-only migration implementation.
     ///
-    /// Minor and major migrations are run while the migration manager holds a full-mode stateless
-    /// reference. During that time normal service capabilities route to stateless and migration code
+    /// Minor and major migrations are run while the migration manager holds a full-mode ephemeral
+    /// reference. During that time normal service capabilities route to ephemeral and migration code
     /// must use direct maintenance access to the persistent backend or replacement backend.
     fn migration_type(&self) -> MigrationType {
         MigrationType::Patch
@@ -361,12 +361,12 @@ impl<T: BlockchainSource> MigrationManager<T> {
                     let primary = self.router.primary_backend();
                     let db_height = primary.db_height().await?;
 
-                    let _stateless_reference = self
+                    let _ephemeral_reference = self
                         .router
-                        .init_or_take_stateless(
+                        .init_or_take_ephemeral(
                             self.source.clone(),
                             self.cfg.network.to_zebra_network(),
-                            StatelessMode::Full,
+                            EphemeralMode::Full,
                             db_height,
                         )
                         .await?;
@@ -595,7 +595,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
 
                         replacement.write_block(chain_block).await?;
 
-                        router.update_stateless_db_height(Some(chain_block_height))?;
+                        router.update_ephemeral_db_height(Some(chain_block_height))?;
                     }
                 }
 
@@ -615,7 +615,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
 
         let old_primary = router.replace_primary(Arc::clone(&replacement));
 
-        router.update_stateless_db_height(replacement.db_height().await?)?;
+        router.update_ephemeral_db_height(replacement.db_height().await?)?;
 
         tokio::spawn(async move {
             while Arc::strong_count(&old_primary) > 1 {
@@ -819,7 +819,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                         continue;
                     };
 
-                    router.update_stateless_db_height(Some(db_height))?;
+                    router.update_ephemeral_db_height(Some(db_height))?;
 
                     let db_height = db_height.0;
 
@@ -990,7 +990,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                             txn.commit()?;
                         }
 
-                        router.update_stateless_db_height(Some(Height(next_height_to_migrate)))?;
+                        router.update_ephemeral_db_height(Some(Height(next_height_to_migrate)))?;
 
                         next_height_to_migrate = height.0 + 1;
                     }

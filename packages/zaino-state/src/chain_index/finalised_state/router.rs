@@ -1,17 +1,17 @@
-//! Capability-based database router with optional stateless service routing.
+//! Capability-based database router with optional ephemeral service routing.
 //!
 //! This module implements [`Router`], the internal dispatch layer used by `FinalisedState` to route
 //! finalised-state operations to:
 //! - the **primary** database backend, which owns the persistent finalised-state database, or
-//! - an optional **stateless** backend, which serves requests from a backing [`BlockchainSource`]
+//! - an optional **ephemeral** backend, which serves requests from a backing [`BlockchainSource`]
 //!   while the persistent database is syncing or migrating.
 //!
 //! The router is designed to separate **service routing** from **maintenance writes**:
 //! - normal `FinalisedState` reads and writes are routed through [`Router::backend`],
-//! - long-running sync uses [`StatelessMode::ReadOnly`] so reads are served by stateless while
+//! - long-running sync uses [`EphemeralMode::ReadOnly`] so reads are served by ephemeral while
 //!   `WRITE_CORE` remains available on the primary backend,
-//! - migrations use [`StatelessMode::Full`] so all routed service capabilities, including
-//!   `WRITE_CORE`, move to stateless while migration code mutates the primary or replacement
+//! - migrations use [`EphemeralMode::Full`] so all routed service capabilities, including
+//!   `WRITE_CORE`, move to ephemeral while migration code mutates the primary or replacement
 //!   database through explicit maintenance paths such as [`Router::primary_backend`].
 //!
 //! This prevents normal `write_block` / `sync_to_height` calls from writing to the persistent
@@ -27,59 +27,59 @@
 //! - major rebuild migrations,
 //! - background maintenance that must freeze normal writes.
 //!
-//! A stateless backend allows FinalisedState to keep serving finalised-state requests from the backing
+//! A ephemeral backend allows FinalisedState to keep serving finalised-state requests from the backing
 //! validator/source while persistent database work continues in the background.
 //!
 //! # Routing model
 //!
 //! Routing is controlled by atomic capability masks:
-//! - `stateless_mask` controls which capabilities are served by the stateless backend,
+//! - `ephemeral_mask` controls which capabilities are served by the ephemeral backend,
 //! - `primary_mask` controls which capabilities are served by the primary backend.
 //!
 //! [`Router::backend`] resolves requests in this order:
-//! 1. If `stateless_mask` contains the requested capability and a stateless backend is active,
-//!    return stateless.
+//! 1. If `ephemeral_mask` contains the requested capability and a ephemeral backend is active,
+//!    return ephemeral.
 //! 2. Otherwise, if `primary_mask` contains the requested capability, return primary.
 //! 3. Otherwise, return [`FinalisedStateError::FeatureUnavailable`].
 //!
-//! # Stateless modes
+//! # Ephemeral modes
 //!
-//! [`StatelessMode::ReadOnly`] is intended for long-running sync:
-//! - read/query capabilities route to stateless,
+//! [`EphemeralMode::ReadOnly`] is intended for long-running sync:
+//! - read/query capabilities route to ephemeral,
 //! - `WRITE_CORE` remains routed to primary,
 //! - normal `sync_to_height` can still write through the router unless a full-mode holder is active.
 //!
-//! [`StatelessMode::Full`] is intended for migrations:
-//! - all stateless-supported capabilities route to stateless,
-//! - `WRITE_CORE` routes to stateless instead of primary,
+//! [`EphemeralMode::Full`] is intended for migrations:
+//! - all ephemeral-supported capabilities route to ephemeral,
+//! - `WRITE_CORE` routes to ephemeral instead of primary,
 //! - normal routed writes are prevented from mutating the persistent database,
 //! - migration code must use explicit maintenance accessors such as [`Router::primary_backend`].
 //!
-//! # Stateless lifetime
+//! # Ephemeral lifetime
 //!
-//! Stateless routing is controlled by [`StatelessReference`].
+//! Ephemeral routing is controlled by [`EphemeralReference`].
 //!
-//! Calling [`Router::init_or_take_stateless`] installs or reuses the stateless backend and returns a
-//! [`StatelessReference`]. The caller holds that reference for the entire period during which it
-//! needs stateless routing to remain active. When the reference is dropped, routing is automatically
+//! Calling [`Router::init_or_take_ephemeral`] installs or reuses the ephemeral backend and returns a
+//! [`EphemeralReference`]. The caller holds that reference for the entire period during which it
+//! needs ephemeral routing to remain active. When the reference is dropped, routing is automatically
 //! downgraded or restored.
 //!
-//! This makes stateless routing scope-based:
+//! This makes ephemeral routing scope-based:
 //!
 //! ```text
-//! let _stateless_reference = router.init_or_take_stateless(...).await;
-//! // stateless routing active
+//! let _ephemeral_reference = router.init_or_take_ephemeral(...).await;
+//! // ephemeral routing active
 //! // work runs here
-//! // stateless routing released when `_stateless_reference` is dropped
+//! // ephemeral routing released when `_ephemeral_reference` is dropped
 //! ```
 //!
 //! # Concurrency and atomicity model
 //!
 //! The router uses:
 //! - [`ArcSwap`] for lock-free replacement of the primary backend,
-//! - [`ArcSwapOption`] for lock-free publication/removal of the stateless backend,
+//! - [`ArcSwapOption`] for lock-free publication/removal of the ephemeral backend,
 //! - [`AtomicU32`] capability masks for fast capability routing,
-//! - a small lifecycle mutex to serialise stateless init/release transitions.
+//! - a small lifecycle mutex to serialise ephemeral init/release transitions.
 //!
 //! Backend selection is wait-free and safe for concurrent readers. In-flight operations remain valid
 //! because callers receive an [`Arc<FinalisedSource>`] before invoking backend methods.
@@ -91,7 +91,7 @@
 //!
 //! [`Router::primary_backend`] intentionally bypasses service routing. It must only be used by
 //! database maintenance code that is allowed to mutate or inspect the persistent backend while
-//! stateless is serving normal traffic.
+//! ephemeral is serving normal traffic.
 //!
 //! Normal service code should use routed trait methods (`DbRead`, `DbWrite`, and capability
 //! extension routing) rather than calling [`Router::primary_backend`].
@@ -101,12 +101,12 @@
 //! - If a new capability bit is introduced, ensure it is:
 //!   - added to `CapabilityRequest`,
 //!   - implemented by the relevant [`FinalisedSource`] variants,
-//!   - included or excluded deliberately in stateless routing policy.
+//!   - included or excluded deliberately in ephemeral routing policy.
 //!
-//! - Migrations should use [`StatelessMode::Full`] and perform persistent database writes through
+//! - Migrations should use [`EphemeralMode::Full`] and perform persistent database writes through
 //!   explicit maintenance accessors.
 //!
-//! - Long-running sync should use [`StatelessMode::ReadOnly`] and continue writing through routed
+//! - Long-running sync should use [`EphemeralMode::ReadOnly`] and continue writing through routed
 //!   `FinalisedState::write_block` / `Router::write_block`, so a concurrent full-mode migration can freeze
 //!   those writes safely.
 //!
@@ -133,20 +133,20 @@ use std::sync::{
 };
 use tokio::runtime::Handle;
 
-/// Stateless routing policy used when installing or reusing the stateless backend.
+/// Ephemeral routing policy used when installing or reusing the ephemeral backend.
 ///
-/// The selected mode determines which capability bits are routed to stateless and which remain on
+/// The selected mode determines which capability bits are routed to ephemeral and which remain on
 /// the primary backend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StatelessMode {
-    /// Route read/query capabilities through stateless while keeping `WRITE_CORE` on primary.
+pub(crate) enum EphemeralMode {
+    /// Route read/query capabilities through ephemeral while keeping `WRITE_CORE` on primary.
     ///
     /// This mode is intended for long-running sync. It allows FinalisedState to serve reads from the
     /// backing source while normal routed writes continue to append to the persistent database,
-    /// unless a concurrent [`StatelessMode::Full`] holder upgrades routing and freezes writes.
+    /// unless a concurrent [`EphemeralMode::Full`] holder upgrades routing and freezes writes.
     ReadOnly,
 
-    /// Route all stateless-supported capabilities through stateless, including `WRITE_CORE`.
+    /// Route all ephemeral-supported capabilities through ephemeral, including `WRITE_CORE`.
     ///
     /// This mode is intended for migrations and maintenance operations that must prevent normal
     /// routed writes from touching the persistent primary database. Migration code must use
@@ -155,69 +155,69 @@ pub(crate) enum StatelessMode {
     Full,
 }
 
-/// Scope guard for active stateless routing.
+/// Scope guard for active ephemeral routing.
 ///
-/// A `StatelessReference` is returned by [`Router::init_or_take_stateless`]. Holding this value keeps
-/// the stateless backend installed and keeps the requested [`StatelessMode`] in effect. Dropping the
-/// value automatically releases the caller's stateless routing claim.
+/// A `EphemeralReference` is returned by [`Router::init_or_take_ephemeral`]. Holding this value keeps
+/// the ephemeral backend installed and keeps the requested [`EphemeralMode`] in effect. Dropping the
+/// value automatically releases the caller's ephemeral routing claim.
 ///
 /// The contained backend reference is retained so the router can use ordinary [`Arc`] reference
-/// counting to determine whether stateless is still in use by other holders.
+/// counting to determine whether ephemeral is still in use by other holders.
 #[derive(Debug)]
-pub(crate) struct StatelessReference<T>
+pub(crate) struct EphemeralReference<T>
 where
     T: BlockchainSource + Send + Sync + 'static,
 {
-    /// Router that owns the stateless backend and routing masks.
+    /// Router that owns the ephemeral backend and routing masks.
     router: Arc<Router<T>>,
 
-    /// Reference to the active stateless backend.
+    /// Reference to the active ephemeral backend.
     ///
     /// This is wrapped in `Option` so [`Drop`] can take and release it exactly once.
-    stateless: Option<Arc<FinalisedSource<T>>>,
+    ephemeral: Option<Arc<FinalisedSource<T>>>,
 
     /// Routing mode requested by this reference.
-    mode: StatelessMode,
+    mode: EphemeralMode,
 }
 
-impl<T> StatelessReference<T>
+impl<T> EphemeralReference<T>
 where
     T: BlockchainSource + Send + Sync + 'static,
 {
     fn new(
         router: Arc<Router<T>>,
-        stateless: Arc<FinalisedSource<T>>,
-        mode: StatelessMode,
+        ephemeral: Arc<FinalisedSource<T>>,
+        mode: EphemeralMode,
     ) -> Self {
         Self {
             router,
-            stateless: Some(stateless),
+            ephemeral: Some(ephemeral),
             mode,
         }
     }
 
     pub(crate) fn backend(&self) -> &Arc<FinalisedSource<T>> {
-        self.stateless
+        self.ephemeral
             .as_ref()
-            .expect("stateless reference missing backend")
+            .expect("ephemeral reference missing backend")
     }
 
-    pub(crate) fn mode(&self) -> StatelessMode {
+    pub(crate) fn mode(&self) -> EphemeralMode {
         self.mode
     }
 }
 
-impl<T> Drop for StatelessReference<T>
+impl<T> Drop for EphemeralReference<T>
 where
     T: BlockchainSource + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        let Some(stateless) = self.stateless.take() else {
+        let Some(ephemeral) = self.ephemeral.take() else {
             return;
         };
 
         self.router
-            .release_stateless_reference(stateless, self.mode);
+            .release_ephemeral_reference(ephemeral, self.mode);
     }
 }
 
@@ -243,21 +243,21 @@ impl<T: BlockchainSource> Drop for BackgroundOpGuard<T> {
 ///
 /// `Router` is the internal dispatch layer used by `FinalisedState`. It routes operations to either:
 /// - the **primary** database backend, which owns persistent finalised-state storage, or
-/// - an optional **stateless** backend, which serves requests from a backing source while the
+/// - an optional **ephemeral** backend, which serves requests from a backing source while the
 ///   persistent database is syncing or migrating.
 ///
-/// Routing is controlled by capability masks. Stateless is checked first, then primary. This allows
-/// stateless to temporarily take over selected capabilities without replacing the primary backend.
+/// Routing is controlled by capability masks. Ephemeral is checked first, then primary. This allows
+/// ephemeral to temporarily take over selected capabilities without replacing the primary backend.
 ///
 /// ## Modes
 ///
-/// Long-running sync uses [`StatelessMode::ReadOnly`]:
-/// - finalised-state reads are served by stateless,
+/// Long-running sync uses [`EphemeralMode::ReadOnly`]:
+/// - finalised-state reads are served by ephemeral,
 /// - `WRITE_CORE` remains on primary,
 /// - routed sync writes can continue unless a full-mode migration is active.
 ///
-/// Migrations use [`StatelessMode::Full`]:
-/// - all service capabilities route to stateless,
+/// Migrations use [`EphemeralMode::Full`]:
+/// - all service capabilities route to ephemeral,
 /// - `WRITE_CORE` is removed from primary routing,
 /// - normal routed writes cannot mutate the persistent database,
 /// - migration code writes through explicit maintenance accessors.
@@ -274,54 +274,54 @@ pub(crate) struct Router<T: BlockchainSource> {
     /// This backend owns the persistent finalised-state database. In steady state, all capabilities
     /// route to this backend.
     ///
-    /// During [`StatelessMode::ReadOnly`], primary keeps `WRITE_CORE` while stateless serves reads.
-    /// During [`StatelessMode::Full`], primary is removed from routed service capability so
+    /// During [`EphemeralMode::ReadOnly`], primary keeps `WRITE_CORE` while ephemeral serves reads.
+    /// During [`EphemeralMode::Full`], primary is removed from routed service capability so
     /// migrations can work on it through explicit maintenance accessors without normal routed writes
     /// interfering.
     primary: ArcSwap<FinalisedSource<T>>,
 
-    /// Optional stateless finalised-state backend.
+    /// Optional ephemeral finalised-state backend.
     ///
     /// This backend is installed while long-running sync or migration work is active. It serves
-    /// finalised-state requests from the backing source according to the active [`StatelessMode`].
-    stateless: ArcSwapOption<FinalisedSource<T>>,
+    /// finalised-state requests from the backing source according to the active [`EphemeralMode`].
+    ephemeral: ArcSwapOption<FinalisedSource<T>>,
 
-    /// Serialises stateless init/release transitions.
+    /// Serialises ephemeral init/release transitions.
     ///
     /// Routing lookups do not take this lock. The lock only protects lifecycle transitions where the
-    /// stateless backend is created, removed, or has its capability policy changed.
-    stateless_lifecycle_lock: Mutex<()>,
+    /// ephemeral backend is created, removed, or has its capability policy changed.
+    ephemeral_lifecycle_lock: Mutex<()>,
 
-    /// Number of active read-only stateless routing references.
+    /// Number of active read-only ephemeral routing references.
     ///
-    /// This counts only [`StatelessReference`] holders. It must not be derived from
+    /// This counts only [`EphemeralReference`] holders. It must not be derived from
     /// [`Arc`] strong counts, because normal routed backend calls also clone backend
     /// [`Arc`] handles while operations are in flight.
-    stateless_read_only_reference_count: AtomicU32,
+    ephemeral_read_only_reference_count: AtomicU32,
 
-    /// Number of active full stateless routing references.
+    /// Number of active full ephemeral routing references.
     ///
     /// While this count is non-zero, routed service capability stays in
-    /// [`StatelessMode::Full`], meaning normal routed writes cannot mutate primary.
-    stateless_full_reference_count: AtomicU32,
+    /// [`EphemeralMode::Full`], meaning normal routed writes cannot mutate primary.
+    ephemeral_full_reference_count: AtomicU32,
 
     /// Capability mask for the primary backend.
     ///
     /// A bit being set means the corresponding capability may be served by primary. This mask is
-    /// modified when stateless routing is active:
+    /// modified when ephemeral routing is active:
     /// - full primary capability in steady state,
-    /// - `WRITE_CORE` only during read-only stateless routing,
-    /// - empty during full stateless routing.
+    /// - `WRITE_CORE` only during read-only ephemeral routing,
+    /// - empty during full ephemeral routing.
     primary_mask: AtomicU32,
 
-    /// Capability mask for the stateless backend.
+    /// Capability mask for the ephemeral backend.
     ///
-    /// A bit being set means the corresponding capability should be served by stateless if the
-    /// stateless backend is currently installed.
+    /// A bit being set means the corresponding capability should be served by ephemeral if the
+    /// ephemeral backend is currently installed.
     ///
-    /// This mask is empty in steady state, read-only during [`StatelessMode::ReadOnly`], and full
-    /// stateless capability during [`StatelessMode::Full`].
-    stateless_mask: AtomicU32,
+    /// This mask is empty in steady state, read-only during [`EphemeralMode::ReadOnly`], and full
+    /// ephemeral capability during [`EphemeralMode::Full`].
+    ephemeral_mask: AtomicU32,
 
     /// Number of in-progress background operations (sync and migration).
     ///
@@ -335,7 +335,7 @@ pub(crate) struct Router<T: BlockchainSource> {
 
 /// Database capability router.
 ///
-/// `Router` owns the active primary backend and optionally owns a stateless backend used for
+/// `Router` owns the active primary backend and optionally owns a ephemeral backend used for
 /// temporary service routing during sync and migration. Normal callers should access backends
 /// through [`Router::backend`] or the `DbRead` / `DbWrite` trait implementations. Maintenance code
 /// that intentionally bypasses service routing may use [`Router::primary_backend`].
@@ -344,23 +344,23 @@ impl<T: BlockchainSource> Router<T> {
 
     /// Creates a new [`Router`] with `primary` installed as the active backend.
     ///
-    /// The primary capability mask is initialized from `primary.capability()`. Stateless routing is
+    /// The primary capability mask is initialized from `primary.capability()`. Ephemeral routing is
     /// initially inactive.
     ///
     /// ## Notes
     ///
     /// The router assumes `primary.capability()` accurately describes the capabilities the backend
-    /// can serve. Capability routing policy is enforced by mask changes during stateless routing.
+    /// can serve. Capability routing policy is enforced by mask changes during ephemeral routing.
     pub(crate) fn new(primary: Arc<FinalisedSource<T>>) -> Self {
         let cap = primary.capability();
         Self {
             primary: ArcSwap::from(primary),
-            stateless: ArcSwapOption::empty(),
-            stateless_lifecycle_lock: Mutex::new(()),
-            stateless_read_only_reference_count: AtomicU32::new(0),
-            stateless_full_reference_count: AtomicU32::new(0),
+            ephemeral: ArcSwapOption::empty(),
+            ephemeral_lifecycle_lock: Mutex::new(()),
+            ephemeral_read_only_reference_count: AtomicU32::new(0),
+            ephemeral_full_reference_count: AtomicU32::new(0),
             primary_mask: AtomicU32::new(cap.bits()),
-            stateless_mask: AtomicU32::new(0),
+            ephemeral_mask: AtomicU32::new(0),
             background_ops: AtomicUsize::new(0),
         }
     }
@@ -370,14 +370,14 @@ impl<T: BlockchainSource> Router<T> {
     /// Returns the backend that should serve `cap` under the current routing policy.
     ///
     /// Routing order:
-    /// 1. If the stateless mask contains the requested capability and stateless is active, return
-    ///    stateless.
+    /// 1. If the ephemeral mask contains the requested capability and ephemeral is active, return
+    ///    ephemeral.
     /// 2. Otherwise, if the primary mask contains the requested capability, return primary.
     /// 3. Otherwise, return [`FinalisedStateError::FeatureUnavailable`].
     ///
     /// ## Correctness contract
     ///
-    /// The masks are the source of truth for service routing. During full stateless routing,
+    /// The masks are the source of truth for service routing. During full ephemeral routing,
     /// `WRITE_CORE` is intentionally routed away from primary so normal writes cannot interfere with
     /// migrations. Migration code that must mutate persistent state must use explicit maintenance
     /// accessors instead of routed writes.
@@ -388,9 +388,9 @@ impl<T: BlockchainSource> Router<T> {
     ) -> Result<Arc<FinalisedSource<T>>, FinalisedStateError> {
         let bit = cap.as_capability().bits();
 
-        if self.stateless_mask.load(Ordering::Acquire) & bit != 0 {
-            if let Some(stateless) = self.stateless.load().as_ref() {
-                return Ok(Arc::clone(stateless));
+        if self.ephemeral_mask.load(Ordering::Acquire) & bit != 0 {
+            if let Some(ephemeral) = self.ephemeral.load().as_ref() {
+                return Ok(Arc::clone(ephemeral));
             }
         }
         if self.primary_mask.load(Ordering::Acquire) & bit != 0 {
@@ -400,241 +400,241 @@ impl<T: BlockchainSource> Router<T> {
         Err(FinalisedStateError::FeatureUnavailable(cap.name()))
     }
 
-    // ***** Stateless finalised state control *****
+    // ***** Ephemeral finalised state control *****
     //
     // These methods should only ever be used by the migration manager.
 
-    /// Installs or reuses stateless routing and returns a scope guard for the active stateless mode.
+    /// Installs or reuses ephemeral routing and returns a scope guard for the active ephemeral mode.
     ///
-    /// The returned [`StatelessReference`] must be held for the entire period during which the caller
-    /// requires stateless routing. When the reference is dropped, routing is automatically released or
+    /// The returned [`EphemeralReference`] must be held for the entire period during which the caller
+    /// requires ephemeral routing. When the reference is dropped, routing is automatically released or
     /// downgraded.
     ///
     /// The `db_height` argument is the current persistent on-disk database height that should be
-    /// reported by the stateless backend while it is serving normal routed reads. This value is
+    /// reported by the ephemeral backend while it is serving normal routed reads. This value is
     /// independent of the backing source height.
     ///
-    /// ## [`StatelessMode::ReadOnly`]
+    /// ## [`EphemeralMode::ReadOnly`]
     ///
-    /// If stateless is inactive:
-    /// - creates a stateless backend,
+    /// If ephemeral is inactive:
+    /// - creates a ephemeral backend,
     /// - initializes its reported persistent database height from `db_height`,
-    /// - routes read/query capabilities to stateless,
+    /// - routes read/query capabilities to ephemeral,
     /// - keeps `WRITE_CORE` routed to primary.
     ///
-    /// If stateless is already active:
-    /// - updates the active stateless backend's reported persistent database height,
-    /// - returns another reference to the active stateless backend,
+    /// If ephemeral is already active:
+    /// - updates the active ephemeral backend's reported persistent database height,
+    /// - returns another reference to the active ephemeral backend,
     /// - does not upgrade write routing unless a full-mode reference is already active.
     ///
     /// This mode is used by long-running sync.
     ///
-    /// ## [`StatelessMode::Full`]
+    /// ## [`EphemeralMode::Full`]
     ///
-    /// If stateless is inactive:
-    /// - creates a stateless backend,
+    /// If ephemeral is inactive:
+    /// - creates a ephemeral backend,
     /// - initializes its reported persistent database height from `db_height`,
-    /// - routes all stateless-supported capabilities to stateless,
+    /// - routes all ephemeral-supported capabilities to ephemeral,
     /// - removes primary from routed service capability.
     ///
-    /// If stateless is already active:
-    /// - updates the active stateless backend's reported persistent database height,
-    /// - ensures full stateless routing is active,
-    /// - returns another reference to the active stateless backend.
+    /// If ephemeral is already active:
+    /// - updates the active ephemeral backend's reported persistent database height,
+    /// - ensures full ephemeral routing is active,
+    /// - returns another reference to the active ephemeral backend.
     ///
     /// This mode is used by migrations.
-    pub(crate) async fn init_or_take_stateless(
+    pub(crate) async fn init_or_take_ephemeral(
         self: &Arc<Self>,
         source: T,
         network: zebra_chain::parameters::Network,
-        mode: StatelessMode,
+        mode: EphemeralMode,
         db_height: Option<Height>,
-    ) -> Result<StatelessReference<T>, FinalisedStateError>
+    ) -> Result<EphemeralReference<T>, FinalisedStateError>
     where
         T: Send + Sync + 'static,
     {
-        let _stateless_lifecycle_guard = self
-            .stateless_lifecycle_lock
+        let _ephemeral_lifecycle_guard = self
+            .ephemeral_lifecycle_lock
             .lock()
-            .expect("stateless lifecycle mutex poisoned");
+            .expect("ephemeral lifecycle mutex poisoned");
 
         match mode {
-            StatelessMode::ReadOnly => {
-                self.stateless_read_only_reference_count
+            EphemeralMode::ReadOnly => {
+                self.ephemeral_read_only_reference_count
                     .fetch_add(1, Ordering::AcqRel);
             }
-            StatelessMode::Full => {
-                self.stateless_full_reference_count
+            EphemeralMode::Full => {
+                self.ephemeral_full_reference_count
                     .fetch_add(1, Ordering::AcqRel);
             }
         }
 
-        let stateless = match self.stateless.load_full() {
-            Some(stateless) => {
-                match stateless.as_ref() {
-                    FinalisedSource::Ephemeral(stateless_backend) => {
-                        stateless_backend.update_db_height(db_height)?;
+        let ephemeral = match self.ephemeral.load_full() {
+            Some(ephemeral) => {
+                match ephemeral.as_ref() {
+                    FinalisedSource::Ephemeral(ephemeral_backend) => {
+                        ephemeral_backend.update_db_height(db_height)?;
                     }
                     FinalisedSource::V0(_) | FinalisedSource::V1(_) => {
-                        self.decrement_stateless_reference_count(mode);
+                        self.decrement_ephemeral_reference_count(mode);
 
                         return Err(FinalisedStateError::Custom(
-                            "router stateless slot contained a persistent database backend"
+                            "router ephemeral slot contained a persistent database backend"
                                 .to_string(),
                         ));
                     }
                 }
 
-                stateless
+                ephemeral
             }
             None => {
-                let stateless = Arc::new(FinalisedSource::ephemeral(source, network, db_height));
-                self.stateless.store(Some(Arc::clone(&stateless)));
-                stateless
+                let ephemeral = Arc::new(FinalisedSource::ephemeral(source, network, db_height));
+                self.ephemeral.store(Some(Arc::clone(&ephemeral)));
+                ephemeral
             }
         };
 
-        let active_mode = self.active_stateless_mode().ok_or_else(|| {
+        let active_mode = self.active_ephemeral_mode().ok_or_else(|| {
             FinalisedStateError::Custom(
-                "stateless routing mode missing after incrementing reference count".to_string(),
+                "ephemeral routing mode missing after incrementing reference count".to_string(),
             )
         })?;
 
-        self.apply_stateless_mode(stateless.as_ref(), active_mode);
+        self.apply_ephemeral_mode(ephemeral.as_ref(), active_mode);
 
-        Ok(StatelessReference::new(Arc::clone(self), stateless, mode))
+        Ok(EphemeralReference::new(Arc::clone(self), ephemeral, mode))
     }
 
-    /// Releases one stateless reference.
+    /// Releases one ephemeral reference.
     ///
-    /// This is called automatically from [`StatelessReference::drop`]. Callers should not call this
+    /// This is called automatically from [`EphemeralReference::drop`]. Callers should not call this
     /// directly.
     ///
-    /// If the dropped reference was the final stateless reference:
-    /// - stateless routing is disabled,
+    /// If the dropped reference was the final ephemeral reference:
+    /// - ephemeral routing is disabled,
     /// - full primary capability is restored,
-    /// - the stateless backend is removed and shut down asynchronously when possible.
+    /// - the ephemeral backend is removed and shut down asynchronously when possible.
     ///
-    /// If other stateless references remain:
+    /// If other ephemeral references remain:
     /// - routing is recalculated from the remaining read-only and full reference counts,
     /// - full mode remains active while at least one full-mode reference exists,
     /// - read-only mode remains active while no full-mode references exist and at least one read-only
     ///   reference exists.
     ///
     /// Full mode takes precedence over read-only mode. Multiple full-mode references are supported.
-    fn release_stateless_reference(
+    fn release_ephemeral_reference(
         &self,
-        stateless_reference: Arc<FinalisedSource<T>>,
-        mode: StatelessMode,
+        ephemeral_reference: Arc<FinalisedSource<T>>,
+        mode: EphemeralMode,
     ) where
         T: Send + Sync + 'static,
     {
-        let stateless_to_shutdown = {
-            let _stateless_lifecycle_guard = self
-                .stateless_lifecycle_lock
+        let ephemeral_to_shutdown = {
+            let _ephemeral_lifecycle_guard = self
+                .ephemeral_lifecycle_lock
                 .lock()
-                .expect("stateless lifecycle mutex poisoned");
+                .expect("ephemeral lifecycle mutex poisoned");
 
-            self.decrement_stateless_reference_count(mode);
+            self.decrement_ephemeral_reference_count(mode);
 
-            let stateless_guard = self.stateless.load();
+            let ephemeral_guard = self.ephemeral.load();
 
-            let Some(active_stateless) = stateless_guard.as_ref() else {
+            let Some(active_ephemeral) = ephemeral_guard.as_ref() else {
                 return;
             };
 
-            if !Arc::ptr_eq(&stateless_reference, active_stateless) {
+            if !Arc::ptr_eq(&ephemeral_reference, active_ephemeral) {
                 return;
             }
 
-            match self.active_stateless_mode() {
+            match self.active_ephemeral_mode() {
                 Some(active_mode) => {
-                    self.apply_stateless_mode(active_stateless.as_ref(), active_mode);
+                    self.apply_ephemeral_mode(active_ephemeral.as_ref(), active_mode);
                     return;
                 }
                 None => {
                     self.restore_primary_capability();
-                    self.stateless.swap(None)
+                    self.ephemeral.swap(None)
                 }
             }
         };
 
-        drop(stateless_reference);
+        drop(ephemeral_reference);
 
-        if let Some(stateless) = stateless_to_shutdown {
+        if let Some(ephemeral) = ephemeral_to_shutdown {
             match Handle::try_current() {
                 Ok(handle) => {
                     handle.spawn(async move {
-                        if let Err(error) = stateless.shutdown().await {
-                            tracing::warn!("stateless shutdown failed during release: {error}");
+                        if let Err(error) = ephemeral.shutdown().await {
+                            tracing::warn!("ephemeral shutdown failed during release: {error}");
                         }
                     });
                 }
                 Err(error) => {
                     tracing::warn!(
-                    "stateless backend removed from routing but could not be shut down asynchronously: {error}"
+                    "ephemeral backend removed from routing but could not be shut down asynchronously: {error}"
                 );
                 }
             }
         }
     }
 
-    /// Updates the persistent database height reported by the active stateless backend.
+    /// Updates the persistent database height reported by the active ephemeral backend.
     ///
-    /// This updates only the optional stateless backend currently held by the router. It never touches
+    /// This updates only the optional ephemeral backend currently held by the router. It never touches
     /// the primary backend and does not use capability routing.
     ///
-    /// This method is intended for sync and migration progress reporting while stateless is serving
+    /// This method is intended for sync and migration progress reporting while ephemeral is serving
     /// normal finalised-state reads. The reported height should reflect the actual persistent on-disk
     /// database height, not the backing source height.
     ///
-    /// If no stateless backend is active, this method is a no-op. This allows normal sync code to call it
-    /// after successful routed writes without needing to know whether stateless routing is currently
+    /// If no ephemeral backend is active, this method is a no-op. This allows normal sync code to call it
+    /// after successful routed writes without needing to know whether ephemeral routing is currently
     /// enabled.
-    pub(crate) fn update_stateless_db_height(
+    pub(crate) fn update_ephemeral_db_height(
         &self,
         db_height: Option<Height>,
     ) -> Result<(), FinalisedStateError> {
-        let Some(stateless) = self.stateless.load_full() else {
+        let Some(ephemeral) = self.ephemeral.load_full() else {
             return Ok(());
         };
 
-        match stateless.as_ref() {
-            FinalisedSource::Ephemeral(stateless) => stateless.update_db_height(db_height),
+        match ephemeral.as_ref() {
+            FinalisedSource::Ephemeral(ephemeral) => ephemeral.update_db_height(db_height),
             FinalisedSource::V0(_) | FinalisedSource::V1(_) => Err(FinalisedStateError::Custom(
-                "router stateless slot contained a persistent database backend".to_string(),
+                "router ephemeral slot contained a persistent database backend".to_string(),
             )),
         }
     }
 
-    /// Returns `true` if the primary backend is stateless.
+    /// Returns `true` if the primary backend is ephemeral.
     ///
     /// This is used by callers that need to avoid starting persistent database work when the router is
-    /// running in ephemeral/stateless mode.
-    pub(crate) fn primary_is_stateless(&self) -> bool {
+    /// running in ephemeral/ephemeral mode.
+    pub(crate) fn primary_is_ephemeral(&self) -> bool {
         matches!(self.primary.load().as_ref(), FinalisedSource::Ephemeral(_))
     }
 
-    /// Returns `true` if at least one full-mode stateless reference is active.
+    /// Returns `true` if at least one full-mode ephemeral reference is active.
     ///
     /// While this is true, normal routed writes must not attempt to sync the persistent primary database.
-    pub(crate) fn has_full_stateless_reference(&self) -> bool {
-        self.stateless_full_reference_count.load(Ordering::Acquire) > 0
+    pub(crate) fn has_full_ephemeral_reference(&self) -> bool {
+        self.ephemeral_full_reference_count.load(Ordering::Acquire) > 0
     }
 
-    /// Returns the currently active stateless routing mode from stateless reference counters.
+    /// Returns the currently active ephemeral routing mode from ephemeral reference counters.
     ///
     /// Full mode takes precedence over read-only mode. This means any active full-mode
     /// reference keeps normal routed writes frozen until all full-mode references are dropped.
-    fn active_stateless_mode(&self) -> Option<StatelessMode> {
-        if self.stateless_full_reference_count.load(Ordering::Acquire) > 0 {
-            Some(StatelessMode::Full)
+    fn active_ephemeral_mode(&self) -> Option<EphemeralMode> {
+        if self.ephemeral_full_reference_count.load(Ordering::Acquire) > 0 {
+            Some(EphemeralMode::Full)
         } else if self
-            .stateless_read_only_reference_count
+            .ephemeral_read_only_reference_count
             .load(Ordering::Acquire)
             > 0
         {
-            Some(StatelessMode::ReadOnly)
+            Some(EphemeralMode::ReadOnly)
         } else {
             None
         }
@@ -645,14 +645,14 @@ impl<T: BlockchainSource> Router<T> {
         self.primary.load_full().capability()
     }
 
-    /// Returns the stateless capability set used for read-only routing.
+    /// Returns the ephemeral capability set used for read-only routing.
     ///
-    /// This is the stateless backend capability set with `WRITE_CORE` removed.
-    fn read_only_stateless_capability(stateless: &FinalisedSource<T>) -> Capability {
-        stateless.capability() & !Capability::WRITE_CORE
+    /// This is the ephemeral backend capability set with `WRITE_CORE` removed.
+    fn read_only_ephemeral_capability(ephemeral: &FinalisedSource<T>) -> Capability {
+        ephemeral.capability() & !Capability::WRITE_CORE
     }
 
-    /// Returns the primary capability set used while read-only stateless routing is active.
+    /// Returns the primary capability set used while read-only ephemeral routing is active.
     ///
     /// This is normally only `WRITE_CORE`.
     fn primary_write_capability(&self) -> Capability {
@@ -661,65 +661,65 @@ impl<T: BlockchainSource> Router<T> {
 
     /// Applies the routing masks required by `mode`.
     ///
-    /// [`StatelessMode::ReadOnly`] routes read/query capabilities to stateless and keeps
+    /// [`EphemeralMode::ReadOnly`] routes read/query capabilities to ephemeral and keeps
     /// `WRITE_CORE` on primary.
     ///
-    /// [`StatelessMode::Full`] routes all stateless-supported capabilities to stateless and removes
+    /// [`EphemeralMode::Full`] routes all ephemeral-supported capabilities to ephemeral and removes
     /// primary from routed service capability.
-    fn apply_stateless_mode(&self, stateless: &FinalisedSource<T>, mode: StatelessMode) {
+    fn apply_ephemeral_mode(&self, ephemeral: &FinalisedSource<T>, mode: EphemeralMode) {
         match mode {
-            StatelessMode::ReadOnly => {
-                self.stateless_mask.store(
-                    Self::read_only_stateless_capability(stateless).bits(),
+            EphemeralMode::ReadOnly => {
+                self.ephemeral_mask.store(
+                    Self::read_only_ephemeral_capability(ephemeral).bits(),
                     Ordering::Release,
                 );
                 self.primary_mask
                     .store(self.primary_write_capability().bits(), Ordering::Release);
             }
 
-            StatelessMode::Full => {
-                self.stateless_mask
-                    .store(stateless.capability().bits(), Ordering::Release);
+            EphemeralMode::Full => {
+                self.ephemeral_mask
+                    .store(ephemeral.capability().bits(), Ordering::Release);
                 self.primary_mask.store(0, Ordering::Release);
             }
         }
     }
 
-    /// Restores steady-state routing to the primary backend and disables stateless routing.
+    /// Restores steady-state routing to the primary backend and disables ephemeral routing.
     fn restore_primary_capability(&self) {
         self.primary_mask
             .store(self.primary_capability().bits(), Ordering::Release);
-        self.stateless_mask.store(0, Ordering::Release);
+        self.ephemeral_mask.store(0, Ordering::Release);
     }
 
-    /// Decrements the stateless reference count for `mode`.
+    /// Decrements the ephemeral reference count for `mode`.
     ///
-    /// This is used when stateless initialization fails after the reference count has already been
-    /// incremented. Normal stateless reference release is handled by [`Router::release_stateless_reference`].
-    fn decrement_stateless_reference_count(&self, mode: StatelessMode) {
+    /// This is used when ephemeral initialization fails after the reference count has already been
+    /// incremented. Normal ephemeral reference release is handled by [`Router::release_ephemeral_reference`].
+    fn decrement_ephemeral_reference_count(&self, mode: EphemeralMode) {
         match mode {
-            StatelessMode::ReadOnly => {
+            EphemeralMode::ReadOnly => {
                 let previous_reference_count = self
-                    .stateless_read_only_reference_count
+                    .ephemeral_read_only_reference_count
                     .fetch_sub(1, Ordering::AcqRel);
 
                 if previous_reference_count == 0 {
-                    self.stateless_read_only_reference_count
+                    self.ephemeral_read_only_reference_count
                         .store(0, Ordering::Release);
 
-                    tracing::warn!("stateless read-only reference count underflow");
+                    tracing::warn!("ephemeral read-only reference count underflow");
                 }
             }
-            StatelessMode::Full => {
+            EphemeralMode::Full => {
                 let previous_reference_count = self
-                    .stateless_full_reference_count
+                    .ephemeral_full_reference_count
                     .fetch_sub(1, Ordering::AcqRel);
 
                 if previous_reference_count == 0 {
-                    self.stateless_full_reference_count
+                    self.ephemeral_full_reference_count
                         .store(0, Ordering::Release);
 
-                    tracing::warn!("stateless full reference count underflow");
+                    tracing::warn!("ephemeral full reference count underflow");
                 }
             }
         }
@@ -727,7 +727,7 @@ impl<T: BlockchainSource> Router<T> {
 
     // ***** Primary routing *****
 
-    /// Returns the current primary backend, bypassing stateless service routing.
+    /// Returns the current primary backend, bypassing ephemeral service routing.
     ///
     /// This is a maintenance accessor. It is intended for migrations and database maintenance code
     /// that must intentionally inspect or mutate the persistent backend while normal service traffic
@@ -750,17 +750,17 @@ impl<T: BlockchainSource> Router<T> {
         &self,
         new_primary: Arc<FinalisedSource<T>>,
     ) -> Arc<FinalisedSource<T>> {
-        let _stateless_lifecycle_guard = self
-            .stateless_lifecycle_lock
+        let _ephemeral_lifecycle_guard = self
+            .ephemeral_lifecycle_lock
             .lock()
-            .expect("stateless lifecycle mutex poisoned");
+            .expect("ephemeral lifecycle mutex poisoned");
 
         let old_primary = self.primary.swap(new_primary);
 
-        match self.stateless.load().as_ref() {
-            Some(stateless) => match self.active_stateless_mode() {
+        match self.ephemeral.load().as_ref() {
+            Some(ephemeral) => match self.active_ephemeral_mode() {
                 Some(active_mode) => {
-                    self.apply_stateless_mode(stateless.as_ref(), active_mode);
+                    self.apply_ephemeral_mode(ephemeral.as_ref(), active_mode);
                 }
                 None => {
                     self.restore_primary_capability();
@@ -834,13 +834,13 @@ impl<T: BlockchainSource> DbCore for Router<T> {
 
     /// Shuts down the router's active backends.
     ///
-    /// This disables stateless routing, removes the stateless backend if present, restores primary
-    /// capability routing, shuts down the primary backend, and then shuts down the removed stateless
+    /// This disables ephemeral routing, removes the ephemeral backend if present, restores primary
+    /// capability routing, shuts down the primary backend, and then shuts down the removed ephemeral
     /// backend.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.stateless_mask.store(0, Ordering::Release);
+        self.ephemeral_mask.store(0, Ordering::Release);
 
-        let stateless = self.stateless.swap(None);
+        let ephemeral = self.ephemeral.swap(None);
 
         self.primary_mask.store(
             self.primary.load_full().capability().bits(),
@@ -849,13 +849,13 @@ impl<T: BlockchainSource> DbCore for Router<T> {
 
         let primary_shutdown_result = self.primary.load_full().shutdown().await;
 
-        let stateless_shutdown_result = match stateless {
-            Some(stateless) => stateless.shutdown().await,
+        let ephemeral_shutdown_result = match ephemeral {
+            Some(ephemeral) => ephemeral.shutdown().await,
             None => Ok(()),
         };
 
         primary_shutdown_result?;
-        stateless_shutdown_result?;
+        ephemeral_shutdown_result?;
 
         Ok(())
     }
@@ -867,7 +867,7 @@ impl<T: BlockchainSource> DbCore for Router<T> {
 /// router can freeze normal writes during full-mode migrations.
 ///
 /// Migration code that intentionally mutates the persistent database must not use these methods
-/// while full stateless routing is active; it should use [`Router::primary_backend`] or a dedicated
+/// while full ephemeral routing is active; it should use [`Router::primary_backend`] or a dedicated
 /// replacement backend.
 #[async_trait]
 impl<T: BlockchainSource> DbWrite for Router<T> {
@@ -904,8 +904,8 @@ impl<T: BlockchainSource> DbWrite for Router<T> {
 
 /// Core read surface routed through `READ_CORE`.
 ///
-/// These methods represent normal service reads. During stateless routing they may be served by the
-/// stateless backend rather than the persistent primary backend.
+/// These methods represent normal service reads. During ephemeral routing they may be served by the
+/// ephemeral backend rather than the persistent primary backend.
 #[async_trait]
 impl<T: BlockchainSource> DbRead for Router<T> {
     /// Returns the database tip height via the backend currently serving `READ_CORE`.
