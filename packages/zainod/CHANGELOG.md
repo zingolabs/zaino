@@ -16,7 +16,7 @@ and this crate adheres to Rust's notion of
   externally. It logs a `WARN` on startup when enabled.
 - New `ephemeral_finalised_state` config option (default `false`). When `true`,
   Zaino runs without a persistent finalised-state database: finalised reads are
-  served directly from the backing validator via a stateless passthrough. Useful
+  served directly from the backing validator via an ephemeral passthrough. Useful
   for disk-constrained or disposable deployments.
 ### Changed
 ### Deprecated

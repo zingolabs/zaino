@@ -358,5 +358,5 @@ Migration
 
 Bug Fixes / Optimisations
 - Finalised-state sync and migration no longer block serving: large syncs and
-  version migrations run in the background while a stateless passthrough serves
+  version migrations run in the background while an ephemeral passthrough serves
   finalised reads from the backing source.

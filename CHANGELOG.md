@@ -26,10 +26,10 @@ and this library adheres to Rust's notion of
 - Optional ("ephemeral") finalised state: `zainod` gains an
   `ephemeral_finalised_state` config option (default `false`) that runs Zaino
   without a persistent finalised-state database, serving finalised reads from
-  the backing validator via a stateless passthrough.
+  the backing validator via an ephemeral passthrough.
 ### Changed
 - Finalised-state sync and version migrations are now background, non-blocking
-  operations: large syncs and migrations run while a stateless passthrough
+  operations: large syncs and migrations run while an ephemeral passthrough
   serves finalised reads, so startup and serving are no longer blocked on
   persistence. Internally the finalised-state facade `ZainoDB` was renamed
   `FinalisedState` and its backing `DbBackend`/`db` module became
