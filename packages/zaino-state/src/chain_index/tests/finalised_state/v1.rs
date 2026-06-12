@@ -1,7 +1,7 @@
 //! Holds tests for the V1 database.
 
 use hex::ToHex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -9,9 +9,12 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
-use crate::chain_index::finalised_state::capability::IndexedBlockExt;
+use crate::chain_index::finalised_state::capability::{
+    BlockCoreExt as _, DbRead as _, DbWrite as _, IndexedBlockExt, TransparentHistExt as _,
+};
 use crate::chain_index::finalised_state::db::DbBackend;
 use crate::chain_index::finalised_state::reader::DbReader;
+use crate::chain_index::finalised_state::write_batch::WriteBatcher;
 use crate::chain_index::finalised_state::ZainoDB;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
@@ -308,6 +311,228 @@ async fn try_write_invalid_block() {
     assert!(db_err.is_err());
 
     dbg!(zaino_db.db_height().await.unwrap());
+}
+
+/// Spawns a v1 `DbBackend` over a fresh tempdir, for tests that need direct
+/// backend access (e.g. the batched write path and accumulator reads).
+async fn spawn_fresh_v1_backend() -> (TempDir, DbBackend) {
+    let temp_dir = tempfile::tempdir().expect("create tempdir");
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+    let backend = DbBackend::spawn_v1(&config)
+        .await
+        .expect("spawn v1 backend");
+    (temp_dir, backend)
+}
+
+/// Batched ingest must be indistinguishable from per-block ingest: same tip,
+/// same `txid_location` mappings, and the same txout-set accumulator (the
+/// batched path threads the accumulator in memory through each batch instead
+/// of re-reading committed state).
+#[tokio::test(flavor = "multi_thread")]
+async fn write_blocks_batched_ingest_matches_per_block() {
+    let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
+    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
+
+    let (_dir_reference, reference_backend) = spawn_fresh_v1_backend().await;
+    for block in &chain {
+        reference_backend
+            .write_block(block.clone())
+            .await
+            .expect("per-block write");
+    }
+
+    let (_dir_batched, batched_backend) = spawn_fresh_v1_backend().await;
+    // A small budget forces many batches (and dependency splits where the
+    // vector chain spends recently created outputs) instead of one big batch.
+    let mut batcher = WriteBatcher::new(64 * 1024);
+    let mut batch_count = 0;
+    for block in chain.iter().cloned() {
+        if let Some(batch) = batcher.push(block) {
+            batched_backend
+                .write_blocks(&batch)
+                .await
+                .expect("batched write");
+            batch_count += 1;
+        }
+    }
+    if let Some(batch) = batcher.flush() {
+        batched_backend
+            .write_blocks(&batch)
+            .await
+            .expect("final batched write");
+        batch_count += 1;
+    }
+    assert!(
+        batch_count > 1,
+        "small budget should split the chain into multiple batches"
+    );
+
+    assert_eq!(
+        reference_backend
+            .db_height()
+            .await
+            .expect("reference db_height"),
+        batched_backend
+            .db_height()
+            .await
+            .expect("batched db_height"),
+    );
+
+    for block in &chain {
+        let height = block.context.index.height;
+        for tx in block.transactions() {
+            let reference_location = reference_backend
+                .get_tx_location(tx.txid())
+                .await
+                .expect("reference get_tx_location");
+            let batched_location = batched_backend
+                .get_tx_location(tx.txid())
+                .await
+                .expect("batched get_tx_location");
+            assert_eq!(
+                reference_location,
+                batched_location,
+                "txid {:?} location diverges between per-block and batched ingest \
+                 (height {})",
+                tx.txid(),
+                height.0,
+            );
+        }
+    }
+
+    assert_eq!(
+        reference_backend
+            .get_tx_out_set_info_accumulator()
+            .await
+            .expect("reference accumulator"),
+        batched_backend
+            .get_tx_out_set_info_accumulator()
+            .await
+            .expect("batched accumulator"),
+        "batched accumulator threading must reproduce the per-block accumulator",
+    );
+}
+
+/// The batcher must partition the chain: chunks concatenate back to the
+/// original order, and inside one chunk no block spends an output created
+/// by — or a sibling output of a transaction spent from by — an earlier
+/// chunk block. That is the contract `DbV1::write_blocks` relies on for its
+/// committed-state-only reads.
+#[test]
+fn write_batcher_partitions_chain_without_intra_batch_dependencies() {
+    let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
+    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
+
+    let mut batcher = WriteBatcher::new(16 * 1024);
+    let mut chunks: Vec<Vec<IndexedBlock>> = Vec::new();
+    for block in chain.iter().cloned() {
+        if let Some(batch) = batcher.push(block) {
+            chunks.push(batch);
+        }
+    }
+    if let Some(batch) = batcher.flush() {
+        chunks.push(batch);
+    }
+
+    let flattened: Vec<u32> = chunks
+        .iter()
+        .flatten()
+        .map(|block| block.context.index.height.0)
+        .collect();
+    let expected: Vec<u32> = chain
+        .iter()
+        .map(|block| block.context.index.height.0)
+        .collect();
+    assert_eq!(
+        flattened, expected,
+        "chunks must partition the chain in order"
+    );
+    assert!(chunks.len() > 1, "tiny budget must produce multiple chunks");
+
+    for chunk in &chunks {
+        let mut created: HashSet<TransactionHash> = HashSet::new();
+        let mut spent_from: HashSet<TransactionHash> = HashSet::new();
+        for block in chunk {
+            let own_txids: HashSet<TransactionHash> =
+                block.transactions().iter().map(|tx| *tx.txid()).collect();
+            for tx in block.transactions() {
+                for input in tx.transparent().inputs() {
+                    if input.is_null_prevout() {
+                        continue;
+                    }
+                    let prev_txid = TransactionHash::from(*input.prevout_txid());
+                    if own_txids.contains(&prev_txid) {
+                        continue;
+                    }
+                    assert!(
+                        !created.contains(&prev_txid) && !spent_from.contains(&prev_txid),
+                        "block {} depends on uncommitted state of its own batch via {prev_txid:?}",
+                        block.context.index.height.0,
+                    );
+                }
+            }
+            for tx in block.transactions() {
+                created.insert(*tx.txid());
+                for input in tx.transparent().inputs() {
+                    if !input.is_null_prevout() {
+                        spent_from.insert(TransactionHash::from(*input.prevout_txid()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `write_blocks` is a strict batch primitive: gaps within the batch and
+/// batches that do not start at `db_tip + 1` are rejected before anything is
+/// written.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_blocks_rejects_malformed_batches() {
+    let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
+    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
+    let (_db_dir, backend) = spawn_fresh_v1_backend().await;
+
+    let gapped = vec![chain[0].clone(), chain[2].clone()];
+    let gap_error = backend
+        .write_blocks(&gapped)
+        .await
+        .expect_err("gapped batch must be rejected");
+    assert!(
+        gap_error.to_string().contains("not height-contiguous"),
+        "unexpected error for gapped batch: {gap_error}"
+    );
+
+    let offset = chain[1..3].to_vec();
+    let offset_error = backend
+        .write_blocks(&offset)
+        .await
+        .expect_err("batch not starting at genesis on an empty DB must be rejected");
+    assert!(
+        offset_error.to_string().contains("empty database"),
+        "unexpected error for offset batch: {offset_error}"
+    );
+
+    // The rejected batches must not have written anything.
+    assert_eq!(backend.db_height().await.expect("db_height"), None);
+
+    backend
+        .write_blocks(&chain[..3])
+        .await
+        .expect("valid batch write");
+    assert_eq!(
+        backend.db_height().await.expect("db_height"),
+        Some(Height(2))
+    );
 }
 
 /// Regression test for the `write_block` indexing loop: a fresh ingest must

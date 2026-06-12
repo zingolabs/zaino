@@ -1524,16 +1524,25 @@ impl DbV1 {
     /// Missing accumulator data is only valid for a completely empty database before writing genesis.
     /// In every other case, a missing accumulator is treated as database corruption / failed migration.
     ///
+    /// `prior_accumulator` is the accumulator after the previous block when that block is not yet
+    /// committed — batched writes thread it through the batch in memory because the stored
+    /// accumulator only reflects committed state. Pass `None` to load the stored accumulator
+    /// (the single-block write path).
+    ///
     /// The returned accumulator must be written inside the same LMDB write transaction as the block.
     pub(crate) async fn calculate_tx_out_set_info_accumulator_after_block(
         &self,
         block_height: Height,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
+        prior_accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        // Load the existing accumulator. Only a fresh empty DB writing genesis may start from zero.
-        let mut accumulator =
-            match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await {
+        // Load the existing accumulator unless the caller threads one through a batch.
+        // Only a fresh empty DB writing genesis may start from zero.
+        let mut accumulator = match prior_accumulator {
+            Some(accumulator) => accumulator,
+            None => match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await
+            {
                 Ok(accumulator) => accumulator,
                 Err(FinalisedStateError::DataUnavailable(_)) => {
                     let current_tip = self.tip_height().await?;
@@ -1547,7 +1556,8 @@ impl DbV1 {
                     }
                 }
                 Err(error) => return Err(error),
-            };
+            },
+        };
 
         let (created_counts, spendable_counts) = index_created_outputs(transactions)?;
         let (spent_indices_by_tx, spent_outpoints) = index_spent_outpoints(spent_map)?;

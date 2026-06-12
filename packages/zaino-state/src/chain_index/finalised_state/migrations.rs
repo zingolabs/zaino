@@ -990,6 +990,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                                 height,
                                 &transactions,
                                 &spent_map,
+                                None,
                             )
                             .await?
                     }

@@ -1,6 +1,7 @@
 //! ZainoDB::V1 core write functionality.
 
 use super::*;
+use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 #[cfg(test)]
 use crate::version;
 
@@ -40,7 +41,6 @@ impl DbV1 {
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
         let block_hash = block.context.index.hash;
-        let block_hash_bytes = block_hash.to_bytes()?;
         let block_height = block.context.index.height;
         let block_height_bytes = block_height.to_bytes()?;
 
@@ -118,6 +118,198 @@ impl DbV1 {
             );
             return Ok(());
         }
+
+        let data = self.build_block_write_data(&block, None).await?;
+
+        // if any database writes fail, or block validation fails, remove block from database and return err.
+        let zaino_db = self.write_task_clone();
+        let join_handle = tokio::task::spawn_blocking(move || {
+            // Write block to ZainoDB
+            let mut txn = zaino_db.env.begin_rw_txn()?;
+
+            zaino_db.put_block_write_data_in_txn(&mut txn, data)?;
+
+            // `txn.commit()` is durable: the LMDB env is opened without NO_SYNC, so commit
+            // fsyncs the data and meta pages. Validation below is read-only and observes the
+            // committed state without any further sync, so no explicit `env.sync` is needed here.
+            txn.commit()?;
+
+            zaino_db.validate_block_blocking(block_height, block_hash)?;
+
+            Ok::<_, FinalisedStateError>(())
+        });
+
+        // Wait for the join and handle panic / cancellation explicitly so we can
+        // attempt to remove any partially written block.
+        let post_result = match join_handle.await {
+            Ok(inner_res) => inner_res,
+            Err(join_err) => {
+                warn!("Tokio task error (spawn_blocking join error): {}", join_err);
+
+                // Best-effort delete of partially written block; ignore delete result.
+                let _ = self.delete_block(&block).await;
+
+                return Err(FinalisedStateError::Custom(format!(
+                    "Tokio task error: {}",
+                    join_err
+                )));
+            }
+        };
+
+        match post_result {
+            Ok(_) => {
+                // The block (and its `txid_location` entries) were durably committed inside the
+                // blocking task above; validation succeeded and wrote nothing, so no extra sync.
+                self.status.store(StatusType::Ready);
+                if block.context.index.height.0 % 100 == 0 {
+                    info!(
+                        "Successfully committed block {} at height {} to ZainoDB.",
+                        &block.context.index.hash, &block.context.index.height
+                    );
+                } else {
+                    tracing::debug!(
+                        "Successfully committed block {} at height {} to ZainoDB.",
+                        &block.context.index.hash,
+                        &block.context.index.height
+                    );
+                }
+
+                Ok(())
+            }
+            Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
+                // Block write failed because key already exists - another process wrote it
+                // between our check and our write.
+                //
+                // Wait briefly and verify it's the same block and was fully written to the finalised state.
+                // Partially written block should be deleted from the database and the write error reported
+                // so the on disk tables are never corrupted by a partial block writes.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                let height_bytes = block_height.to_bytes()?;
+                let verification_result = tokio::task::block_in_place(|| {
+                    // Sync to see latest commits from other processes
+                    self.env.sync(true).ok();
+                    let ro = self.env.begin_ro_txn()?;
+                    match ro.get(self.headers, &height_bytes) {
+                        Ok(stored_header_bytes) => {
+                            // Data is stored as StoredEntryVar<BlockHeaderData>
+                            let stored_entry =
+                                StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "header decode error in KeyExist handler: {e}"
+                                        ))
+                                    })?;
+                            let stored_header = stored_entry.inner();
+                            if stored_header.context.index.hash == block_hash {
+                                // Block hash exists, verify block was fully written.
+                                self.validate_block_blocking(block_height, block_hash)
+                                    .map(|()| true)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "Block write fail at height {}, with hash {:?}, \
+                                            validation error: {}",
+                                            block_height.0, block_hash, e
+                                        ))
+                                    })
+                            } else {
+                                Err(FinalisedStateError::Custom(format!(
+                                    "KeyExist race: different block at height {} \
+                                     (stored: {:?}, incoming: {:?})",
+                                    block_height.0, stored_header.context.index.hash, block_hash
+                                )))
+                            }
+                        }
+                        Err(lmdb::Error::NotFound) => Err(FinalisedStateError::Custom(format!(
+                            "KeyExist but block not found at height {} after sync",
+                            block_height.0
+                        ))),
+                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                    }
+                });
+
+                match verification_result {
+                    Ok(_) => {
+                        // Block was already written correctly by another process
+                        self.status.store(StatusType::Ready);
+                        info!(
+                            "Block {} at height {} was already written by another process, skipping.",
+                            &block_hash, &block_height.0
+                        );
+                        Ok(())
+                    }
+                    Err(e) => {
+                        warn!("Error writing block to DB: {e}");
+                        warn!(
+                            "Deleting corrupt block from DB at height: {} with hash: {:?}",
+                            block_height.0, block_hash.0
+                        );
+
+                        let _ = self.delete_block(&block).await;
+                        tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
+                            FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
+                        })?;
+                        self.status.store(StatusType::CriticalError);
+                        self.status.store(StatusType::RecoverableError);
+                        Err(FinalisedStateError::InvalidBlock {
+                            height: block_height.0,
+                            hash: block_hash,
+                            reason: e.to_string(),
+                        })
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Error writing block to DB: {e}");
+                warn!(
+                    "Deleting corrupt block from DB at height: {} with hash: {:?}",
+                    block_height.0, block_hash.0
+                );
+
+                let _ = self.delete_block(&block).await;
+                tokio::task::block_in_place(|| self.env.sync(true))
+                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+
+                // NOTE: this does not need to be critical if we implement self healing,
+                // which we have the tools to do.
+                self.status.store(StatusType::CriticalError);
+
+                if e.to_string().contains("MDB_MAP_FULL") {
+                    warn!("Configured max database size exceeded, update `storage.database.size` in zaino's config.");
+                    return Err(FinalisedStateError::Custom(format!(
+                        "Database configuration error: {e}"
+                    )));
+                }
+
+                Err(FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: e.to_string(),
+                })
+            }
+        }
+    }
+
+    /// Builds everything needed to persist `block`: encoded key bytes, checksummed table
+    /// entries, per-block index maps, and the post-block txout-set accumulator.
+    ///
+    /// `prior_accumulator` threads the accumulator through a multi-block batch whose earlier
+    /// blocks are not yet committed; pass `None` to load the stored (committed) accumulator
+    /// (the single-block write path). Every other read performed here resolves against
+    /// committed state only, so a batch must not contain a block that spends transparent
+    /// outputs created by — or sibling outputs of transactions spent from by — an earlier
+    /// block of the same batch. The
+    /// [`WriteBatcher`](crate::chain_index::finalised_state::write_batch::WriteBatcher)
+    /// enforces this by splitting batches.
+    async fn build_block_write_data(
+        &self,
+        block: &IndexedBlock,
+        prior_accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
+    ) -> Result<BlockWriteData, FinalisedStateError> {
+        let block_hash = block.context.index.hash;
+        let block_hash_bytes = block_hash.to_bytes()?;
+        let block_height = block.context.index.height;
+        let block_height_bytes = block_height.to_bytes()?;
 
         // Build DBHeight
         let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.context.index.height);
@@ -311,6 +503,7 @@ impl DbV1 {
                 block_height,
                 &transactions,
                 &spent_map,
+                prior_accumulator,
             )
             .await?;
 
@@ -326,8 +519,217 @@ impl DbV1 {
         let sapling_entry = StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
         let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
 
-        // if any database writes fail, or block validation fails, remove block from database and return err.
-        let zaino_db = Self {
+        Ok(BlockWriteData {
+            block_hash,
+            block_height,
+            block_hash_bytes,
+            block_height_bytes,
+            height_entry,
+            header_entry,
+            commitment_tree_entry,
+            txid_location_entries,
+            txid_entry,
+            transparent_entry,
+            sapling_entry,
+            orchard_entry,
+            spent_map,
+            tx_out_set_info_accumulator,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            addrhist_inputs_map,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            addrhist_outputs_map,
+        })
+    }
+
+    /// Persists one block's pre-built write data inside an open LMDB write transaction:
+    /// every table put for the block, and nothing else. Committing — and post-commit
+    /// validation — is the caller's responsibility, so several blocks can share one
+    /// durable commit.
+    fn put_block_write_data_in_txn(
+        &self,
+        txn: &mut lmdb::RwTransaction<'_>,
+        data: BlockWriteData,
+    ) -> Result<(), FinalisedStateError> {
+        txn.put(
+            self.headers,
+            &data.block_height_bytes,
+            &data.header_entry.to_bytes()?,
+            WriteFlags::NO_OVERWRITE,
+        )?;
+
+        txn.put(
+            self.heights,
+            &data.block_hash_bytes,
+            &data.height_entry.to_bytes()?,
+            WriteFlags::NO_OVERWRITE,
+        )?;
+
+        txn.put(
+            self.txids,
+            &data.block_height_bytes,
+            &data.txid_entry.to_bytes()?,
+            WriteFlags::NO_OVERWRITE,
+        )?;
+
+        // Reverse txid index: `txid -> TxLocation`.
+        for (txid_bytes, tx_location) in &data.txid_location_entries {
+            let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+            txn.put(
+                self.txid_location,
+                txid_bytes,
+                &entry_bytes,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+        }
+
+        txn.put(
+            self.transparent,
+            &data.block_height_bytes,
+            &data.transparent_entry.to_bytes()?,
+            WriteFlags::NO_OVERWRITE,
+        )?;
+
+        txn.put(
+            self.sapling,
+            &data.block_height_bytes,
+            &data.sapling_entry.to_bytes()?,
+            WriteFlags::NO_OVERWRITE,
+        )?;
+
+        txn.put(
+            self.orchard,
+            &data.block_height_bytes,
+            &data.orchard_entry.to_bytes()?,
+            WriteFlags::NO_OVERWRITE,
+        )?;
+
+        txn.put(
+            self.commitment_tree_data,
+            &data.block_height_bytes,
+            &data.commitment_tree_entry.to_bytes()?,
+            WriteFlags::NO_OVERWRITE,
+        )?;
+
+        // Write spent to ZainoDB
+        for (outpoint, tx_location) in data.spent_map {
+            let outpoint_bytes = &outpoint.to_bytes()?;
+            let tx_location_entry_bytes =
+                StoredEntryFixed::new(outpoint_bytes, tx_location).to_bytes()?;
+            txn.put(
+                self.spent,
+                &outpoint_bytes,
+                &tx_location_entry_bytes,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+        }
+
+        let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
+            TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+            data.tx_out_set_info_accumulator,
+        );
+
+        txn.put(
+            self.tx_out_set_info_accumulator,
+            &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+            &tx_out_set_info_accumulator_entry.to_bytes()?,
+            WriteFlags::empty(),
+        )?;
+
+        #[cfg(feature = "transparent_address_history_experimental")]
+        {
+            // Write outputs to ZainoDB addrhist
+            for (addr_script, records) in data.addrhist_outputs_map {
+                let addr_bytes = addr_script.to_bytes()?;
+
+                // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
+                let mut stored_entries = Vec::with_capacity(records.len());
+                for record in records {
+                    let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
+                        FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
+                    })?;
+                    let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
+                    let entry_bytes = entry.to_bytes()?;
+                    stored_entries.push((record, entry_bytes));
+                }
+
+                // Order by byte encoding for LMDB DUP_SORT insertion order
+                stored_entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+                for (_record, record_entry_bytes) in stored_entries {
+                    txn.put(
+                        self.address_history,
+                        &addr_bytes,
+                        &record_entry_bytes,
+                        WriteFlags::empty(),
+                    )?;
+                }
+            }
+
+            // Write inputs to ZainoDB addrhist
+            for (addr_script, records) in data.addrhist_inputs_map {
+                let addr_bytes = addr_script.to_bytes()?;
+
+                // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
+                let mut stored_entries = Vec::with_capacity(records.len());
+                for (record, prev_output) in records {
+                    let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
+                        FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
+                    })?;
+                    let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
+                    let entry_bytes = entry.to_bytes()?;
+                    stored_entries.push((record, entry_bytes, prev_output));
+                }
+
+                // Order by byte encoding for LMDB DUP_SORT insertion order
+                stored_entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+                for (_record, record_entry_bytes, (prev_output_script, prev_output_record)) in
+                    stored_entries
+                {
+                    txn.put(
+                        self.address_history,
+                        &addr_bytes,
+                        &record_entry_bytes,
+                        WriteFlags::empty(),
+                    )?;
+
+                    // mark corresponding output as spent
+                    let prev_addr_bytes = prev_output_script.to_bytes()?;
+                    let packed_prev =
+                        AddrEventBytes::from_record(&prev_output_record).map_err(|e| {
+                            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
+                        })?;
+                    let prev_entry_bytes =
+                        StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
+                    let updated = self.mark_addr_hist_record_spent_in_txn(
+                        &mut *txn,
+                        &prev_output_script,
+                        &prev_entry_bytes,
+                    )?;
+                    if !updated {
+                        // Log and treat as invalid block — marking the prev-output must succeed.
+                        return Err(FinalisedStateError::InvalidBlock {
+                            height: data.block_height.0,
+                            hash: data.block_hash,
+                            reason: format!(
+                                "failed to mark prev-output spent: addr={} tloc={:?} vout={}",
+                                hex::encode(addr_bytes),
+                                prev_output_record.tx_location(),
+                                prev_output_record.out_index()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Clone of `self` for a blocking write task: shares the LMDB env and table handles
+    /// but starts with an empty `db_handler` slot.
+    fn write_task_clone(&self) -> Self {
+        Self {
             env: Arc::clone(&self.env),
             headers: self.headers,
             txids: self.txids,
@@ -348,341 +750,145 @@ impl DbV1 {
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
+        }
+    }
+
+    /// Writes a contiguous batch of finalised [`IndexedBlock`]s in a single LMDB write
+    /// transaction — one durable commit (data + meta fsync) for the whole batch instead
+    /// of one per block.
+    ///
+    /// ## Batch preconditions
+    ///
+    /// - Blocks are height-contiguous and the first block is `db_tip + 1` (both checked
+    ///   here).
+    /// - No block reads state written by an earlier block in the same batch: no
+    ///   transparent input may spend an output created by an earlier batch block, and no
+    ///   two batch blocks may spend outputs of the same prior transaction.
+    ///   `build_block_write_data` resolves prevouts and spent-output bookkeeping against
+    ///   committed state only, so violating this yields wrong index data. The
+    ///   [`WriteBatcher`](crate::chain_index::finalised_state::write_batch::WriteBatcher)
+    ///   splits batches to maintain it.
+    ///
+    /// ## Failure semantics
+    ///
+    /// Before the commit nothing is persisted. If post-commit validation fails, every
+    /// batch block is best-effort deleted (tip first) before the error is returned. This
+    /// method has none of `write_block`'s idempotent-rewrite or multi-process recovery
+    /// handling — callers should retry a failed batch block-by-block via
+    /// [`DbV1::write_block`].
+    pub(crate) async fn write_blocks(
+        &self,
+        blocks: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        let Some(first) = blocks.first() else {
+            return Ok(());
         };
+        self.status.store(StatusType::Syncing);
+
+        for pair in blocks.windows(2) {
+            let (prev, next) = (pair[0].context.index.height, pair[1].context.index.height);
+            if next.0 != prev.0 + 1 {
+                return Err(FinalisedStateError::Custom(format!(
+                    "write_blocks batch is not height-contiguous: {} is followed by {}",
+                    prev.0, next.0
+                )));
+            }
+        }
+
+        let first_height = first.context.index.height;
+        tokio::task::block_in_place(|| {
+            let ro = self.env.begin_ro_txn()?;
+            let cur = ro.open_ro_cursor(self.headers)?;
+            match cur.get(None, None, lmdb_sys::MDB_LAST) {
+                Ok((last_height_bytes, _)) => {
+                    let last_height = Height::from_bytes(
+                        last_height_bytes.expect("Height is always some in the finalised state"),
+                    )?;
+                    if first_height.0 != last_height.0 + 1 {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "cannot write batch starting at height {first_height:?}; \
+                             current tip is {last_height:?}"
+                        )));
+                    }
+                }
+                Err(lmdb::Error::NotFound) => {
+                    if first_height.0 != GENESIS_HEIGHT.0 {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "first block of a batch on an empty database must be height 0, \
+                             got {first_height:?}"
+                        )));
+                    }
+                }
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            }
+            Ok::<_, FinalisedStateError>(())
+        })?;
+
+        // Build phase: committed-state reads plus CPU, with the txout-set accumulator
+        // threaded through the batch in memory (the stored accumulator only reflects
+        // committed state).
+        let mut batch_data = Vec::with_capacity(blocks.len());
+        let mut prior_accumulator = None;
+        for block in blocks {
+            let data = self
+                .build_block_write_data(block, prior_accumulator)
+                .await?;
+            prior_accumulator = Some(data.tx_out_set_info_accumulator);
+            batch_data.push(data);
+        }
+
+        let block_ids: Vec<(Height, BlockHash)> = blocks
+            .iter()
+            .map(|b| (b.context.index.height, b.context.index.hash))
+            .collect();
+
+        let zaino_db = self.write_task_clone();
         let join_handle = tokio::task::spawn_blocking(move || {
-            // Write block to ZainoDB
             let mut txn = zaino_db.env.begin_rw_txn()?;
-
-            txn.put(
-                zaino_db.headers,
-                &block_height_bytes,
-                &header_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            txn.put(
-                zaino_db.heights,
-                &block_hash_bytes,
-                &height_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            txn.put(
-                zaino_db.txids,
-                &block_height_bytes,
-                &txid_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            // Reverse txid index: `txid -> TxLocation`.
-            for (txid_bytes, tx_location) in &txid_location_entries {
-                let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
-                txn.put(
-                    zaino_db.txid_location,
-                    txid_bytes,
-                    &entry_bytes,
-                    WriteFlags::NO_OVERWRITE,
-                )?;
+            for data in batch_data {
+                zaino_db.put_block_write_data_in_txn(&mut txn, data)?;
             }
-
-            txn.put(
-                zaino_db.transparent,
-                &block_height_bytes,
-                &transparent_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            txn.put(
-                zaino_db.sapling,
-                &block_height_bytes,
-                &sapling_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            txn.put(
-                zaino_db.orchard,
-                &block_height_bytes,
-                &orchard_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            txn.put(
-                zaino_db.commitment_tree_data,
-                &block_height_bytes,
-                &commitment_tree_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            // Write spent to ZainoDB
-            for (outpoint, tx_location) in spent_map {
-                let outpoint_bytes = &outpoint.to_bytes()?;
-                let tx_location_entry_bytes =
-                    StoredEntryFixed::new(outpoint_bytes, tx_location).to_bytes()?;
-                txn.put(
-                    zaino_db.spent,
-                    &outpoint_bytes,
-                    &tx_location_entry_bytes,
-                    WriteFlags::NO_OVERWRITE,
-                )?;
-            }
-
-            let tx_out_set_info_accumulator_entry =
-                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, tx_out_set_info_accumulator);
-
-            txn.put(
-                zaino_db.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &tx_out_set_info_accumulator_entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
-
-            #[cfg(feature = "transparent_address_history_experimental")]
-            {
-                // Write outputs to ZainoDB addrhist
-                for (addr_script, records) in addrhist_outputs_map {
-                    let addr_bytes = addr_script.to_bytes()?;
-
-                    // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
-                    let mut stored_entries = Vec::with_capacity(records.len());
-                    for record in records {
-                        let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
-                            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
-                        })?;
-                        let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                        let entry_bytes = entry.to_bytes()?;
-                        stored_entries.push((record, entry_bytes));
-                    }
-
-                    // Order by byte encoding for LMDB DUP_SORT insertion order
-                    stored_entries.sort_by(|a, b| a.1.cmp(&b.1));
-
-                    for (_record, record_entry_bytes) in stored_entries {
-                        txn.put(
-                            zaino_db.address_history,
-                            &addr_bytes,
-                            &record_entry_bytes,
-                            WriteFlags::empty(),
-                        )?;
-                    }
-                }
-
-                // Write inputs to ZainoDB addrhist
-                for (addr_script, records) in addrhist_inputs_map {
-                    let addr_bytes = addr_script.to_bytes()?;
-
-                    // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
-                    let mut stored_entries = Vec::with_capacity(records.len());
-                    for (record, prev_output) in records {
-                        let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
-                            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
-                        })?;
-                        let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                        let entry_bytes = entry.to_bytes()?;
-                        stored_entries.push((record, entry_bytes, prev_output));
-                    }
-
-                    // Order by byte encoding for LMDB DUP_SORT insertion order
-                    stored_entries.sort_by(|a, b| a.1.cmp(&b.1));
-
-                    for (_record, record_entry_bytes, (prev_output_script, prev_output_record)) in
-                        stored_entries
-                    {
-                        txn.put(
-                            zaino_db.address_history,
-                            &addr_bytes,
-                            &record_entry_bytes,
-                            WriteFlags::empty(),
-                        )?;
-
-                        // mark corresponding output as spent
-                        let prev_addr_bytes = prev_output_script.to_bytes()?;
-                        let packed_prev = AddrEventBytes::from_record(&prev_output_record)
-                            .map_err(|e| {
-                                FinalisedStateError::Custom(format!(
-                                    "AddrEventBytes pack error: {e:?}"
-                                ))
-                            })?;
-                        let prev_entry_bytes =
-                            StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
-                        let updated = zaino_db.mark_addr_hist_record_spent_in_txn(
-                            &mut txn,
-                            &prev_output_script,
-                            &prev_entry_bytes,
-                        )?;
-                        if !updated {
-                            // Log and treat as invalid block — marking the prev-output must succeed.
-                            return Err(FinalisedStateError::InvalidBlock {
-                                height: block_height.0,
-                                hash: block_hash,
-                                reason: format!(
-                                    "failed to mark prev-output spent: addr={} tloc={:?} vout={}",
-                                    hex::encode(addr_bytes),
-                                    prev_output_record.tx_location(),
-                                    prev_output_record.out_index()
-                                ),
-                            });
-                        }
-                    }
-                }
-            }
-
-            // `txn.commit()` is durable: the LMDB env is opened without NO_SYNC, so commit
-            // fsyncs the data and meta pages. Validation below is read-only and observes the
-            // committed state without any further sync, so no explicit `env.sync` is needed here.
+            // One durable commit (data + meta fsync) for the whole batch.
             txn.commit()?;
-
-            zaino_db.validate_block_blocking(block_height, block_hash)?;
-
+            for (height, hash) in block_ids {
+                zaino_db.validate_block_blocking(height, hash)?;
+            }
             Ok::<_, FinalisedStateError>(())
         });
 
-        // Wait for the join and handle panic / cancellation explicitly so we can
-        // attempt to remove any partially written block.
         let post_result = match join_handle.await {
-            Ok(inner_res) => inner_res,
-            Err(join_err) => {
-                warn!("Tokio task error (spawn_blocking join error): {}", join_err);
-
-                // Best-effort delete of partially written block; ignore delete result.
-                let _ = self.delete_block(&block).await;
-
-                return Err(FinalisedStateError::Custom(format!(
-                    "Tokio task error: {}",
-                    join_err
-                )));
-            }
+            Ok(inner) => inner,
+            Err(join_err) => Err(FinalisedStateError::Custom(format!(
+                "Tokio task error: {join_err}"
+            ))),
         };
 
         match post_result {
-            Ok(_) => {
-                // The block (and its `txid_location` entries) were durably committed inside the
-                // blocking task above; validation succeeded and wrote nothing, so no extra sync.
+            Ok(()) => {
                 self.status.store(StatusType::Ready);
-                if block.context.index.height.0 % 100 == 0 {
-                    info!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.context.index.hash, &block.context.index.height
-                    );
-                } else {
-                    tracing::debug!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.context.index.hash,
-                        &block.context.index.height
-                    );
-                }
-
+                info!(
+                    "Committed batch of {} blocks ({}..={}) to ZainoDB.",
+                    blocks.len(),
+                    first_height.0,
+                    first_height.0 + blocks.len() as u32 - 1,
+                );
                 Ok(())
             }
-            Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
-                // Block write failed because key already exists - another process wrote it
-                // between our check and our write.
-                //
-                // Wait briefly and verify it's the same block and was fully written to the finalised state.
-                // Partially written block should be deleted from the database and the write error reported
-                // so the on disk tables are never corrupted by a partial block writes.
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                let height_bytes = block_height.to_bytes()?;
-                let verification_result = tokio::task::block_in_place(|| {
-                    // Sync to see latest commits from other processes
-                    self.env.sync(true).ok();
-                    let ro = self.env.begin_ro_txn()?;
-                    match ro.get(self.headers, &height_bytes) {
-                        Ok(stored_header_bytes) => {
-                            // Data is stored as StoredEntryVar<BlockHeaderData>
-                            let stored_entry =
-                                StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
-                                    .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
-                                            "header decode error in KeyExist handler: {e}"
-                                        ))
-                                    })?;
-                            let stored_header = stored_entry.inner();
-                            if stored_header.context.index.hash == block_hash {
-                                // Block hash exists, verify block was fully written.
-                                self.validate_block_blocking(block_height, block_hash)
-                                    .map(|()| true)
-                                    .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
-                                            "Block write fail at height {}, with hash {:?}, \
-                                            validation error: {}",
-                                            block_height.0, block_hash, e
-                                        ))
-                                    })
-                            } else {
-                                Err(FinalisedStateError::Custom(format!(
-                                    "KeyExist race: different block at height {} \
-                                     (stored: {:?}, incoming: {:?})",
-                                    block_height.0, stored_header.context.index.hash, block_hash
-                                )))
-                            }
-                        }
-                        Err(lmdb::Error::NotFound) => Err(FinalisedStateError::Custom(format!(
-                            "KeyExist but block not found at height {} after sync",
-                            block_height.0
-                        ))),
-                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
-                    }
-                });
-
-                match verification_result {
-                    Ok(_) => {
-                        // Block was already written correctly by another process
-                        self.status.store(StatusType::Ready);
-                        info!(
-                            "Block {} at height {} was already written by another process, skipping.",
-                            &block_hash, &block_height.0
-                        );
-                        Ok(())
-                    }
-                    Err(e) => {
-                        warn!("Error writing block to DB: {e}");
-                        warn!(
-                            "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                            block_height.0, block_hash.0
-                        );
-
-                        let _ = self.delete_block(&block).await;
-                        tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
-                            FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
-                        })?;
-                        self.status.store(StatusType::CriticalError);
-                        self.status.store(StatusType::RecoverableError);
-                        Err(FinalisedStateError::InvalidBlock {
-                            height: block_height.0,
-                            hash: block_hash,
-                            reason: e.to_string(),
-                        })
-                    }
-                }
-            }
             Err(e) => {
-                warn!("Error writing block to DB: {e}");
                 warn!(
-                    "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                    block_height.0, block_hash.0
+                    "Batched block write failed ({e}); removing any committed batch blocks \
+                     ({}..={})",
+                    first_height.0,
+                    first_height.0 + blocks.len() as u32 - 1,
                 );
-
-                let _ = self.delete_block(&block).await;
-                tokio::task::block_in_place(|| self.env.sync(true))
-                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-
-                // NOTE: this does not need to be critical if we implement self healing,
-                // which we have the tools to do.
-                self.status.store(StatusType::CriticalError);
-
-                if e.to_string().contains("MDB_MAP_FULL") {
-                    warn!("Configured max database size exceeded, update `storage.database.size` in zaino's config.");
-                    return Err(FinalisedStateError::Custom(format!(
-                        "Database configuration error: {e}"
-                    )));
+                // Tip-first so each delete removes the current tip; no-ops when the
+                // failure happened before commit (nothing was persisted).
+                for block in blocks.iter().rev() {
+                    let _ = self.delete_block(block).await;
                 }
-
-                Err(FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: e.to_string(),
-                })
+                let _ = tokio::task::block_in_place(|| self.env.sync(true));
+                self.status.store(StatusType::RecoverableError);
+                Err(e)
             }
         }
     }
@@ -1321,4 +1527,31 @@ impl DbV1 {
         self.status.store(StatusType::Ready);
         Ok(())
     }
+}
+
+/// Pre-built write data for one block: encoded key bytes, checksummed table entries,
+/// per-block index maps, and the post-block txout-set accumulator. Produced by
+/// [`DbV1::build_block_write_data`] and consumed inside an LMDB write transaction by
+/// [`DbV1::put_block_write_data_in_txn`].
+struct BlockWriteData {
+    block_hash: BlockHash,
+    block_height: Height,
+    block_hash_bytes: Vec<u8>,
+    block_height_bytes: Vec<u8>,
+    height_entry: StoredEntryFixed<Height>,
+    header_entry: StoredEntryVar<BlockHeaderData>,
+    commitment_tree_entry: StoredEntryFixed<CommitmentTreeData>,
+    /// Sorted by txid so the random-keyed `txid_location` B-tree sees locally-ordered
+    /// inserts.
+    txid_location_entries: Vec<([u8; 32], TxLocation)>,
+    txid_entry: StoredEntryVar<TxidList>,
+    transparent_entry: StoredEntryVar<TransparentTxList>,
+    sapling_entry: StoredEntryVar<SaplingTxList>,
+    orchard_entry: StoredEntryVar<OrchardTxList>,
+    spent_map: HashMap<Outpoint, TxLocation>,
+    tx_out_set_info_accumulator: FinalisedTxOutSetInfoAccumulator,
+    #[cfg(feature = "transparent_address_history_experimental")]
+    addrhist_inputs_map: HashMap<AddrScript, Vec<(AddrHistRecord, (AddrScript, AddrHistRecord))>>,
+    #[cfg(feature = "transparent_address_history_experimental")]
+    addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>>,
 }

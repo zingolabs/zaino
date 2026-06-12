@@ -244,6 +244,24 @@ impl DbBackend {
         Ok(Self::V1(DbV1::spawn(cfg).await?))
     }
 
+    /// Writes a contiguous, dependency-free batch of blocks with a single durable commit
+    /// where the backend supports it (see `DbV1::write_blocks` for the batch contract).
+    /// The legacy v0 backend has no batched path and falls back to per-block writes.
+    pub(crate) async fn write_blocks(
+        &self,
+        blocks: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V0(db) => {
+                for block in blocks {
+                    db.write_block(block.clone()).await?;
+                }
+                Ok(())
+            }
+            Self::V1(db) => db.write_blocks(blocks).await,
+        }
+    }
+
     /// Wait until the database backend reports [`StatusType::Ready`].
     ///
     /// This polls `DbCore::status()` on a fixed interval. It is intended for startup sequencing in

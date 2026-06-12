@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 
 use crate::chain_index::finalised_state::capability::DbWrite as _;
 use crate::chain_index::finalised_state::entry::{StoredEntryFixed, StoredEntryVar};
+use crate::chain_index::finalised_state::write_batch::WriteBatcher;
 use crate::chain_index::tests::finalised_state::v1::spawn_v1_zaino_db;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, indexed_block_chain, load_test_vectors,
@@ -103,6 +104,71 @@ async fn write_block_chain_ingest() {
 
     println!("[bench] vector chain: {block_count} blocks, {tx_count} transactions");
     report("write_block ingest", block_count, "blocks", &mut runs);
+}
+
+/// Batched end-to-end ingest: the same vector chain as
+/// [`write_block_chain_ingest`], written through `WriteBatcher` →
+/// `ZainoDB::write_blocks` so blocks share durable commits. Reported at two
+/// budgets: one small enough to force several batches over this chain
+/// (steady-state batching) and the production default (whole chain in one
+/// commit — the upper bound). Compare against the per-block variant, ideally
+/// with `TMPDIR` on a real filesystem where commits dominate.
+///
+/// multi_thread required: the write path calls `tokio::task::block_in_place`,
+/// which panics on a current-thread runtime.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "benchmark: run with `cargo nextest run -p zaino-state --run-ignored ignored-only --no-capture benchmarks`"]
+async fn write_block_chain_ingest_batched() {
+    const RUNS: usize = 3;
+    const SMALL_BUDGET: usize = 64 * 1024;
+
+    let test_vector_data = load_test_vectors().expect("test vectors load");
+    let blocks = test_vector_data.blocks;
+    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
+    let block_count = chain.len();
+
+    for budget in [
+        SMALL_BUDGET,
+        crate::chain_index::finalised_state::write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET,
+    ] {
+        let mut runs = Vec::with_capacity(RUNS);
+        let mut batches_per_run = 0;
+        for _ in 0..RUNS {
+            let source = build_mockchain_source(blocks.clone());
+            let (_db_dir, zaino_db) = spawn_v1_zaino_db(source).await.expect("spawn ZainoDB");
+            let chain = chain.clone();
+
+            let started = Instant::now();
+            let mut batcher = WriteBatcher::new(budget);
+            let mut batches = 0;
+            for block in chain {
+                if let Some(batch) = batcher.push(block) {
+                    zaino_db.write_blocks(&batch).await.expect("batched write");
+                    batches += 1;
+                }
+            }
+            if let Some(batch) = batcher.flush() {
+                zaino_db
+                    .write_blocks(&batch)
+                    .await
+                    .expect("final batched write");
+                batches += 1;
+            }
+            runs.push(started.elapsed());
+            batches_per_run = batches;
+        }
+
+        println!(
+            "[bench] batched ingest: {block_count} blocks in {batches_per_run} batches \
+             (budget {budget} bytes)"
+        );
+        report(
+            &format!("write_blocks batched ingest (budget {budget})"),
+            block_count,
+            "blocks",
+            &mut runs,
+        );
+    }
 }
 
 /// Per-entry encode cost of `StoredEntryFixed::new(key, item).to_bytes()` —

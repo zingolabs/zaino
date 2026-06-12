@@ -339,6 +339,21 @@ impl DbCore for Router {
     }
 }
 
+impl Router {
+    /// Writes a contiguous, dependency-free batch of blocks with one durable commit via
+    /// the backend currently serving `WRITE_CORE` (see `DbV1::write_blocks` for the batch
+    /// contract). Inherent rather than part of [`DbWrite`] because only backends with a
+    /// batched path benefit; others fall back to per-block writes internally.
+    pub(crate) async fn write_blocks(
+        &self,
+        blocks: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        self.backend(CapabilityRequest::WriteCore)?
+            .write_blocks(blocks)
+            .await
+    }
+}
+
 /// Core write surface routed through `WRITE_CORE`.
 ///
 /// All writes are delegated to the backend currently selected for [`CapabilityRequest::WriteCore`].

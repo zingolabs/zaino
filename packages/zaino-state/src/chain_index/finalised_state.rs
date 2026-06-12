@@ -176,6 +176,7 @@ pub(crate) mod entry;
 pub(crate) mod migrations;
 pub(crate) mod reader;
 pub(crate) mod router;
+pub(crate) mod write_batch;
 
 use capability::*;
 use db::{DbBackend, VERSION_DIRS};
@@ -573,6 +574,11 @@ impl ZainoDB {
         // Run the main sync logic inside an inner async block so we always get
         // a chance to shutdown the reporter task regardless of how this block exits.
         let result: Result<(), FinalisedStateError> = (async {
+            // Batch writes so many blocks share one durable LMDB commit; the batcher
+            // flushes on its byte budget or when a block depends on uncommitted
+            // batch state (see `WriteBatcher`).
+            let mut batcher =
+                write_batch::WriteBatcher::new(write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET);
             for height_int in (db_height.0)..=height.0 {
                 // Update the shared progress value as soon as we start processing this height.
                 current_height.store(height_int as u64, Ordering::Relaxed);
@@ -649,7 +655,13 @@ impl ZainoDB {
                 };
                 parent_chainwork = chain_block.context.chainwork;
 
-                self.write_block(chain_block).await?;
+                if let Some(batch) = batcher.push(chain_block) {
+                    self.write_blocks_with_fallback(&batch).await?;
+                }
+            }
+
+            if let Some(batch) = batcher.flush() {
+                self.write_blocks_with_fallback(&batch).await?;
             }
 
             Ok(())
@@ -675,6 +687,44 @@ impl ZainoDB {
     /// or [`ZainoDB::delete_block`] before re-appending.
     pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.db.write_block(b).await
+    }
+
+    /// Writes a contiguous, dependency-free batch of blocks with one durable commit
+    /// (see `DbV1::write_blocks` for the batch contract). The first block **must** be
+    /// `db_tip_height + 1` and the batch must be height-contiguous.
+    pub(crate) async fn write_blocks(
+        &self,
+        blocks: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        self.db.write_blocks(blocks).await
+    }
+
+    /// Writes a batch via the single-commit path, retrying block-by-block on failure.
+    ///
+    /// The per-block path carries the idempotent-rewrite and multi-process recovery
+    /// handling that the batched path intentionally omits, so a batch that fails for
+    /// one of those reasons (e.g. another process already wrote part of it) still
+    /// lands correctly.
+    async fn write_blocks_with_fallback(
+        &self,
+        blocks: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        if let [block] = blocks {
+            return self.write_block(block.clone()).await;
+        }
+        match self.db.write_blocks(blocks).await {
+            Ok(()) => Ok(()),
+            Err(batch_error) => {
+                tracing::warn!(
+                    "batched write of {} blocks failed ({batch_error}); retrying block-by-block",
+                    blocks.len(),
+                );
+                for block in blocks {
+                    self.write_block(block.clone()).await?;
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Deletes the block at height `h` from the database.
