@@ -366,14 +366,28 @@ impl DbV1 {
             let mut bytes_written: usize = 0;
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
-            put_counted(
-                &mut txn,
-                &mut bytes_written,
-                zaino_db.headers,
-                &block_height_bytes,
-                &header_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
+            // Per-height entries: six tables share the height key and NO_OVERWRITE;
+            // only the table and the encoded entry differ.
+            for (db, value) in [
+                (zaino_db.headers, header_entry.to_bytes()?),
+                (zaino_db.txids, txid_entry.to_bytes()?),
+                (zaino_db.transparent, transparent_entry.to_bytes()?),
+                (zaino_db.sapling, sapling_entry.to_bytes()?),
+                (zaino_db.orchard, orchard_entry.to_bytes()?),
+                (
+                    zaino_db.commitment_tree_data,
+                    commitment_tree_entry.to_bytes()?,
+                ),
+            ] {
+                put_counted(
+                    &mut txn,
+                    &mut bytes_written,
+                    db,
+                    &block_height_bytes,
+                    &value,
+                    WriteFlags::NO_OVERWRITE,
+                )?;
+            }
 
             put_counted(
                 &mut txn,
@@ -381,15 +395,6 @@ impl DbV1 {
                 zaino_db.heights,
                 &block_hash_bytes,
                 &height_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            put_counted(
-                &mut txn,
-                &mut bytes_written,
-                zaino_db.txids,
-                &block_height_bytes,
-                &txid_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
@@ -405,42 +410,6 @@ impl DbV1 {
                     WriteFlags::NO_OVERWRITE,
                 )?;
             }
-
-            put_counted(
-                &mut txn,
-                &mut bytes_written,
-                zaino_db.transparent,
-                &block_height_bytes,
-                &transparent_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            put_counted(
-                &mut txn,
-                &mut bytes_written,
-                zaino_db.sapling,
-                &block_height_bytes,
-                &sapling_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            put_counted(
-                &mut txn,
-                &mut bytes_written,
-                zaino_db.orchard,
-                &block_height_bytes,
-                &orchard_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            put_counted(
-                &mut txn,
-                &mut bytes_written,
-                zaino_db.commitment_tree_data,
-                &block_height_bytes,
-                &commitment_tree_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
 
             // Write spent to ZainoDB
             for (outpoint, tx_location) in spent_map {
@@ -1322,46 +1291,22 @@ impl DbV1 {
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
-            txn.put(
-                self.headers,
-                &block_height_bytes,
-                &header_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
+            // Per-height entries: six tables share the height key and NO_OVERWRITE;
+            // only the table and the encoded entry differ.
+            for (db, value) in [
+                (self.headers, &header_entry_bytes),
+                (self.txids, &txid_entry_bytes),
+                (self.transparent, &transparent_entry_bytes),
+                (self.sapling, &sapling_entry_bytes),
+                (self.orchard, &orchard_entry_bytes),
+                (self.commitment_tree_data, &commitment_tree_entry_bytes),
+            ] {
+                txn.put(db, &block_height_bytes, value, WriteFlags::NO_OVERWRITE)?;
+            }
             txn.put(
                 self.heights,
                 &block_hash_bytes,
                 &height_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.txids,
-                &block_height_bytes,
-                &txid_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.transparent,
-                &block_height_bytes,
-                &transparent_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.sapling,
-                &block_height_bytes,
-                &sapling_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.orchard,
-                &block_height_bytes,
-                &orchard_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.commitment_tree_data,
-                &block_height_bytes,
-                &commitment_tree_entry_bytes,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
