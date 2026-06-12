@@ -66,7 +66,7 @@ use std::{
     collections::HashSet,
     fs,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -143,18 +143,23 @@ pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME: &str =
 /// Singleton key for the finalised txout-set accumulator table.
 pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_KEY: &[u8] = b"tx_out_set_info_accumulator";
 
-/// Number of committed block writes / migration heights between explicit
-/// `env.sync(true)` durability checkpoints.
+/// Bytes of committed write volume between explicit `env.sync(true)` durability checkpoints.
 ///
 /// The LMDB environment is opened with `MDB_NOSYNC` (see [`DbV1::spawn`]), so an individual
 /// `txn.commit()` is *not* flushed to disk. Because the environment does not use `WRITE_MAP`,
 /// LMDB still guarantees ACI on crash — only durability (D) is lost: a crash rolls the database
 /// back to the last on-disk-consistent transaction, it never corrupts it (copy-on-write + dual
 /// meta pages always leave a recoverable committed snapshot). Forcing a sync every
-/// `SYNC_CHECKPOINT_INTERVAL` writes bounds how much committed-but-unflushed tail a crash can
-/// discard. The tail is always safe to re-do: clean sync resumes from the on-disk tip and
-/// re-fetches the missing blocks, and migrations resume idempotently from their progress keys.
-pub(crate) const SYNC_CHECKPOINT_INTERVAL: u32 = 1000;
+/// `SYNC_CHECKPOINT_BYTE_WINDOW` written bytes bounds how much committed-but-unflushed tail a
+/// crash can discard. The tail is always safe to re-do: clean sync resumes from the on-disk tip
+/// and re-fetches the missing blocks, and migrations resume idempotently from their progress
+/// keys.
+///
+/// A byte window (rather than a block count) keeps the loss window, the per-checkpoint stall,
+/// and dirty-page accumulation uniform across block sizes: ~64 max-size (2 MB) mainnet blocks
+/// per checkpoint instead of up to ~2 GB per 1,000 such blocks, and no over-frequent fsyncs
+/// across the near-empty early chain. Writers count the exact key + value bytes they put.
+pub(crate) const SYNC_CHECKPOINT_BYTE_WINDOW: usize = 128 * 1024 * 1024;
 
 /// [`DbCore`] capability implementation for [`DbV1`].
 ///
@@ -279,6 +284,11 @@ pub(crate) struct DbV1 {
     /// grows beyond the number of “holes” in the sequence.
     validated_set: DashSet<u32>,
 
+    /// Exact key + value bytes committed since the last `env.sync(true)` durability
+    /// checkpoint (the env is opened with `NO_SYNC`). Shared via `Arc` so write-task
+    /// clones observe the same window. See [`SYNC_CHECKPOINT_BYTE_WINDOW`].
+    bytes_since_checkpoint: Arc<AtomicUsize>,
+
     /// Background validator / maintenance task handle.
     ///
     /// Wrapped in a `Mutex` so `shutdown(&self)` can `.take()` the handle on
@@ -348,7 +358,7 @@ impl DbV1 {
         // inserts per block (the `spent` and `txid_location` B-trees are keyed by 32-byte
         // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
         // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
-        // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
+        // explicit checkpoints (`SYNC_CHECKPOINT_BYTE_WINDOW`) and on graceful shutdown instead.
         // `WRITE_MAP` is unset, so a crash never corrupts the database — it only discards the
         // unflushed tail of recent commits, which clean sync and migrations safely re-do.
         let env = Environment::new()
@@ -419,6 +429,7 @@ impl DbV1 {
                 address_history,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
+                bytes_since_checkpoint: Arc::new(AtomicUsize::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
@@ -443,6 +454,7 @@ impl DbV1 {
                 tx_out_set_info_accumulator,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
+                bytes_since_checkpoint: Arc::new(AtomicUsize::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
@@ -492,6 +504,7 @@ impl DbV1 {
             address_history: self.address_history,
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
+            bytes_since_checkpoint: Arc::clone(&self.bytes_since_checkpoint),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
@@ -674,6 +687,7 @@ impl DbV1 {
             address_history: self.address_history,
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
+            bytes_since_checkpoint: Arc::clone(&self.bytes_since_checkpoint),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
@@ -903,7 +917,7 @@ impl DbV1 {
         // inserts per block (the `spent` and `txid_location` B-trees are keyed by 32-byte
         // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
         // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
-        // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
+        // explicit checkpoints (`SYNC_CHECKPOINT_BYTE_WINDOW`) and on graceful shutdown instead.
         // `WRITE_MAP` is unset, so a crash never corrupts the database — it only discards the
         // unflushed tail of recent commits, which clean sync and migrations safely re-do.
         let env = Environment::new()
@@ -971,6 +985,7 @@ impl DbV1 {
                 address_history,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
+                bytes_since_checkpoint: Arc::new(AtomicUsize::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
@@ -994,6 +1009,7 @@ impl DbV1 {
                 tx_out_set_info_accumulator,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
+                bytes_since_checkpoint: Arc::new(AtomicUsize::new(0)),
                 validated_set: DashSet::new(),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),

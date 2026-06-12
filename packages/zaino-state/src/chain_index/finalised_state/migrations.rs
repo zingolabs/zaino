@@ -187,7 +187,7 @@ use crate::{
     chain_index::{
         finalised_state::{
             capability::{CapabilityRequest, DbMetadata},
-            db::v1::{DB_VERSION_V1, SYNC_CHECKPOINT_INTERVAL, TX_OUT_SET_INFO_ACCUMULATOR_KEY},
+            db::v1::{DB_VERSION_V1, SYNC_CHECKPOINT_BYTE_WINDOW, TX_OUT_SET_INFO_ACCUMULATOR_KEY},
             entry::{StoredEntryFixed, StoredEntryVar},
         },
         source::BlockchainSource,
@@ -757,6 +757,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
             );
             let stage_a_started = std::time::Instant::now();
 
+            let mut bytes_since_checkpoint: usize = 0;
             while next_height <= db_tip {
                 let height = Height::try_from(next_height)
                     .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
@@ -799,6 +800,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                     for (txid_bytes, tx_location) in &entries {
                         let entry_bytes =
                             StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+                        bytes_since_checkpoint += txid_bytes.len() + entry_bytes.len();
 
                         match txn.put(
                             txid_location_db,
@@ -852,8 +854,10 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 
                 // Durability checkpoint (the env is opened with `NO_SYNC`): bound how much
                 // backfill a crash can discard. The lost tail is re-done idempotently from the
-                // Stage A progress key on resume.
-                if next_height % SYNC_CHECKPOINT_INTERVAL == 0 {
+                // Stage A progress key on resume. (Per-height progress-key rewrites are a few
+                // dozen bytes and not counted.)
+                if bytes_since_checkpoint >= SYNC_CHECKPOINT_BYTE_WINDOW {
+                    bytes_since_checkpoint = 0;
                     env.sync(true)?;
                 }
 
@@ -927,6 +931,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
             );
             let stage_b_started = std::time::Instant::now();
 
+            let mut bytes_since_checkpoint: usize = 0;
             while next_height_to_migrate <= db_tip {
                 let height = Height::try_from(next_height_to_migrate)
                     .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
@@ -947,7 +952,9 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                         .map_err(FinalisedStateError::LmdbError)?;
                     let entry =
                         StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
-                            FinalisedStateError::Custom(format!("transparent corrupt data: {error}"))
+                            FinalisedStateError::Custom(format!(
+                                "transparent corrupt data: {error}"
+                            ))
                         })?;
                     if !entry.verify(&height_bytes) {
                         return Err(FinalisedStateError::Custom(
@@ -1049,6 +1056,8 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                         let outpoint_bytes = outpoint.to_bytes()?;
                         let tx_location_entry_bytes =
                             StoredEntryFixed::new(&outpoint_bytes, *tx_location).to_bytes()?;
+                        bytes_since_checkpoint +=
+                            outpoint_bytes.len() + tx_location_entry_bytes.len();
 
                         match txn.put(
                             spent_db,
@@ -1116,8 +1125,10 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 
                 // Durability checkpoint (the env is opened with `NO_SYNC`): bound how much
                 // backfill a crash can discard. The lost tail is re-done idempotently from the
-                // Stage B progress key on resume.
-                if next_height_to_migrate % SYNC_CHECKPOINT_INTERVAL == 0 {
+                // Stage B progress key on resume. (Per-height accumulator and progress-key
+                // rewrites are small and not counted.)
+                if bytes_since_checkpoint >= SYNC_CHECKPOINT_BYTE_WINDOW {
+                    bytes_since_checkpoint = 0;
                     env.sync(true)?;
                 }
 

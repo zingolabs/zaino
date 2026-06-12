@@ -353,6 +353,7 @@ impl DbV1 {
             address_history: self.address_history,
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
+            bytes_since_checkpoint: Arc::clone(&self.bytes_since_checkpoint),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
@@ -360,24 +361,32 @@ impl DbV1 {
             config: self.config.clone(),
         };
         let join_handle = tokio::task::spawn_blocking(move || {
-            // Write block to ZainoDB
+            // Write block to ZainoDB, counting the exact key + value bytes put so the
+            // caller can maintain the `SYNC_CHECKPOINT_BYTE_WINDOW` durability window.
+            let mut bytes_written: usize = 0;
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.headers,
                 &block_height_bytes,
                 &header_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.heights,
                 &block_hash_bytes,
                 &height_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.txids,
                 &block_height_bytes,
                 &txid_entry.to_bytes()?,
@@ -387,7 +396,9 @@ impl DbV1 {
             // Reverse txid index: `txid -> TxLocation`.
             for (txid_bytes, tx_location) in &txid_location_entries {
                 let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
-                txn.put(
+                put_counted(
+                    &mut txn,
+                    &mut bytes_written,
                     zaino_db.txid_location,
                     txid_bytes,
                     &entry_bytes,
@@ -395,28 +406,36 @@ impl DbV1 {
                 )?;
             }
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.transparent,
                 &block_height_bytes,
                 &transparent_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.sapling,
                 &block_height_bytes,
                 &sapling_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.orchard,
                 &block_height_bytes,
                 &orchard_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.commitment_tree_data,
                 &block_height_bytes,
                 &commitment_tree_entry.to_bytes()?,
@@ -428,7 +447,9 @@ impl DbV1 {
                 let outpoint_bytes = &outpoint.to_bytes()?;
                 let tx_location_entry_bytes =
                     StoredEntryFixed::new(outpoint_bytes, tx_location).to_bytes()?;
-                txn.put(
+                put_counted(
+                    &mut txn,
+                    &mut bytes_written,
                     zaino_db.spent,
                     &outpoint_bytes,
                     &tx_location_entry_bytes,
@@ -439,7 +460,9 @@ impl DbV1 {
             let tx_out_set_info_accumulator_entry =
                 StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, tx_out_set_info_accumulator);
 
-            txn.put(
+            put_counted(
+                &mut txn,
+                &mut bytes_written,
                 zaino_db.tx_out_set_info_accumulator,
                 &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
                 &tx_out_set_info_accumulator_entry.to_bytes()?,
@@ -467,7 +490,9 @@ impl DbV1 {
                     stored_entries.sort_by(|a, b| a.1.cmp(&b.1));
 
                     for (_record, record_entry_bytes) in stored_entries {
-                        txn.put(
+                        put_counted(
+                            &mut txn,
+                            &mut bytes_written,
                             zaino_db.address_history,
                             &addr_bytes,
                             &record_entry_bytes,
@@ -497,7 +522,9 @@ impl DbV1 {
                     for (_record, record_entry_bytes, (prev_output_script, prev_output_record)) in
                         stored_entries
                     {
-                        txn.put(
+                        put_counted(
+                            &mut txn,
+                            &mut bytes_written,
                             zaino_db.address_history,
                             &addr_bytes,
                             &record_entry_bytes,
@@ -538,13 +565,13 @@ impl DbV1 {
 
             // `txn.commit()` makes the block visible to subsequent readers (LMDB MVCC), but the
             // env is opened with `NO_SYNC`, so it is *not* fsynced here. Durability is forced at
-            // `SYNC_CHECKPOINT_INTERVAL` boundaries below and on graceful shutdown. Validation
+            // `SYNC_CHECKPOINT_BYTE_WINDOW` boundaries below and on graceful shutdown. Validation
             // is read-only and observes the just-committed state from the map regardless of sync.
             txn.commit()?;
 
             zaino_db.validate_block_blocking(block_height, block_hash)?;
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, FinalisedStateError>(bytes_written)
         });
 
         // Wait for the join and handle panic / cancellation explicitly so we can
@@ -565,14 +592,20 @@ impl DbV1 {
         };
 
         match post_result {
-            Ok(_) => {
+            Ok(bytes_written) => {
                 // The block was committed inside the blocking task above. Under `NO_SYNC` that
                 // commit is not yet on disk; force a durability checkpoint every
-                // `SYNC_CHECKPOINT_INTERVAL` blocks so a crash can only lose a bounded tail (which
-                // the syncer re-fetches from the on-disk tip). Genesis is checkpointed too so a
-                // brand-new cache has a durable root.
+                // `SYNC_CHECKPOINT_BYTE_WINDOW` written bytes so a crash can only lose a bounded
+                // tail (which the syncer re-fetches from the on-disk tip). Genesis is
+                // checkpointed unconditionally so a brand-new cache has a durable root.
                 self.status.store(StatusType::Ready);
-                if block_height.0 % SYNC_CHECKPOINT_INTERVAL == 0 {
+                let accumulated = self
+                    .bytes_since_checkpoint
+                    .fetch_add(bytes_written, std::sync::atomic::Ordering::Relaxed)
+                    + bytes_written;
+                if accumulated >= SYNC_CHECKPOINT_BYTE_WINDOW || block_height == GENESIS_HEIGHT {
+                    self.bytes_since_checkpoint
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
                     tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
                         FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                     })?;
@@ -977,6 +1010,7 @@ impl DbV1 {
             address_history: self.address_history,
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
+            bytes_since_checkpoint: Arc::clone(&self.bytes_since_checkpoint),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
@@ -1340,4 +1374,20 @@ impl DbV1 {
         self.status.store(StatusType::Ready);
         Ok(())
     }
+}
+
+/// Puts one encoded entry and counts its exact key + value bytes toward the
+/// `SYNC_CHECKPOINT_BYTE_WINDOW` durability window, so the count can never
+/// drift from the put it describes.
+fn put_counted(
+    txn: &mut lmdb::RwTransaction<'_>,
+    bytes_written: &mut usize,
+    db: lmdb::Database,
+    key: &[u8],
+    value: &[u8],
+    flags: WriteFlags,
+) -> Result<(), FinalisedStateError> {
+    *bytes_written += key.len() + value.len();
+    txn.put(db, &key, &value, flags)?;
+    Ok(())
 }

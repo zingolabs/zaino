@@ -338,6 +338,7 @@ impl DbV1 {
             address_history: self.address_history,
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
+            bytes_since_checkpoint: Arc::clone(&self.bytes_since_checkpoint),
             validated_set: self.validated_set.clone(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
