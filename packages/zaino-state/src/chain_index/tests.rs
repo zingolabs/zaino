@@ -1,5 +1,6 @@
 //! Zaino-State ChainIndex unit tests.
 
+mod benchmarks;
 pub(crate) mod finalised_state;
 pub(crate) mod mempool;
 mod mockchain_tests;
