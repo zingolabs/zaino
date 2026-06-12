@@ -75,6 +75,23 @@ use blake2::{
 };
 use corez::io::{self, Read, Write};
 
+/// Length in bytes of the BLAKE2b-256 checksum trailing every stored entry.
+const CHECKSUM_LEN: usize = 32;
+
+/// BLAKE2b-256 over `key ‖ body`, streamed into the hasher — no concatenation
+/// allocation. This is the checksum every stored entry carries; `key` must be
+/// the exact byte encoding used as the LMDB key for the record.
+pub(crate) fn keyed_checksum(key: &[u8], body: &[u8]) -> [u8; 32] {
+    let mut hasher = Blake2bVar::new(CHECKSUM_LEN).expect("BLAKE2b-256 output length is valid");
+    hasher.update(key);
+    hasher.update(body);
+    let mut output = [0u8; CHECKSUM_LEN];
+    hasher
+        .finalize_variable(&mut output)
+        .expect("BLAKE2b-256 output length is valid");
+    output
+}
+
 /// Fixed-length checksummed database value wrapper.
 ///
 /// This wrapper is designed for LMDB tables that rely on fixed-size value records, including those
@@ -122,8 +139,44 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
             item.serialize(&mut v).unwrap();
             v
         };
-        let checksum = Self::blake2b256(&[key.as_ref(), &body].concat());
+        let checksum = keyed_checksum(key.as_ref(), &body);
         Self { item, checksum }
+    }
+
+    /// Encodes the complete stored-entry wire bytes for `item` under `key` in a single
+    /// pass: wrapper version tag, item bytes, and the checksum over `key ‖ item bytes`.
+    ///
+    /// This is the write-path counterpart of `from_bytes`. Prefer it over
+    /// `Self::new(key, item).to_bytes()`, which serializes the item twice (once for the
+    /// checksum, once for the wire bytes).
+    pub(crate) fn encode<K: AsRef<[u8]>>(key: K, item: &T) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(1 + T::VERSIONED_LEN + CHECKSUM_LEN);
+        bytes.push(Self::VERSION);
+        item.serialize(&mut bytes)?;
+        if bytes.len() != 1 + T::VERSIONED_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "encoded fixed-length item has an unexpected length",
+            ));
+        }
+        let checksum = keyed_checksum(key.as_ref(), &bytes[1..]);
+        bytes.extend_from_slice(&checksum);
+        Ok(bytes)
+    }
+
+    /// Verifies the checksum of raw stored-entry bytes under `key` without decoding or
+    /// re-encoding the item: the checksum is defined over `key ‖ item bytes`, and both
+    /// already sit in `raw` exactly as written.
+    ///
+    /// Version-agnostic by construction — the checksum binds whatever encoding version
+    /// the writer used — and therefore both cheaper and stricter than [`Self::verify`],
+    /// which re-encodes the decoded item per candidate version.
+    pub(crate) fn verify_stored<K: AsRef<[u8]>>(key: K, raw: &[u8]) -> bool {
+        if raw.len() != 1 + T::VERSIONED_LEN + CHECKSUM_LEN {
+            return false;
+        }
+        let (body, checksum) = raw[1..].split_at(T::VERSIONED_LEN);
+        keyed_checksum(key.as_ref(), body) == checksum
     }
 
     /// Verifies the checksum for this entry under `key`.
@@ -136,7 +189,8 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     ///
     /// # Usage
     /// Callers should treat a checksum mismatch as a corruption or incompatibility signal and
-    /// return a hard error (or trigger a rebuild path), depending on context.
+    /// return a hard error (or trigger a rebuild path), depending on context. When the raw
+    /// stored bytes are available, prefer [`Self::verify_stored`].
     pub(crate) fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
         // Iterate from latest (T::VERSION) down to 1 (inclusive).
         let mut v = T::VERSION;
@@ -145,7 +199,7 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
             match self.item.to_bytes_with_version(v) {
                 Ok(item_bytes) => {
                     // Compute the candidate checksum over (encoded_key || item_bytes).
-                    let candidate = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+                    let candidate = keyed_checksum(key.as_ref(), &item_bytes);
                     if candidate == self.checksum {
                         return true;
                     }
@@ -210,7 +264,7 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
             ));
         }
 
-        let checksum = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+        let checksum = keyed_checksum(key.as_ref(), &item_bytes);
 
         let mut stored_entry_bytes = Vec::with_capacity(1 + T::VERSIONED_LEN + 32);
         stored_entry_bytes.push(Self::VERSION);
@@ -300,8 +354,50 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
             item.serialize(&mut v).unwrap();
             v
         };
-        let checksum = Self::blake2b256(&[key.as_ref(), &body].concat());
+        let checksum = keyed_checksum(key.as_ref(), &body);
         Self { item, checksum }
+    }
+
+    /// Encodes the complete stored-entry wire bytes for `item` under `key` in a single
+    /// pass: wrapper version tag, CompactSize length, item bytes, and the checksum over
+    /// `key ‖ item bytes`.
+    ///
+    /// This is the write-path counterpart of `from_bytes`. Prefer it over
+    /// `Self::new(key, item).to_bytes()`, which serializes the item twice (once for the
+    /// checksum, once for the wire bytes).
+    pub(crate) fn encode<K: AsRef<[u8]>>(key: K, item: &T) -> io::Result<Vec<u8>> {
+        let item_bytes = item.to_bytes()?;
+        let mut bytes = Vec::with_capacity(1 + 9 + item_bytes.len() + CHECKSUM_LEN);
+        bytes.push(Self::VERSION);
+        CompactSize::write(&mut bytes, item_bytes.len())?;
+        bytes.extend_from_slice(&item_bytes);
+        let checksum = keyed_checksum(key.as_ref(), &item_bytes);
+        bytes.extend_from_slice(&checksum);
+        Ok(bytes)
+    }
+
+    /// Verifies the checksum of raw stored-entry bytes under `key` without decoding or
+    /// re-encoding the item: the checksum is defined over `key ‖ item bytes`, and both
+    /// already sit in `raw` exactly as written.
+    ///
+    /// Version-agnostic by construction — the checksum binds whatever encoding version
+    /// the writer used — and therefore both cheaper and stricter than [`Self::verify`],
+    /// which re-encodes the decoded item per candidate version.
+    pub(crate) fn verify_stored<K: AsRef<[u8]>>(key: K, raw: &[u8]) -> bool {
+        let Some((_tag, mut rest)) = raw.split_first() else {
+            return false;
+        };
+        let Ok(len) = CompactSize::read(&mut rest) else {
+            return false;
+        };
+        let Ok(len) = usize::try_from(len) else {
+            return false;
+        };
+        if rest.len() != len + CHECKSUM_LEN {
+            return false;
+        }
+        let (body, checksum) = rest.split_at(len);
+        keyed_checksum(key.as_ref(), body) == checksum
     }
 
     /// Verifies the checksum for this entry under `key`.
@@ -311,6 +407,7 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
     ///
     /// # Key requirements
     /// `key` must be the exact byte encoding used as the LMDB key for this record.
+    /// When the raw stored bytes are available, prefer [`Self::verify_stored`].
     pub(crate) fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
         // Iterate from latest (T::VERSION) down to 1 (inclusive).
         let mut v = T::VERSION;
@@ -319,7 +416,7 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
             match self.item.to_bytes_with_version(v) {
                 Ok(item_bytes) => {
                     // Compute the candidate checksum over (encoded_key || item_bytes).
-                    let candidate = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+                    let candidate = keyed_checksum(key.as_ref(), &item_bytes);
                     if candidate == self.checksum {
                         return true;
                     }
@@ -375,7 +472,7 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
         item_version: u8,
     ) -> io::Result<Vec<u8>> {
         let item_bytes = item.to_bytes_with_version(item_version)?;
-        let checksum = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+        let checksum = keyed_checksum(key.as_ref(), &item_bytes);
 
         let mut stored_entry_bytes = Vec::new();
         stored_entry_bytes.push(Self::VERSION);
@@ -632,5 +729,78 @@ mod tests {
         let wrapper = StoredEntryVar::new(&key, TestInner { x: 0xCAFEBABE });
         let wrong_key = b"bad-key".to_vec();
         assert!(!wrapper.verify(&wrong_key));
+    }
+
+    // -------------------- single-pass encode / stored-bytes verify --------------------
+
+    #[test]
+    fn encode_matches_new_then_to_bytes() {
+        let key = key_bytes();
+
+        let inner = TestInner { x: 0x0123_4567 };
+        let fixed_single_pass = StoredEntryFixed::encode(&key, &inner).expect("fixed encode");
+        let fixed_double_pass = StoredEntryFixed::new(&key, inner.clone())
+            .to_bytes()
+            .expect("fixed to_bytes");
+        assert_eq!(fixed_single_pass, fixed_double_pass);
+
+        let var_single_pass = StoredEntryVar::encode(&key, &inner).expect("var encode");
+        let var_double_pass = StoredEntryVar::new(&key, inner)
+            .to_bytes()
+            .expect("var to_bytes");
+        assert_eq!(var_single_pass, var_double_pass);
+    }
+
+    #[test]
+    fn verify_stored_accepts_written_bytes_and_rejects_tampering() {
+        let key = key_bytes();
+        let inner = TestInner { x: 0x89AB_CDEF };
+
+        let fixed = StoredEntryFixed::encode(&key, &inner).expect("fixed encode");
+        assert!(StoredEntryFixed::<TestInner>::verify_stored(&key, &fixed));
+        assert!(!StoredEntryFixed::<TestInner>::verify_stored(
+            b"other-key",
+            &fixed
+        ));
+        let mut tampered = fixed.clone();
+        tampered[1] ^= 0xff;
+        assert!(!StoredEntryFixed::<TestInner>::verify_stored(
+            &key, &tampered
+        ));
+        assert!(!StoredEntryFixed::<TestInner>::verify_stored(
+            &key,
+            &fixed[..fixed.len() - 1]
+        ));
+
+        let var = StoredEntryVar::encode(&key, &inner).expect("var encode");
+        assert!(StoredEntryVar::<TestInner>::verify_stored(&key, &var));
+        assert!(!StoredEntryVar::<TestInner>::verify_stored(
+            b"other-key",
+            &var
+        ));
+        let mut tampered = var.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        assert!(!StoredEntryVar::<TestInner>::verify_stored(&key, &tampered));
+    }
+
+    #[test]
+    fn verify_stored_accepts_historical_item_versions() {
+        // verify_stored binds whatever bytes were written, so values encoded with an
+        // older inner item version still verify without any re-encoding loop.
+        let key = key_bytes();
+        let inner = TestInner { x: 0xAABB_CCDD };
+
+        let fixed_raw =
+            StoredEntryFixed::<TestInner>::to_bytes_with_item_version(&key, &inner, version::V1)
+                .expect("fixed v1 bytes");
+        assert!(StoredEntryFixed::<TestInner>::verify_stored(
+            &key, &fixed_raw
+        ));
+
+        let var_raw =
+            StoredEntryVar::<TestInner>::to_bytes_with_item_version(&key, &inner, version::V1)
+                .expect("var v1 bytes");
+        assert!(StoredEntryVar::<TestInner>::verify_stored(&key, &var_raw));
     }
 }

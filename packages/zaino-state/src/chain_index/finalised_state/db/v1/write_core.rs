@@ -312,17 +312,18 @@ impl DbV1 {
         let block_height_bytes = block_height.to_bytes()?;
 
         // Build DBHeight
-        let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.context.index.height);
+        let height_entry_bytes =
+            StoredEntryFixed::encode(&block_hash_bytes, &block.context.index.height)?;
 
         // Build header
-        let header_entry = StoredEntryVar::new(
+        let header_entry_bytes = StoredEntryVar::encode(
             &block_height_bytes,
-            BlockHeaderData::new(block.context, *block.data()),
-        );
+            &BlockHeaderData::new(block.context, *block.data()),
+        )?;
 
         // Build commitment tree data
-        let commitment_tree_entry =
-            StoredEntryFixed::new(&block_height_bytes, *block.commitment_tree_data());
+        let commitment_tree_entry_bytes =
+            StoredEntryFixed::encode(&block_height_bytes, block.commitment_tree_data())?;
 
         // Build transaction indexes.
         //
@@ -339,7 +340,7 @@ impl DbV1 {
         let mut txid_index: HashMap<TransactionHash, u16> = HashMap::with_capacity(tx_len);
         // Reverse txid index entries (`txid -> TxLocation`), sorted before the write
         // txn so the random-keyed `txid_location` B-tree sees locally-ordered inserts.
-        let mut txid_location_entries: Vec<([u8; 32], TxLocation)> = Vec::with_capacity(tx_len);
+        let mut txid_location_entries: Vec<([u8; 32], Vec<u8>)> = Vec::with_capacity(tx_len);
         let mut sapling = Vec::with_capacity(tx_len);
         let mut orchard = Vec::with_capacity(tx_len);
 
@@ -376,7 +377,11 @@ impl DbV1 {
                 });
             }
 
-            txid_location_entries.push(((*hash).into(), tx_location));
+            let txid_bytes: [u8; 32] = (*hash).into();
+            txid_location_entries.push((
+                txid_bytes,
+                StoredEntryFixed::encode(&txid_bytes, &tx_location)?,
+            ));
 
             // Transparent transactions — paired with the txid at the source binding.
             let transparent_data = stored_transparent_data(tx);
@@ -533,27 +538,44 @@ impl DbV1 {
 
         txid_location_entries.sort_by_key(|entry| entry.0);
 
-        let txid_entry = StoredEntryVar::new(&block_height_bytes, TxidList::new(txids));
-        let transparent_entry =
-            StoredEntryVar::new(&block_height_bytes, TransparentTxList::new(transparent));
-        let sapling_entry = StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
-        let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
+        let txid_entry_bytes = StoredEntryVar::encode(&block_height_bytes, &TxidList::new(txids))?;
+        let transparent_entry_bytes =
+            StoredEntryVar::encode(&block_height_bytes, &TransparentTxList::new(transparent))?;
+        let sapling_entry_bytes =
+            StoredEntryVar::encode(&block_height_bytes, &SaplingTxList::new(sapling))?;
+        let orchard_entry_bytes =
+            StoredEntryVar::encode(&block_height_bytes, &OrchardTxList::new(orchard))?;
+
+        // Pre-encode the spent-index and accumulator entries too, so the write
+        // transaction performs no serialization at all.
+        let mut spent_entries = Vec::with_capacity(spent_map.len());
+        for (outpoint, tx_location) in &spent_map {
+            let outpoint_bytes = outpoint.to_bytes()?;
+            let entry_bytes = StoredEntryFixed::encode(&outpoint_bytes, tx_location)?;
+            spent_entries.push((outpoint_bytes, entry_bytes));
+        }
+        let tx_out_set_info_accumulator_entry_bytes = StoredEntryFixed::encode(
+            TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+            &tx_out_set_info_accumulator,
+        )?;
 
         Ok(BlockWriteData {
             block_hash,
             block_height,
             block_hash_bytes,
             block_height_bytes,
-            height_entry,
-            header_entry,
-            commitment_tree_entry,
+            height_entry_bytes,
+            header_entry_bytes,
+            commitment_tree_entry_bytes,
             txid_location_entries,
-            txid_entry,
-            transparent_entry,
-            sapling_entry,
-            orchard_entry,
+            txid_entry_bytes,
+            transparent_entry_bytes,
+            sapling_entry_bytes,
+            orchard_entry_bytes,
+            spent_entries,
             spent_map,
             tx_out_set_info_accumulator,
+            tx_out_set_info_accumulator_entry_bytes,
             #[cfg(feature = "transparent_address_history_experimental")]
             addrhist_inputs_map,
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -561,97 +583,78 @@ impl DbV1 {
         })
     }
 
+    /// Packs one address-history record and encodes its stored entry under
+    /// `addr_bytes` in a single pass.
+    #[cfg(feature = "transparent_address_history_experimental")]
+    fn encode_addr_hist_entry(
+        addr_bytes: &[u8],
+        record: &AddrHistRecord,
+    ) -> Result<Vec<u8>, FinalisedStateError> {
+        let packed = AddrEventBytes::from_record(record).map_err(|e| {
+            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
+        })?;
+        Ok(StoredEntryFixed::encode(addr_bytes, &packed)?)
+    }
+
     /// Persists one block's pre-built write data inside an open LMDB write transaction:
-    /// every table put for the block, and nothing else. Committing — and post-commit
-    /// validation — is the caller's responsibility, so several blocks can share one
+    /// every table put for the block, and nothing else — all entries arrive
+    /// pre-encoded, so no serialization happens inside the single-writer window.
+    /// Committing is the caller's responsibility, so several blocks can share one
     /// durable commit.
     fn put_block_write_data_in_txn(
         &self,
         txn: &mut lmdb::RwTransaction<'_>,
         data: BlockWriteData,
     ) -> Result<(), FinalisedStateError> {
-        txn.put(
-            self.headers,
-            &data.block_height_bytes,
-            &data.header_entry.to_bytes()?,
-            WriteFlags::NO_OVERWRITE,
-        )?;
+        // Per-height entries: six tables share the height key and NO_OVERWRITE;
+        // only the table and the pre-encoded entry differ.
+        for (db, entry_bytes) in [
+            (self.headers, &data.header_entry_bytes),
+            (self.txids, &data.txid_entry_bytes),
+            (self.transparent, &data.transparent_entry_bytes),
+            (self.sapling, &data.sapling_entry_bytes),
+            (self.orchard, &data.orchard_entry_bytes),
+            (self.commitment_tree_data, &data.commitment_tree_entry_bytes),
+        ] {
+            txn.put(
+                db,
+                &data.block_height_bytes,
+                entry_bytes,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+        }
 
         txn.put(
             self.heights,
             &data.block_hash_bytes,
-            &data.height_entry.to_bytes()?,
-            WriteFlags::NO_OVERWRITE,
-        )?;
-
-        txn.put(
-            self.txids,
-            &data.block_height_bytes,
-            &data.txid_entry.to_bytes()?,
+            &data.height_entry_bytes,
             WriteFlags::NO_OVERWRITE,
         )?;
 
         // Reverse txid index: `txid -> TxLocation`.
-        for (txid_bytes, tx_location) in &data.txid_location_entries {
-            let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+        for (txid_bytes, entry_bytes) in &data.txid_location_entries {
             txn.put(
                 self.txid_location,
                 txid_bytes,
-                &entry_bytes,
+                entry_bytes,
                 WriteFlags::NO_OVERWRITE,
             )?;
         }
-
-        txn.put(
-            self.transparent,
-            &data.block_height_bytes,
-            &data.transparent_entry.to_bytes()?,
-            WriteFlags::NO_OVERWRITE,
-        )?;
-
-        txn.put(
-            self.sapling,
-            &data.block_height_bytes,
-            &data.sapling_entry.to_bytes()?,
-            WriteFlags::NO_OVERWRITE,
-        )?;
-
-        txn.put(
-            self.orchard,
-            &data.block_height_bytes,
-            &data.orchard_entry.to_bytes()?,
-            WriteFlags::NO_OVERWRITE,
-        )?;
-
-        txn.put(
-            self.commitment_tree_data,
-            &data.block_height_bytes,
-            &data.commitment_tree_entry.to_bytes()?,
-            WriteFlags::NO_OVERWRITE,
-        )?;
 
         // Write spent to ZainoDB
-        for (outpoint, tx_location) in data.spent_map {
-            let outpoint_bytes = &outpoint.to_bytes()?;
-            let tx_location_entry_bytes =
-                StoredEntryFixed::new(outpoint_bytes, tx_location).to_bytes()?;
+        for (outpoint_bytes, entry_bytes) in &data.spent_entries {
             txn.put(
                 self.spent,
-                &outpoint_bytes,
-                &tx_location_entry_bytes,
+                outpoint_bytes,
+                entry_bytes,
                 WriteFlags::NO_OVERWRITE,
             )?;
         }
-
-        let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-            TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            data.tx_out_set_info_accumulator,
-        );
 
         txn.put(
             self.tx_out_set_info_accumulator,
             &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            &tx_out_set_info_accumulator_entry.to_bytes()?,
+            &data.tx_out_set_info_accumulator_entry_bytes,
             WriteFlags::empty(),
         )?;
 
@@ -664,11 +667,7 @@ impl DbV1 {
                 // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
                 let mut stored_entries = Vec::with_capacity(records.len());
                 for record in records {
-                    let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
-                        FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
-                    })?;
-                    let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                    let entry_bytes = entry.to_bytes()?;
+                    let entry_bytes = Self::encode_addr_hist_entry(&addr_bytes, &record)?;
                     stored_entries.push((record, entry_bytes));
                 }
 
@@ -692,11 +691,7 @@ impl DbV1 {
                 // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
                 let mut stored_entries = Vec::with_capacity(records.len());
                 for (record, prev_output) in records {
-                    let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
-                        FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
-                    })?;
-                    let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                    let entry_bytes = entry.to_bytes()?;
+                    let entry_bytes = Self::encode_addr_hist_entry(&addr_bytes, &record)?;
                     stored_entries.push((record, entry_bytes, prev_output));
                 }
 
@@ -715,12 +710,8 @@ impl DbV1 {
 
                     // mark corresponding output as spent
                     let prev_addr_bytes = prev_output_script.to_bytes()?;
-                    let packed_prev =
-                        AddrEventBytes::from_record(&prev_output_record).map_err(|e| {
-                            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
-                        })?;
                     let prev_entry_bytes =
-                        StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
+                        Self::encode_addr_hist_entry(&prev_addr_bytes, &prev_output_record)?;
                     let updated = self.mark_addr_hist_record_spent_in_txn(
                         &mut *txn,
                         &prev_output_script,
@@ -1228,19 +1219,13 @@ impl DbV1 {
                     for (_record, (prev_output_script, prev_output_record)) in records {
                         {
                             let prev_addr_bytes = prev_output_script.to_bytes()?;
-                            let packed_prev = AddrEventBytes::from_record(prev_output_record)
-                                .map_err(|e| {
-                                    FinalisedStateError::Custom(format!(
-                                        "AddrEventBytes pack error: {e:?}"
-                                    ))
-                                })?;
 
                             // Build the *spent* form of the stored entry so it matches the DB
                             // (mark_addr_hist_record_spent_blocking sets FLAG_SPENT and
                             // recomputes the checksum).  We must pass the spent bytes here
                             // because the DB currently contains the spent version.
                             let prev_entry_bytes =
-                                StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
+                                Self::encode_addr_hist_entry(&prev_addr_bytes, prev_output_record)?;
 
                             // Turn the mined-entry into the spent-entry (mutate flags + checksum)
                             let mut spent_prev_entry = prev_entry_bytes.clone();
@@ -1548,18 +1533,23 @@ struct BlockWriteData {
     block_height: Height,
     block_hash_bytes: Vec<u8>,
     block_height_bytes: Vec<u8>,
-    height_entry: StoredEntryFixed<Height>,
-    header_entry: StoredEntryVar<BlockHeaderData>,
-    commitment_tree_entry: StoredEntryFixed<CommitmentTreeData>,
-    /// Sorted by txid so the random-keyed `txid_location` B-tree sees locally-ordered
-    /// inserts.
-    txid_location_entries: Vec<([u8; 32], TxLocation)>,
-    txid_entry: StoredEntryVar<TxidList>,
-    transparent_entry: StoredEntryVar<TransparentTxList>,
-    sapling_entry: StoredEntryVar<SaplingTxList>,
-    orchard_entry: StoredEntryVar<OrchardTxList>,
+    height_entry_bytes: Vec<u8>,
+    header_entry_bytes: Vec<u8>,
+    commitment_tree_entry_bytes: Vec<u8>,
+    /// `(txid, encoded entry)`, sorted by txid so the random-keyed `txid_location`
+    /// B-tree sees locally-ordered inserts.
+    txid_location_entries: Vec<([u8; 32], Vec<u8>)>,
+    txid_entry_bytes: Vec<u8>,
+    transparent_entry_bytes: Vec<u8>,
+    sapling_entry_bytes: Vec<u8>,
+    orchard_entry_bytes: Vec<u8>,
+    /// `(encoded outpoint key, encoded entry)` for the `spent` table.
+    spent_entries: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Kept alongside `spent_entries`: `PendingBatchState::absorb` and the
+    /// accumulator calculation consume the typed map.
     spent_map: HashMap<Outpoint, TxLocation>,
     tx_out_set_info_accumulator: FinalisedTxOutSetInfoAccumulator,
+    tx_out_set_info_accumulator_entry_bytes: Vec<u8>,
     #[cfg(feature = "transparent_address_history_experimental")]
     addrhist_inputs_map: HashMap<AddrScript, Vec<(AddrHistRecord, (AddrScript, AddrHistRecord))>>,
     #[cfg(feature = "transparent_address_history_experimental")]
