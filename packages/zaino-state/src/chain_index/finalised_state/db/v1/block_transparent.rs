@@ -48,84 +48,96 @@ impl DbV1 {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
+        tokio::task::block_in_place(|| self.get_transparent_blocking(tx_location))
+    }
+
+    /// Fetches the transparent data at `tx_location` by reading the stored table
+    /// directly: one lazy extraction from the height's stored `TransparentTxList`
+    /// value — the rest of the list is never decoded, and no validation is
+    /// triggered. This is the shared raw-read primitive for transparent
+    /// lookups; async callers go through [`BlockTransparentExt::get_transparent`].
+    ///
+    /// WARNING: This is a blocking function and **MUST** be called within a blocking
+    /// thread / task.
+    pub(super) fn get_transparent_blocking(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
         use std::io::{Cursor, Read};
 
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
+        let txn = self.env.begin_ro_txn()?;
 
-            let height = Height::try_from(tx_location.block_height())
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
-            let height_bytes = height.to_bytes()?;
+        let height = Height::try_from(tx_location.block_height())
+            .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+        let height_bytes = height.to_bytes()?;
 
-            let raw = match txn.get(self.transparent, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "transparent data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            let mut cursor = Cursor::new(raw);
-
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            let _body_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("compact size read error: {e}"))
-            })?;
-
-            // Read [1] TransparentTxList Record version (skip 1 byte)
-            cursor.set_position(cursor.position() + 1);
-
-            // Read CompactSize: number of records
-            let list_len = CompactSize::read(&mut cursor)
-                .map_err(|e| FinalisedStateError::Custom(format!("txid list len error: {e}")))?;
-
-            let idx = tx_location.tx_index() as usize;
-            if idx >= list_len as usize {
-                return Err(FinalisedStateError::Custom(
-                    "tx_index out of range in transparent tx data".to_string(),
+        let raw = match txn.get(self.transparent, &height_bytes) {
+            Ok(val) => val,
+            Err(lmdb::Error::NotFound) => {
+                return Err(FinalisedStateError::DataUnavailable(
+                    "transparent data missing from db".into(),
                 ));
             }
+            Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+        };
+        let mut cursor = Cursor::new(raw);
 
-            // Skip preceding entries
-            for _ in 0..idx {
-                Self::skip_opt_transparent_entry(&mut cursor)
-                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
-            }
+        // Skip [0] StoredEntry version
+        cursor.set_position(1);
 
-            let option_start = cursor.position();
+        // Read CompactSize: length of serialized body
+        let _body_len = CompactSize::read(&mut cursor)
+            .map_err(|e| FinalisedStateError::Custom(format!("compact size read error: {e}")))?;
 
-            // Peek at the 1-byte presence flag
-            let mut presence = [0u8; 1];
-            cursor.read_exact(&mut presence).map_err(|e| {
-                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
-            })?;
+        // Read [1] TransparentTxList Record version (skip 1 byte)
+        cursor.set_position(cursor.position() + 1);
 
-            if presence[0] == 0 {
-                return Ok(None);
-            } else if presence[0] != 1 {
-                return Err(FinalisedStateError::Custom(format!(
-                    "invalid Option tag: {}",
-                    presence[0]
-                )));
-            }
+        // Read CompactSize: number of records
+        let list_len = CompactSize::read(&mut cursor)
+            .map_err(|e| FinalisedStateError::Custom(format!("txid list len error: {e}")))?;
 
-            let tx_start = cursor.position();
+        let idx = tx_location.tx_index() as usize;
+        if idx >= list_len as usize {
+            return Err(FinalisedStateError::Custom(
+                "tx_index out of range in transparent tx data".to_string(),
+            ));
+        }
 
-            cursor.set_position(option_start);
-            // Skip this entry to compute length
-            Self::skip_opt_transparent_entry(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
-            })?;
+        // Skip preceding entries
+        for _ in 0..idx {
+            Self::skip_opt_transparent_entry(&mut cursor)
+                .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
+        }
 
-            let end = cursor.position();
-            let slice = &raw[tx_start as usize..end as usize];
+        let option_start = cursor.position();
 
-            Ok(Some(TransparentCompactTx::from_bytes(slice)?))
-        })
+        // Peek at the 1-byte presence flag
+        let mut presence = [0u8; 1];
+        cursor
+            .read_exact(&mut presence)
+            .map_err(|e| FinalisedStateError::Custom(format!("failed to read Option tag: {e}")))?;
+
+        if presence[0] == 0 {
+            return Ok(None);
+        } else if presence[0] != 1 {
+            return Err(FinalisedStateError::Custom(format!(
+                "invalid Option tag: {}",
+                presence[0]
+            )));
+        }
+
+        let tx_start = cursor.position();
+
+        cursor.set_position(option_start);
+        // Skip this entry to compute length
+        Self::skip_opt_transparent_entry(&mut cursor).map_err(|e| {
+            FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
+        })?;
+
+        let end = cursor.position();
+        let slice = &raw[tx_start as usize..end as usize];
+
+        Ok(Some(TransparentCompactTx::from_bytes(slice)?))
     }
 
     /// Fetch block transparent transaction data by height.
