@@ -237,6 +237,9 @@ async fn load_db_backend_from_file() {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path.clone(),
+                // Keep the opt-in startup verification sweeps covered: this test
+                // loads a pre-built on-disk fixture, exactly the sweep's territory.
+                validate_on_start: true,
                 ..Default::default()
             },
             ..Default::default()

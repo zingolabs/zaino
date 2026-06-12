@@ -479,49 +479,64 @@ impl DbV1 {
         let handle = tokio::spawn({
             let zaino_db = zaino_db;
             async move {
-                // *** initial validation ***
+                // *** initial validation (opt-in) ***
+                //
+                // The full-database sweeps re-verify every block and index entry by
+                // checksum — O(database) work at every boot. Verification of stored
+                // data is owned by the background validator (steady-state loop below)
+                // and by on-demand read checks above `validated_tip`, so the sweeps
+                // default off and exist for suspected-corruption recovery.
                 zaino_db.status.store(StatusType::Syncing);
 
-                #[cfg(feature = "transparent_address_history_experimental")]
-                {
-                    let (r1, r2, r3) = tokio::join!(
-                        zaino_db.initial_spent_scan(),
-                        zaino_db.initial_address_history_scan(),
-                        zaino_db.initial_block_scan(),
+                if zaino_db.config.storage.database.validate_on_start {
+                    #[cfg(feature = "transparent_address_history_experimental")]
+                    {
+                        let (r1, r2, r3) = tokio::join!(
+                            zaino_db.initial_spent_scan(),
+                            zaino_db.initial_address_history_scan(),
+                            zaino_db.initial_block_scan(),
+                        );
+
+                        for (desc, result) in [
+                            ("spent scan", r1),
+                            ("addrhist scan", r2),
+                            ("block scan", r3),
+                        ] {
+                            if let Err(e) = result {
+                                error!("initial {desc} failed: {e}");
+                                zaino_db.status.store(StatusType::CriticalError);
+                                // TODO: Handle error better? - Return invalid block error from validate?
+                                return;
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "transparent_address_history_experimental"))]
+                    {
+                        let (r1, r2) = tokio::join!(
+                            zaino_db.initial_spent_scan(),
+                            zaino_db.initial_block_scan(),
+                        );
+
+                        for (desc, result) in [("spent scan", r1), ("block scan", r2)] {
+                            if let Err(e) = result {
+                                error!("initial {desc} failed: {e}");
+                                zaino_db.status.store(StatusType::CriticalError);
+                                // TODO: Handle error better? - Return invalid block error from validate?
+                                return;
+                            }
+                        }
+                    }
+
+                    info!(
+                        "initial validation complete – tip={}",
+                        zaino_db.validated_tip.load(Ordering::Relaxed)
                     );
-
-                    for (desc, result) in [
-                        ("spent scan", r1),
-                        ("addrhist scan", r2),
-                        ("block scan", r3),
-                    ] {
-                        if let Err(e) = result {
-                            error!("initial {desc} failed: {e}");
-                            zaino_db.status.store(StatusType::CriticalError);
-                            // TODO: Handle error better? - Return invalid block error from validate?
-                            return;
-                        }
-                    }
+                } else {
+                    info!(
+                        "startup validation sweeps disabled \
+                         (storage.database.validate_on_start = false)"
+                    );
                 }
-                #[cfg(not(feature = "transparent_address_history_experimental"))]
-                {
-                    let (r1, r2) =
-                        tokio::join!(zaino_db.initial_spent_scan(), zaino_db.initial_block_scan(),);
-
-                    for (desc, result) in [("spent scan", r1), ("block scan", r2)] {
-                        if let Err(e) = result {
-                            error!("initial {desc} failed: {e}");
-                            zaino_db.status.store(StatusType::CriticalError);
-                            // TODO: Handle error better? - Return invalid block error from validate?
-                            return;
-                        }
-                    }
-                }
-
-                info!(
-                    "initial validation complete – tip={}",
-                    zaino_db.validated_tip.load(Ordering::Relaxed)
-                );
                 zaino_db.status.store(StatusType::Ready);
 
                 // *** steady-state loop ***

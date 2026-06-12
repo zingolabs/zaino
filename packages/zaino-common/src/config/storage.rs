@@ -68,6 +68,15 @@ pub struct DatabaseConfig {
     /// Database size limit. Defaults to 128 GB.
     #[serde(default)]
     pub size: DatabaseSize,
+    /// Run the full database verification sweeps (every block plus every index
+    /// entry, by checksum) at startup.
+    ///
+    /// Defaults to `false`: commits are durable, the background validator verifies
+    /// stored data continuously, and reads verify on demand, so the full sweeps are
+    /// only needed when corruption is suspected (e.g. after storage faults or
+    /// external modification of the database files).
+    #[serde(default)]
+    pub validate_on_start: bool,
 }
 
 impl Default for DatabaseConfig {
@@ -75,6 +84,7 @@ impl Default for DatabaseConfig {
         Self {
             path: resolve_path_with_xdg_cache_defaults("zaino"),
             size: DatabaseSize::default(),
+            validate_on_start: false,
         }
     }
 }
