@@ -31,6 +31,8 @@ pub mod rpc {
         use zaino_fetch::jsonrpsee::response::z_validate_address::{
             KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
         };
+        #[allow(deprecated)]
+        use zaino_state::ZcashIndexer;
 
         pub fn assert_known_valid_eq(
             resp: ZValidateAddressResponse,
@@ -137,6 +139,32 @@ pub mod rpc {
                 expected_sapling,
                 "Sapling (zebrad passthrough via FetchService — keys omitted)",
             );
+        }
+
+        /// Which sapling suite to run after the shared suite.
+        pub enum SaplingSuite {
+            /// Full response — diversifier and diversifiedtransmissionkey present.
+            Standard,
+            /// zebrad's JSON-RPC passthrough (via FetchService) omits those keys.
+            ZebradPassthroughFetchService,
+        }
+
+        /// Build the `z_validate_address` rpc-call closure from `subscriber` and
+        /// run the shared validation suite plus the chosen sapling suite. Factors
+        /// the identical closure + suite-call preamble shared by the four
+        /// `z_validate_address` tests (fetch_service zcashd/zebrad, state_service,
+        /// json_server).
+        #[allow(deprecated)]
+        pub async fn run_z_validate_for<S: ZcashIndexer>(subscriber: &S, sapling: SaplingSuite) {
+            let rpc_call =
+                |addr: String| async move { subscriber.z_validate_address(addr).await.unwrap() };
+            run_z_validate_suite(&rpc_call).await;
+            match sapling {
+                SaplingSuite::Standard => run_z_validate_sapling(&rpc_call).await,
+                SaplingSuite::ZebradPassthroughFetchService => {
+                    run_z_validate_sapling_zebrad_passthrough_fetchservice(&rpc_call).await
+                }
+            }
         }
     }
 }

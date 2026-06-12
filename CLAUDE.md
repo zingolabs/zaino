@@ -159,3 +159,28 @@ it, double-check whether `?` (in a `fn() -> Result<_, _>` test), a more
 descriptive `.expect("...")` with a message naming the invariant, or an
 `assert!`/`assert_matches!` would make the failure mode clearer. Prefer
 those alternatives whenever they fit.
+
+## Use the language server (LSP) for definitive code intelligence
+
+When answering *where* a symbol is defined, *who* calls or references it,
+its type, or its implementors, use the language server (go-to-definition,
+find-references, hover, call-hierarchy, workspace-symbol) — not `grep` or
+text search. Text search *guesses*; the LSP *resolves*: it follows `use`
+aliases, re-exports, generics, trait impls, and macro expansions a regex
+cannot, and it is not fooled by comments, strings, or shadowed names.
+Reach for `grep` only as a fallback — when the server is genuinely
+unavailable, still indexing, or the target isn't code it understands — and
+say so when you do.
+
+**Multi-workspace caveat (this repo):** the tree has three *separate* Cargo
+workspaces — `Cargo.toml` (root, `packages/*` production), `integration-tests/Cargo.toml`
+(walletless tests), and `integration-tests/wallet-tests/Cargo.toml` (wallet
+tests). rust-analyzer is scoped (in `.helix/languages.toml`) to **one
+integration-test workspace at a time** — indexing more than one wedges the
+server, and the production workspace is intentionally never indexed (we only
+need LSP on test code; production crates still resolve as path dependencies, so
+go-to-def into them works). To switch which test workspace is analyzed, swap the
+active `linkedProjects` entry in `.helix/languages.toml` (comment one, uncomment
+the other) and reload the LSP (`:lsp-restart`). Because only one workspace is
+loaded at a time, an empty LSP result usually means "the other workspace isn't
+loaded," not "no references" — confirm which workspace is active first.

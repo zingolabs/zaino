@@ -1,6 +1,5 @@
 //! Holds code used to build test vector data for unit tests. These tests should not be run by default or in CI.
 
-use anyhow::Context;
 use corez::io::{self, Read, Write};
 use futures::TryFutureExt as _;
 use std::fs;
@@ -10,9 +9,7 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::sync::Arc;
 use tower::{Service, ServiceExt as _};
-use wire_serialized_transaction_test_data::transactions::get_test_vectors;
-use zaino_fetch::chain::transaction::FullTransaction;
-use zaino_fetch::chain::utils::ParseFromSlice;
+use wallet_tests::from_inputs;
 use zaino_state::read_u32_le;
 use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
@@ -22,7 +19,6 @@ use zaino_state::CompactSize;
 use zaino_state::StateService;
 use zaino_state::ZcashIndexer;
 use zaino_state::{ChainWork, IndexedBlock};
-use zaino_testutils::from_inputs;
 use zaino_testutils::{TestManager, ValidatorKind};
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
@@ -53,17 +49,20 @@ async fn create_200_block_regtest_chain_vectors() {
         None,
         true,
         false,
-        true,
+        false,
     )
     .await
     .unwrap();
 
     let state_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let mut clients = wallet_tests::build_clients(
+        test_manager
+            .zaino_grpc_listen_address
+            .expect("zaino enabled")
+            .port(),
+        wallet_tests::default_heights(&ValidatorKind::Zebrad),
+    );
 
     let faucet_taddr = clients.get_faucet_address("transparent").await;
     let faucet_saddr = clients.get_faucet_address("sapling").await;
@@ -73,23 +72,24 @@ async fn create_200_block_regtest_chain_vectors() {
     let recipient_saddr = clients.get_recipient_address("sapling").await;
     let recipient_uaddr = clients.get_recipient_address("unified").await;
 
-    clients.faucet.sync_and_await().await.unwrap();
-
-    // *** Mine 100 blocks to finalise first block reward ***
-    test_manager
-        .generate_blocks_and_wait_for_tip(100, &state_service_subscriber)
-        .await;
+    // *** Mine 100 blocks to finalise first block reward, shield it, and mine
+    // the shield in ***
+    wallet_tests::fund_faucet_dual(
+        &test_manager,
+        &mut clients,
+        &ValidatorKind::Zebrad,
+        &state_service_subscriber,
+        &state_service_subscriber,
+        1,
+    )
+    .await;
 
     // *** Build 100 block chain holding transparent, sapling, and orchard transactions ***
-    // sync wallets
-    clients.faucet.sync_and_await().await.unwrap();
-
     // create transactions
+    clients.shield_faucet().await;
     clients
-        .faucet
-        .quick_shield(zip32::AccountId::ZERO)
-        .await
-        .unwrap();
+        .send_from_faucet(recipient_uaddr.as_str(), 250_000)
+        .await;
 
     // Generate block
     test_manager
@@ -97,49 +97,18 @@ async fn create_200_block_regtest_chain_vectors() {
         .await;
 
     // sync wallets
-    clients.faucet.sync_and_await().await.unwrap();
+    clients.sync_faucet().await;
+    clients.sync_recipient().await;
 
     // create transactions
-    clients
-        .faucet
-        .quick_shield(zip32::AccountId::ZERO)
-        .await
-        .unwrap();
-    from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(recipient_uaddr.as_str(), 250_000, None)],
-    )
-    .await
-    .unwrap();
+    clients.shield_faucet().await;
 
-    // Generate block
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
+    clients
+        .send_from_faucet(recipient_taddr.as_str(), 250_000)
         .await;
-
-    // sync wallets
-    clients.faucet.sync_and_await().await.unwrap();
-    clients.recipient.sync_and_await().await.unwrap();
-
-    // create transactions
     clients
-        .faucet
-        .quick_shield(zip32::AccountId::ZERO)
-        .await
-        .unwrap();
-
-    from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(recipient_taddr.as_str(), 250_000, None)],
-    )
-    .await
-    .unwrap();
-    from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(recipient_uaddr.as_str(), 250_000, None)],
-    )
-    .await
-    .unwrap();
+        .send_from_faucet(recipient_uaddr.as_str(), 250_000)
+        .await;
 
     from_inputs::quick_send(
         &mut clients.recipient,
@@ -154,33 +123,19 @@ async fn create_200_block_regtest_chain_vectors() {
         .await;
 
     // sync wallets
-    clients.faucet.sync_and_await().await.unwrap();
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_faucet().await;
+    clients.sync_recipient().await;
 
     // create transactions
-    clients
-        .faucet
-        .quick_shield(zip32::AccountId::ZERO)
-        .await
-        .unwrap();
-    clients
-        .recipient
-        .quick_shield(zip32::AccountId::ZERO)
-        .await
-        .unwrap();
+    clients.shield_faucet().await;
+    clients.shield_recipient().await;
 
-    from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(recipient_taddr.as_str(), 250_000, None)],
-    )
-    .await
-    .unwrap();
-    from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(recipient_uaddr.as_str(), 250_000, None)],
-    )
-    .await
-    .unwrap();
+    clients
+        .send_from_faucet(recipient_taddr.as_str(), 250_000)
+        .await;
+    clients
+        .send_from_faucet(recipient_uaddr.as_str(), 250_000)
+        .await;
 
     from_inputs::quick_send(
         &mut clients.recipient,
@@ -196,8 +151,8 @@ async fn create_200_block_regtest_chain_vectors() {
 
     for _i in 0..48 {
         // sync wallets
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.recipient.sync_and_await().await.unwrap();
+        clients.sync_faucet().await;
+        clients.sync_recipient().await;
 
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         let chain_height = dbg!(state_service_subscriber.chain_height().await.unwrap());
@@ -206,29 +161,15 @@ async fn create_200_block_regtest_chain_vectors() {
         }
 
         // create transactions
-        clients
-            .faucet
-            .quick_shield(zip32::AccountId::ZERO)
-            .await
-            .unwrap();
-        clients
-            .recipient
-            .quick_shield(zip32::AccountId::ZERO)
-            .await
-            .unwrap();
+        clients.shield_faucet().await;
+        clients.shield_recipient().await;
 
-        from_inputs::quick_send(
-            &mut clients.faucet,
-            vec![(recipient_taddr.as_str(), 250_000, None)],
-        )
-        .await
-        .unwrap();
-        from_inputs::quick_send(
-            &mut clients.faucet,
-            vec![(recipient_uaddr.as_str(), 250_000, None)],
-        )
-        .await
-        .unwrap();
+        clients
+            .send_from_faucet(recipient_taddr.as_str(), 250_000)
+            .await;
+        clients
+            .send_from_faucet(recipient_uaddr.as_str(), 250_000)
+            .await;
 
         from_inputs::quick_send(
             &mut clients.recipient,
@@ -249,8 +190,8 @@ async fn create_200_block_regtest_chain_vectors() {
             .await;
 
         // sync wallets
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.recipient.sync_and_await().await.unwrap();
+        clients.sync_faucet().await;
+        clients.sync_recipient().await;
 
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         let chain_height = dbg!(state_service_subscriber.chain_height().await.unwrap());
@@ -259,35 +200,18 @@ async fn create_200_block_regtest_chain_vectors() {
         }
 
         // create transactions
-        clients
-            .faucet
-            .quick_shield(zip32::AccountId::ZERO)
-            .await
-            .unwrap();
-        clients
-            .recipient
-            .quick_shield(zip32::AccountId::ZERO)
-            .await
-            .unwrap();
+        clients.shield_faucet().await;
+        clients.shield_recipient().await;
 
-        from_inputs::quick_send(
-            &mut clients.faucet,
-            vec![(recipient_taddr.as_str(), 250_000, None)],
-        )
-        .await
-        .unwrap();
-        from_inputs::quick_send(
-            &mut clients.faucet,
-            vec![(recipient_saddr.as_str(), 250_000, None)],
-        )
-        .await
-        .unwrap();
-        from_inputs::quick_send(
-            &mut clients.faucet,
-            vec![(recipient_uaddr.as_str(), 250_000, None)],
-        )
-        .await
-        .unwrap();
+        clients
+            .send_from_faucet(recipient_taddr.as_str(), 250_000)
+            .await;
+        clients
+            .send_from_faucet(recipient_saddr.as_str(), 250_000)
+            .await;
+        clients
+            .send_from_faucet(recipient_uaddr.as_str(), 250_000)
+            .await;
 
         from_inputs::quick_send(
             &mut clients.recipient,
@@ -765,83 +689,4 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     Ok((full_data, faucet, recipient))
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn pre_v4_txs_parsing() -> anyhow::Result<()> {
-    let test_vectors = get_test_vectors();
-
-    for (i, test_vector) in test_vectors.iter().filter(|v| v.version < 4).enumerate() {
-        let description = test_vector.description;
-        let version = test_vector.version;
-        let raw_tx = test_vector.tx.clone();
-        let txid = test_vector.txid;
-        // todo!: add an 'is_coinbase' method to the transaction struct to check thid
-        let _is_coinbase = test_vector.is_coinbase;
-        let has_sapling = test_vector.has_sapling;
-        let has_orchard = test_vector.has_orchard;
-        let transparent_inputs = test_vector.transparent_inputs;
-        let transparent_outputs = test_vector.transparent_outputs;
-
-        let deserialized_tx =
-            FullTransaction::parse_from_slice(&raw_tx, Some(vec![txid.to_vec()]), None)
-                .with_context(|| {
-                    format!("Failed to deserialize transaction with description: {description:?}")
-                })?;
-
-        let tx = deserialized_tx.1;
-
-        assert_eq!(
-            tx.version(),
-            version,
-            "Version mismatch for transaction #{i} ({description})"
-        );
-        assert_eq!(
-            tx.tx_id(),
-            txid,
-            "TXID mismatch for transaction #{i} ({description})"
-        );
-        // Check Sapling spends (v4+ transactions)
-        if version >= 4 {
-            assert_eq!(
-                !tx.shielded_spends().is_empty(),
-                has_sapling != 0,
-                "Sapling spends mismatch for transaction #{i} ({description})"
-            );
-        } else {
-            // v1-v3 transactions should not have Sapling spends
-            assert!(
-                tx.shielded_spends().is_empty(),
-                "Transaction #{i} ({description}) version {version} should not have Sapling spends"
-            );
-        }
-
-        // Check Orchard actions (v5+ transactions)
-        if version >= 5 {
-            assert_eq!(
-                !tx.orchard_actions().is_empty(),
-                has_orchard != 0,
-                "Orchard actions mismatch for transaction #{i} ({description})"
-            );
-        } else {
-            // v1-v4 transactions should not have Orchard actions
-            assert!(
-                tx.orchard_actions().is_empty(),
-                "Transaction #{i} ({description}) version {version} should not have Orchard actions"
-            );
-        }
-        assert_eq!(
-            !tx.transparent_inputs().is_empty(),
-            transparent_inputs > 0,
-            "Transparent inputs presence mismatch for transaction #{i} ({description})"
-        );
-        assert_eq!(
-            !tx.transparent_outputs().is_empty(),
-            transparent_outputs > 0,
-            "Transparent outputs presence mismatch for transaction #{i} ({description})"
-        );
-
-        // dbg!(tx);
-    }
-    Ok(())
 }

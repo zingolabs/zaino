@@ -53,39 +53,31 @@ const NON_EXISTENT_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
 #[allow(deprecated)] // StateService
 async fn setup_chain<V: ValidatorExt>(
     test_manager: &mut TestManager<V, StateService>,
+    clients: &mut wallet_tests::Clients,
 ) -> (String, String) {
     let state_service_subscriber = test_manager.service_subscriber.clone().unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     let faucet_taddr = clients.get_faucet_address("transparent").await;
 
-    clients.faucet.sync_and_await().await.unwrap();
-
     // Generate blocks and perform transaction
-    test_manager
-        .generate_blocks_and_wait_for_tip(100, &state_service_subscriber)
-        .await;
-    clients.faucet.sync_and_await().await.unwrap();
-    clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
-        .await;
-    clients.faucet.sync_and_await().await.unwrap();
-
-    from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(recipient_taddr.as_str(), 250_000, None)],
+    wallet_tests::fund_faucet_dual(
+        test_manager,
+        clients,
+        &ValidatorKind::Zebrad,
+        &state_service_subscriber,
+        &state_service_subscriber,
+        1,
     )
-    .await
-    .unwrap();
+    .await;
+
+    clients
+        .send_from_faucet(recipient_taddr.as_str(), 250_000)
+        .await;
     test_manager
         .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
         .await;
 
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_recipient().await;
 
     (recipient_taddr, faucet_taddr)
 }
@@ -244,16 +236,11 @@ pub(super) async fn main() {
         _fetch_service_subscriber,
         _state_service,
         state_service_subscriber,
-    ) = super::create_test_manager_and_services::<Zebrad>(
-        &ValidatorKind::Zebrad,
-        None,
-        true,
-        true,
-        None,
-    )
-    .await;
+        mut clients,
+    ) = super::create_test_manager_and_services::<Zebrad>(&ValidatorKind::Zebrad, None, true, None)
+        .await;
 
-    let (recipient_taddr, faucet_taddr) = setup_chain(&mut test_manager).await;
+    let (recipient_taddr, faucet_taddr) = setup_chain(&mut test_manager, &mut clients).await;
 
     // ============================================================
     // Test 1: Simple address query (single address, no filters)

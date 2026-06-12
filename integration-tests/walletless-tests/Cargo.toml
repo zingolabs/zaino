@@ -1,0 +1,60 @@
+[package]
+name = "walletless-tests"
+description = "Zaino integration tests that exercise the indexer's query surface directly (no wallet)."
+publish = false
+
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = [
+    "zaino-state/transparent_address_history_experimental",
+    "zainod/transparent_address_history_experimental",
+    "zaino-testutils/transparent_address_history_experimental",
+]
+
+[dependencies]
+zaino-fetch = { workspace = true }
+zaino-testutils = { workspace = true }
+# The lib's z_validate helper calls `ZcashIndexer::z_validate_address`.
+zaino-state = { workspace = true, features = ["test_dependencies"] }
+tracing.workspace = true
+
+[dev-dependencies]
+anyhow = { workspace = true }
+
+# Test utility
+zainod = { workspace = true }
+zaino-testutils = { workspace = true }
+zaino-fetch = { workspace = true }
+zaino-proto = { workspace = true }
+zaino-common = { workspace = true }
+wire_serialized_transaction_test_data = { workspace = true }
+zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
+zebra-rpc = { workspace = true }
+zip32 = { workspace = true }
+
+corez = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }
+hex = { workspace = true }
+
+# Runtime
+tokio = { workspace = true }
+
+# Zingo-infra
+zcash_local_net = { workspace = true }

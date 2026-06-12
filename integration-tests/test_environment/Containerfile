@@ -28,29 +28,54 @@ FROM docker.io/zodlinc/zcash:v${ZCASH_VERSION} AS zcashd-downloader
 FROM docker.io/library/rust:${RUST_VERSION}-trixie AS zebra-builder
 
 ARG ZEBRA_VERSION
-RUN apt-get update
-RUN apt-get install -y git clang cmake pkg-config libssl-dev protobuf-compiler libstdc++6
+# Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
+# together with the base image (query with `apt-cache policy <pkg>`).
+# --no-install-recommends (DL3015): ca-certificates is already present in the
+# rust base, and the dropped recommends are llvm/dev/32-bit extras that the
+# cargo build does not need.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git=1:2.47.3-0+deb13u1 \
+    clang=1:19.0-63 \
+    cmake=3.31.6-2 \
+    pkg-config=1.8.1-4 \
+    libssl-dev=3.5.6-1~deb13u1 \
+    protobuf-compiler=3.21.12-11 \
+    libstdc++6=14.2.0-19
 WORKDIR /zebra
-RUN git clone https://github.com/ZcashFoundation/zebra .
-RUN git checkout "${ZEBRA_VERSION}" 
-# Use persistent cache for cargo
-# RUN --mount=type=cache,target=/usr/local/cargo/registry \
-#     --mount=type=cache,target=/usr/local/cargo/git \
-#     --mount=type=cache,target=/zebra/target \
-RUN cargo build --release --bin zebrad
-RUN cp target/release/zebrad /tmp/zebrad
+# Single RUN (DL3059): clone, checkout, build, and stage the binary.
+RUN git clone https://github.com/ZcashFoundation/zebra . \
+    && git checkout "${ZEBRA_VERSION}" \
+    && cargo build --release --bin zebrad \
+    && cp target/release/zebrad /tmp/zebrad
 
 FROM docker.io/library/debian:trixie AS zcashd-builder
 
 ARG ZCASH_VERSION
-RUN apt-get update && apt-get install -y \
-    git build-essential pkg-config libssl-dev automake autoconf \
-    libtool bsdmainutils curl
+# Versions pinned (DL3008) to the candidates in debian:trixie; bump together
+# with the base image (query with `apt-cache policy <pkg>`).
+# --no-install-recommends (DL3015): ca-certificates and netbase are re-added
+# explicitly because the zcash source build clones and downloads over HTTPS;
+# they were previously pulled in only as apt recommends.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git=1:2.47.3-0+deb13u1 \
+    build-essential=12.12 \
+    pkg-config=1.8.1-4 \
+    libssl-dev=3.5.6-1~deb13u1 \
+    automake=1:1.17-4 \
+    autoconf=2.72-3.1 \
+    libtool=2.5.4-4 \
+    bsdmainutils=12.1.8 \
+    curl=8.14.1-2+deb13u3 \
+    ca-certificates=20250419 \
+    netbase=6.5
 
 WORKDIR /zcash
-RUN git clone --depth 1 --branch "v${ZCASH_VERSION}" https://github.com/zcash/zcash .
-RUN ./zcutil/fetch-params.sh && ./zcutil/build.sh -j$(nproc)
-RUN cp src/zcashd src/zcash-cli /tmp/
+# Single RUN (DL3059): clone, fetch params, build, and stage the binaries.
+RUN git clone --depth 1 --branch "v${ZCASH_VERSION}" \
+        https://github.com/zcash/zcash . \
+    && ./zcutil/fetch-params.sh \
+    && ./zcutil/build.sh -j"$(nproc)" \
+    && cp src/zcashd src/zcash-cli /tmp/
 
 ########################
 # === BASE RUNTIME IMAGE ===
@@ -75,14 +100,16 @@ ENV ROCKSDB_LIB_DIR=/usr/lib/x86_64-linux-gnu
 LABEL maintainer="nachog00"
 LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
 
+# Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
+# together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl-dev \
-    curl \
-    libclang-dev \
-    build-essential \
-    cmake \
-    librocksdb-dev \
-    protobuf-compiler \
+    libssl-dev=3.5.6-1~deb13u1 \
+    curl=8.14.1-2+deb13u3 \
+    libclang-dev=1:19.0-63 \
+    build-essential=12.12 \
+    cmake=3.31.6-2 \
+    librocksdb-dev=9.10.0-1+b1 \
+    protobuf-compiler=3.21.12-11 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create container_user
@@ -122,8 +149,8 @@ LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root ${CARGO_HOME} && \
-    cargo install rust-script --locked --verbose --root ${CARGO_HOME}
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
+    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -136,8 +163,8 @@ LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root ${CARGO_HOME} && \
-    cargo install rust-script --locked --verbose --root ${CARGO_HOME}
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
+    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -150,8 +177,8 @@ LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root ${CARGO_HOME} && \
-    cargo install rust-script --locked --verbose --root ${CARGO_HOME}
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
+    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -164,8 +191,8 @@ LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root ${CARGO_HOME} && \
-    cargo install rust-script --locked --verbose --root ${CARGO_HOME}
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
+    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]

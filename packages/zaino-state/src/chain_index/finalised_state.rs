@@ -555,6 +555,11 @@ impl ZainoDB {
                 tokio::select! {
                     _ = interval.tick() => {
                         let cur = reporter_current.load(Ordering::Relaxed);
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::gauge!("zaino.sync.finalized_height").set(cur as f64);
+                            metrics::gauge!("zaino.sync.target_height").set(target_height as f64);
+                        }
                         tracing::info!(
                             "sync_to_height: syncing height {current} / {target} on network = {:?}",
                             reporter_network,

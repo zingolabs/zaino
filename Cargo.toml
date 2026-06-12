@@ -95,6 +95,10 @@ async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3.30"
 
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+
 # Utility
 thiserror = "1.0"
 lazy-regex = "3.3"

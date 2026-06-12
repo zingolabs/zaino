@@ -2,15 +2,35 @@
 
 #![forbid(unsafe_code)]
 
-use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
 use zaino_state::ZcashIndexer;
 use zaino_state::ZcashService;
-use zaino_testutils::from_inputs;
 use zaino_testutils::TestManager;
 use zaino_testutils::ValidatorExt;
 use zaino_testutils::ValidatorKind;
 use zainodlib::error::IndexerError;
-use zip32::AccountId;
+
+/// Sync the faucet; on zebrad, mature 100 coinbase blocks and shield so it has
+/// spendable funds (zebrad can't mine directly to orchard in this setup).
+async fn fund_faucet<V, Service>(
+    test_manager: &TestManager<V, Service>,
+    clients: &mut wallet_tests::Clients,
+    validator: &ValidatorKind,
+) where
+    V: ValidatorExt,
+    Service: zaino_testutils::TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
+{
+    wallet_tests::fund_faucet_dual(
+        test_manager,
+        clients,
+        validator,
+        test_manager.subscriber(),
+        test_manager.subscriber(),
+        1,
+    )
+    .await;
+}
 
 async fn connect_to_node_get_info_for_validator<V, Service>(validator: &ValidatorKind)
 where
@@ -19,18 +39,57 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    let mut test_manager =
-        TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
-            .await
-            .unwrap();
-    let clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let (mut test_manager, clients) =
+        wallet_tests::launch_and_build::<V, Service>(validator, None, None).await;
 
     clients.faucet.do_info().await;
     clients.recipient.do_info().await;
 
+    test_manager.close().await;
+}
+
+/// The standard send rhythm: send `amount` to the recipient's `pool`, mine a
+/// block, sync the recipient, and assert it received `amount`. The two simple
+/// parameters (`pool`, `amount`) replace what used to be an address string plus
+/// a balance-field closure.
+async fn send_and_assert_received<V, Service>(
+    test_manager: &TestManager<V, Service>,
+    clients: &mut wallet_tests::Clients,
+    pool: wallet_tests::Pool,
+    amount: u64,
+) where
+    V: ValidatorExt,
+    Service: zaino_testutils::TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
+{
+    let recipient_address = clients.get_recipient_address(pool.address_kind()).await;
+    clients.send_from_faucet(&recipient_address, amount).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_recipient().await;
+    assert_eq!(
+        pool.received_balance(&clients.recipient_balance().await),
+        amount
+    );
+}
+
+/// Launch, fund the faucet, then run the standard send-and-check rhythm.
+async fn assert_send_to_pool<V, Service>(
+    validator: &ValidatorKind,
+    pool: wallet_tests::Pool,
+    amount: u64,
+) where
+    V: ValidatorExt,
+    Service: zaino_testutils::TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
+{
+    let (mut test_manager, mut clients) =
+        wallet_tests::launch_and_build::<V, Service>(validator, None, None).await;
+    fund_faucet(&test_manager, &mut clients, validator).await;
+    send_and_assert_received(&test_manager, &mut clients, pool, amount).await;
     test_manager.close().await;
 }
 
@@ -41,51 +100,7 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    let mut test_manager =
-        TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
-            .await
-            .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
-
-    clients.faucet.sync_and_await().await.unwrap();
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
-
-    let recipient_ua = clients.get_recipient_address("unified").await.to_string();
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
-        .await
-        .unwrap();
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-    clients.recipient.sync_and_await().await.unwrap();
-
-    assert_eq!(
-        clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .total_orchard_balance
-            .unwrap()
-            .into_u64(),
-        250_000
-    );
-
-    test_manager.close().await;
+    assert_send_to_pool::<V, Service>(validator, wallet_tests::Pool::Orchard, 250_000).await;
 }
 
 async fn send_to_sapling<V, Service>(validator: &ValidatorKind)
@@ -95,51 +110,7 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    let mut test_manager =
-        TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
-            .await
-            .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
-
-    clients.faucet.sync_and_await().await.unwrap();
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
-
-    let recipient_zaddr = clients.get_recipient_address("sapling").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
-        .await
-        .unwrap();
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-    clients.recipient.sync_and_await().await.unwrap();
-
-    assert_eq!(
-        clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .total_sapling_balance
-            .unwrap()
-            .into_u64(),
-        250_000
-    );
-
-    test_manager.close().await;
+    assert_send_to_pool::<V, Service>(validator, wallet_tests::Pool::Sapling, 250_000).await;
 }
 
 async fn send_to_transparent<V, Service>(validator: &ValidatorKind)
@@ -149,51 +120,19 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    let mut test_manager =
-        TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
-            .await
-            .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let (mut test_manager, mut clients) =
+        wallet_tests::launch_and_build::<V, Service>(validator, None, None).await;
 
-    clients.faucet.sync_and_await().await.unwrap();
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
+    fund_faucet(&test_manager, &mut clients, validator).await;
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
-        .await
-        .unwrap();
+    clients.send_from_faucet(&recipient_taddr, 250_000).await;
 
     test_manager
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
 
-    let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            &test_manager.full_node_rpc_listen_address.to_string(),
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
 
     println!("\n\nFetching Chain Height!\n");
 
@@ -228,17 +167,10 @@ where
 
     dbg!(finalised_transactions.clone());
 
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_recipient().await;
 
     assert_eq!(
-        clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .confirmed_transparent_balance
-            .unwrap()
-            .into_u64(),
+        wallet_tests::Pool::Transparent.received_balance(&clients.recipient_balance().await),
         250_000
     );
 
@@ -255,91 +187,46 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    let mut test_manager =
-        TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
-            .await
-            .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let (mut test_manager, mut clients) =
+        wallet_tests::launch_and_build::<V, Service>(validator, None, None).await;
 
     test_manager
         .generate_blocks_and_wait_for_tip(2, test_manager.subscriber())
         .await;
-    clients.faucet.sync_and_await().await.unwrap();
 
     // "Create" 3 orchard notes in faucet.
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
+    wallet_tests::fund_faucet_dual(
+        &test_manager,
+        &mut clients,
+        validator,
+        test_manager.subscriber(),
+        test_manager.subscriber(),
+        3,
+    )
+    .await;
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let recipient_zaddr = clients.get_recipient_address("sapling").await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_ua, 250_000, None)])
-        .await
-        .unwrap();
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_zaddr, 250_000, None)])
-        .await
-        .unwrap();
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
-        .await
-        .unwrap();
+    clients.send_from_faucet(&recipient_ua, 250_000).await;
+    clients.send_from_faucet(&recipient_zaddr, 250_000).await;
+    clients.send_from_faucet(&recipient_taddr, 250_000).await;
     test_manager
         .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
         .await;
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_recipient().await;
 
+    let balance = clients.recipient_balance().await;
     assert_eq!(
-        clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .total_orchard_balance
-            .unwrap()
-            .into_u64(),
+        wallet_tests::Pool::Orchard.received_balance(&balance),
         250_000
     );
     assert_eq!(
-        clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .total_sapling_balance
-            .unwrap()
-            .into_u64(),
+        wallet_tests::Pool::Sapling.received_balance(&balance),
         250_000
     );
     assert_eq!(
-        clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
-            .await
-            .unwrap()
-            .confirmed_transparent_balance
-            .unwrap()
-            .into_u64(),
+        wallet_tests::Pool::Transparent.received_balance(&balance),
         250_000
     );
 
@@ -353,66 +240,38 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    let mut test_manager =
-        TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
-            .await
-            .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let (mut test_manager, mut clients) =
+        wallet_tests::launch_and_build::<V, Service>(validator, None, None).await;
 
-    clients.faucet.sync_and_await().await.unwrap();
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
+    fund_faucet(&test_manager, &mut clients, validator).await;
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
-    from_inputs::quick_send(&mut clients.faucet, vec![(&recipient_taddr, 250_000, None)])
-        .await
-        .unwrap();
+    clients.send_from_faucet(&recipient_taddr, 250_000).await;
     test_manager
         .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
         .await;
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_recipient().await;
 
     assert_eq!(
         clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
+            .recipient_balance()
             .await
-            .unwrap()
             .confirmed_transparent_balance
             .unwrap()
             .into_u64(),
         250_000
     );
 
-    clients
-        .recipient
-        .quick_shield(AccountId::ZERO)
-        .await
-        .unwrap();
+    clients.shield_recipient().await;
     test_manager
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_recipient().await;
 
     assert_eq!(
         clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
+            .recipient_balance()
             .await
-            .unwrap()
             .total_orchard_balance
             .unwrap()
             .into_u64(),
@@ -429,77 +288,35 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
 {
-    let mut test_manager =
-        TestManager::<V, Service>::launch(validator, None, None, None, true, false, true)
-            .await
-            .unwrap();
-    let mut clients = test_manager
-        .clients
-        .take()
-        .expect("Clients are not initialized");
+    let (mut test_manager, mut clients) =
+        wallet_tests::launch_and_build::<V, Service>(validator, None, None).await;
 
     test_manager
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
-    clients.faucet.sync_and_await().await.unwrap();
 
-    if matches!(validator, ValidatorKind::Zebrad) {
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(100, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-        clients.faucet.quick_shield(AccountId::ZERO).await.unwrap();
-        test_manager
-            .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-            .await;
-        clients.faucet.sync_and_await().await.unwrap();
-    };
+    wallet_tests::fund_faucet_dual(
+        &test_manager,
+        &mut clients,
+        validator,
+        test_manager.subscriber(),
+        test_manager.subscriber(),
+        2,
+    )
+    .await;
 
-    let txid_1 = from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(
-            &zaino_testutils::get_base_address_macro!(&mut clients.recipient, "unified"),
-            250_000,
-            None,
-        )],
-    )
-    .await
-    .unwrap();
-    let txid_2 = from_inputs::quick_send(
-        &mut clients.faucet,
-        vec![(
-            &zaino_testutils::get_base_address_macro!(&mut clients.recipient, "sapling"),
-            250_000,
-            None,
-        )],
-    )
-    .await
-    .unwrap();
+    let recipient_ua = clients.get_recipient_address("unified").await;
+    let txid_1 = clients.send_from_faucet(&recipient_ua, 250_000).await;
+    let recipient_zaddr = clients.get_recipient_address("sapling").await;
+    let txid_2 = clients.send_from_faucet(&recipient_zaddr, 250_000).await;
 
     println!("\n\nStarting Mempool!\n");
     clients.recipient.wallet.write().await.clear_all();
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_recipient().await;
 
     // test_manager.local_net.print_stdout();
 
-    let fetch_service = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            &test_manager.full_node_rpc_listen_address.to_string(),
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
 
     println!("\n\nFetching Raw Mempool!\n");
     let mempool_txids = fetch_service.get_raw_mempool().await.unwrap();
@@ -523,10 +340,8 @@ where
 
     assert_eq!(
         clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
+            .recipient_balance()
             .await
-            .unwrap()
             .unconfirmed_orchard_balance
             .unwrap()
             .into_u64(),
@@ -534,10 +349,8 @@ where
     );
     assert_eq!(
         clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
+            .recipient_balance()
             .await
-            .unwrap()
             .unconfirmed_sapling_balance
             .unwrap()
             .into_u64(),
@@ -562,14 +375,12 @@ where
             .await
     );
 
-    clients.recipient.sync_and_await().await.unwrap();
+    clients.sync_recipient().await;
 
     assert_eq!(
         clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
+            .recipient_balance()
             .await
-            .unwrap()
             .confirmed_orchard_balance
             .unwrap()
             .into_u64(),
@@ -577,10 +388,8 @@ where
     );
     assert_eq!(
         clients
-            .recipient
-            .account_balance(zip32::AccountId::ZERO)
+            .recipient_balance()
             .await
-            .unwrap()
             .confirmed_orchard_balance
             .unwrap()
             .into_u64(),
