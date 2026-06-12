@@ -3,11 +3,12 @@
 //! During initial sync every block previously paid one durable LMDB commit
 //! (two fsyncs). [`WriteBatcher`] groups contiguous blocks so many blocks
 //! share one commit, flushing a batch when the accumulated **byte budget** is
-//! reached — an estimate of on-disk write volume. LMDB tracks roughly 512 MiB
-//! of dirty pages per write transaction before spilling, so the default
-//! budget stays well inside that.
+//! reached — an estimate of on-disk write volume — or, on chains of tiny
+//! blocks, at the **block-count cap**. LMDB tracks roughly 512 MiB of dirty
+//! pages per write transaction before spilling, so the default budget stays
+//! well inside that.
 //!
-//! Batches need no other flush trigger: the batched write path
+//! Transparent dependencies are no flush trigger: the batched write path
 //! (`DbV1::write_blocks`) threads a `PendingBatchState` overlay through the
 //! batch, so blocks may freely spend outputs created — or sibling outputs of
 //! transactions spent from — earlier in the same uncommitted batch.
@@ -24,11 +25,21 @@ use crate::{
 /// negligible against per-block CPU work.
 pub(crate) const DEFAULT_WRITE_BATCH_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 
+/// Maximum blocks per batch, regardless of the byte budget.
+///
+/// Commit amortization saturates far below this (two fsyncs spread over a
+/// thousand blocks is microseconds per block), while a pure byte budget
+/// reaches tens of thousands of near-empty early-chain blocks per batch:
+/// unbounded build memory, readers seeing nothing until each giant commit,
+/// and any per-block cost at the batch boundary scaling with block count.
+pub(crate) const DEFAULT_WRITE_BATCH_MAX_BLOCKS: usize = 1024;
+
 /// Accumulates contiguous [`IndexedBlock`]s into batches for
 /// `DbV1::write_blocks`, flushing when the estimated write volume reaches the
-/// byte budget.
+/// byte budget or the batch reaches the block-count cap.
 pub(crate) struct WriteBatcher {
     byte_budget: usize,
+    max_blocks: usize,
     pending: Vec<IndexedBlock>,
     pending_bytes: usize,
 }
@@ -37,18 +48,19 @@ impl WriteBatcher {
     pub(crate) fn new(byte_budget: usize) -> Self {
         Self {
             byte_budget,
+            max_blocks: DEFAULT_WRITE_BATCH_MAX_BLOCKS,
             pending: Vec::new(),
             pending_bytes: 0,
         }
     }
 
     /// Adds `block` to the batch; returns the batch (including `block`) once
-    /// it completes the byte budget.
+    /// it completes the byte budget or reaches the block-count cap.
     pub(crate) fn push(&mut self, block: IndexedBlock) -> Option<Vec<IndexedBlock>> {
         self.pending_bytes += estimated_block_write_bytes(&block);
         self.pending.push(block);
 
-        if self.pending_bytes >= self.byte_budget {
+        if self.pending_bytes >= self.byte_budget || self.pending.len() >= self.max_blocks {
             return self.take_pending();
         }
         None

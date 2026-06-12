@@ -8,7 +8,8 @@ use crate::version;
 /// [`DbWrite`] capability implementation for [`DbV1`].
 ///
 /// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
-/// performed via LMDB write transactions and validated before becoming visible as “known-good”.
+/// performed via LMDB write transactions; verification of committed data is owned by the
+/// background validator task and on-demand read checks, not the write path.
 #[async_trait]
 impl DbWrite for DbV1 {
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
@@ -121,7 +122,7 @@ impl DbV1 {
 
         let data = self.build_block_write_data(&block, None).await?;
 
-        // if any database writes fail, or block validation fails, remove block from database and return err.
+        // if any database writes fail, remove block from database and return err.
         let zaino_db = self.write_task_clone();
         let join_handle = tokio::task::spawn_blocking(move || {
             // Write block to ZainoDB
@@ -130,11 +131,12 @@ impl DbV1 {
             zaino_db.put_block_write_data_in_txn(&mut txn, data)?;
 
             // `txn.commit()` is durable: the LMDB env is opened without NO_SYNC, so commit
-            // fsyncs the data and meta pages. Validation below is read-only and observes the
-            // committed state without any further sync, so no explicit `env.sync` is needed here.
+            // fsyncs the data and meta pages — atomicity and durability come from LMDB.
+            //
+            // No inline validation: the background validator task verifies committed
+            // heights concurrently, and reads above `validated_tip` validate on demand,
+            // so the write path never pays the read-back/re-hash pass.
             txn.commit()?;
-
-            zaino_db.validate_block_blocking(block_height, block_hash)?;
 
             Ok::<_, FinalisedStateError>(())
         });
@@ -159,7 +161,8 @@ impl DbV1 {
         match post_result {
             Ok(_) => {
                 // The block (and its `txid_location` entries) were durably committed inside the
-                // blocking task above; validation succeeded and wrote nothing, so no extra sync.
+                // blocking task above; verification happens off the write path (background
+                // validator / on-demand read checks).
                 self.status.store(StatusType::Ready);
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
@@ -786,11 +789,16 @@ impl DbV1 {
     ///
     /// ## Failure semantics
     ///
-    /// Before the commit nothing is persisted. If post-commit validation fails, every
-    /// batch block is best-effort deleted (tip first) before the error is returned. This
-    /// method has none of `write_block`'s idempotent-rewrite or multi-process recovery
-    /// handling — callers should retry a failed batch block-by-block via
-    /// [`DbV1::write_block`].
+    /// The batch commits atomically: on any error nothing is persisted and there is
+    /// nothing to roll back. This method has none of `write_block`'s idempotent-rewrite
+    /// or multi-process recovery handling — callers should retry a failed batch
+    /// block-by-block via [`DbV1::write_block`].
+    ///
+    /// ## Verification
+    ///
+    /// No inline validation: the background validator verifies committed heights
+    /// concurrently, and reads above `validated_tip` validate on demand, keeping the
+    /// read-back/re-hash pass off the writer's critical path.
     pub(crate) async fn write_blocks(
         &self,
         blocks: &[IndexedBlock],
@@ -850,22 +858,16 @@ impl DbV1 {
             batch_data.push(data);
         }
 
-        let block_ids: Vec<(Height, BlockHash)> = blocks
-            .iter()
-            .map(|b| (b.context.index.height, b.context.index.hash))
-            .collect();
-
         let zaino_db = self.write_task_clone();
         let join_handle = tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
             for data in batch_data {
                 zaino_db.put_block_write_data_in_txn(&mut txn, data)?;
             }
-            // One durable commit (data + meta fsync) for the whole batch.
+            // One durable commit (data + meta fsync) for the whole batch. No inline
+            // validation: the background validator and on-demand read checks own
+            // verification, off the writer's critical path.
             txn.commit()?;
-            for (height, hash) in block_ids {
-                zaino_db.validate_block_blocking(height, hash)?;
-            }
             Ok::<_, FinalisedStateError>(())
         });
 
@@ -888,18 +890,13 @@ impl DbV1 {
                 Ok(())
             }
             Err(e) => {
+                // Every failure here precedes a successful commit, and LMDB commits are
+                // atomic, so nothing was persisted; there is nothing to roll back.
                 warn!(
-                    "Batched block write failed ({e}); removing any committed batch blocks \
-                     ({}..={})",
+                    "Batched block write failed ({e}); nothing persisted ({}..={})",
                     first_height.0,
                     first_height.0 + blocks.len() as u32 - 1,
                 );
-                // Tip-first so each delete removes the current tip; no-ops when the
-                // failure happened before commit (nothing was persisted).
-                for block in blocks.iter().rev() {
-                    let _ = self.delete_block(block).await;
-                }
-                let _ = tokio::task::block_in_place(|| self.env.sync(true));
                 self.status.store(StatusType::RecoverableError);
                 Err(e)
             }
