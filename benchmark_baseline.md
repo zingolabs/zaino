@@ -117,4 +117,36 @@ Follow-up that would lift the ceiling: make the batch build-phase reads
 pending-aware (consult the open batch before the DB in
 `resolve_spent_outpoints_for_set_info`, the double-spend pre-check, and
 `apply_prior_block_transitions`), so the byte budget becomes the only flush
-trigger.
+trigger. Implemented in the next section.
+
+### `51fb3f02` — pending-aware batch reads (dependency ceiling lifted)
+
+A `PendingBatchState` overlay (accumulator after the latest pending block,
+every pending transaction with location and transparent data, every pending
+spend) is threaded through the batch build phase and consulted before the
+committed tables at each read that can touch uncommitted state. The
+already-spent pre-check now also catches double spends across batch blocks.
+`WriteBatcher` drops its dependency tracking: the byte budget is the only
+flush trigger.
+
+Batch counts on the vector chain: 64 KiB budget 103 → **18** batches;
+128 MiB budget 98 → **1** batch.
+
+Single invocation, medians (note: this invocation's per-block ext4 run
+landed in the slow bimodal mode at 1.78 ms/block; the baseline's typical
+mode is 830 µs/block):
+
+| Backing | Per-block | Batched 64 KiB | Batched 128 MiB |
+|---|---:|---:|---:|
+| ext4 | 1.78 ms/block (563 blocks/s) | 469 µs/block (2,130 blocks/s) | **137.7 µs/block (7,264 blocks/s)** |
+| tmpfs | 103 µs/block | 112 µs/block | **46.9 µs/block (21,315 blocks/s)** |
+
+Speedups: ext4 single-batch is 12.9× this invocation's per-block run and
+6.0× the baseline's typical 830 µs mode. tmpfs single-batch is ~2.2× —
+one transaction setup and one commit also save CPU when fsyncs are nearly
+free.
+
+Correctness: the batched-vs-per-block equivalence test ingests the vector
+chain — whose blocks spend each other's fresh outputs almost every other
+block, now *inside* batches — and reproduces identical tip, `txid_location`
+mappings, and txout-set accumulator state.
