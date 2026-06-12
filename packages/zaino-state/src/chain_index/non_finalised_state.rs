@@ -1,7 +1,7 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
 use crate::chain_index::{
+    finalised_state::capability::{CapabilityRequest, IndexedBlockExt},
     finalization_ceiling,
-    source::{BlockchainSourceError, BlockchainSourceResult},
     types::db::{
         legacy::{compact_block_from_parts, BlockData, CompactTxData},
         CommitmentTreeData,
@@ -13,12 +13,15 @@ use crate::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
     },
     error::FinalisedStateError,
-    ChainWork, IndexedBlock,
+    ChainWork,
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
 use primitive_types::U256;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
@@ -80,7 +83,7 @@ impl ChainIndexSnapshot {
     /// chain (the finalized DB reached the seam). While false, reads needing
     /// finalized data must pass through to the validator.
     pub(crate) fn is_resolved(&self) -> bool {
-        matches!(self.availability(), SnapshotAvailability::Resolved)
+        matches!(self.availability(), SnapshotAvailability::Reified)
     }
 
     /// The non-finalized snapshot, but only once it is `Resolved` (validated
@@ -113,7 +116,7 @@ pub(crate) enum SnapshotAvailability {
     /// resolve window blocks' *absolute* chainwork = `base + relative` — is
     /// reattached by the resolution-promotion step, #1096, alongside its
     /// reader; it isn't carried yet.)
-    Resolved,
+    Reified,
 }
 
 #[derive(Debug, Clone)]
@@ -354,34 +357,38 @@ pub enum InitError {
     #[error(transparent)]
     /// The finalized state failed to initialize
     FinalisedStateInitialzationError(#[from] FinalisedStateError),
-    /// the initial block provided was not on the best chain
+    /// The non-finalized state failed to initialize
     #[error("initial block not on best chain")]
-    InitalBlockMissingHeight,
+    NonFinalizedStateInitError(#[from] SyncError),
 }
 
 impl NonfinalizedBlockCacheSnapshot {
     async fn init_from_blockchain_source(
         source: &impl BlockchainSource,
         network: Network,
-    ) -> BlockchainSourceResult<Self> {
-        let tip_height =
-            source
-                .get_best_block_height()
-                .await?
-                .ok_or(BlockchainSourceError::Unrecoverable(String::from(
-                    "source has no blocks",
-                )))?;
+    ) -> Result<Self, SyncError> {
+        let missing_block_error = |target_block| {
+            SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
+                MissingBlockError(format!("source missing block: {target_block}")),
+            )))
+        };
+        let tip_height = source
+            .get_best_block_height()
+            .await
+            .map_err(|e| SyncError::ErrorFromSource(Box::new(e)))?
+            .ok_or(missing_block_error("no chaintip"))?;
         let start_height = finalization_ceiling(tip_height.0);
         let start_block = source
             .get_block(HashOrHeight::Height(start_height.into()))
-            .await?
-            .ok_or(BlockchainSourceError::Unrecoverable(String::from(
-                "source missing block 100 below tio",
-            )))?;
+            .await
+            .map_err(|e| SyncError::ErrorFromSource(Box::new(e)))?
+            .ok_or(missing_block_error(
+                "100 blocks below self-reported chaintip height",
+            ))?;
 
         let provisional_block = block_to_provisional_block(&start_block, source, network)
             .await
-            .map_err(|e| todo!())?;
+            .map_err(|e| SyncError::ErrorFromSource(Box::new(e)))?;
 
         let mut blocks = HashMap::new();
         let mut heights_to_hashes = HashMap::new();
@@ -448,8 +455,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
         let snapshot =
             NonfinalizedBlockCacheSnapshot::init_from_blockchain_source(&source, network.clone())
-                .await
-                .map_err(|e| -> InitError { todo!() })?;
+                .await?;
 
         // Set up optional listener
         let nfs_change_listener = Self::setup_listener(&source).await;
@@ -507,14 +513,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let anchor_height = super::finalization_ceiling(chain_height.0);
         let mut initial_state = self.get_snapshot();
         if initial_state.best_tip.height < anchor_height {
-            let seam = match finalized_db
-                .to_reader()
-                .get_chain_block_by_height(anchor_height)
-                .await?
-            {
-                Some(indexed) => indexed,
-                None => self.fetch_seam_indexed_block(anchor_height).await?,
-            };
             self.current.swap(Arc::new(
                 NonfinalizedBlockCacheSnapshot::init_from_blockchain_source(
                     &self.source,
@@ -700,12 +698,23 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map_err(|_e| UpdateError::FinalizedStateCorruption)?
             .unwrap_or(Height(0));
 
-        // The NFS holds only the non-finalized window. Trim to the seam (the
-        // finalization ceiling of the current tip), derived from the NFS's own
-        // best tip — *not* the finalized-DB tip, which lags since the NFS leads.
-        // This advances the window floor with the chain and evicts blocks that
-        // have fallen below the seam, independent of finalized-DB progress.
-        let seam = super::finalization_ceiling(new_snapshot.best_tip.height.0);
+        if new_snapshot
+            .heights_to_hashes
+            .contains_key(&finalized_height)
+        {
+            self.reify(&mut new_snapshot, finalized_db.as_ref());
+        }
+
+        let seam = match new_snapshot.availability {
+            SnapshotAvailability::Provisional => {
+                // While provisional, we keep the blocks we know to be finalized
+                super::finalization_ceiling(new_snapshot.best_tip.height.0)
+            }
+            // Once we're reified, we keep blocks until the FS syncs them,
+            // to ensure we never allow a gap
+            SnapshotAvailability::Reified => finalized_height,
+        };
+
         new_snapshot.remove_finalized_blocks(seam);
         let best_block = &new_snapshot
             .blocks
@@ -730,7 +739,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             // Seam overlap: the finalized DB has reached the window's floor.
             // (The seam's absolute-chainwork base is fetched by the resolution
             // promotion, #1096, when its reader exists.)
-            SnapshotAvailability::Resolved
+            SnapshotAvailability::Reified
         } else {
             SnapshotAvailability::Provisional
         };
@@ -784,76 +793,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.current.load_full()
     }
 
-    /// Fetch the seam (finalization-ceiling) block from the source and build it
-    /// as an [`IndexedBlock`] to anchor the NFS window while the finalized DB is
-    /// still catching up. The absolute chainwork is a zero placeholder:
-    /// [`ProvisionalBlock::from_indexed_seam`] drops it and tracks the window's
-    /// work relative to this seam.
-    async fn fetch_seam_indexed_block(&self, height: Height) -> Result<IndexedBlock, SyncError> {
-        let block = self
-            .source
-            .get_block(HashOrHeight::Height(zebra_chain::block::Height(height.0)))
-            .await
-            .map_err(|e| {
-                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
-                    Box::new(e),
-                ))
-            })?
-            .ok_or_else(|| {
-                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
-                    Box::new(InvalidData(format!(
-                        "source missing seam block at height {}",
-                        height.0
-                    ))),
-                ))
-            })?;
-        let tree_roots = get_tree_roots_from_source(block.hash().into(), &self.source)
-            .await
-            .map_err(|e| {
-                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
-                    Box::new(InvalidData(format!("{e}"))),
-                ))
-            })?;
-        Self::create_indexed_block_with_optional_roots(
-            block.as_ref(),
-            &tree_roots,
-            ChainWork::from_u256(U256::zero()),
-            self.network.clone(),
-        )
-        .map_err(|e| {
-            SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
-                InvalidData(e),
-            )))
-        })
-    }
-
-    /// Create IndexedBlock with optional tree roots (for genesis/sync cases)
-    ///
-    /// TODO: Issue #604 - This uses `unwrap_or_default()` uniformly for both Sapling and Orchard,
-    /// but they have different activation heights. This masks potential bugs and prevents proper
-    /// validation based on network upgrade activation.
-    fn create_indexed_block_with_optional_roots(
-        block: &zebra_chain::block::Block,
-        tree_roots: &TreeRootData,
-        parent_chainwork: ChainWork,
-        network: Network,
-    ) -> Result<IndexedBlock, String> {
-        let (sapling_root, sapling_size, orchard_root, orchard_size) =
-            tree_roots.clone().extract_with_defaults();
-
-        let metadata = BlockMetadata::new(
-            sapling_root,
-            sapling_size as u32,
-            orchard_root,
-            orchard_size as u32,
-            parent_chainwork,
-            network,
-        );
-
-        let block_with_metadata = BlockWithMetadata::new(block, metadata);
-        IndexedBlock::try_from(block_with_metadata)
-    }
-
     async fn add_nonbest_block(
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
@@ -891,6 +830,29 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .blocks
             .insert(*provisional_block.hash(), provisional_block.clone());
         Ok(provisional_block)
+    }
+
+    async fn reify(
+        &self,
+        new_snapshot: &mut NonfinalizedBlockCacheSnapshot,
+
+        finalized_db: &ZainoDB,
+    ) -> Result<(), String> {
+        let mut reified_blocks = HashSet::new();
+        let Some((seam_height, seam_hash)) = new_snapshot
+            .heights_to_hashes
+            .iter()
+            .min_by_key(|(height, _hash)| height)
+        else {
+            return Err("tried to reify empty snapshot".to_string());
+        };
+        let seam_block = finalized_db
+            .backend_for_cap(CapabilityRequest::IndexedBlockExt)
+            .map_err(|e| format!("backend can't serve indexed blocks"))?
+            .get_chain_block(*seam_height)
+            .await
+            .map_err(|e| format!("backend error: {e}"))?;
+        todo!()
     }
 }
 

@@ -2056,7 +2056,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>> {
         let non_finalized_snapshot = match snapshot {
             Some(s) => match s.availability() {
-                SnapshotAvailability::Resolved => Some(s.get_nfs_snapshot()),
+                SnapshotAvailability::Reified => Some(s.get_nfs_snapshot()),
                 // While Provisional the chain tip is newer than the snapshot's
                 // tip, so there's no settled tip to anchor the stream to.
                 SnapshotAvailability::Provisional => return None,
@@ -2309,7 +2309,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let best_tip = self.best_chaintip(&snapshot).await?;
 
         let non_finalized_snapshot = match snapshot.availability() {
-            SnapshotAvailability::Resolved => snapshot.get_nfs_snapshot(),
+            SnapshotAvailability::Reified => snapshot.get_nfs_snapshot(),
             SnapshotAvailability::Provisional => {
                 // Accumulator invariants are not established until the finalised state catches
                 // up. Match zcashd's "stats collection failed" empty-object shape.
