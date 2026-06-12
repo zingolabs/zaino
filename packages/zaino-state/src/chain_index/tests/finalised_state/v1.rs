@@ -17,14 +17,17 @@ use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, copy_dir_recursive, index_test_vector_blocks, indexed_block_chain,
-    load_test_vectors, TestVectorBlockData, TestVectorData,
+    load_test_vectors, sync_db_with_blockdata, test_vector_block_metadata, TestVectorBlockData,
+    TestVectorData,
 };
 
 use crate::chain_index::types::TransactionHash;
 
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::error::FinalisedStateError;
-use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
+use crate::{
+    BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, TxLocation,
+};
 
 use crate::{AddrScript, Outpoint};
 
@@ -305,6 +308,86 @@ async fn try_write_invalid_block() {
     assert!(db_err.is_err());
 
     dbg!(zaino_db.db_height().await.unwrap());
+}
+
+/// Regression test for the `write_block` indexing loop: a fresh ingest must
+/// leave every transaction resolvable through the `txid_location` reverse
+/// index, with the location matching the transaction's position in the raw
+/// vector chain. (Migration tests cover rebuilding this index; this covers
+/// populating it on first write.)
+#[tokio::test(flavor = "multi_thread")]
+async fn write_block_populates_txid_location_index() {
+    let (TestVectorData { blocks, .. }, _db_dir, _zaino_db, db_reader) =
+        load_vectors_v1db_and_reader().await;
+
+    for vector in &blocks {
+        for (tx_index, transaction) in vector.zebra_block.transactions.iter().enumerate() {
+            let txid = TransactionHash::from(transaction.hash());
+            let tx_index = u16::try_from(tx_index).expect("vector block tx count fits in u16");
+            let expected_location = TxLocation::new(vector.height, tx_index);
+
+            let found_location = db_reader
+                .get_tx_location(&txid)
+                .await
+                .expect("get_tx_location");
+
+            assert_eq!(
+                found_location,
+                Some(expected_location),
+                "txid {txid:?} (height {}, index {tx_index}) missing or mismatched in \
+                 txid_location index",
+                vector.height,
+            );
+        }
+    }
+}
+
+/// Regression test for the duplicate-txid guard in `write_block`: a block
+/// containing the same transaction twice must be rejected as invalid and must
+/// not advance the DB tip.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_block_rejects_duplicate_txid() {
+    init_tracing();
+
+    let test_vector_data = load_test_vectors().expect("test vectors load");
+    let blocks = test_vector_data.blocks;
+    let last_vector = blocks.last().expect("test vectors are non-empty").clone();
+
+    let source = build_mockchain_source(blocks.clone());
+    let (_db_dir, zaino_db) = spawn_v1_zaino_db(source)
+        .await
+        .expect("spawn ZainoDB for duplicate-txid test");
+    // Sync everything below the last vector block so it is the next expected write.
+    sync_db_with_blockdata(zaino_db.router(), blocks, Some(last_vector.height - 1)).await;
+
+    let mut tampered_block = last_vector.zebra_block.clone();
+    let duplicated_transaction = tampered_block
+        .transactions
+        .last()
+        .expect("vector block has at least a coinbase transaction")
+        .clone();
+    tampered_block.transactions.push(duplicated_transaction);
+
+    let metadata = test_vector_block_metadata(&last_vector, ChainWork::from_u256(0.into()));
+    let chain_block = IndexedBlock::try_from(BlockWithMetadata::new(&tampered_block, metadata))
+        .expect("tampered block converts to IndexedBlock");
+
+    match zaino_db.write_block(chain_block).await {
+        Err(FinalisedStateError::InvalidBlock { reason, .. }) => assert!(
+            reason.contains("duplicate transaction hash"),
+            "expected duplicate-txid rejection, got: {reason}"
+        ),
+        other => panic!("expected InvalidBlock for duplicate txid, got {other:?}"),
+    }
+
+    // The rejected block must not have advanced the tip.
+    assert_eq!(
+        zaino_db
+            .db_height()
+            .await
+            .expect("db_height after rejected write"),
+        Some(Height(last_vector.height - 1)),
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

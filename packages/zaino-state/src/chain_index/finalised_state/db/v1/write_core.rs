@@ -142,7 +142,12 @@ impl DbV1 {
         let tx_len = block.transactions().len();
         let mut transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
             Vec::with_capacity(tx_len);
-        let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
+        // txid -> in-block index. `insert` returning `Some` is the duplicate-txid
+        // guard; the index also makes in-block prevout lookups O(1).
+        let mut txid_index: HashMap<TransactionHash, u16> = HashMap::with_capacity(tx_len);
+        // Reverse txid index entries (`txid -> TxLocation`), sorted before the write
+        // txn so the random-keyed `txid_location` B-tree sees locally-ordered inserts.
+        let mut txid_location_entries: Vec<([u8; 32], TxLocation)> = Vec::with_capacity(tx_len);
         let mut sapling = Vec::with_capacity(tx_len);
         let mut orchard = Vec::with_capacity(tx_len);
 
@@ -158,17 +163,28 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
-        #[allow(clippy::unused_enumerate_index)]
-        for (_tx_index, tx) in block.transactions().iter().enumerate() {
+        for (tx_index, tx) in block.transactions().iter().enumerate() {
             let hash = tx.txid();
 
-            if !txid_set.insert(*hash) {
+            // Bound the index first: the dup map, the reverse-index entry, and the
+            // spent map all want the narrow u16 form.
+            let tx_index =
+                u16::try_from(tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: format!("transaction index {tx_index} does not fit into u16"),
+                })?;
+            let tx_location = TxLocation::new(block_height.into(), tx_index);
+
+            if txid_index.insert(*hash, tx_index).is_some() {
                 return Err(FinalisedStateError::InvalidBlock {
                     height: block_height.0,
                     hash: block_hash,
                     reason: format!("duplicate transaction hash in block: {hash:?}"),
                 });
             }
+
+            txid_location_entries.push(((*hash).into(), tx_location));
 
             // Transparent transactions — paired with the txid at the source binding.
             let transparent_data =
@@ -195,16 +211,6 @@ impl DbV1 {
                 Some(tx.orchard().clone())
             };
             orchard.push(orchard_data);
-
-            // Transaction location
-            let tx_index =
-                u16::try_from(_tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: format!("transaction index {_tx_index} does not fit into u16"),
-                })?;
-
-            let tx_location = TxLocation::new(block_height.into(), tx_index);
 
             // Transparent Inputs: Build Spent Outpoints Index
             for input in tx.transparent().inputs().iter() {
@@ -243,20 +249,18 @@ impl DbV1 {
 
                     // Check if output is in *this* block, else fetch from DB.
                     let prev_tx_hash = TransactionHash(*prev_outpoint.prev_txid());
-                    if txid_set.contains(&prev_tx_hash) {
-                        // Locate the paired (txid, transparent_data) within this block.
-                        if let Some((tx_index, (_, Some(prev_transparent)))) = transactions
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (h, _))| h == &prev_tx_hash)
-                        {
+                    if let Some(&prev_idx) = txid_index.get(&prev_tx_hash) {
+                        // In-bounds by construction: `prev_idx` was assigned when that
+                        // transaction was pushed into `transactions`, and the current
+                        // transaction is pushed before its inputs are processed.
+                        if let (_, Some(prev_transparent)) = &transactions[prev_idx as usize] {
                             // Fetch output from transaction
                             if let Some(prev_output) = prev_transparent
                                 .outputs()
                                 .get(prev_outpoint.prev_index() as usize)
                             {
                                 let prev_output_tx_location =
-                                    TxLocation::new(block_height.0, tx_index as u16);
+                                    TxLocation::new(block_height.0, prev_idx);
                                 DbV1::build_input_history(
                                     &mut addrhist_inputs_map,
                                     tx_location,
@@ -314,20 +318,6 @@ impl DbV1 {
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
 
-        // Reverse txid index entries (`txid -> TxLocation`). Built before `txids` is moved into
-        // the `TxidList` below, and sorted by txid so the random-keyed `txid_location` B-tree
-        // sees locally-ordered inserts.
-        let mut txid_location_entries: Vec<([u8; 32], TxLocation)> =
-            Vec::with_capacity(txids.len());
-        for (tx_index, txid) in txids.iter().enumerate() {
-            let tx_index = u16::try_from(tx_index).map_err(|_| {
-                FinalisedStateError::Custom(format!(
-                    "transaction index out of range at height {}",
-                    block_height.0
-                ))
-            })?;
-            txid_location_entries.push(((*txid).into(), TxLocation::new(block_height.0, tx_index)));
-        }
         txid_location_entries.sort_by_key(|entry| entry.0);
 
         let txid_entry = StoredEntryVar::new(&block_height_bytes, TxidList::new(txids));
