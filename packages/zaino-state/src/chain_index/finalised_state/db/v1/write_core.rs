@@ -336,7 +336,7 @@ impl DbV1 {
         let sapling_entry = StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
         let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
 
-        // if any database writes fail, or block validation fails, remove block from database and return err.
+        // if any database writes fail, remove block from database and return err.
         let zaino_db = Self {
             env: Arc::clone(&self.env),
             headers: self.headers,
@@ -534,11 +534,13 @@ impl DbV1 {
 
             // `txn.commit()` makes the block visible to subsequent readers (LMDB MVCC), but the
             // env is opened with `NO_SYNC`, so it is *not* fsynced here. Durability is forced at
-            // `SYNC_CHECKPOINT_BYTE_WINDOW` boundaries below and on graceful shutdown. Validation
-            // is read-only and observes the just-committed state from the map regardless of sync.
+            // `SYNC_CHECKPOINT_BYTE_WINDOW` boundaries below and on graceful shutdown.
+            //
+            // Validation is no longer inline: the background validator task verifies committed
+            // heights concurrently with the writer, readers above `validated_tip` validate on
+            // demand, and `checkpoint_validate_and_sync` re-checks the whole window before any
+            // of it becomes durable.
             txn.commit()?;
-
-            zaino_db.validate_block_blocking(block_height, block_hash)?;
 
             Ok::<_, FinalisedStateError>(bytes_written)
         });
@@ -575,9 +577,7 @@ impl DbV1 {
                 if accumulated >= SYNC_CHECKPOINT_BYTE_WINDOW || block_height == GENESIS_HEIGHT {
                     self.bytes_since_checkpoint
                         .store(0, std::sync::atomic::Ordering::Relaxed);
-                    tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
-                        FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
-                    })?;
+                    self.checkpoint_validate_and_sync(block_height).await?;
                 }
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
@@ -706,6 +706,45 @@ impl DbV1 {
                 })
             }
         }
+    }
+
+    /// Validates every committed-but-unvalidated height up to `tip`, then forces an
+    /// `env.sync(true)` durability checkpoint — nothing unverified ever becomes durable.
+    ///
+    /// The background validator task normally keeps `validated_tip` close behind the
+    /// writer, so the validation step here is a fast catch-up (already-validated heights
+    /// are skipped in O(1)); when the validator lags, the writer absorbs the remainder
+    /// here instead of waiting on it.
+    ///
+    /// On a validation failure every block above the validated prefix is best-effort
+    /// deleted (tip first, mirroring `write_block`'s corrupt-block handling) before the
+    /// error propagates; clean sync re-fetches the discarded range.
+    async fn checkpoint_validate_and_sync(&self, tip: Height) -> Result<(), FinalisedStateError> {
+        let first_unvalidated = self
+            .validated_tip
+            .load(std::sync::atomic::Ordering::Acquire)
+            + 1;
+        if first_unvalidated <= tip.0 {
+            let start = Height::try_from(first_unvalidated)
+                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+            if let Err(validation_error) = self.validate_block_range(start, tip).await {
+                warn!(
+                    "checkpoint validation failed ({validation_error}); removing blocks above \
+                     the validated prefix"
+                );
+                let validated_tip = self
+                    .validated_tip
+                    .load(std::sync::atomic::Ordering::Acquire);
+                for height in ((validated_tip + 1)..=tip.0).rev() {
+                    let _ = self.delete_block_at_height(Height(height)).await;
+                }
+                let _ = tokio::task::block_in_place(|| self.env.sync(true));
+                self.status.store(StatusType::RecoverableError);
+                return Err(validation_error);
+            }
+        }
+        tokio::task::block_in_place(|| self.env.sync(true))
+            .map_err(|e| FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}")))
     }
 
     /// Deletes a block identified height from every finalised table.
