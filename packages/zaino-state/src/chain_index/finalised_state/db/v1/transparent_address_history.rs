@@ -1,5 +1,6 @@
 //! ZainoDB::V1 transparent address history indexing functionality.
 
+use crate::chain_index::finalised_state::db::v1::write_core::PendingBatchState;
 use crate::chain_index::finalised_state::db::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
@@ -1321,7 +1322,8 @@ impl DbV1 {
     /// Resolves each spent outpoint to its previous [`TxOutCompact`].
     ///
     /// Same-block spends are resolved from the in-block `transactions` slice via the
-    /// `txid_to_block_index` map. Prior-block spends are resolved via
+    /// `txid_to_block_index` map, and spends of uncommitted batch transactions from the
+    /// `pending` overlay. Everything else is resolved via
     /// [`DbV1::get_previous_output_blocking`] inside a `block_in_place` to honour the read/write
     /// boundary requirements documented on that method.
     fn resolve_spent_outpoints_for_set_info(
@@ -1329,6 +1331,7 @@ impl DbV1 {
         spent_map: &HashMap<Outpoint, TxLocation>,
         txid_to_block_index: &HashMap<TransactionHash, usize>,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
+        pending: Option<&PendingBatchState>,
     ) -> Result<Vec<(Outpoint, TxOutCompact)>, FinalisedStateError> {
         let mut resolved = Vec::with_capacity(spent_map.len());
 
@@ -1345,6 +1348,19 @@ impl DbV1 {
                 *tx.outputs().get(prev_index).ok_or_else(|| {
                     FinalisedStateError::Custom(format!(
                         "txout-set accumulator cannot be calculated: same-block spend of {prev_txid:?} index {prev_index} out of range"
+                    ))
+                })?
+            } else if let Some((_, pending_transparent)) =
+                pending.and_then(|batch| batch.transactions.get(&prev_txid))
+            {
+                let tx = pending_transparent.as_ref().ok_or_else(|| {
+                    FinalisedStateError::Custom(format!(
+                        "txout-set accumulator cannot be calculated: batch-pending spend of {prev_txid:?} has no transparent transaction data"
+                    ))
+                })?;
+                *tx.outputs().get(prev_index).ok_or_else(|| {
+                    FinalisedStateError::Custom(format!(
+                        "txout-set accumulator cannot be calculated: batch-pending spend of {prev_txid:?} index {prev_index} out of range"
                     ))
                 })?
             } else {
@@ -1369,26 +1385,42 @@ impl DbV1 {
         spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
         created_in_block: &HashMap<TransactionHash, u32>,
         direction: AccumulatorDirection,
+        pending: Option<&PendingBatchState>,
     ) -> Result<(), FinalisedStateError> {
         for (transaction_hash, spent_indices) in spent_indices_by_tx {
             if created_in_block.contains_key(transaction_hash) {
                 continue;
             }
 
-            let Some(transaction_location) =
-                <Self as BlockCoreExt>::get_tx_location(self, transaction_hash).await?
-            else {
-                return Err(FinalisedStateError::Custom(format!(
-                    "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} is missing from the txid index"
-                )));
-            };
+            // Prior transactions created by an uncommitted batch block resolve from the
+            // overlay; everything else from the committed indices.
+            let transparent_transaction = match pending
+                .and_then(|batch| batch.transactions.get(transaction_hash))
+            {
+                Some((_, pending_transparent)) => pending_transparent.clone().ok_or_else(|| {
+                    FinalisedStateError::Custom(format!(
+                        "txout-set accumulator cannot be calculated: spent batch-pending transaction {transaction_hash:?} has no transparent transaction data"
+                    ))
+                })?,
+                None => {
+                    let Some(transaction_location) =
+                        <Self as BlockCoreExt>::get_tx_location(self, transaction_hash).await?
+                    else {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} is missing from the txid index"
+                        )));
+                    };
 
-            let Some(transparent_transaction) =
-                <Self as BlockTransparentExt>::get_transparent(self, transaction_location).await?
-            else {
-                return Err(FinalisedStateError::Custom(format!(
-                    "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} has no transparent transaction data"
-                )));
+                    let Some(transparent_transaction) =
+                        <Self as BlockTransparentExt>::get_transparent(self, transaction_location)
+                            .await?
+                    else {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} has no transparent transaction data"
+                        )));
+                    };
+                    transparent_transaction
+                }
             };
 
             let previous_output_count = u32::try_from(transparent_transaction.outputs().len())
@@ -1423,13 +1455,22 @@ impl DbV1 {
 
             // The prior tx leaves the UTXO set (apply) / re-enters it (reverse) when this block
             // accounts for every spendable output that was still unspent before this block.
+            // An output counts as spent when either the committed spent index or the open
+            // batch's uncommitted spends cover it.
             let leaves_set = if remaining_outpoints.is_empty() {
                 true
             } else {
-                let remaining_spenders =
-                    <Self as TransparentHistExt>::get_outpoint_spenders(self, remaining_outpoints)
-                        .await?;
-                !remaining_spenders.into_iter().any(|s| s.is_none())
+                let remaining_spenders = <Self as TransparentHistExt>::get_outpoint_spenders(
+                    self,
+                    remaining_outpoints.clone(),
+                )
+                .await?;
+                remaining_outpoints.iter().zip(remaining_spenders).all(
+                    |(outpoint, committed_spender)| {
+                        committed_spender.is_some()
+                            || pending.is_some_and(|batch| batch.spent.contains_key(outpoint))
+                    },
+                )
             };
 
             if leaves_set {
@@ -1461,6 +1502,7 @@ impl DbV1 {
         &self,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
+        pending: Option<&PendingBatchState>,
     ) -> Result<
         (
             Vec<(Outpoint, TxOutCompact)>,
@@ -1495,6 +1537,7 @@ impl DbV1 {
             spent_map,
             &txid_to_block_index,
             transactions,
+            pending,
         )?;
 
         let mut spent_entries = Vec::with_capacity(resolved.len());
@@ -1524,10 +1567,10 @@ impl DbV1 {
     /// Missing accumulator data is only valid for a completely empty database before writing genesis.
     /// In every other case, a missing accumulator is treated as database corruption / failed migration.
     ///
-    /// `prior_accumulator` is the accumulator after the previous block when that block is not yet
-    /// committed — batched writes thread it through the batch in memory because the stored
-    /// accumulator only reflects committed state. Pass `None` to load the stored accumulator
-    /// (the single-block write path).
+    /// `pending` is the in-memory overlay of an open write batch: the accumulator after the
+    /// latest pending block plus that batch's uncommitted transactions and spends. The stored
+    /// tables only reflect committed state, so every read here consults the overlay first.
+    /// Pass `None` on the single-block write path (no uncommitted state exists).
     ///
     /// The returned accumulator must be written inside the same LMDB write transaction as the block.
     pub(crate) async fn calculate_tx_out_set_info_accumulator_after_block(
@@ -1535,11 +1578,11 @@ impl DbV1 {
         block_height: Height,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
-        prior_accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
+        pending: Option<&PendingBatchState>,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        // Load the existing accumulator unless the caller threads one through a batch.
-        // Only a fresh empty DB writing genesis may start from zero.
-        let mut accumulator = match prior_accumulator {
+        // Continue from the open batch's accumulator when one exists; otherwise load the
+        // stored value. Only a fresh empty DB writing genesis may start from zero.
+        let mut accumulator = match pending.and_then(|batch| batch.accumulator) {
             Some(accumulator) => accumulator,
             None => match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await
             {
@@ -1563,8 +1606,8 @@ impl DbV1 {
         let (spent_indices_by_tx, spent_outpoints) = index_spent_outpoints(spent_map)?;
 
         // Forward-direction validation: outpoints spent by this block must not already be
-        // spent in finalised state (same-block spends are not in the finalised spent table
-        // yet and are skipped).
+        // spent in finalised state or by an uncommitted batch block (same-block spends are
+        // in neither spent index and are skipped).
         if !spent_outpoints.is_empty() {
             let outpoints: Vec<Outpoint> = spent_outpoints.iter().map(|(o, _)| *o).collect();
             let existing_spenders =
@@ -1575,7 +1618,9 @@ impl DbV1 {
                 {
                     continue;
                 }
-                if let Some(existing_spender) = existing_spender {
+                let pending_spender =
+                    pending.and_then(|batch| batch.spent.get(spent_outpoint).copied());
+                if let Some(existing_spender) = existing_spender.or(pending_spender) {
                     return Err(FinalisedStateError::Custom(format!(
                         "txout-set accumulator cannot be calculated: block spends already-spent outpoint {spent_outpoint:?}; existing spender is {existing_spender:?}"
                     )));
@@ -1584,7 +1629,7 @@ impl DbV1 {
         }
 
         let (created_entries, spent_entries, spendable_spent_count_by_tx) =
-            self.build_entry_data(transactions, spent_map)?;
+            self.build_entry_data(transactions, spent_map, pending)?;
 
         let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
             FinalisedStateError::Custom(
@@ -1606,6 +1651,7 @@ impl DbV1 {
             &spent_indices_by_tx,
             &created_counts,
             AccumulatorDirection::Apply,
+            pending,
         )
         .await?;
         apply_entry_deltas(
@@ -1666,7 +1712,7 @@ impl DbV1 {
         }
 
         let (created_entries, spent_entries, spendable_spent_count_by_tx) =
-            self.build_entry_data(transactions, spent_map)?;
+            self.build_entry_data(transactions, spent_map, None)?;
 
         let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
             FinalisedStateError::Custom(
@@ -1688,6 +1734,8 @@ impl DbV1 {
             &spent_indices_by_tx,
             &created_counts,
             AccumulatorDirection::Reverse,
+            // Deletes operate on the committed tip only; no batch overlay exists.
+            None,
         )
         .await?;
         apply_entry_deltas(

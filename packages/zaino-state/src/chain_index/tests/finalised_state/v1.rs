@@ -1,7 +1,7 @@
 //! Holds tests for the V1 database.
 
 use hex::ToHex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -423,13 +423,13 @@ async fn write_blocks_batched_ingest_matches_per_block() {
     );
 }
 
-/// The batcher must partition the chain: chunks concatenate back to the
-/// original order, and inside one chunk no block spends an output created
-/// by — or a sibling output of a transaction spent from by — an earlier
-/// chunk block. That is the contract `DbV1::write_blocks` relies on for its
-/// committed-state-only reads.
+/// The batcher must partition the chain on its byte budget alone: chunks
+/// concatenate back to the original order, a tiny budget produces many
+/// chunks, and a budget larger than the whole chain produces exactly one.
+/// (Intra-batch transparent dependencies are permitted — the batched write
+/// path resolves them through its `PendingBatchState` overlay.)
 #[test]
-fn write_batcher_partitions_chain_without_intra_batch_dependencies() {
+fn write_batcher_partitions_chain_on_byte_budget() {
     let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
     let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
 
@@ -459,38 +459,16 @@ fn write_batcher_partitions_chain_without_intra_batch_dependencies() {
     );
     assert!(chunks.len() > 1, "tiny budget must produce multiple chunks");
 
-    for chunk in &chunks {
-        let mut created: HashSet<TransactionHash> = HashSet::new();
-        let mut spent_from: HashSet<TransactionHash> = HashSet::new();
-        for block in chunk {
-            let own_txids: HashSet<TransactionHash> =
-                block.transactions().iter().map(|tx| *tx.txid()).collect();
-            for tx in block.transactions() {
-                for input in tx.transparent().inputs() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-                    let prev_txid = TransactionHash::from(*input.prevout_txid());
-                    if own_txids.contains(&prev_txid) {
-                        continue;
-                    }
-                    assert!(
-                        !created.contains(&prev_txid) && !spent_from.contains(&prev_txid),
-                        "block {} depends on uncommitted state of its own batch via {prev_txid:?}",
-                        block.context.index.height.0,
-                    );
-                }
-            }
-            for tx in block.transactions() {
-                created.insert(*tx.txid());
-                for input in tx.transparent().inputs() {
-                    if !input.is_null_prevout() {
-                        spent_from.insert(TransactionHash::from(*input.prevout_txid()));
-                    }
-                }
-            }
-        }
+    // A budget far above the whole chain's write volume yields a single batch.
+    let mut unbounded = WriteBatcher::new(usize::MAX);
+    for block in chain.iter().cloned() {
+        assert!(
+            unbounded.push(block).is_none(),
+            "an unbounded budget must never flush mid-chain"
+        );
     }
+    let single = unbounded.flush().expect("pending blocks must flush");
+    assert_eq!(single.len(), chain.len());
 }
 
 /// `write_blocks` is a strict batch primitive: gaps within the batch and

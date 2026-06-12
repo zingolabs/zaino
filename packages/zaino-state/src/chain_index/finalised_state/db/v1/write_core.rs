@@ -293,18 +293,15 @@ impl DbV1 {
     /// Builds everything needed to persist `block`: encoded key bytes, checksummed table
     /// entries, per-block index maps, and the post-block txout-set accumulator.
     ///
-    /// `prior_accumulator` threads the accumulator through a multi-block batch whose earlier
-    /// blocks are not yet committed; pass `None` to load the stored (committed) accumulator
-    /// (the single-block write path). Every other read performed here resolves against
-    /// committed state only, so a batch must not contain a block that spends transparent
-    /// outputs created by — or sibling outputs of transactions spent from by — an earlier
-    /// block of the same batch. The
-    /// [`WriteBatcher`](crate::chain_index::finalised_state::write_batch::WriteBatcher)
-    /// enforces this by splitting batches.
+    /// `pending` is the in-memory overlay of an open write batch ([`PendingBatchState`]):
+    /// every read that may touch state written by an earlier, uncommitted batch block —
+    /// transparent prevout resolution, spent-output checks, and the accumulator itself —
+    /// consults the overlay before the committed tables. Pass `None` on the single-block
+    /// write path, where all prior state is committed.
     async fn build_block_write_data(
         &self,
         block: &IndexedBlock,
-        prior_accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
+        pending: Option<&PendingBatchState>,
     ) -> Result<BlockWriteData, FinalisedStateError> {
         let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
@@ -379,12 +376,7 @@ impl DbV1 {
             txid_location_entries.push(((*hash).into(), tx_location));
 
             // Transparent transactions — paired with the txid at the source binding.
-            let transparent_data =
-                if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.transparent().clone())
-                };
+            let transparent_data = stored_transparent_data(tx);
             transactions.push((*hash, transparent_data));
 
             // Sapling transactions
@@ -463,6 +455,31 @@ impl DbV1 {
                                 );
                             }
                         }
+                    } else if let Some((prev_location, Some(prev_transparent))) =
+                        pending.and_then(|batch| batch.transactions.get(&prev_tx_hash))
+                    {
+                        // Prevout created by an uncommitted batch block: resolve from
+                        // the overlay (the committed tables don't have it yet).
+                        if let Some(prev_output) = prev_transparent
+                            .outputs()
+                            .get(prev_outpoint.prev_index() as usize)
+                        {
+                            DbV1::build_input_history(
+                                &mut addrhist_inputs_map,
+                                tx_location,
+                                input_index as u16,
+                                input,
+                                prev_output,
+                                *prev_location,
+                            );
+                        } else {
+                            return Err(FinalisedStateError::InvalidBlock {
+                                height: block.height().0,
+                                hash: *block.hash(),
+                                reason: "Invalid block data: invalid transparent input."
+                                    .to_string(),
+                            });
+                        }
                     } else if let Ok((prev_output, prev_output_tx_location)) =
                         tokio::task::block_in_place(|| {
                             let prev_output = self.get_previous_output_blocking(prev_outpoint)?;
@@ -503,7 +520,7 @@ impl DbV1 {
                 block_height,
                 &transactions,
                 &spent_map,
-                prior_accumulator,
+                pending,
             )
             .await?;
 
@@ -761,13 +778,11 @@ impl DbV1 {
     ///
     /// - Blocks are height-contiguous and the first block is `db_tip + 1` (both checked
     ///   here).
-    /// - No block reads state written by an earlier block in the same batch: no
-    ///   transparent input may spend an output created by an earlier batch block, and no
-    ///   two batch blocks may spend outputs of the same prior transaction.
-    ///   `build_block_write_data` resolves prevouts and spent-output bookkeeping against
-    ///   committed state only, so violating this yields wrong index data. The
-    ///   [`WriteBatcher`](crate::chain_index::finalised_state::write_batch::WriteBatcher)
-    ///   splits batches to maintain it.
+    ///
+    /// Blocks may freely reference state written by earlier blocks of the same batch
+    /// (spend their outputs, spend sibling outputs of transactions they spent from):
+    /// the build phase threads a [`PendingBatchState`] overlay through the batch and
+    /// consults it before the committed tables.
     ///
     /// ## Failure semantics
     ///
@@ -824,16 +839,14 @@ impl DbV1 {
             Ok::<_, FinalisedStateError>(())
         })?;
 
-        // Build phase: committed-state reads plus CPU, with the txout-set accumulator
-        // threaded through the batch in memory (the stored accumulator only reflects
-        // committed state).
+        // Build phase: reads resolve against committed state plus the in-memory overlay
+        // of earlier batch blocks (accumulator, transactions, spends), so batch blocks
+        // may freely spend outputs their batch created.
         let mut batch_data = Vec::with_capacity(blocks.len());
-        let mut prior_accumulator = None;
+        let mut pending = PendingBatchState::new();
         for block in blocks {
-            let data = self
-                .build_block_write_data(block, prior_accumulator)
-                .await?;
-            prior_accumulator = Some(data.tx_out_set_info_accumulator);
+            let data = self.build_block_write_data(block, Some(&pending)).await?;
+            pending.absorb(block, &data);
             batch_data.push(data);
         }
 
@@ -1554,4 +1567,58 @@ struct BlockWriteData {
     addrhist_inputs_map: HashMap<AddrScript, Vec<(AddrHistRecord, (AddrScript, AddrHistRecord))>>,
     #[cfg(feature = "transparent_address_history_experimental")]
     addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>>,
+}
+
+/// In-memory overlay of everything an open write batch has produced but not yet
+/// committed: the txout-set accumulator after the latest pending block, every
+/// pending transaction (with its location and transparent data), and every
+/// outpoint the batch spends. Build-phase reads consult this before the
+/// committed tables, so a batch block may spend outputs created — or sibling
+/// outputs of transactions spent from — earlier in the same batch.
+// pub(crate) (not pub(super)) because it appears in the signature of the
+// pub(crate) accumulator calculation that migrations.rs also calls.
+pub(crate) struct PendingBatchState {
+    /// Txout-set accumulator after the latest pending block; `None` until the
+    /// first block of the batch is built.
+    pub(super) accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
+    /// txid -> (location, transparent data) for every pending transaction.
+    pub(super) transactions: HashMap<TransactionHash, (TxLocation, Option<TransparentCompactTx>)>,
+    /// Outpoints spent by pending blocks, keyed to their spender's location.
+    pub(super) spent: HashMap<Outpoint, TxLocation>,
+}
+
+impl PendingBatchState {
+    fn new() -> Self {
+        Self {
+            accumulator: None,
+            transactions: HashMap::new(),
+            spent: HashMap::new(),
+        }
+    }
+
+    /// Absorbs a just-built block's contributions so later batch blocks can
+    /// read them.
+    fn absorb(&mut self, block: &IndexedBlock, data: &BlockWriteData) {
+        self.accumulator = Some(data.tx_out_set_info_accumulator);
+        for (tx_index, tx) in block.transactions().iter().enumerate() {
+            let tx_index = u16::try_from(tx_index)
+                .expect("transaction index bounded by build_block_write_data");
+            let location = TxLocation::new(block.context.index.height.0, tx_index);
+            self.transactions
+                .insert(*tx.txid(), (location, stored_transparent_data(tx)));
+        }
+        for (outpoint, location) in &data.spent_map {
+            self.spent.insert(*outpoint, *location);
+        }
+    }
+}
+
+/// The stored form of a transaction's transparent data: `None` when the
+/// transaction has no transparent inputs or outputs.
+fn stored_transparent_data(tx: &CompactTxData) -> Option<TransparentCompactTx> {
+    if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
+        None
+    } else {
+        Some(tx.transparent().clone())
+    }
 }

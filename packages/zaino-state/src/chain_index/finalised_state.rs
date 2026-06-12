@@ -575,8 +575,7 @@ impl ZainoDB {
         // a chance to shutdown the reporter task regardless of how this block exits.
         let result: Result<(), FinalisedStateError> = (async {
             // Batch writes so many blocks share one durable LMDB commit; the batcher
-            // flushes on its byte budget or when a block depends on uncommitted
-            // batch state (see `WriteBatcher`).
+            // flushes on its byte budget (see `WriteBatcher`).
             let mut batcher =
                 write_batch::WriteBatcher::new(write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET);
             for height_int in (db_height.0)..=height.0 {
