@@ -314,15 +314,15 @@ impl DbV1 {
 
         match ro.get(self.txid_location, &key) {
             Ok(stored_bytes) => {
-                let entry =
-                    StoredEntryFixed::<TxLocation>::from_bytes(stored_bytes).map_err(|e| {
-                        FinalisedStateError::Custom(format!("corrupt txid_location entry: {e}"))
-                    })?;
-                if !entry.verify(key) {
+                if !StoredEntryFixed::<TxLocation>::verify_stored(key, stored_bytes) {
                     return Err(FinalisedStateError::Custom(
                         "txid_location entry checksum mismatch".to_string(),
                     ));
                 }
+                let entry =
+                    StoredEntryFixed::<TxLocation>::from_bytes(stored_bytes).map_err(|e| {
+                        FinalisedStateError::Custom(format!("corrupt txid_location entry: {e}"))
+                    })?;
                 Ok(Some(*entry.inner()))
             }
             Err(lmdb::Error::NotFound) => Ok(None),

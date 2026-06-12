@@ -1232,9 +1232,8 @@ impl DbV1 {
                             // Set SPENT flag (flags byte is at index 10 in StoredEntry layout)
                             spent_prev_entry[10] |= AddrHistRecord::FLAG_SPENT;
                             // Recompute checksum over bytes 1..19 as StoredEntryFixed expects.
-                            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                                &[&prev_addr_bytes, &spent_prev_entry[1..19]].concat(),
-                            );
+                            let checksum =
+                                keyed_checksum(&prev_addr_bytes, &spent_prev_entry[1..19]);
                             spent_prev_entry[19..51].copy_from_slice(&checksum);
 
                             let updated = zaino_db.mark_addr_hist_record_unspent_in_txn(

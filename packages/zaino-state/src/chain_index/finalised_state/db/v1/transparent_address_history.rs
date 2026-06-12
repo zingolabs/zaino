@@ -756,6 +756,14 @@ impl DbV1 {
                 Err(error) => return Err(FinalisedStateError::LmdbError(error)),
             };
 
+            if !StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::verify_stored(
+                TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                raw_accumulator,
+            ) {
+                return Err(FinalisedStateError::Custom(
+                    "txout-set accumulator checksum mismatch".to_string(),
+                ));
+            }
             let accumulator_entry =
                 StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw_accumulator)
                     .map_err(|error| {
@@ -763,12 +771,6 @@ impl DbV1 {
                         "txout-set accumulator decode error: {error}"
                     ))
                 })?;
-
-            if !accumulator_entry.verify(TX_OUT_SET_INFO_ACCUMULATOR_KEY) {
-                return Err(FinalisedStateError::Custom(
-                    "txout-set accumulator checksum mismatch".to_string(),
-                ));
-            }
 
             Ok(accumulator_entry.item)
         })
@@ -1119,9 +1121,7 @@ impl DbV1 {
 
             hist_record[10] |= AddrHistRecord::FLAG_SPENT;
 
-            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                &[&addr_bytes, &hist_record[1..19]].concat(),
-            );
+            let checksum = keyed_checksum(&addr_bytes, &hist_record[1..19]);
             hist_record[19..51].copy_from_slice(&checksum);
 
             cur.put(&addr_bytes, &hist_record, WriteFlags::CURRENT)?;
@@ -1197,9 +1197,7 @@ impl DbV1 {
             hist_record[10] &= !AddrHistRecord::FLAG_SPENT;
 
             // Recompute checksum over entry header + payload (bytes 1..19).
-            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                &[&addr_bytes, &hist_record[1..19]].concat(),
-            );
+            let checksum = keyed_checksum(&addr_bytes, &hist_record[1..19]);
             hist_record[19..51].copy_from_slice(&checksum);
 
             // Write back in place for the exact duplicate we matched.

@@ -163,12 +163,11 @@ impl DbV1 {
             let raw = ro
                 .get(self.headers, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
-                .map_err(|e| fail(&format!("header corrupt data: {e}")))?;
-            if !entry.verify(&height_key) {
+            if !StoredEntryVar::<BlockHeaderData>::verify_stored(&height_key, raw) {
                 return Err(fail("header checksum mismatch"));
             }
-            entry
+            StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                .map_err(|e| fail(&format!("header corrupt data: {e}")))?
         };
 
         // *** txids ***
@@ -176,23 +175,21 @@ impl DbV1 {
             let raw = ro
                 .get(self.txids, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            let entry = StoredEntryVar::<TxidList>::from_bytes(raw)
-                .map_err(|e| fail(&format!("txids corrupt data: {e}")))?;
-            if !entry.verify(&height_key) {
+            if !StoredEntryVar::<TxidList>::verify_stored(&height_key, raw) {
                 return Err(fail("txids checksum mismatch"));
             }
-            entry
+            StoredEntryVar::<TxidList>::from_bytes(raw)
+                .map_err(|e| fail(&format!("txids corrupt data: {e}")))?
         };
 
         // *** transparent ***
         let transparent_tx_list = {
             let raw = ro.get(self.transparent, &height_key)?;
-            let entry = StoredEntryVar::<TransparentTxList>::from_bytes(raw)
-                .map_err(|e| fail(&format!("transparent corrupt data: {e}")))?;
-            if !entry.verify(&height_key) {
+            if !StoredEntryVar::<TransparentTxList>::verify_stored(&height_key, raw) {
                 return Err(fail("transparent checksum mismatch"));
             }
-            entry
+            StoredEntryVar::<TransparentTxList>::from_bytes(raw)
+                .map_err(|e| fail(&format!("transparent corrupt data: {e}")))?
         };
 
         // *** sapling ***
@@ -200,9 +197,9 @@ impl DbV1 {
             let raw = ro
                 .get(self.sapling, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            let entry = StoredEntryVar::<SaplingTxList>::from_bytes(raw)
-                .map_err(|e| fail(&format!("sapling corrupt data: {e}")))?;
-            if !entry.verify(&height_key) {
+            // The checksum binds the exact bytes the writer encoded from typed
+            // values, so a match implies decodability; no decode needed here.
+            if !StoredEntryVar::<SaplingTxList>::verify_stored(&height_key, raw) {
                 return Err(fail("sapling checksum mismatch"));
             }
         }
@@ -212,9 +209,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.orchard, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            let entry = StoredEntryVar::<OrchardTxList>::from_bytes(raw)
-                .map_err(|e| fail(&format!("orchard corrupt data: {e}")))?;
-            if !entry.verify(&height_key) {
+            if !StoredEntryVar::<OrchardTxList>::verify_stored(&height_key, raw) {
                 return Err(fail("orchard checksum mismatch"));
             }
         }
@@ -224,9 +219,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.commitment_tree_data, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            let entry = StoredEntryFixed::<CommitmentTreeData>::from_bytes(raw)
-                .map_err(|e| fail(&format!("commitment_tree corrupt bytes: {e}")))?;
-            if !entry.verify(&height_key) {
+            if !StoredEntryFixed::<CommitmentTreeData>::verify_stored(&height_key, raw) {
                 return Err(fail("commitment_tree checksum mismatch"));
             }
         }
@@ -236,11 +229,11 @@ impl DbV1 {
             let raw = ro
                 .get(self.heights, &hash_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            let entry = StoredEntryFixed::<Height>::from_bytes(raw)
-                .map_err(|e| fail(&format!("hash -> height corrupt bytes: {e}")))?;
-            if !entry.verify(&hash_key) {
+            if !StoredEntryFixed::<Height>::verify_stored(&hash_key, raw) {
                 return Err(fail("hash -> height checksum mismatch"));
             }
+            let entry = StoredEntryFixed::<Height>::from_bytes(raw)
+                .map_err(|e| fail(&format!("hash -> height corrupt bytes: {e}")))?;
             if entry.item != height {
                 return Err(fail("hash -> height mapping mismatch"));
             }
@@ -294,14 +287,13 @@ impl DbV1 {
                 .get(self.metadata, metadata_key)
                 .map_err(FinalisedStateError::LmdbError)?;
 
-            let entry = StoredEntryFixed::<DbMetadata>::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("metadata corrupt data: {e}")))?;
-
-            if !entry.verify(metadata_key) {
+            if !StoredEntryFixed::<DbMetadata>::verify_stored(metadata_key, raw) {
                 return Err(FinalisedStateError::Custom(
                     "metadata checksum mismatch".to_string(),
                 ));
             }
+            let entry = StoredEntryFixed::<DbMetadata>::from_bytes(raw)
+                .map_err(|e| FinalisedStateError::Custom(format!("metadata corrupt data: {e}")))?;
 
             entry.inner().version
                 >= DbVersion {
@@ -332,11 +324,11 @@ impl DbV1 {
                     let val = ro.get(self.spent, &outpoint_bytes).map_err(|_| {
                         fail(&format!("missing spent index for outpoint {outpoint:?}"))
                     })?;
-                    let entry = StoredEntryFixed::<TxLocation>::from_bytes(val)
-                        .map_err(|e| fail(&format!("corrupt spent entry: {e}")))?;
-                    if !entry.verify(&outpoint_bytes) {
+                    if !StoredEntryFixed::<TxLocation>::verify_stored(&outpoint_bytes, val) {
                         return Err(fail("spent entry checksum mismatch"));
                     }
+                    let entry = StoredEntryFixed::<TxLocation>::from_bytes(val)
+                        .map_err(|e| fail(&format!("corrupt spent entry: {e}")))?;
                     if entry.inner() != &txid_index {
                         return Err(fail("spent entry has wrong TxLocation"));
                     }

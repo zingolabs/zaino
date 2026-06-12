@@ -46,6 +46,8 @@ use crate::{
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
+use crate::chain_index::finalised_state::entry::keyed_checksum;
+#[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrHistRecord, AddrScript};
 
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
@@ -585,11 +587,7 @@ impl DbV1 {
             let mut cursor = ro.open_ro_cursor(spent)?;
 
             for (key_bytes, val_bytes) in cursor.iter() {
-                let entry = StoredEntryFixed::<TxLocation>::from_bytes(val_bytes).map_err(|e| {
-                    FinalisedStateError::Custom(format!("corrupt spent entry: {e}"))
-                })?;
-
-                if !entry.verify(key_bytes) {
+                if !StoredEntryFixed::<TxLocation>::verify_stored(key_bytes, val_bytes) {
                     return Err(FinalisedStateError::Custom(
                         "spent record checksum mismatch".into(),
                     ));
@@ -613,12 +611,7 @@ impl DbV1 {
             let mut cursor = ro.open_ro_cursor(address_history)?;
 
             for (addr_bytes, record_bytes) in cursor.iter() {
-                let entry =
-                    StoredEntryFixed::<AddrEventBytes>::from_bytes(record_bytes).map_err(|e| {
-                        FinalisedStateError::Custom(format!("corrupt addrhist entry: {e}"))
-                    })?;
-
-                if !entry.verify(addr_bytes) {
+                if !StoredEntryFixed::<AddrEventBytes>::verify_stored(addr_bytes, record_bytes) {
                     return Err(FinalisedStateError::Custom(
                         "addrhist record checksum mismatch".into(),
                     ));
