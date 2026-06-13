@@ -935,7 +935,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
                     Ok(caught_up)
                     }
-                    .instrument(tracing::info_span!("sync_iteration", iteration))
+                    .instrument(tracing::info_span!(parent: None, "sync_iteration", iteration))
                     => r,
                 };
 
