@@ -58,7 +58,7 @@ use super::LmdbLifecycle;
 
 use async_trait::async_trait;
 use corez::io::{self, Read};
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags,
 };
@@ -268,6 +268,18 @@ pub(crate) struct DbV1 {
     /// grows beyond the number of “holes” in the sequence.
     validated_set: DashSet<u32>,
 
+    /// `txid` → number of currently-unspent spendable transparent outputs.
+    ///
+    /// A lazily-populated, in-memory view derived entirely from stored data:
+    /// transactions written by this process enter at write time for free, and
+    /// older transactions enter the first time one of their outputs is spent
+    /// (one probe of the spent index, after which spends of that transaction
+    /// are answered from memory). Entries are removed when their count reaches
+    /// zero, so absence means "unknown or fully spent" and readers fall back
+    /// to probing. See [`DbV1::invalidate_unspent_output_counts`] for the one
+    /// staleness rule.
+    unspent_output_counts: Arc<DashMap<TransactionHash, u32>>,
+
     /// Background validator / maintenance task handle.
     ///
     /// Wrapped in a `Mutex` so `shutdown(&self)` can `.take()` the handle on
@@ -397,6 +409,7 @@ impl DbV1 {
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
+                unspent_output_counts: Arc::new(DashMap::new()),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
@@ -421,6 +434,7 @@ impl DbV1 {
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
+                unspent_output_counts: Arc::new(DashMap::new()),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
@@ -470,6 +484,7 @@ impl DbV1 {
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
+            unspent_output_counts: Arc::clone(&self.unspent_output_counts),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
@@ -658,6 +673,7 @@ impl DbV1 {
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
+            unspent_output_counts: Arc::clone(&self.unspent_output_counts),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
@@ -933,6 +949,7 @@ impl DbV1 {
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
+                unspent_output_counts: Arc::new(DashMap::new()),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
@@ -956,6 +973,7 @@ impl DbV1 {
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
                 validated_set: DashSet::new(),
+                unspent_output_counts: Arc::new(DashMap::new()),
                 db_handler: std::sync::Mutex::new(None),
                 cancel_token: CancellationToken::new(),
                 status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),

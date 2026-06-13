@@ -516,6 +516,84 @@ async fn write_blocks_rejects_malformed_batches() {
     );
 }
 
+/// The unspent-output count cache is an optimization, never a semantic input:
+/// deleting blocks (which reverses cached counts) and re-writing them must
+/// reproduce the exact accumulator.
+#[tokio::test(flavor = "multi_thread")]
+async fn accumulator_roundtrips_through_delete_and_rewrite() {
+    let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
+    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
+    let (_db_dir, backend) = spawn_fresh_v1_backend().await;
+
+    for block in &chain {
+        backend.write_block(block.clone()).await.expect("write");
+    }
+    let full_accumulator = backend
+        .get_tx_out_set_info_accumulator()
+        .await
+        .expect("accumulator after full ingest");
+
+    let tip = chain.len() as u32 - 1;
+    let cut = tip - 50;
+    for height in ((cut + 1)..=tip).rev() {
+        backend
+            .delete_block_at_height(Height(height))
+            .await
+            .expect("delete tip block");
+    }
+    for block in &chain[(cut as usize + 1)..] {
+        backend.write_block(block.clone()).await.expect("re-write");
+    }
+
+    assert_eq!(
+        backend
+            .get_tx_out_set_info_accumulator()
+            .await
+            .expect("accumulator after round-trip"),
+        full_accumulator,
+    );
+}
+
+/// Forces the cold-cache (probe) path mid-ingest and requires the same
+/// accumulator as an uninterrupted warm-cache ingest — the cache must be pure
+/// optimization, with the probe fallback semantically identical.
+#[tokio::test(flavor = "multi_thread")]
+async fn accumulator_is_identical_with_cold_unspent_count_cache() {
+    let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
+    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
+
+    let (_dir_warm, warm_backend) = spawn_fresh_v1_backend().await;
+    let (_dir_cold, cold_backend) = spawn_fresh_v1_backend().await;
+
+    for (index, block) in chain.iter().enumerate() {
+        warm_backend
+            .write_block(block.clone())
+            .await
+            .expect("warm write");
+        cold_backend
+            .write_block(block.clone())
+            .await
+            .expect("cold write");
+        if index % 32 == 0 {
+            let DbBackend::V1(db) = &cold_backend else {
+                panic!("spawn_fresh_v1_backend returned a non-V1 backend");
+            };
+            db.invalidate_unspent_output_counts();
+        }
+    }
+
+    assert_eq!(
+        warm_backend
+            .get_tx_out_set_info_accumulator()
+            .await
+            .expect("warm accumulator"),
+        cold_backend
+            .get_tx_out_set_info_accumulator()
+            .await
+            .expect("cold accumulator"),
+    );
+}
+
 /// Regression test for the `write_block` indexing loop: a fresh ingest must
 /// leave every transaction resolvable through the `txid_location` reverse
 /// index, with the location matching the transaction's position in the raw

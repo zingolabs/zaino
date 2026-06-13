@@ -117,6 +117,9 @@ impl DbV1 {
                 "Block {} at height {} already exists in ZainoDB, skipping write.",
                 &block_hash, &block_height.0
             );
+            // Another process is writing this database; its spends are invisible
+            // to our in-memory counts.
+            self.invalidate_unspent_output_counts();
             return Ok(());
         }
 
@@ -150,6 +153,7 @@ impl DbV1 {
 
                 // Best-effort delete of partially written block; ignore delete result.
                 let _ = self.delete_block(&block).await;
+                self.invalidate_unspent_output_counts();
 
                 return Err(FinalisedStateError::Custom(format!(
                     "Tokio task error: {}",
@@ -182,6 +186,7 @@ impl DbV1 {
             Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
                 // Block write failed because key already exists - another process wrote it
                 // between our check and our write.
+                self.invalidate_unspent_output_counts();
                 //
                 // Wait briefly and verify it's the same block and was fully written to the finalised state.
                 // Partially written block should be deleted from the database and the write error reported
@@ -263,6 +268,7 @@ impl DbV1 {
                 }
             }
             Err(e) => {
+                self.invalidate_unspent_output_counts();
                 warn!("Error writing block to DB: {e}");
                 warn!(
                     "Deleting corrupt block from DB at height: {} with hash: {:?}",
@@ -596,6 +602,18 @@ impl DbV1 {
         Ok(StoredEntryFixed::encode(addr_bytes, &packed)?)
     }
 
+    /// Drops every cached unspent-output count.
+    ///
+    /// The cache is derived data, so this is the single consistency mechanism:
+    /// call it whenever this process's in-memory view may have diverged from
+    /// committed state — a failed write or delete (cache updates happen during
+    /// the build phase, before the commit), or any evidence of another process
+    /// writing the shared database. The only cost is re-amortization: the next
+    /// spend of each affected transaction re-probes the committed spent index.
+    pub(crate) fn invalidate_unspent_output_counts(&self) {
+        self.unspent_output_counts.clear();
+    }
+
     /// Persists one block's pre-built write data inside an open LMDB write transaction:
     /// every table put for the block, and nothing else — all entries arrive
     /// pre-encoded, so no serialization happens inside the single-writer window.
@@ -757,6 +775,7 @@ impl DbV1 {
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
+            unspent_output_counts: Arc::clone(&self.unspent_output_counts),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
@@ -882,7 +901,9 @@ impl DbV1 {
             }
             Err(e) => {
                 // Every failure here precedes a successful commit, and LMDB commits are
-                // atomic, so nothing was persisted; there is nothing to roll back.
+                // atomic, so nothing was persisted on disk — but the build phase already
+                // applied this batch's unspent-count updates in memory.
+                self.invalidate_unspent_output_counts();
                 warn!(
                     "Batched block write failed ({e}); nothing persisted ({}..={})",
                     first_height.0,
@@ -896,6 +917,19 @@ impl DbV1 {
 
     /// Deletes a block identified height from every finalised table.
     pub(crate) async fn delete_block_at_height(
+        &self,
+        height: Height,
+    ) -> Result<(), FinalisedStateError> {
+        let result = self.delete_block_at_height_inner(height).await;
+        if result.is_err() {
+            // Cache updates happen during the delete's build phase, before its
+            // commit; on failure the in-memory counts are ahead of disk.
+            self.invalidate_unspent_output_counts();
+        }
+        result
+    }
+
+    async fn delete_block_at_height_inner(
         &self,
         height: Height,
     ) -> Result<(), FinalisedStateError> {
@@ -971,6 +1005,16 @@ impl DbV1 {
         &self,
         block: &IndexedBlock,
     ) -> Result<(), FinalisedStateError> {
+        let result = self.delete_block_inner(block).await;
+        if result.is_err() {
+            // Cache updates happen during the delete's build phase, before its
+            // commit; on failure the in-memory counts are ahead of disk.
+            self.invalidate_unspent_output_counts();
+        }
+        result
+    }
+
+    async fn delete_block_inner(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
         // Check block height and hash
         let block_height = block.context.index.height;
         let block_height_bytes =
@@ -1166,6 +1210,7 @@ impl DbV1 {
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
+            unspent_output_counts: Arc::clone(&self.unspent_output_counts),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),

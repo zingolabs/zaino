@@ -13,6 +13,7 @@ use super::*;
 ///
 /// Forward (`Apply`) and reverse (`Reverse`) traverse the same shared helpers; the only
 /// difference is the sign of every delta.
+#[derive(Clone, Copy)]
 enum AccumulatorDirection {
     /// Applying a block forward (write path / migration backfill).
     Apply,
@@ -1414,6 +1415,43 @@ impl DbV1 {
         Ok(resolved)
     }
 
+    /// Answers "does this operation transition the prior transaction's UTXO-set
+    /// membership?" from the in-memory unspent-output count alone, updating the
+    /// count in the same step. Returns `None` on a cache miss — including a stale
+    /// entry detected by underflow, which is dropped — in which case the caller
+    /// probes the committed spent index and repopulates the cache.
+    ///
+    /// Entries are removed at zero, so for `Reverse` (block deletion) presence
+    /// means the transaction still had unspent outputs and cannot re-enter the
+    /// set; absence is ambiguous (unknown vs fully spent) and must be probed.
+    fn cached_unspent_transition(
+        &self,
+        transaction_hash: &TransactionHash,
+        spendable_spends: u32,
+        direction: AccumulatorDirection,
+    ) -> Option<bool> {
+        let (_, count) = self.unspent_output_counts.remove(transaction_hash)?;
+        match direction {
+            AccumulatorDirection::Apply => {
+                // A count smaller than this block's spends is stale: leave the
+                // entry dropped and let the probe re-derive it.
+                let remaining = count.checked_sub(spendable_spends)?;
+                if remaining == 0 {
+                    Some(true)
+                } else {
+                    self.unspent_output_counts
+                        .insert(*transaction_hash, remaining);
+                    Some(false)
+                }
+            }
+            AccumulatorDirection::Reverse => {
+                self.unspent_output_counts
+                    .insert(*transaction_hash, count.saturating_add(spendable_spends));
+                Some(false)
+            }
+        }
+    }
+
     /// Applies the prior-block portion of the accumulator update.
     ///
     /// For every transaction spent from by this block that was *not* created in this block,
@@ -1426,6 +1464,7 @@ impl DbV1 {
         accumulator: &mut FinalisedTxOutSetInfoAccumulator,
         spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
         created_in_block: &HashMap<TransactionHash, u32>,
+        spendable_spent_count_by_tx: &HashMap<TransactionHash, u32>,
         direction: AccumulatorDirection,
         prior_transactions: &HashMap<TransactionHash, TransparentCompactTx>,
         // Retained solely for the remaining-outputs spentness overlay below: an
@@ -1459,41 +1498,87 @@ impl DbV1 {
                 }
             }
 
-            // Spendable outputs of the prior tx that this block did not spend.
-            let mut remaining_outpoints = Vec::new();
-            for (output_index, prev_output) in transparent_transaction.outputs().iter().enumerate()
-            {
-                let output_index = output_index as u32;
-                if is_unspendable_tx_out(prev_output) {
-                    continue;
-                }
-                if spent_indices.contains(&output_index) {
-                    continue;
-                }
-                remaining_outpoints.push(Outpoint::new(transaction_hash.0, output_index));
-            }
+            let spendable_spends = spendable_spent_count_by_tx
+                .get(transaction_hash)
+                .copied()
+                .unwrap_or(0);
 
-            // The prior tx leaves the UTXO set (apply) / re-enters it (reverse) when this block
-            // accounts for every spendable output that was still unspent before this block.
-            // An output counts as spent when either the committed spent index or the open
-            // batch's uncommitted spends cover it.
-            let leaves_set = if remaining_outpoints.is_empty() {
-                true
-            } else {
-                let remaining_spenders = <Self as TransparentHistExt>::get_outpoint_spenders(
-                    self,
-                    remaining_outpoints.clone(),
-                )
-                .await?;
-                remaining_outpoints.iter().zip(remaining_spenders).all(
-                    |(outpoint, committed_spender)| {
-                        committed_spender.is_some()
-                            || pending.is_some_and(|batch| batch.spent.contains_key(outpoint))
-                    },
-                )
-            };
+            // Cache fast-path: a hit answers the transition and maintains the count
+            // with no reads at all. A miss falls back to one probe of the committed
+            // spent index, then caches the derived post-operation count so later
+            // spends of this transaction are answered from memory.
+            let transitions =
+                match self.cached_unspent_transition(transaction_hash, spendable_spends, direction)
+                {
+                    Some(transitions) => transitions,
+                    None => {
+                        // Spendable outputs of the prior tx that this block did not spend.
+                        let mut remaining_outpoints = Vec::new();
+                        for (output_index, prev_output) in
+                            transparent_transaction.outputs().iter().enumerate()
+                        {
+                            let output_index = output_index as u32;
+                            if is_unspendable_tx_out(prev_output) {
+                                continue;
+                            }
+                            if spent_indices.contains(&output_index) {
+                                continue;
+                            }
+                            remaining_outpoints
+                                .push(Outpoint::new(transaction_hash.0, output_index));
+                        }
 
-            if leaves_set {
+                        // Count the outputs still unspent before this operation. An output
+                        // counts as spent when either the committed spent index or the open
+                        // batch's uncommitted spends cover it.
+                        let unspent_remaining = if remaining_outpoints.is_empty() {
+                            0u32
+                        } else {
+                            let remaining_spenders =
+                                <Self as TransparentHistExt>::get_outpoint_spenders(
+                                    self,
+                                    remaining_outpoints.clone(),
+                                )
+                                .await?;
+                            u32::try_from(
+                                remaining_outpoints
+                                    .iter()
+                                    .zip(remaining_spenders)
+                                    .filter(|(outpoint, committed_spender)| {
+                                        committed_spender.is_none()
+                                            && !pending.is_some_and(|batch| {
+                                                batch.spent.contains_key(*outpoint)
+                                            })
+                                    })
+                                    .count(),
+                            )
+                            .map_err(|_| {
+                                FinalisedStateError::Custom(
+                                "txout-set accumulator remaining output count does not fit into u32"
+                                    .to_string(),
+                            )
+                            })?
+                        };
+
+                        let count_after = match direction {
+                            AccumulatorDirection::Apply => unspent_remaining,
+                            AccumulatorDirection::Reverse => {
+                                unspent_remaining.saturating_add(spendable_spends)
+                            }
+                        };
+                        if count_after > 0 {
+                            self.unspent_output_counts
+                                .insert(*transaction_hash, count_after);
+                        }
+
+                        // The prior tx leaves the UTXO set (apply) / re-enters it (reverse)
+                        // when this operation accounts for every spendable output that was
+                        // still unspent before it.
+                        unspent_remaining == 0
+                    }
+                };
+
+            if transitions {
                 accumulator.transactions = match direction {
                     AccumulatorDirection::Apply => accumulator.transactions.checked_sub(1),
                     AccumulatorDirection::Reverse => accumulator.transactions.checked_add(1),
@@ -1663,6 +1748,19 @@ impl DbV1 {
             )
         })?;
 
+        // Newly-created transactions enter the unspent-count cache for free: both
+        // inputs to the net count were already computed above.
+        for (transaction_hash, spendable_created) in &spendable_counts {
+            let spent_same_block = spendable_spent_count_by_tx
+                .get(transaction_hash)
+                .copied()
+                .unwrap_or(0);
+            let net = spendable_created.saturating_sub(spent_same_block);
+            if net > 0 {
+                self.unspent_output_counts.insert(*transaction_hash, net);
+            }
+        }
+
         apply_in_block_transitions(
             &mut accumulator,
             &created_counts,
@@ -1676,6 +1774,7 @@ impl DbV1 {
             &mut accumulator,
             &spent_indices_by_tx,
             &created_counts,
+            &spendable_spent_count_by_tx,
             AccumulatorDirection::Apply,
             &prior_transactions,
             pending,
@@ -1756,6 +1855,11 @@ impl DbV1 {
             )
         })?;
 
+        // The deleted block's own transactions cease to exist; drop their counts.
+        for transaction_hash in created_counts.keys() {
+            self.unspent_output_counts.remove(transaction_hash);
+        }
+
         apply_in_block_transitions(
             &mut accumulator,
             &created_counts,
@@ -1769,6 +1873,7 @@ impl DbV1 {
             &mut accumulator,
             &spent_indices_by_tx,
             &created_counts,
+            &spendable_spent_count_by_tx,
             AccumulatorDirection::Reverse,
             &prior_transactions,
             None,
