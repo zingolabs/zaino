@@ -235,6 +235,16 @@ impl Network {
         self.into()
     }
 
+    /// Sapling activation height for this network, if configured.
+    pub fn sapling_activation_height(&self) -> Option<zebra_chain::block::Height> {
+        zebra_chain::parameters::NetworkUpgrade::Sapling.activation_height(&self.to_zebra_network())
+    }
+
+    /// NU5 (Orchard) activation height for this network, if configured.
+    pub fn nu5_activation_height(&self) -> Option<zebra_chain::block::Height> {
+        zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&self.to_zebra_network())
+    }
+
     /// Get the standard regtest activation heights used by Zaino.
     pub fn zaino_regtest_heights() -> ConfiguredActivationHeights {
         ConfiguredActivationHeights {

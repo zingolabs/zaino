@@ -609,26 +609,13 @@ impl ZainoDB {
     where
         T: BlockchainSource,
     {
-        let network = self.cfg.network;
-        let zebra_network = network.to_zebra_network();
-        let sapling_activation_height = zebra_chain::parameters::NetworkUpgrade::Sapling
-            .activation_height(&zebra_network)
-            .expect("Sapling activation height must be set");
-        let nu5_activation_height =
-            zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&zebra_network);
-
         let (sync_initial_start_height, mut parent_chainwork) = self.resolve_sync_start().await?;
-
         // Track last time we emitted an info log so we only print every 10s.
         let current_height = Arc::new(AtomicU32::new(sync_initial_start_height));
-
         // Spawn the reporter task that logs progress every 10 seconds, even while a
         // write is running.
-        let (shutdown_tx, reporter_handle) = Self::spawn_sync_progress_reporter(
-            Arc::clone(&current_height),
-            sync_upper_bound.0,
-            network,
-        );
+        let (shutdown_tx, reporter_handle) =
+            self.spawn_sync_progress_reporter(Arc::clone(&current_height), sync_upper_bound.0);
 
         // Run the main sync logic inside an inner async block so we always get
         // a chance to shutdown the reporter task regardless of how this block exits.
@@ -637,6 +624,15 @@ impl ZainoDB {
             // flushes on its byte budget (see `WriteBatcher`).
             let mut batcher =
                 write_batch::WriteBatcher::new(write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET);
+
+            let zebra_network = self.cfg.network.to_zebra_network();
+            let sapling_activation_height = self
+                .cfg
+                .network
+                .sapling_activation_height()
+                .expect("Sapling activation height must be set");
+            let nu5_activation_height = self.cfg.network.nu5_activation_height();
+
             for height_int in sync_initial_start_height..=sync_upper_bound.0 {
                 // Update the shared progress value as soon as we start processing this height.
                 current_height.store(height_int, Ordering::Relaxed);
@@ -681,7 +677,7 @@ impl ZainoDB {
                     orchard_root,
                     orchard_size as u32,
                     parent_chainwork,
-                    network.to_zebra_network(),
+                    zebra_network.clone(),
                 );
 
                 let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
@@ -774,10 +770,11 @@ impl ZainoDB {
     /// and the task handle: the caller sends `()` on the sender and awaits the handle
     /// to stop the reporter cleanly.
     fn spawn_sync_progress_reporter(
+        &self,
         current_height: Arc<AtomicU32>,
         sync_upper_bound: u32,
-        network: zaino_common::Network,
     ) -> (watch::Sender<()>, tokio::task::JoinHandle<()>) {
+        let network = self.cfg.network.to_zebra_network();
         let (shutdown_tx, mut shutdown_rx) = watch::channel(());
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));

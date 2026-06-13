@@ -395,9 +395,7 @@ impl BlockchainSource for ValidatorConnector {
                     }
                 };
 
-                let sapling = match zebra_chain::parameters::NetworkUpgrade::Sapling
-                    .activation_height(&state.network.to_zebra_network())
-                {
+                let sapling = match state.network.sapling_activation_height() {
                     Some(activation_height) if height >= activation_height => Some(
                         state
                             .read_state_service
@@ -422,9 +420,7 @@ impl BlockchainSource for ValidatorConnector {
                         .map(|tree| tree.to_rpc_bytes())
                 });
 
-                let orchard = match zebra_chain::parameters::NetworkUpgrade::Nu5
-                    .activation_height(&state.network.to_zebra_network())
-                {
+                let orchard = match state.network.nu5_activation_height() {
                     Some(activation_height) if height >= activation_height => Some(
                         state
                             .read_state_service
