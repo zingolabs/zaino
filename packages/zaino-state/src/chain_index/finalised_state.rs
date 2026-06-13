@@ -621,7 +621,6 @@ impl ZainoDB {
 
         // Track last time we emitted an info log so we only print every 10s.
         let current_height = Arc::new(AtomicU32::new(sync_initial_start_height));
-        let target_height = sync_upper_bound.0;
 
         // Shutdown signal for the reporter task.
         let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -639,7 +638,7 @@ impl ZainoDB {
                             "sync_to_height: syncing height {current} / {target} on network = {:?}",
                             reporter_network,
                             current = cur,
-                            target = target_height
+                            target = sync_upper_bound.0
                         );
                     }
                     // stop when we receive a shutdown signal
