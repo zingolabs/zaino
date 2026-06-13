@@ -479,18 +479,22 @@ impl ZainoDB {
     /// Sync the database up to and including `height` using a [`BlockchainSource`].
     ///
     /// This method is a convenience ingestion loop that:
-    /// - determines the current database tip height,
+    /// - determines where to start (genesis for an empty database, otherwise the next height
+    ///   after the current database tip),
     /// - fetches each missing block from the source,
     /// - fetches Sapling and Orchard commitment tree roots for each block,
     /// - constructs [`BlockMetadata`] and an [`IndexedBlock`],
-    /// - and appends the block via [`ZainoDB::write_block`].
+    /// - and writes the blocks in byte-budgeted batches (one durable commit per batch), falling
+    ///   back to per-block [`ZainoDB::write_block`] for a lone block or a failed batch.
     ///
     /// ## Chainwork handling
-    /// For database versions that expose `capability::BlockCoreExt`, chainwork is retrieved from
-    /// stored header data and threaded through `BlockMetadata`.
+    /// The running chainwork is seeded once before the loop and threaded through each
+    /// `BlockMetadata` as blocks are built. On resume it is read from the stored tip's header (via
+    /// `capability::BlockCoreExt`); on a fresh database it starts at zero, since genesis has no
+    /// prior work.
     ///
-    /// Legacy v0 databases do not expose header/chainwork APIs; in that case, chainwork is set to
-    /// zero. This is safe only insofar as v0 consumers do not rely on chainwork-dependent features.
+    /// It is also zero for legacy v0 databases, which expose no header/chainwork APIs — safe only
+    /// insofar as v0 consumers do not rely on chainwork-dependent features.
     ///
     /// ## Invariants
     /// - Blocks are written strictly in height order.
@@ -524,10 +528,10 @@ impl ZainoDB {
         // - existing tip: continue at `tip + 1`, seeding chainwork from the tip's
         //   own stored header (v0 serves no header/chainwork data, so it falls
         //   back to zero).
-        let (db_height, mut parent_chainwork) = match self.db_height().await? {
-            None => (GENESIS_HEIGHT, ChainWork::from_u256(0.into())),
+        let (sync_initial_start_height, mut parent_chainwork) = match self.db_height().await? {
+            None => (GENESIS_HEIGHT.0, ChainWork::from_u256(0.into())),
             Some(tip) => {
-                let parent_chainwork = match self
+                let tip_chainwork = match self
                     .db
                     .backend(CapabilityRequest::BlockCoreExt)?
                     .get_block_header(tip)
@@ -537,12 +541,12 @@ impl ZainoDB {
                     // V0 does not hold or serve header/chainwork data.
                     Err(_) => ChainWork::from_u256(0.into()),
                 };
-                (tip + 1, parent_chainwork)
+                (tip.0 + 1, tip_chainwork)
             }
         };
 
         // Track last time we emitted an info log so we only print every 10s.
-        let current_height = Arc::new(AtomicU64::new(db_height.0 as u64));
+        let current_height = Arc::new(AtomicU64::new(sync_initial_start_height as u64));
         let target_height = height.0 as u64;
 
         // Shutdown signal for the reporter task.
@@ -579,7 +583,7 @@ impl ZainoDB {
             // flushes on its byte budget (see `WriteBatcher`).
             let mut batcher =
                 write_batch::WriteBatcher::new(write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET);
-            for height_int in (db_height.0)..=height.0 {
+            for height_int in sync_initial_start_height..=height.0 {
                 // Update the shared progress value as soon as we start processing this height.
                 current_height.store(height_int as u64, Ordering::Relaxed);
 
