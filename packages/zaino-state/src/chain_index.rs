@@ -998,7 +998,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     }
                 }
             }
-        })
+        }.in_current_span())
     }
 }
 
