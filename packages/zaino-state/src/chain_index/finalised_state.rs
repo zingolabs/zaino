@@ -182,7 +182,7 @@ use db::{DbBackend, VERSION_DIRS};
 use migrations::MigrationManager;
 use reader::*;
 use router::Router;
-use tracing::{info, instrument};
+use tracing::{info, instrument, Instrument};
 use zebra_chain::parameters::NetworkKind;
 
 use crate::{
@@ -574,7 +574,7 @@ impl ZainoDB {
                     }
                 }
             }
-        });
+        }.in_current_span());
 
         // Run the main sync logic inside an inner async block so we always get
         // a chance to shutdown the reporter task regardless of how this block exits.
