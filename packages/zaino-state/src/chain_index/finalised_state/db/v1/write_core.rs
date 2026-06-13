@@ -269,6 +269,15 @@ impl DbV1 {
             }
             Err(e) => {
                 self.invalidate_unspent_output_counts();
+
+                if matches!(e, FinalisedStateError::LmdbError(lmdb::Error::MapFull)) {
+                    // The transaction aborted atomically: nothing was committed, the
+                    // database is intact, and there is no block to delete — only the
+                    // configured size cap was reached.
+                    self.status.store(StatusType::RecoverableError);
+                    return Err(self.map_full_config_error());
+                }
+
                 warn!("Error writing block to DB: {e}");
                 warn!(
                     "Deleting corrupt block from DB at height: {} with hash: {:?}",
@@ -282,13 +291,6 @@ impl DbV1 {
                 // NOTE: this does not need to be critical if we implement self healing,
                 // which we have the tools to do.
                 self.status.store(StatusType::CriticalError);
-
-                if e.to_string().contains("MDB_MAP_FULL") {
-                    warn!("Configured max database size exceeded, update `storage.database.size` in zaino's config.");
-                    return Err(FinalisedStateError::Custom(format!(
-                        "Database configuration error: {e}"
-                    )));
-                }
 
                 Err(FinalisedStateError::InvalidBlock {
                     height: block_height.0,
@@ -614,6 +616,19 @@ impl DbV1 {
         self.unspent_output_counts.clear();
     }
 
+    /// The operator-facing error for LMDB's `MapFull`: the configured database size
+    /// cap was hit. The failing transaction aborted atomically, so the database is
+    /// intact — raising `storage.database.size` and restarting resumes sync from
+    /// the on-disk tip with nothing lost.
+    fn map_full_config_error(&self) -> FinalisedStateError {
+        FinalisedStateError::Custom(format!(
+            "database hit the configured size cap (storage.database.size = {} GB): \
+             raise it and restart; the database is intact and sync resumes from the \
+             on-disk tip",
+            self.config.storage.database.size.0
+        ))
+    }
+
     /// Persists one block's pre-built write data inside an open LMDB write transaction:
     /// every table put for the block, and nothing else — all entries arrive
     /// pre-encoded, so no serialization happens inside the single-writer window.
@@ -904,6 +919,11 @@ impl DbV1 {
                 // atomic, so nothing was persisted on disk — but the build phase already
                 // applied this batch's unspent-count updates in memory.
                 self.invalidate_unspent_output_counts();
+
+                if matches!(e, FinalisedStateError::LmdbError(lmdb::Error::MapFull)) {
+                    self.status.store(StatusType::RecoverableError);
+                    return Err(self.map_full_config_error());
+                }
                 warn!(
                     "Batched block write failed ({e}); nothing persisted ({}..={})",
                     first_height.0,

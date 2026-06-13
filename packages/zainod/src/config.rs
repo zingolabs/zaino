@@ -1187,4 +1187,27 @@ listen_address = "127.0.0.1:8137"
             .check_config()
             .expect("public JSON-RPC bind must be accepted under the override feature");
     }
+
+    /// `docs/example_configs/zainod.toml` must agree with the in-code defaults:
+    /// `DatabaseSize::default()` is the single source of truth for the database
+    /// size cap, and a drifted example ships users a guaranteed mid-sync
+    /// MDB_MAP_FULL once the chain outgrows the stale value.
+    #[test]
+    fn example_config_database_size_matches_code_default() {
+        let example_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/example_configs/zainod.toml"
+        );
+        let example = std::fs::read_to_string(example_path).expect("read example config");
+        let value: toml::Value = toml::from_str(&example).expect("parse example config");
+        let example_size = value["storage"]["database"]["size"]
+            .as_integer()
+            .expect("storage.database.size in example config");
+        let default_size = i64::try_from(zaino_common::DatabaseSize::default().0)
+            .expect("default database size fits in i64");
+        assert_eq!(
+            example_size, default_size,
+            "docs/example_configs/zainod.toml drifted from DatabaseSize::default()"
+        );
+    }
 }

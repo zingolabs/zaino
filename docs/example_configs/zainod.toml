@@ -32,7 +32,7 @@ shard_power = 4
 
 [storage.database]
 path = '/home/cupress/.cache/zaino'
-size = 128
+size = 384
 # Run the full database verification sweeps (every block and index entry, by
 # checksum) at startup. Off by default: the background validator and on-demand
 # read checks verify stored data continuously; enable after suspected

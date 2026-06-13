@@ -65,7 +65,7 @@ impl DatabaseSize {
 pub struct DatabaseConfig {
     /// Database file path.
     pub path: PathBuf,
-    /// Database size limit. Defaults to 128 GB.
+    /// Database size limit. Defaults to [`DatabaseSize::default`].
     #[serde(default)]
     pub size: DatabaseSize,
     /// Run the full database verification sweeps (every block plus every index
