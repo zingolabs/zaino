@@ -23,6 +23,9 @@ no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 # Operator build: no TLS + Prometheus metrics endpoint.
 no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
 
+# Operator build with full observability: no TLS + Prometheus + OpenTelemetry.
+operator_otel = ["no_tls_with_prometheus", "otel"]
+
 # Prometheus /metrics scrape endpoint.
 prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus"]
 
