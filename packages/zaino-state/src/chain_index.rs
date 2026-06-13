@@ -835,6 +835,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
 
+            /// Maximum number of blocks to sync per iteration. Keeps each
+            /// cycle bounded so progress logs, metrics, and OTEL spans
+            /// export between batches instead of accumulating for hours.
+            const BATCH_SIZE: u32 = 1000;
+
             loop {
                 let source = source.clone();
                 let network = network.clone();
@@ -854,7 +859,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 // tests drop the indexer without calling `shutdown()` and
                 // still have the worker exit promptly via the `Drop` impl
                 // below.
-                let sync_result: Result<(), SyncError> = tokio::select! {
+                let sync_result: Result<bool, SyncError> = tokio::select! {
                     biased;
                     _ = cancel_token.cancelled() => return Ok(()),
                     r = async {
@@ -876,7 +881,26 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
 
-                    fs.sync_to_height(finalised_height, &source)
+                    // Compute a bounded batch target instead of syncing
+                    // the entire chain in one call.
+                    let db_height = fs.db_height().await.map_err(source_error)?;
+                    let current = db_height.map(|h| h.0).unwrap_or(0);
+                    let batch_target = crate::Height(
+                        std::cmp::min(current.saturating_add(BATCH_SIZE), finalised_height.0),
+                    );
+
+                    let blocks_remaining = finalised_height.0.saturating_sub(current);
+                    let caught_up = batch_target.0 >= finalised_height.0;
+
+                    info!(
+                        from_height = current,
+                        to_height = batch_target.0,
+                        chain_tip = chain_height.0,
+                        blocks_remaining,
+                        "Syncing batch"
+                    );
+
+                    fs.sync_to_height(batch_target, &source)
                         .await
                         .map_err(source_error)?;
 
@@ -889,7 +913,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                     source,
                                     network,
                                     fs.to_reader()
-                                        .get_chain_block_by_height(finalised_height)
+                                        .get_chain_block_by_height(batch_target)
                                         .await
                                         .expect("todo"),
                                 )
@@ -909,31 +933,36 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         .await?;
                     std::mem::drop(intermediate_nfs_for_scoping);
 
-                    Ok(())
+                    Ok(caught_up)
                     } => r,
                 };
 
                 match sync_result {
-                    Ok(()) => {
+                    Ok(caught_up) => {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
-                        status.store(StatusType::Ready);
-                        // Race the post-success wait against cancellation
-                        // and a source-change notification. `shutdown()`'s
-                        // `cancel_token.cancel()` releases this immediately
-                        // so the next top-of-loop check exits the worker;
-                        // a source change wakes the worker before the full
-                        // `timings.interval` elapses, so newly-mined
-                        // blocks land in the next iter without waiting on
-                        // the timer.
-                        tokio::select! {
-                            biased;
-                            _ = cancel_token.cancelled() => return Ok(()),
-                            _ = source::wait_or_source_change(
-                                change_rx.as_mut(),
-                                timings.interval,
-                            ) => {}
+
+                        if caught_up {
+                            status.store(StatusType::Ready);
+                            // Race the post-success wait against cancellation
+                            // and a source-change notification. `shutdown()`'s
+                            // `cancel_token.cancel()` releases this immediately
+                            // so the next top-of-loop check exits the worker;
+                            // a source change wakes the worker before the full
+                            // `timings.interval` elapses, so newly-mined
+                            // blocks land in the next iter without waiting on
+                            // the timer.
+                            tokio::select! {
+                                biased;
+                                _ = cancel_token.cancelled() => return Ok(()),
+                                _ = source::wait_or_source_change(
+                                    change_rx.as_mut(),
+                                    timings.interval,
+                                ) => {}
+                            }
                         }
+                        // During bulk sync (not caught up), iterate immediately
+                        // to process the next batch — no sleep.
                     }
                     Err(e) => {
                         consecutive_failures += 1;
