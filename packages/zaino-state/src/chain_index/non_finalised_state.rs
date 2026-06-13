@@ -479,6 +479,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     }
 
     /// Handle a blockchain reorg by finding the common ancestor
+    #[instrument(name = "NonFinalizedState::handle_reorg", skip(self, working_snapshot, block))]
     async fn handle_reorg(
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,

@@ -288,6 +288,7 @@ impl JsonRpSeeConnector {
     /// Sends a jsonRPC request and returns the response.
     /// NOTE: This function currently resends the call up to 5 times on a server response of "Work queue depth exceeded".
     ///       This is because the node's queue can become overloaded and stop servicing RPCs.
+    #[tracing::instrument(name = "zebra_rpc", skip(self, params), fields(rpc_method = method))]
     async fn send_request<
         T: std::fmt::Debug + Serialize,
         R: std::fmt::Debug + for<'de> Deserialize<'de> + ResponseToError,

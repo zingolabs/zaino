@@ -37,6 +37,7 @@ impl DbV1 {
     // `u32::is_multiple_of` is only stable from Rust 1.87; the `% 100 == 0` form below keeps the
     // crate buildable on our older minimum supported Rust version.
     #[allow(clippy::manual_is_multiple_of)]
+    #[tracing::instrument(name = "DbV1::write_block", skip(self, block), fields(height = block.context.index.height.0))]
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         // Status transitions (Syncing → Ready) are owned by the sync loop,
         // not individual block writes. Only error statuses are set here.

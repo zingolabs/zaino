@@ -837,7 +837,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             /// Maximum number of blocks to sync per iteration. Keeps each
             /// cycle bounded so progress logs, metrics, and OTEL spans
             /// export between batches instead of accumulating for hours.
-            const BATCH_SIZE: u32 = 1000;
+            const BATCH_SIZE: u32 = 10_000;
             let mut iteration: u64 = 0;
 
             loop {

@@ -501,6 +501,7 @@ impl ZainoDB {
     /// - commitment tree roots are missing for Sapling or Orchard,
     /// - constructing an [`IndexedBlock`] fails,
     /// - or any underlying database write fails.
+    #[instrument(name = "ZainoDB::sync_to_height", skip(self, source), fields(target_height = height.0, network = ?self.cfg.network))]
     pub(crate) async fn sync_to_height<T>(
         &self,
         height: Height,
@@ -678,6 +679,7 @@ impl ZainoDB {
     ///
     /// For reorg handling, callers should delete tip blocks using [`ZainoDB::delete_block_at_height`]
     /// or [`ZainoDB::delete_block`] before re-appending.
+    #[instrument(name = "ZainoDB::write_block", skip(self, b), fields(height = b.context.index.height.0, block_hash = %b.context.index.hash))]
     pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.db.write_block(b).await
     }
