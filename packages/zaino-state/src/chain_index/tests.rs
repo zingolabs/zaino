@@ -8,6 +8,7 @@ mod non_finalised_state;
 mod poll;
 mod proptest_blockgen;
 mod sync_loop;
+mod treestate_sync;
 pub(crate) mod types;
 pub(crate) mod vectors;
 
