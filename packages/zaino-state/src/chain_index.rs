@@ -34,7 +34,7 @@ use non_finalised_state::NonfinalizedBlockCacheSnapshot;
 use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, instrument};
+use tracing::{info, Instrument};
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
     chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
@@ -814,7 +814,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         combined_status
     }
 
-    #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
@@ -839,6 +838,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             /// cycle bounded so progress logs, metrics, and OTEL spans
             /// export between batches instead of accumulating for hours.
             const BATCH_SIZE: u32 = 1000;
+            let mut iteration: u64 = 0;
 
             loop {
                 let source = source.clone();
@@ -934,8 +934,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     std::mem::drop(intermediate_nfs_for_scoping);
 
                     Ok(caught_up)
-                    } => r,
+                    }
+                    .instrument(tracing::info_span!("sync_iteration", iteration))
+                    => r,
                 };
+
+                iteration += 1;
 
                 match sync_result {
                     Ok(caught_up) => {
