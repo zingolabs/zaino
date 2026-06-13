@@ -1,6 +1,7 @@
 //! ZainoDB::V1 core block indexing functionality.
 
 use super::*;
+use crate::chain_index::types::Height;
 
 /// [`BlockCoreExt`] capability implementation for [`DbV1`].
 ///

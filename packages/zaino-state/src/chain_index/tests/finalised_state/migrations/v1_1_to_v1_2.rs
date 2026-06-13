@@ -21,7 +21,8 @@ use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
-use crate::{BlockCacheConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
+use crate::chain_index::types::Height;
+use crate::{BlockCacheConfig, Outpoint, TxLocation, ZainoVersionedSerde as _};
 
 const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
 

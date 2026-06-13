@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
+use crate::chain_index::types::Height;
 #[cfg(test)]
 use crate::version;
 

@@ -56,6 +56,7 @@
 pub(crate) mod v0;
 pub(crate) mod v1;
 
+use crate::chain_index::types::Height;
 use v0::DbV0;
 use v1::DbV1;
 use zaino_proto::proto::utils::PoolTypeFilter;
@@ -70,7 +71,7 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, IndexedBlock,
     NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
     StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };

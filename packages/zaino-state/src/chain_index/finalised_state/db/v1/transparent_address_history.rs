@@ -6,6 +6,7 @@ use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
     ZAINO_TXOUTSET_ENTRY_LEN,
 };
+use crate::chain_index::types::Height;
 
 use super::*;
 

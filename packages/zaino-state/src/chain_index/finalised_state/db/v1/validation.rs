@@ -22,6 +22,7 @@
 //!   field in [`BlockData`] however this is currently unimplemented.
 
 use super::*;
+use crate::chain_index::types::Height;
 
 impl DbV1 {
     /// Return `true` if `height` is already known-good.

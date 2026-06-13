@@ -44,6 +44,7 @@
 //! `DbReader` is created from an `Arc<ZainoDB>` using [`ZainoDB::to_reader`](super::ZainoDB::to_reader).
 //! Prefer passing `DbReader` through query layers rather than passing `ZainoDB` directly.
 
+use crate::chain_index::types::Height;
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::{
@@ -52,7 +53,7 @@ use crate::{
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
     },
     error::FinalisedStateError,
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, IndexedBlock,
     OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
     TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };

@@ -14,8 +14,9 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, indexed_block_chain, load_test_vectors, TestVectorData,
 };
+use crate::chain_index::types::Height;
 use crate::error::FinalisedStateError;
-use crate::{BlockCacheConfig, Height};
+use crate::BlockCacheConfig;
 
 pub(crate) async fn spawn_v0_zaino_db(
     source: MockchainSource,
@@ -119,7 +120,7 @@ async fn delete_blocks_from_db() {
     for h in (1..=200).rev() {
         // dbg!("Deleting block at height {}", h);
         zaino_db
-            .delete_block_at_height(crate::Height(h))
+            .delete_block_at_height(crate::chain_index::types::Height(h))
             .await
             .unwrap();
     }

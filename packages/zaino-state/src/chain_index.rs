@@ -83,8 +83,8 @@ pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT 
 /// never evicted. Callers comparing this floor against
 /// `finalized_height` should account for the asymmetry
 /// (see zingolabs/zaino#1128).
-pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
-    crate::Height(chain_tip.saturating_sub(NON_FINALIZED_DEPTH))
+pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::chain_index::types::Height {
+    crate::chain_index::types::Height(chain_tip.saturating_sub(NON_FINALIZED_DEPTH))
 }
 
 /// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
@@ -1210,7 +1210,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
         {
             Some(tx_location) => {
                 self.finalized_state
-                    .get_chain_block_by_height(crate::Height(tx_location.block_height()))
+                    .get_chain_block_by_height(crate::chain_index::types::Height(
+                        tx_location.block_height(),
+                    ))
                     .await?
             }
 

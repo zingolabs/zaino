@@ -75,13 +75,14 @@
 //! When changing persisted metadata formats, bump the `ZainoVersionedSerde::VERSION` for that type
 //! and provide a decoding path in `decode_latest()`.
 
+use crate::chain_index::types::Height;
 use core::fmt;
 
 use crate::{
     chain_index::types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
     error::FinalisedStateError,
     read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, FixedEncodedLen, Height,
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, FixedEncodedLen,
     IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
     StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
     ZainoVersionedSerde,

@@ -182,6 +182,7 @@ use super::{
     db::DbBackend,
     router::Router,
 };
+use crate::chain_index::types::Height;
 
 use crate::{
     chain_index::{
@@ -195,7 +196,7 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, Outpoint,
+    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, IndexedBlock, Outpoint,
     TransactionHash, TransparentCompactTx, TxLocation, TxidList, ZainoVersionedSerde as _,
 };
 

@@ -1,6 +1,7 @@
 //! ZainoDB::V1 compact block indexing functionality.
 
 use super::*;
+use crate::chain_index::types::Height;
 
 /// [`CompactBlockExt`] capability implementation for [`DbV1`].
 ///

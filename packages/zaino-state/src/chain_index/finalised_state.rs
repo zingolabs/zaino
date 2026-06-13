@@ -178,6 +178,7 @@ pub(crate) mod reader;
 pub(crate) mod router;
 pub(crate) mod write_batch;
 
+use crate::chain_index::types::Height;
 use capability::*;
 use db::{DbBackend, VERSION_DIRS};
 use migrations::MigrationManager;
@@ -193,7 +194,7 @@ use crate::{
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, StatusType,
+    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, IndexedBlock, StatusType,
 };
 
 use std::{

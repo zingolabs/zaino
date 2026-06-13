@@ -1,6 +1,7 @@
 //! ZainoDB::V1 shielded block indexing functionality.
 
 use super::*;
+use crate::chain_index::types::Height;
 
 /// [`BlockShieldedExt`] capability implementation for [`DbV1`].
 ///

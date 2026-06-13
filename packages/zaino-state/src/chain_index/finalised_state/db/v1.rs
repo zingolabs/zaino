@@ -24,6 +24,7 @@
 //! uses `tokio::task::block_in_place` / `spawn_blocking` for LMDB operations to avoid blocking the
 //! async runtime, and configures `max_readers` to support high read concurrency.
 
+use crate::chain_index::types::Height;
 use crate::{
     chain_index::{
         finalised_state::{
@@ -40,9 +41,9 @@ use crate::{
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _,
-    Height, IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
-    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde as _,
+    IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
+    SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation,
+    TxOutCompact, TxidList, ZainoVersionedSerde as _,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]

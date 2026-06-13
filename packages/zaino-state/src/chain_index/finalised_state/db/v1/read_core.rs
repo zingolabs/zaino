@@ -1,6 +1,7 @@
 //! ZainoDB::V1 core read functionality.
 
 use super::*;
+use crate::chain_index::types::Height;
 
 /// [`DbRead`] capability implementation for [`DbV1`].
 ///

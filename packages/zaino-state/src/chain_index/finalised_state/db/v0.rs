@@ -40,6 +40,7 @@
 //! This backend uses `tokio::task::block_in_place` / `tokio::task::spawn_blocking` around LMDB
 //! operations to avoid blocking the async runtime.
 
+use crate::chain_index::types::Height;
 use crate::{
     chain_index::{
         finalised_state::capability::{
@@ -50,7 +51,7 @@ use crate::{
     config::BlockCacheConfig,
     error::FinalisedStateError,
     status::{NamedAtomicStatus, StatusType},
-    CompactBlockStream, Height, IndexedBlock,
+    CompactBlockStream, IndexedBlock,
 };
 
 use zaino_proto::proto::{
@@ -84,7 +85,9 @@ use tracing::info;
 #[async_trait]
 impl DbRead for DbV0 {
     /// Returns the database tip height (`None` if empty).
-    async fn db_height(&self) -> Result<Option<crate::Height>, FinalisedStateError> {
+    async fn db_height(
+        &self,
+    ) -> Result<Option<crate::chain_index::types::Height>, FinalisedStateError> {
         self.tip_height().await
     }
 
@@ -112,7 +115,7 @@ impl DbRead for DbV0 {
     /// legacy helper; both are mapped to `Ok(None)` here.
     async fn get_block_hash(
         &self,
-        height: crate::Height,
+        height: crate::chain_index::types::Height,
     ) -> Result<Option<crate::BlockHash>, FinalisedStateError> {
         match self.get_block_hash_by_height(height).await {
             Ok(hash) => Ok(Some(hash)),
@@ -147,7 +150,7 @@ impl DbWrite for DbV0 {
     /// Deletes a block at the given height, enforcing that it is the current tip.
     async fn delete_block_at_height(
         &self,
-        height: crate::Height,
+        height: crate::chain_index::types::Height,
     ) -> Result<(), FinalisedStateError> {
         self.delete_block_at_height(height).await
     }
@@ -523,7 +526,7 @@ impl DbV0 {
     /// - `hashes_to_blocks[hash_json]`
     pub(crate) async fn delete_block_at_height(
         &self,
-        height: crate::Height,
+        height: crate::chain_index::types::Height,
     ) -> Result<(), FinalisedStateError> {
         let block_height = height.0;
         let height_key = DbHeight(zebra_chain::block::Height(block_height)).to_be_bytes();
@@ -654,14 +657,16 @@ impl DbV0 {
     ///
     /// Heights are stored as big-endian keys, so the LMDB `MDB_LAST` cursor position corresponds to
     /// the maximum height.
-    pub(crate) async fn tip_height(&self) -> Result<Option<crate::Height>, FinalisedStateError> {
+    pub(crate) async fn tip_height(
+        &self,
+    ) -> Result<Option<crate::chain_index::types::Height>, FinalisedStateError> {
         tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
             let cur = ro.open_ro_cursor(self.heights_to_hashes)?;
 
             match cur.get(None, None, lmdb_sys::MDB_LAST) {
                 Ok((height_bytes, _hash_bytes)) => {
-                    let tip_height = crate::Height(
+                    let tip_height = crate::chain_index::types::Height(
                         DbHeight::from_be_bytes(
                             height_bytes.expect("Height is always some in the finalised state"),
                         )?
@@ -683,7 +688,7 @@ impl DbV0 {
     async fn get_block_height_by_hash(
         &self,
         hash: crate::BlockHash,
-    ) -> Result<crate::Height, FinalisedStateError> {
+    ) -> Result<crate::chain_index::types::Height, FinalisedStateError> {
         let zebra_hash: ZebraHash = zebra_chain::block::Hash::from(hash);
         let hash_key = serde_json::to_vec(&DbHash(zebra_hash))?;
 
@@ -694,7 +699,7 @@ impl DbV0 {
             let block: DbCompactBlock = serde_json::from_slice(block_bytes)?;
             let block_height = block.0.height as u32;
 
-            Ok(crate::Height(block_height))
+            Ok(crate::chain_index::types::Height(block_height))
         })
     }
 
@@ -703,7 +708,7 @@ impl DbV0 {
     /// v0 resolves height → hash via `heights_to_hashes`.
     async fn get_block_hash_by_height(
         &self,
-        height: crate::Height,
+        height: crate::chain_index::types::Height,
     ) -> Result<crate::BlockHash, FinalisedStateError> {
         let zebra_height: ZebraHeight = height.into();
         let height_key = DbHeight(zebra_height).to_be_bytes();
@@ -743,7 +748,7 @@ impl DbV0 {
     /// `hashes_to_blocks`.
     async fn get_compact_block(
         &self,
-        height: crate::Height,
+        height: crate::chain_index::types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
         let zebra_hash =

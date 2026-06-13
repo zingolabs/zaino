@@ -15,7 +15,7 @@ pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let hash = crate::BlockHash::from([1u8; 32]);
     let parent_hash = crate::BlockHash::from([2u8; 32]);
     let chainwork = crate::ChainWork::from_u256(0.into());
-    let height = crate::Height(42);
+    let height = crate::chain_index::types::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
 
     let bctx = BlockContext::new(hash, parent_hash, chainwork, height);

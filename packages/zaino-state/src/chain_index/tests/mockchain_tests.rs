@@ -64,7 +64,7 @@ async fn get_block_range() {
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
     let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
-    let start = crate::Height(0);
+    let start = crate::chain_index::types::Height(0);
 
     let indexer_blocks =
         ChainIndex::get_block_range(&index_reader, &nonfinalized_snapshot, start, None)
@@ -160,7 +160,7 @@ async fn get_transaction_status() {
             transaction_status_best_chain.unwrap(),
             BestChainLocation::Block(
                 crate::BlockHash(block_hash.0),
-                crate::Height(block_height.unwrap().0)
+                crate::chain_index::types::Height(block_height.unwrap().0)
             )
         );
     }
@@ -568,7 +568,7 @@ async fn get_block_height() {
             )
             .await
             .unwrap();
-        assert_eq!(got, Some(crate::Height(*height)));
+        assert_eq!(got, Some(crate::chain_index::types::Height(*height)));
     }
 
     // Negative case: an unknown hash returns None

@@ -69,10 +69,11 @@ use super::{
     capability::{Capability, DbCore, DbMetadata, DbRead, DbWrite},
     db::DbBackend,
 };
+use crate::chain_index::types::Height;
 
 use crate::{
     chain_index::finalised_state::capability::CapabilityRequest, error::FinalisedStateError,
-    BlockHash, Height, IndexedBlock, StatusType,
+    BlockHash, IndexedBlock, StatusType,
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};

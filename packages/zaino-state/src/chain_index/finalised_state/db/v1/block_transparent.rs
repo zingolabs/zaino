@@ -1,6 +1,7 @@
 //! ZainoDB::V1 transparent block indexing functionality.
 
 use super::*;
+use crate::chain_index::types::Height;
 
 /// [`BlockTransparentExt`] capability implementation for [`DbV1`].
 ///

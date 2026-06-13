@@ -27,9 +27,10 @@ use crate::chain_index::tests::vectors::{
 use crate::chain_index::types::TransactionHash;
 
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
+use crate::chain_index::types::Height;
 use crate::error::FinalisedStateError;
 use crate::{
-    BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, TxLocation,
+    BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, IndexedBlock, TxLocation,
 };
 
 use crate::{AddrScript, Outpoint};
@@ -141,13 +142,13 @@ async fn resume_sync_preserves_cumulative_chainwork() {
     let reference_source = build_mockchain_source(blocks.clone());
     let (_reference_dir, reference_db) = spawn_v1_zaino_db(reference_source.clone()).await.unwrap();
     reference_db
-        .sync_to_height(crate::Height(TARGET), &reference_source)
+        .sync_to_height(crate::chain_index::types::Height(TARGET), &reference_source)
         .await
         .unwrap();
     reference_db.wait_until_ready().await;
     let reference_chainwork = Arc::new(reference_db)
         .to_reader()
-        .get_block_header(crate::Height(PROBE))
+        .get_block_header(crate::chain_index::types::Height(PROBE))
         .await
         .unwrap()
         .context
@@ -157,18 +158,18 @@ async fn resume_sync_preserves_cumulative_chainwork() {
     let resume_source = build_mockchain_source(blocks);
     let (_resume_dir, resume_db) = spawn_v1_zaino_db(resume_source.clone()).await.unwrap();
     resume_db
-        .sync_to_height(crate::Height(SPLIT), &resume_source)
+        .sync_to_height(crate::chain_index::types::Height(SPLIT), &resume_source)
         .await
         .unwrap();
     resume_db.wait_until_ready().await;
     resume_db
-        .sync_to_height(crate::Height(TARGET), &resume_source)
+        .sync_to_height(crate::chain_index::types::Height(TARGET), &resume_source)
         .await
         .unwrap();
     resume_db.wait_until_ready().await;
     let resume_chainwork = Arc::new(resume_db)
         .to_reader()
-        .get_block_header(crate::Height(PROBE))
+        .get_block_header(crate::chain_index::types::Height(PROBE))
         .await
         .unwrap()
         .context
@@ -208,7 +209,7 @@ async fn build_failure_names_failing_height_not_target() {
     let (_db_dir, zaino_db) = spawn_v1_zaino_db(source.clone()).await.unwrap();
 
     let err = zaino_db
-        .sync_to_height(crate::Height(TARGET), &source)
+        .sync_to_height(crate::chain_index::types::Height(TARGET), &source)
         .await
         .expect_err("building the headless block at height 1 should fail the sync");
     let msg = err.to_string();
@@ -244,7 +245,7 @@ async fn delete_blocks_from_db() {
     for h in (1..=200).rev() {
         // dbg!("Deleting block at height {}", h);
         zaino_db
-            .delete_block_at_height(crate::Height(h))
+            .delete_block_at_height(crate::chain_index::types::Height(h))
             .await
             .unwrap();
     }
@@ -412,7 +413,7 @@ async fn try_write_invalid_block() {
     let mut chain_block =
         IndexedBlock::try_from(BlockWithMetadata::new(&zebra_block, metadata)).unwrap();
 
-    chain_block.context.index.height = crate::Height(height + 1);
+    chain_block.context.index.height = crate::chain_index::types::Height(height + 1);
     dbg!(chain_block.context.index.height);
 
     let db_err = dbg!(zaino_db.write_block(chain_block).await);
@@ -798,7 +799,7 @@ async fn try_delete_block_with_invalid_height() {
 
     let db_err = dbg!(
         zaino_db
-            .delete_block_at_height(crate::Height(delete_height))
+            .delete_block_at_height(crate::chain_index::types::Height(delete_height))
             .await
     );
 

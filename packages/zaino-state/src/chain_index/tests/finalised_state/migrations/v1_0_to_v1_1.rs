@@ -13,7 +13,8 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
-use crate::{BlockCacheConfig, Height};
+use crate::chain_index::types::Height;
+use crate::BlockCacheConfig;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn v1_0_to_v1_1_metadata_migration() {

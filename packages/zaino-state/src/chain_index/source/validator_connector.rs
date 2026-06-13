@@ -5,7 +5,7 @@ use zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo;
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 use zebra_rpc::methods::ValidateAddresses as _;
 
-use crate::Height;
+use crate::chain_index::types::Height;
 
 use super::*;
 
