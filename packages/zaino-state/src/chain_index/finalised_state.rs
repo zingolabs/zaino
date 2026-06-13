@@ -199,7 +199,7 @@ use crate::{
 
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, Ordering},
         Arc,
     },
     time::Duration,
@@ -620,8 +620,8 @@ impl ZainoDB {
         let (sync_initial_start_height, mut parent_chainwork) = self.resolve_sync_start().await?;
 
         // Track last time we emitted an info log so we only print every 10s.
-        let current_height = Arc::new(AtomicU64::new(sync_initial_start_height as u64));
-        let target_height = sync_upper_bound.0 as u64;
+        let current_height = Arc::new(AtomicU32::new(sync_initial_start_height));
+        let target_height = sync_upper_bound.0;
 
         // Shutdown signal for the reporter task.
         let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -659,7 +659,7 @@ impl ZainoDB {
                 write_batch::WriteBatcher::new(write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET);
             for height_int in sync_initial_start_height..=sync_upper_bound.0 {
                 // Update the shared progress value as soon as we start processing this height.
-                current_height.store(height_int as u64, Ordering::Relaxed);
+                current_height.store(height_int, Ordering::Relaxed);
 
                 let block = fetch_block_at(source, height_int).await?;
 
