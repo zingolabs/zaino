@@ -163,11 +163,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.headers, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            if !StoredEntryVar::<BlockHeaderData>::verify_stored(&height_key, raw) {
-                return Err(fail("header checksum mismatch"));
-            }
-            StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
-                .map_err(|e| fail(&format!("header corrupt data: {e}")))?
+            decode_verified_var::<BlockHeaderData>(&height_key, raw, "header", &fail)?
         };
 
         // *** txids ***
@@ -175,21 +171,13 @@ impl DbV1 {
             let raw = ro
                 .get(self.txids, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            if !StoredEntryVar::<TxidList>::verify_stored(&height_key, raw) {
-                return Err(fail("txids checksum mismatch"));
-            }
-            StoredEntryVar::<TxidList>::from_bytes(raw)
-                .map_err(|e| fail(&format!("txids corrupt data: {e}")))?
+            decode_verified_var::<TxidList>(&height_key, raw, "txids", &fail)?
         };
 
         // *** transparent ***
         let transparent_tx_list = {
             let raw = ro.get(self.transparent, &height_key)?;
-            if !StoredEntryVar::<TransparentTxList>::verify_stored(&height_key, raw) {
-                return Err(fail("transparent checksum mismatch"));
-            }
-            StoredEntryVar::<TransparentTxList>::from_bytes(raw)
-                .map_err(|e| fail(&format!("transparent corrupt data: {e}")))?
+            decode_verified_var::<TransparentTxList>(&height_key, raw, "transparent", &fail)?
         };
 
         // *** sapling ***
@@ -197,11 +185,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.sapling, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            // The checksum binds the exact bytes the writer encoded from typed
-            // values, so a match implies decodability; no decode needed here.
-            if !StoredEntryVar::<SaplingTxList>::verify_stored(&height_key, raw) {
-                return Err(fail("sapling checksum mismatch"));
-            }
+            verify_var::<SaplingTxList>(&height_key, raw, "sapling", &fail)?;
         }
 
         // *** orchard ***
@@ -209,9 +193,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.orchard, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            if !StoredEntryVar::<OrchardTxList>::verify_stored(&height_key, raw) {
-                return Err(fail("orchard checksum mismatch"));
-            }
+            verify_var::<OrchardTxList>(&height_key, raw, "orchard", &fail)?;
         }
 
         // *** commitment_tree_data (fixed) ***
@@ -219,9 +201,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.commitment_tree_data, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            if !StoredEntryFixed::<CommitmentTreeData>::verify_stored(&height_key, raw) {
-                return Err(fail("commitment_tree checksum mismatch"));
-            }
+            verify_fixed::<CommitmentTreeData>(&height_key, raw, "commitment_tree", &fail)?;
         }
 
         // *** hash→height mapping ***
@@ -229,11 +209,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.heights, &hash_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            if !StoredEntryFixed::<Height>::verify_stored(&hash_key, raw) {
-                return Err(fail("hash -> height checksum mismatch"));
-            }
-            let entry = StoredEntryFixed::<Height>::from_bytes(raw)
-                .map_err(|e| fail(&format!("hash -> height corrupt bytes: {e}")))?;
+            let entry = decode_verified_fixed::<Height>(&hash_key, raw, "hash -> height", &fail)?;
             if entry.item != height {
                 return Err(fail("hash -> height mapping mismatch"));
             }
@@ -287,13 +263,10 @@ impl DbV1 {
                 .get(self.metadata, metadata_key)
                 .map_err(FinalisedStateError::LmdbError)?;
 
-            if !StoredEntryFixed::<DbMetadata>::verify_stored(metadata_key, raw) {
-                return Err(FinalisedStateError::Custom(
-                    "metadata checksum mismatch".to_string(),
-                ));
-            }
-            let entry = StoredEntryFixed::<DbMetadata>::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("metadata corrupt data: {e}")))?;
+            let entry =
+                decode_verified_fixed::<DbMetadata>(metadata_key, raw, "metadata", |reason| {
+                    FinalisedStateError::Custom(reason.to_string())
+                })?;
 
             entry.inner().version
                 >= DbVersion {
@@ -324,11 +297,12 @@ impl DbV1 {
                     let val = ro.get(self.spent, &outpoint_bytes).map_err(|_| {
                         fail(&format!("missing spent index for outpoint {outpoint:?}"))
                     })?;
-                    if !StoredEntryFixed::<TxLocation>::verify_stored(&outpoint_bytes, val) {
-                        return Err(fail("spent entry checksum mismatch"));
-                    }
-                    let entry = StoredEntryFixed::<TxLocation>::from_bytes(val)
-                        .map_err(|e| fail(&format!("corrupt spent entry: {e}")))?;
+                    let entry = decode_verified_fixed::<TxLocation>(
+                        &outpoint_bytes,
+                        val,
+                        "spent entry",
+                        &fail,
+                    )?;
                     if entry.inner() != &txid_index {
                         return Err(fail("spent entry has wrong TxLocation"));
                     }
@@ -774,4 +748,59 @@ impl DbV1 {
             Ok(())
         })
     }
+}
+
+/// Checks the stored checksum of `raw` under `key` for a [`StoredEntryVar<T>`]
+/// without decoding. The checksum binds the exact bytes the writer encoded from
+/// typed values, so a match implies decodability; verify-only callers need no
+/// decode step. A mismatch maps to `fail("{label} checksum mismatch")`.
+fn verify_var<T: crate::ZainoVersionedSerde>(
+    key: &[u8],
+    raw: &[u8],
+    label: &str,
+    fail: impl Fn(&str) -> FinalisedStateError,
+) -> Result<(), FinalisedStateError> {
+    if StoredEntryVar::<T>::verify_stored(key, raw) {
+        Ok(())
+    } else {
+        Err(fail(&format!("{label} checksum mismatch")))
+    }
+}
+
+/// Fixed-entry twin of [`verify_var`].
+fn verify_fixed<T: crate::ZainoVersionedSerde + crate::FixedEncodedLen>(
+    key: &[u8],
+    raw: &[u8],
+    label: &str,
+    fail: impl Fn(&str) -> FinalisedStateError,
+) -> Result<(), FinalisedStateError> {
+    if StoredEntryFixed::<T>::verify_stored(key, raw) {
+        Ok(())
+    } else {
+        Err(fail(&format!("{label} checksum mismatch")))
+    }
+}
+
+/// Checksum-verifies and decodes a [`StoredEntryVar<T>`]. A checksum mismatch
+/// maps to `fail("{label} checksum mismatch")`; a decode failure maps to
+/// `fail("{label} corrupt data: {e}")`.
+fn decode_verified_var<T: crate::ZainoVersionedSerde>(
+    key: &[u8],
+    raw: &[u8],
+    label: &str,
+    fail: impl Fn(&str) -> FinalisedStateError,
+) -> Result<StoredEntryVar<T>, FinalisedStateError> {
+    verify_var::<T>(key, raw, label, &fail)?;
+    StoredEntryVar::<T>::from_bytes(raw).map_err(|e| fail(&format!("{label} corrupt data: {e}")))
+}
+
+/// Fixed-entry twin of [`decode_verified_var`].
+fn decode_verified_fixed<T: crate::ZainoVersionedSerde + crate::FixedEncodedLen>(
+    key: &[u8],
+    raw: &[u8],
+    label: &str,
+    fail: impl Fn(&str) -> FinalisedStateError,
+) -> Result<StoredEntryFixed<T>, FinalisedStateError> {
+    verify_fixed::<T>(key, raw, label, &fail)?;
+    StoredEntryFixed::<T>::from_bytes(raw).map_err(|e| fail(&format!("{label} corrupt data: {e}")))
 }

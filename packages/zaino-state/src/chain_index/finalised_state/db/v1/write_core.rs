@@ -126,7 +126,7 @@ impl DbV1 {
         let data = self.build_block_write_data(&block, None).await?;
 
         // if any database writes fail, remove block from database and return err.
-        let zaino_db = self.write_task_clone();
+        let zaino_db = self.task_clone();
         let join_handle = tokio::task::spawn_blocking(move || {
             // Write block to ZainoDB
             let mut txn = zaino_db.env.begin_rw_txn()?;
@@ -396,20 +396,11 @@ impl DbV1 {
             transactions.push((*hash, transparent_data));
 
             // Sapling transactions
-            let sapling_data =
-                if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.sapling().clone())
-                };
+            let sapling_data = stored_sapling_data(tx);
             sapling.push(sapling_data);
 
             // Orchard transactions
-            let orchard_data = if tx.orchard().actions().is_empty() {
-                None
-            } else {
-                Some(tx.orchard().clone())
-            };
+            let orchard_data = stored_orchard_data(tx);
             orchard.push(orchard_data);
 
             // Transparent Inputs: Build Spent Outpoints Index
@@ -770,9 +761,11 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Clone of `self` for a blocking write task: shares the LMDB env and table handles
-    /// but starts with an empty `db_handler` slot.
-    fn write_task_clone(&self) -> Self {
+    /// Clone of `self` for a background task (write, validation/scan, or compact-block
+    /// streaming): shares the LMDB env, table handles, and shared atomics, but starts
+    /// with an empty `db_handler` slot. `validated_set` is cloned by value (a snapshot),
+    /// matching the long-standing behavior of every task clone.
+    pub(super) fn task_clone(&self) -> Self {
         Self {
             env: Arc::clone(&self.env),
             headers: self.headers,
@@ -883,7 +876,7 @@ impl DbV1 {
             batch_data.push(data);
         }
 
-        let zaino_db = self.write_task_clone();
+        let zaino_db = self.task_clone();
         let join_handle = tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
             for data in batch_data {
@@ -1063,7 +1056,9 @@ impl DbV1 {
         let tx_len = block.transactions().len();
         let mut transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
             Vec::with_capacity(tx_len);
-        let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
+        // txid -> in-block index. `insert` returning `Some` is the duplicate-txid
+        // guard; the index also makes in-block prevout lookups O(1).
+        let mut txid_index: HashMap<TransactionHash, u16> = HashMap::with_capacity(tx_len);
 
         let mut spent_map: HashMap<Outpoint, TxLocation> = HashMap::new();
 
@@ -1077,24 +1072,30 @@ impl DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         let mut addrhist_outputs_map: HashMap<AddrScript, Vec<AddrHistRecord>> = HashMap::new();
 
-        #[allow(clippy::unused_enumerate_index)]
-        for (_tx_index, tx) in block.transactions().iter().enumerate() {
+        for (tx_index, tx) in block.transactions().iter().enumerate() {
             let hash = tx.txid();
 
-            if txid_set.insert(*hash) {
-                // Transparent transactions — paired with the txid at the source binding.
-                let transparent_data = if tx.transparent().inputs().is_empty()
-                    && tx.transparent().outputs().is_empty()
-                {
-                    None
-                } else {
-                    Some(tx.transparent().clone())
-                };
-                transactions.push((*hash, transparent_data));
+            // Bound the index first: the dup map and the spent map both want the
+            // narrow u16 form.
+            let tx_index =
+                u16::try_from(tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: format!("transaction index {tx_index} does not fit into u16"),
+                })?;
+            let tx_location = TxLocation::new(block_height.into(), tx_index);
+
+            if txid_index.insert(*hash, tx_index).is_some() {
+                return Err(FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: format!("duplicate transaction hash in block: {hash:?}"),
+                });
             }
 
-            // Transaction location
-            let tx_location = TxLocation::new(block_height.into(), _tx_index as u16);
+            // Transparent transactions — paired with the txid at the source binding.
+            let transparent_data = stored_transparent_data(tx);
+            transactions.push((*hash, transparent_data));
 
             // Build Spent Outpoints Index
             for input in tx.transparent().inputs().iter() {
@@ -1132,22 +1133,20 @@ impl DbV1 {
 
                     let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
 
-                    //Check if output is in *this* block, else fetch from DB.
+                    // Check if output is in *this* block, else fetch from DB.
                     let prev_tx_hash = TransactionHash(*prev_outpoint.prev_txid());
-                    if txid_set.contains(&prev_tx_hash) {
-                        // Locate the paired (txid, transparent_data) within this block.
-                        if let Some((tx_index, (_, Some(prev_transparent)))) = transactions
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (h, _))| h == &prev_tx_hash)
-                        {
+                    if let Some(&prev_idx) = txid_index.get(&prev_tx_hash) {
+                        // In-bounds by construction: `prev_idx` was assigned when that
+                        // transaction was pushed into `transactions`, and the current
+                        // transaction is pushed before its inputs are processed.
+                        if let (_, Some(prev_transparent)) = &transactions[prev_idx as usize] {
                             // Fetch output from transaction
                             if let Some(prev_output) = prev_transparent
                                 .outputs()
                                 .get(prev_outpoint.prev_index() as usize)
                             {
                                 let prev_output_tx_location =
-                                    TxLocation::new(block_height.0, tx_index as u16);
+                                    TxLocation::new(block_height.0, prev_idx);
                                 DbV1::build_input_history(
                                     &mut addrhist_inputs_map,
                                     tx_location,
@@ -1213,29 +1212,7 @@ impl DbV1 {
             .collect();
 
         // Delete all block data from db.
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            unspent_output_counts: Arc::clone(&self.unspent_output_counts),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.task_clone();
         tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
@@ -1486,19 +1463,10 @@ impl DbV1 {
                 };
             transparent.push(transparent_data);
 
-            let sapling_data =
-                if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.sapling().clone())
-                };
+            let sapling_data = stored_sapling_data(tx);
             sapling.push(sapling_data);
 
-            let orchard_data = if tx.orchard().actions().is_empty() {
-                None
-            } else {
-                Some(tx.orchard().clone())
-            };
+            let orchard_data = stored_orchard_data(tx);
             orchard.push(orchard_data);
         }
 
@@ -1671,5 +1639,25 @@ fn stored_transparent_data(tx: &CompactTxData) -> Option<TransparentCompactTx> {
         None
     } else {
         Some(tx.transparent().clone())
+    }
+}
+
+/// The stored form of a transaction's sapling data: `None` when the
+/// transaction has no sapling spends or outputs.
+fn stored_sapling_data(tx: &CompactTxData) -> Option<SaplingCompactTx> {
+    if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
+        None
+    } else {
+        Some(tx.sapling().clone())
+    }
+}
+
+/// The stored form of a transaction's orchard data: `None` when the
+/// transaction has no orchard actions.
+fn stored_orchard_data(tx: &CompactTxData) -> Option<OrchardCompactTx> {
+    if tx.orchard().actions().is_empty() {
+        None
+    } else {
+        Some(tx.orchard().clone())
     }
 }

@@ -380,67 +380,37 @@ impl DbV1 {
 
         let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
 
-        // Create the DbV1 instance. We declare the variable in the outer scope and
-        // initialise it in the two cfg arms so `zaino_db` is available afterwards.
-        let mut zaino_db: Self;
-
         #[cfg(feature = "transparent_address_history_experimental")]
-        {
-            let address_history = super::open_or_create_db(
-                &env,
-                "address_history_1_0_0",
-                DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
-            )
-            .await?;
+        let address_history = super::open_or_create_db(
+            &env,
+            "address_history_1_0_0",
+            DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
+        )
+        .await?;
 
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                address_history,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                unspent_output_counts: Arc::new(DashMap::new()),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
-
-        #[cfg(not(feature = "transparent_address_history_experimental"))]
-        {
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                unspent_output_counts: Arc::new(DashMap::new()),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
+        let mut zaino_db = Self {
+            env: Arc::new(env),
+            headers,
+            txids,
+            transparent,
+            sapling,
+            orchard,
+            commitment_tree_data,
+            heights: hashes,
+            spent,
+            txid_location,
+            tx_out_set_info_accumulator,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            address_history,
+            metadata,
+            validated_tip: Arc::new(AtomicU32::new(0)),
+            validated_set: DashSet::new(),
+            unspent_output_counts: Arc::new(DashMap::new()),
+            db_handler: std::sync::Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+            status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+            config: config.clone(),
+        };
 
         // Validate (or initialise) the metadata entry before we touch any tables.
         zaino_db.check_schema_version().await?;
@@ -467,29 +437,7 @@ impl DbV1 {
     ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
     async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
         // Clone everything the task needs so we can move it into the async block.
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            unspent_output_counts: Arc::clone(&self.unspent_output_counts),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.task_clone();
 
         let handle = tokio::spawn({
             let zaino_db = zaino_db;
@@ -607,20 +555,29 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
-    async fn initial_spent_scan(&self) -> Result<(), FinalisedStateError> {
+    /// Sweeps every entry of `table`, verifying each stored checksum against its key.
+    ///
+    /// `label` names the table in the mismatch error. Shared body of the opt-in
+    /// startup scans; runs on a blocking task because it cursors the whole table.
+    async fn scan_table_checksums<T>(
+        &self,
+        table: Database,
+        label: &'static str,
+    ) -> Result<(), FinalisedStateError>
+    where
+        T: crate::ZainoVersionedSerde + crate::FixedEncodedLen + Send + 'static,
+    {
         let env = self.env.clone();
-        let spent = self.spent;
 
         tokio::task::spawn_blocking(move || {
             let ro = env.begin_ro_txn()?;
-            let mut cursor = ro.open_ro_cursor(spent)?;
+            let mut cursor = ro.open_ro_cursor(table)?;
 
             for (key_bytes, val_bytes) in cursor.iter() {
-                if !StoredEntryFixed::<TxLocation>::verify_stored(key_bytes, val_bytes) {
-                    return Err(FinalisedStateError::Custom(
-                        "spent record checksum mismatch".into(),
-                    ));
+                if !StoredEntryFixed::<T>::verify_stored(key_bytes, val_bytes) {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "{label} record checksum mismatch"
+                    )));
                 }
             }
 
@@ -630,55 +587,22 @@ impl DbV1 {
         .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))?
     }
 
+    /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
+    async fn initial_spent_scan(&self) -> Result<(), FinalisedStateError> {
+        self.scan_table_checksums::<TxLocation>(self.spent, "spent")
+            .await
+    }
+
     /// Validates every stored address-history record (`AddrScript` duplicates of `AddrEventBytes`) by checksum.
     #[cfg(feature = "transparent_address_history_experimental")]
     async fn initial_address_history_scan(&self) -> Result<(), FinalisedStateError> {
-        let env = self.env.clone();
-        let address_history = self.address_history;
-
-        tokio::task::spawn_blocking(move || {
-            let ro = env.begin_ro_txn()?;
-            let mut cursor = ro.open_ro_cursor(address_history)?;
-
-            for (addr_bytes, record_bytes) in cursor.iter() {
-                if !StoredEntryFixed::<AddrEventBytes>::verify_stored(addr_bytes, record_bytes) {
-                    return Err(FinalisedStateError::Custom(
-                        "addrhist record checksum mismatch".into(),
-                    ));
-                }
-            }
-
-            Ok(())
-        })
-        .await
-        .map_err(|e| FinalisedStateError::Custom(format!("spawn_blocking failed: {e}")))?
+        self.scan_table_checksums::<AddrEventBytes>(self.address_history, "addrhist")
+            .await
     }
 
     /// Scans the whole finalised chain once at start-up and validates every block by checksum and continuity.
     async fn initial_block_scan(&self) -> Result<(), FinalisedStateError> {
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            unspent_output_counts: Arc::clone(&self.unspent_output_counts),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.task_clone();
 
         tokio::task::spawn_blocking(move || {
             let ro = zaino_db.env.begin_ro_txn()?;
@@ -923,63 +847,37 @@ impl DbV1 {
 
         let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
 
-        let mut zaino_db: Self;
         #[cfg(feature = "transparent_address_history_experimental")]
-        {
-            let address_history = super::open_or_create_db(
-                &env,
-                "address_history_1_0_0",
-                DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
-            )
-            .await?;
+        let address_history = super::open_or_create_db(
+            &env,
+            "address_history_1_0_0",
+            DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
+        )
+        .await?;
 
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                address_history,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                unspent_output_counts: Arc::new(DashMap::new()),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
-        #[cfg(not(feature = "transparent_address_history_experimental"))]
-        {
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                unspent_output_counts: Arc::new(DashMap::new()),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
+        let mut zaino_db = Self {
+            env: Arc::new(env),
+            headers,
+            txids,
+            transparent,
+            sapling,
+            orchard,
+            commitment_tree_data,
+            heights: hashes,
+            spent,
+            txid_location,
+            tx_out_set_info_accumulator,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            address_history,
+            metadata,
+            validated_tip: Arc::new(AtomicU32::new(0)),
+            validated_set: DashSet::new(),
+            unspent_output_counts: Arc::new(DashMap::new()),
+            db_handler: std::sync::Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+            status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
+            config: config.clone(),
+        };
 
         // Initialise the metadata entry before we touch any tables.
         tokio::task::block_in_place(|| {
