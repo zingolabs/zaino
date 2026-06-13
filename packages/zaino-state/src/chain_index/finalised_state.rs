@@ -611,11 +611,11 @@ impl ZainoDB {
     {
         let (sync_initial_start_height, mut parent_chainwork) = self.resolve_sync_start().await?;
         // Track last time we emitted an info log so we only print every 10s.
-        let current_height = Arc::new(AtomicU32::new(sync_initial_start_height));
+        let reported_height = Arc::new(AtomicU32::new(sync_initial_start_height));
         // Spawn the reporter task that logs progress every 10 seconds, even while a
         // write is running.
         let (shutdown_tx, reporter_handle) =
-            self.spawn_sync_progress_reporter(Arc::clone(&current_height), sync_upper_bound.0);
+            self.spawn_sync_progress_reporter(Arc::clone(&reported_height), sync_upper_bound.0);
 
         // Run the main sync logic inside an inner async block so we always get
         // a chance to shutdown the reporter task regardless of how this block exits.
@@ -633,20 +633,20 @@ impl ZainoDB {
                 .expect("Sapling activation height must be set");
             let nu5_activation_height = self.cfg.network.nu5_activation_height();
 
-            for height_int in sync_initial_start_height..=sync_upper_bound.0 {
+            for current_height in sync_initial_start_height..=sync_upper_bound.0 {
                 // Update the shared progress value as soon as we start processing this height.
-                current_height.store(height_int, Ordering::Relaxed);
+                reported_height.store(current_height, Ordering::Relaxed);
 
-                let block = fetch_block_at(source, height_int).await?;
+                let block = fetch_block_at(source, current_height).await?;
 
                 let block_hash = BlockHash::from(block.hash().0);
 
                 // Fetch sapling / orchard commitment tree data if above relevant network upgrade.
                 let (sapling_opt, orchard_opt) =
                     source.get_commitment_tree_roots(block_hash).await?;
-                let is_sapling_active = height_int >= sapling_activation_height.0;
+                let is_sapling_active = current_height >= sapling_activation_height.0;
                 let is_orchard_active = nu5_activation_height
-                    .is_some_and(|nu5_activation_height| height_int >= nu5_activation_height.0);
+                    .is_some_and(|nu5_activation_height| current_height >= nu5_activation_height.0);
                 let (sapling_root, sapling_size) = if is_sapling_active {
                     sapling_opt.ok_or_else(|| {
                         FinalisedStateError::BlockchainSourceError(
@@ -686,7 +686,7 @@ impl ZainoDB {
                     Err(_) => {
                         return Err(FinalisedStateError::BlockchainSourceError(
                             BlockchainSourceError::Unrecoverable(format!(
-                                "error building block data at height {height_int}"
+                                "error building block data at height {current_height}"
                             )),
                         ));
                     }
