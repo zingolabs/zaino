@@ -709,8 +709,7 @@ impl ZainoDB {
                     Err(_) => {
                         return Err(FinalisedStateError::BlockchainSourceError(
                             BlockchainSourceError::Unrecoverable(format!(
-                                "error building block data at height {}",
-                                height.0
+                                "error building block data at height {height_int}"
                             )),
                         ));
                     }

@@ -181,6 +181,48 @@ async fn resume_sync_preserves_cumulative_chainwork() {
     );
 }
 
+/// Regression test: when building an `IndexedBlock` fails mid-sync,
+/// `sync_to_height` names the height of the block that actually failed (the
+/// loop's `height_int`), not the sync target. (It previously interpolated the
+/// target `height.0`, reporting a failure at height 1 as "height 5".)
+///
+/// The test serves a fetchable-but-unbuildable block at height 1 (its
+/// transactions cleared, so `coinbase_height()` is `None` and
+/// `IndexedBlock::try_from` fails) while targeting height 5.
+#[tokio::test(flavor = "multi_thread")]
+async fn build_failure_names_failing_height_not_target() {
+    init_tracing();
+
+    const FAIL_HEIGHT: usize = 1;
+    const TARGET: u32 = 5;
+
+    let mut blocks = load_test_vectors().unwrap().blocks;
+    blocks.truncate((TARGET as usize) + 1); // heights 0..=TARGET, tip stays valid
+
+    // Clear the transactions of the block at FAIL_HEIGHT: it still fetches (the
+    // header, and thus the hash, is unchanged) but `coinbase_height()` becomes
+    // `None`, so `IndexedBlock::try_from` fails when sync reaches it.
+    blocks[FAIL_HEIGHT].zebra_block.transactions.clear();
+
+    let source = build_mockchain_source(blocks);
+    let (_db_dir, zaino_db) = spawn_v1_zaino_db(source.clone()).await.unwrap();
+
+    let err = zaino_db
+        .sync_to_height(crate::Height(TARGET), &source)
+        .await
+        .expect_err("building the headless block at height 1 should fail the sync");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("error building block data"),
+        "expected the IndexedBlock build-failure path; got: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("height {FAIL_HEIGHT}")),
+        "build error should name the failing height ({FAIL_HEIGHT}), not the target; got: {msg}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn add_blocks_to_db_and_verify() {
     init_tracing();
