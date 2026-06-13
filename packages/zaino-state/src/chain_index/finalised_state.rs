@@ -582,22 +582,7 @@ impl ZainoDB {
                 // Update the shared progress value as soon as we start processing this height.
                 current_height.store(height_int as u64, Ordering::Relaxed);
 
-                let block = match source
-                    .get_block(zebra_state::HashOrHeight::Height(
-                        zebra_chain::block::Height(height_int),
-                    ))
-                    .await?
-                {
-                    Some(block) => block,
-                    None => {
-                        return Err(FinalisedStateError::BlockchainSourceError(
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "error fetching block at height {} from validator",
-                                height.0
-                            )),
-                        ));
-                    }
-                };
+                let block = fetch_block_at(source, height_int).await?;
 
                 let block_hash = BlockHash::from(block.hash().0);
 
@@ -934,18 +919,7 @@ impl ZainoDB {
         let mut parent_chainwork = ChainWork::from_u256(0.into());
 
         for height in GENESIS_HEIGHT.0..=tip.0 {
-            let block = source
-                .get_block(zebra_state::HashOrHeight::Height(
-                    zebra_chain::block::Height(height),
-                ))
-                .await?
-                .ok_or_else(|| {
-                    FinalisedStateError::BlockchainSourceError(
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "source missing block at height {height}"
-                        )),
-                    )
-                })?;
+            let block = fetch_block_at(&source, height).await?;
 
             let block_hash = BlockHash::from(block.hash().0);
             let (sapling_opt, orchard_opt) = source.get_commitment_tree_roots(block_hash).await?;
@@ -1016,4 +990,23 @@ impl ZainoDB {
 
         Self::spawn_with_target_version(cfg, source, target_version).await
     }
+}
+
+/// Fetches the best-chain block at `height` from `source`, mapping a missing
+/// block to an unrecoverable [`FinalisedStateError`]. The error names the
+/// height that is actually missing.
+async fn fetch_block_at<T: BlockchainSource>(
+    source: &T,
+    height: u32,
+) -> Result<Arc<zebra_chain::block::Block>, FinalisedStateError> {
+    source
+        .get_block(zebra_state::HashOrHeight::Height(
+            zebra_chain::block::Height(height),
+        ))
+        .await?
+        .ok_or_else(|| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                format!("error fetching block at height {height} from validator"),
+            ))
+        })
 }

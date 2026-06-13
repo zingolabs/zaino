@@ -504,16 +504,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
                     }
 
                     for height in (build_start_height.0)..=primary_db_height.0 {
-                        let block = source
-                            .get_block(zebra_state::HashOrHeight::Height(
-                                zebra_chain::block::Height(height),
-                            ))
-                            .await?
-                            .ok_or_else(|| {
-                                FinalisedStateError::Custom(format!(
-                                    "block not found at height {height}"
-                                ))
-                            })?;
+                        let block = super::fetch_block_at(&source, height).await?;
                         let hash = BlockHash::from(block.hash().0);
 
                         let (sapling_root_data, orchard_root_data) =
