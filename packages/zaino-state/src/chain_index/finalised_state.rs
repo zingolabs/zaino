@@ -602,7 +602,7 @@ impl ZainoDB {
     /// - or any underlying database write fails.
     pub(crate) async fn sync_to_height<T>(
         &self,
-        height: Height,
+        sync_upper_bound: Height,
         source: &T,
     ) -> Result<(), FinalisedStateError>
     where
@@ -620,7 +620,7 @@ impl ZainoDB {
 
         // Track last time we emitted an info log so we only print every 10s.
         let current_height = Arc::new(AtomicU64::new(sync_initial_start_height as u64));
-        let target_height = height.0 as u64;
+        let target_height = sync_upper_bound.0 as u64;
 
         // Shutdown signal for the reporter task.
         let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -656,7 +656,7 @@ impl ZainoDB {
             // flushes on its byte budget (see `WriteBatcher`).
             let mut batcher =
                 write_batch::WriteBatcher::new(write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET);
-            for height_int in sync_initial_start_height..=height.0 {
+            for height_int in sync_initial_start_height..=sync_upper_bound.0 {
                 // Update the shared progress value as soon as we start processing this height.
                 current_height.store(height_int as u64, Ordering::Relaxed);
 
