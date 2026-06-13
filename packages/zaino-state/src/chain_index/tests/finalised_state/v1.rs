@@ -116,6 +116,71 @@ async fn sync_to_height() {
     assert_eq!(built_db_height, Height(200));
 }
 
+/// Regression test: a `sync_to_height` call that *resumes* a non-empty database
+/// preserves cumulative chainwork.
+///
+/// On resume, `sync_to_height` seeds `parent_chainwork` from the stored tip's
+/// own header. (It previously read the *target* height's header, which isn't in
+/// the database yet, so the seed silently fell to zero and every block written
+/// on resume lost all the work accumulated before the resume point.)
+///
+/// The test syncs the same chain two ways — one continuous pass versus a split
+/// (sync to SPLIT, then resume to TARGET) — and asserts the first block the
+/// resuming call writes has the same stored chainwork either way.
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_sync_preserves_cumulative_chainwork() {
+    init_tracing();
+
+    const SPLIT: u32 = 100;
+    const TARGET: u32 = 200;
+    const PROBE: u32 = SPLIT + 1; // first block written by the resuming call
+
+    let blocks = load_test_vectors().unwrap().blocks;
+
+    // Reference: one continuous sync covering 0..=TARGET.
+    let reference_source = build_mockchain_source(blocks.clone());
+    let (_reference_dir, reference_db) = spawn_v1_zaino_db(reference_source.clone()).await.unwrap();
+    reference_db
+        .sync_to_height(crate::Height(TARGET), &reference_source)
+        .await
+        .unwrap();
+    reference_db.wait_until_ready().await;
+    let reference_chainwork = Arc::new(reference_db)
+        .to_reader()
+        .get_block_header(crate::Height(PROBE))
+        .await
+        .unwrap()
+        .context
+        .chainwork;
+
+    // Resume: sync 0..=SPLIT, then resume SPLIT+1..=TARGET in a second call.
+    let resume_source = build_mockchain_source(blocks);
+    let (_resume_dir, resume_db) = spawn_v1_zaino_db(resume_source.clone()).await.unwrap();
+    resume_db
+        .sync_to_height(crate::Height(SPLIT), &resume_source)
+        .await
+        .unwrap();
+    resume_db.wait_until_ready().await;
+    resume_db
+        .sync_to_height(crate::Height(TARGET), &resume_source)
+        .await
+        .unwrap();
+    resume_db.wait_until_ready().await;
+    let resume_chainwork = Arc::new(resume_db)
+        .to_reader()
+        .get_block_header(crate::Height(PROBE))
+        .await
+        .unwrap()
+        .context
+        .chainwork;
+
+    assert_eq!(
+        resume_chainwork, reference_chainwork,
+        "resume chainwork mismatch at height {PROBE}: \
+         resume={resume_chainwork:?} reference={reference_chainwork:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn add_blocks_to_db_and_verify() {
     init_tracing();

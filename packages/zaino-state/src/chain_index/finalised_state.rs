@@ -511,9 +511,6 @@ impl ZainoDB {
         T: BlockchainSource,
     {
         let network = self.cfg.network;
-        let db_height_opt = self.db_height().await?;
-        let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
-
         let zebra_network = network.to_zebra_network();
         let sapling_activation_height = zebra_chain::parameters::NetworkUpgrade::Sapling
             .activation_height(&zebra_network)
@@ -521,22 +518,26 @@ impl ZainoDB {
         let nu5_activation_height =
             zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&zebra_network);
 
-        let mut parent_chainwork = if db_height_opt.is_none() {
-            ChainWork::from_u256(0.into())
-        } else {
-            db_height.0 += 1;
-            match self
-                .db
-                .backend(CapabilityRequest::BlockCoreExt)?
-                .get_block_header(height)
-                .await
-            {
-                Ok(header) => header.context.chainwork,
-                // V0 does not hold or use chainwork, and does not serve header data,
-                // can we handle this better?
-                //
-                // can we get this data from zebra blocks?
-                Err(_) => ChainWork::from_u256(0.into()),
+        // Resume point and the running chainwork seed, both derived from a single
+        // database-tip lookup:
+        // - empty database: start at genesis with zero accumulated work;
+        // - existing tip: continue at `tip + 1`, seeding chainwork from the tip's
+        //   own stored header (v0 serves no header/chainwork data, so it falls
+        //   back to zero).
+        let (db_height, mut parent_chainwork) = match self.db_height().await? {
+            None => (GENESIS_HEIGHT, ChainWork::from_u256(0.into())),
+            Some(tip) => {
+                let parent_chainwork = match self
+                    .db
+                    .backend(CapabilityRequest::BlockCoreExt)?
+                    .get_block_header(tip)
+                    .await
+                {
+                    Ok(header) => header.context.chainwork,
+                    // V0 does not hold or serve header/chainwork data.
+                    Err(_) => ChainWork::from_u256(0.into()),
+                };
+                (tip + 1, parent_chainwork)
             }
         };
 
