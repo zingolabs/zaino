@@ -622,32 +622,13 @@ impl ZainoDB {
         // Track last time we emitted an info log so we only print every 10s.
         let current_height = Arc::new(AtomicU32::new(sync_initial_start_height));
 
-        // Shutdown signal for the reporter task.
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        // Spawn reporter task that logs every 10 seconds, even while write_block() is running.
-        let reporter_current = Arc::clone(&current_height);
-        let reporter_network = network;
-        let mut reporter_shutdown = shutdown_rx.clone();
-        let reporter_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(10));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let cur = reporter_current.load(Ordering::Relaxed);
-                        tracing::info!(
-                            "sync_to_height: syncing height {current} / {target} on network = {:?}",
-                            reporter_network,
-                            current = cur,
-                            target = sync_upper_bound.0
-                        );
-                    }
-                    // stop when we receive a shutdown signal
-                    _ = reporter_shutdown.changed() => {
-                        break;
-                    }
-                }
-            }
-        });
+        // Spawn the reporter task that logs progress every 10 seconds, even while a
+        // write is running.
+        let (shutdown_tx, reporter_handle) = Self::spawn_sync_progress_reporter(
+            Arc::clone(&current_height),
+            sync_upper_bound.0,
+            network,
+        );
 
         // Run the main sync logic inside an inner async block so we always get
         // a chance to shutdown the reporter task regardless of how this block exits.
@@ -787,6 +768,34 @@ impl ZainoDB {
                 Ok(())
             }
         }
+    }
+
+    /// Spawns the 10-second sync-progress reporter task. Returns the shutdown sender
+    /// and the task handle: the caller sends `()` on the sender and awaits the handle
+    /// to stop the reporter cleanly.
+    fn spawn_sync_progress_reporter(
+        current_height: Arc<AtomicU32>,
+        sync_upper_bound: u32,
+        network: zaino_common::Network,
+    ) -> (watch::Sender<()>, tokio::task::JoinHandle<()>) {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let current_syncing_height = current_height.load(Ordering::Relaxed);
+                        tracing::info!(
+                            "sync_to_height: current_syncing_height \
+                            {current_syncing_height} /  {sync_upper_bound} \
+                            on network = {network:?}",
+                        );
+                    }
+                    _ = shutdown_rx.changed() => break,
+                }
+            }
+        });
+        (shutdown_tx, handle)
     }
 }
 
