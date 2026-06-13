@@ -38,7 +38,8 @@ impl DbV1 {
     // crate buildable on our older minimum supported Rust version.
     #[allow(clippy::manual_is_multiple_of)]
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Syncing);
+        // Status transitions (Syncing → Ready) are owned by the sync loop,
+        // not individual block writes. Only error statuses are set here.
         let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
         let block_height = block.context.index.height;
@@ -111,7 +112,6 @@ impl DbV1 {
 
         // If block already exists with same hash, return success without re-writing
         if block_already_exists {
-            self.status.store(StatusType::Ready);
             info!(
                 "Block {} at height {} already exists in ZainoDB, skipping write.",
                 &block_hash, &block_height.0
@@ -567,19 +567,11 @@ impl DbV1 {
             Ok(_) => {
                 // The block (and its `txid_location` entries) were durably committed inside the
                 // blocking task above; validation succeeded and wrote nothing, so no extra sync.
-                self.status.store(StatusType::Ready);
-                if block.context.index.height.0 % 100 == 0 {
-                    info!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.context.index.hash, &block.context.index.height
-                    );
-                } else {
-                    tracing::debug!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.context.index.hash,
-                        &block.context.index.height
-                    );
-                }
+                tracing::trace!(
+                    height = block.context.index.height.0,
+                    block_hash = %block.context.index.hash,
+                    "Committed block to ZainoDB"
+                );
 
                 Ok(())
             }
@@ -638,7 +630,6 @@ impl DbV1 {
                 match verification_result {
                     Ok(_) => {
                         // Block was already written correctly by another process
-                        self.status.store(StatusType::Ready);
                         info!(
                             "Block {} at height {} was already written by another process, skipping.",
                             &block_hash, &block_height.0
@@ -656,7 +647,6 @@ impl DbV1 {
                         tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
                             FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
                         })?;
-                        self.status.store(StatusType::CriticalError);
                         self.status.store(StatusType::RecoverableError);
                         Err(FinalisedStateError::InvalidBlock {
                             height: block_height.0,
@@ -1182,8 +1172,6 @@ impl DbV1 {
         &self,
         block: IndexedBlock,
     ) -> Result<(), FinalisedStateError> {
-        self.status.store(StatusType::Syncing);
-
         let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
         let block_height = block.context.index.height;
@@ -1328,7 +1316,6 @@ impl DbV1 {
             Ok::<_, FinalisedStateError>(())
         })?;
 
-        self.status.store(StatusType::Ready);
         Ok(())
     }
 }
