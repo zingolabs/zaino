@@ -59,9 +59,17 @@ tracing-subscriber = { version = "0.3.20", features = [
     "env-filter",
     "time",
     "json",
+    "registry",
 ] }
 tracing-futures = "0.2"
 tracing-tree = "0.4"
+tracing-opentelemetry = "0.32"
+
+# OpenTelemetry
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+
 nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
 

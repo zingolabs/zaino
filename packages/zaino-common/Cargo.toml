@@ -26,5 +26,15 @@ nu-ansi-term = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
 
+# OpenTelemetry (optional, behind feature flag)
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+
 # Zingo
 zingo_common_components = { workspace = true }
+
+[features]
+default = []
+otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]

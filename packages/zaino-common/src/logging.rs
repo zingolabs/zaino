@@ -292,26 +292,88 @@ fn try_init_stream(
 }
 
 fn init_json(env_filter: EnvFilter) {
-    // JSON format keeps full RFC3339 timestamps for machine parsing
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .json()
-        .with_timer(UtcTime::rfc_3339())
-        .with_target(true)
-        .init();
-}
+    // JSON format keeps full RFC3339 timestamps for machine parsing.
+    // When the otel feature is enabled and OTEL_EXPORTER_OTLP_ENDPOINT is set,
+    // spans are also exported to an OpenTelemetry collector (e.g. Tempo).
+    let registry = tracing_subscriber::registry().with(env_filter);
 
-fn try_init_json(env_filter: EnvFilter) -> Result<(), tracing_subscriber::util::TryInitError> {
-    // JSON format keeps full RFC3339 timestamps for machine parsing
     let fmt_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_timer(UtcTime::rfc_3339())
         .with_target(true);
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .try_init()
+    #[cfg(feature = "otel")]
+    {
+        use opentelemetry::trace::TracerProvider as _;
+        if let Some(provider) = init_otel_provider() {
+            let tracer = provider.tracer("zainod");
+            let otel_layer = tracing_opentelemetry::OpenTelemetryLayer::new(tracer);
+            registry.with(fmt_layer).with(otel_layer).init();
+            return;
+        }
+    }
+
+    registry.with(fmt_layer).init();
+}
+
+fn try_init_json(env_filter: EnvFilter) -> Result<(), tracing_subscriber::util::TryInitError> {
+    let registry = tracing_subscriber::registry().with(env_filter);
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .json()
+        .with_timer(UtcTime::rfc_3339())
+        .with_target(true);
+
+    #[cfg(feature = "otel")]
+    {
+        use opentelemetry::trace::TracerProvider as _;
+        if let Some(provider) = init_otel_provider() {
+            let tracer = provider.tracer("zainod");
+            let otel_layer = tracing_opentelemetry::OpenTelemetryLayer::new(tracer);
+            return registry.with(fmt_layer).with(otel_layer).try_init();
+        }
+    }
+
+    registry.with(fmt_layer).try_init()
+}
+
+/// Initialize the OpenTelemetry tracer provider.
+///
+/// Returns `None` if `OTEL_EXPORTER_OTLP_ENDPOINT` is not set,
+/// making this a no-op in environments without a collector.
+#[cfg(feature = "otel")]
+fn init_otel_provider() -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
+    use std::env;
+
+    if env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_err() {
+        return None;
+    }
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()
+        .ok()?;
+
+    let mut resource_builder = opentelemetry_sdk::Resource::builder().with_service_name(
+        env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "zainod".to_string()),
+    );
+
+    if let Ok(ns) = env::var("POD_NAMESPACE") {
+        resource_builder = resource_builder
+            .with_attribute(opentelemetry::KeyValue::new("k8s.namespace.name", ns));
+    }
+    if let Ok(pod) = env::var("POD_NAME") {
+        resource_builder = resource_builder
+            .with_attribute(opentelemetry::KeyValue::new("k8s.pod.name", pod));
+    }
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(resource_builder.build())
+        .build();
+
+    opentelemetry::global::set_tracer_provider(provider.clone());
+    Some(provider)
 }
 
 /// Wrapper for displaying hashes in a compact format.

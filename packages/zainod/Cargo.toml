@@ -34,6 +34,11 @@ prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus"
 # mesh/proxy that terminates encryption).
 allow_unencrypted_public_json_rpc_bind = []
 
+# OpenTelemetry trace export. When enabled and OTEL_EXPORTER_OTLP_ENDPOINT is
+# set, spans are exported to an OTLP collector (Tempo, Jaeger, etc.).
+# No-op if the env var is unset.
+otel = ["zaino-common/otel"]
+
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
 experimental_features = ["transparent_address_history_experimental"]
