@@ -386,6 +386,20 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         }
         let mut working_snapshot = initial_state.as_ref().clone();
 
+        // Guard: NFS handles only the non-finalized window (~100 blocks
+        // from chain tip). If the gap is larger, the finalized state
+        // hasn't caught up yet — NFS should not attempt to fill it.
+        let gap = chain_height.0.saturating_sub(working_snapshot.best_tip.height.0);
+        if gap > NON_FINALIZED_DEPTH {
+            tracing::warn!(
+                nfs_tip = working_snapshot.best_tip.height.0,
+                chain_tip = chain_height.0,
+                gap,
+                "NFS sync gap exceeds non-finalized window, skipping"
+            );
+            return Ok(());
+        }
+
         // currently this only gets main-chain blocks
         // once readstateservice supports serving sidechain data, this
         // must be rewritten to match
