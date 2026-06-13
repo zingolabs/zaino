@@ -476,6 +476,100 @@ impl ZainoDB {
 
     // ***** Db Core Write *****
 
+    /// Appends a single fully constructed [`IndexedBlock`] to the database.
+    ///
+    /// This **must** be the next block after the current database tip (`db_tip_height + 1`).
+    /// Database implementations may assume append-only semantics to maintain secondary index
+    /// consistency.
+    ///
+    /// For reorg handling, callers should delete tip blocks using [`ZainoDB::delete_block_at_height`]
+    /// or [`ZainoDB::delete_block`] before re-appending.
+    pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
+        self.db.write_block(b).await
+    }
+
+    /// Writes a contiguous, dependency-free batch of blocks with one durable commit
+    /// (see `DbV1::write_blocks` for the batch contract). The first block **must** be
+    /// `db_tip_height + 1` and the batch must be height-contiguous.
+    pub(crate) async fn write_blocks(
+        &self,
+        blocks: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        self.db.write_blocks(blocks).await
+    }
+
+    /// Deletes the block at height `h` from the database.
+    ///
+    /// This **must** be the current database tip. Deleting non-tip blocks is not supported because
+    /// it would require re-writing dependent indices for all higher blocks.
+    ///
+    /// This method delegates to the backend’s `delete_block_at_height` implementation. If that
+    /// deletion cannot be completed correctly (for example, if the backend cannot reconstruct all
+    /// derived index entries needed for deletion), callers must fall back to [`ZainoDB::delete_block`]
+    /// using an [`IndexedBlock`] fetched from the validator/source to ensure a complete wipe.
+    pub(crate) async fn delete_block_at_height(
+        &self,
+        h: Height,
+    ) -> Result<(), FinalisedStateError> {
+        self.db.delete_block_at_height(h).await
+    }
+
+    /// Deletes the provided block from the database.
+    ///
+    /// This **must** be the current database tip. The provided [`IndexedBlock`] is used to ensure
+    /// all derived indices created by that block can be removed deterministically.
+    ///
+    /// Prefer [`ZainoDB::delete_block_at_height`] when possible; use this method when the backend
+    /// requires full block contents to correctly reverse all indices.
+    pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), FinalisedStateError> {
+        self.db.delete_block(b).await
+    }
+
+    // ***** DB Core Read *****
+
+    /// Returns the highest block height stored in the finalised database.
+    ///
+    /// Returns:
+    /// - `Ok(Some(height))` if at least one block is present,
+    /// - `Ok(None)` if the database is empty.
+    pub(crate) async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+        self.db.db_height().await
+    }
+
+    /// Returns the main-chain height for `hash` if the block is present in the finalised database.
+    ///
+    /// Returns:
+    /// - `Ok(Some(height))` if the hash is indexed,
+    /// - `Ok(None)` if the hash is not present (not an error).
+    pub(crate) async fn get_block_height(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<Height>, FinalisedStateError> {
+        self.db.get_block_height(hash).await
+    }
+
+    /// Returns the main-chain block hash for `height` if the block is present in the finalised database.
+    ///
+    /// Returns:
+    /// - `Ok(Some(hash))` if the height is indexed,
+    /// - `Ok(None)` if the height is not present (not an error).
+    pub(crate) async fn get_block_hash(
+        &self,
+        height: Height,
+    ) -> Result<Option<BlockHash>, FinalisedStateError> {
+        self.db.get_block_hash(height).await
+    }
+
+    /// Returns the persisted database metadata.
+    ///
+    /// See `capability::DbMetadata` for the precise fields and on-disk encoding.
+    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+        self.db.get_metadata().await
+    }
+}
+
+// ***** Sync ingestion *****
+impl ZainoDB {
     /// Sync the database up to and including `height` using a [`BlockchainSource`].
     ///
     /// This method is a convenience ingestion loop that:
@@ -522,28 +616,7 @@ impl ZainoDB {
         let nu5_activation_height =
             zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&zebra_network);
 
-        // Resume point and the running chainwork seed, both derived from a single
-        // database-tip lookup:
-        // - empty database: start at genesis with zero accumulated work;
-        // - existing tip: continue at `tip + 1`, seeding chainwork from the tip's
-        //   own stored header (v0 serves no header/chainwork data, so it falls
-        //   back to zero).
-        let (sync_initial_start_height, mut parent_chainwork) = match self.db_height().await? {
-            None => (GENESIS_HEIGHT.0, ChainWork::from_u256(0.into())),
-            Some(tip) => {
-                let tip_chainwork = match self
-                    .db
-                    .backend(CapabilityRequest::BlockCoreExt)?
-                    .get_block_header(tip)
-                    .await
-                {
-                    Ok(header) => header.context.chainwork,
-                    // V0 does not hold or serve header/chainwork data.
-                    Err(_) => ChainWork::from_u256(0.into()),
-                };
-                (tip.0 + 1, tip_chainwork)
-            }
-        };
+        let (sync_initial_start_height, mut parent_chainwork) = self.resolve_sync_start().await?;
 
         // Track last time we emitted an info log so we only print every 10s.
         let current_height = Arc::new(AtomicU64::new(sync_initial_start_height as u64));
@@ -665,27 +738,28 @@ impl ZainoDB {
 
         result
     }
-
-    /// Appends a single fully constructed [`IndexedBlock`] to the database.
-    ///
-    /// This **must** be the next block after the current database tip (`db_tip_height + 1`).
-    /// Database implementations may assume append-only semantics to maintain secondary index
-    /// consistency.
-    ///
-    /// For reorg handling, callers should delete tip blocks using [`ZainoDB::delete_block_at_height`]
-    /// or [`ZainoDB::delete_block`] before re-appending.
-    pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
-        self.db.write_block(b).await
-    }
-
-    /// Writes a contiguous, dependency-free batch of blocks with one durable commit
-    /// (see `DbV1::write_blocks` for the batch contract). The first block **must** be
-    /// `db_tip_height + 1` and the batch must be height-contiguous.
-    pub(crate) async fn write_blocks(
-        &self,
-        blocks: &[IndexedBlock],
-    ) -> Result<(), FinalisedStateError> {
-        self.db.write_blocks(blocks).await
+    /// Resolves where [`ZainoDB::sync_to_height`] should start and the chainwork to seed the run
+    /// with:
+    /// - empty database: start at genesis with zero accumulated work;
+    /// - existing tip: resume at `tip + 1`, seeding from the tip's own stored header (v0 serves no
+    ///   header/chainwork data, so it falls back to zero).
+    async fn resolve_sync_start(&self) -> Result<(u32, ChainWork), FinalisedStateError> {
+        Ok(match self.db_height().await? {
+            None => (GENESIS_HEIGHT.0, ChainWork::from_u256(0.into())),
+            Some(tip) => {
+                let tip_chainwork = match self
+                    .db
+                    .backend(CapabilityRequest::BlockCoreExt)?
+                    .get_block_header(tip)
+                    .await
+                {
+                    Ok(header) => header.context.chainwork,
+                    // V0 does not hold or serve header/chainwork data.
+                    Err(_) => ChainWork::from_u256(0.into()),
+                };
+                (tip.0 + 1, tip_chainwork)
+            }
+        })
     }
 
     /// Writes a batch via the single-commit path, retrying block-by-block on failure.
@@ -714,75 +788,6 @@ impl ZainoDB {
                 Ok(())
             }
         }
-    }
-
-    /// Deletes the block at height `h` from the database.
-    ///
-    /// This **must** be the current database tip. Deleting non-tip blocks is not supported because
-    /// it would require re-writing dependent indices for all higher blocks.
-    ///
-    /// This method delegates to the backend’s `delete_block_at_height` implementation. If that
-    /// deletion cannot be completed correctly (for example, if the backend cannot reconstruct all
-    /// derived index entries needed for deletion), callers must fall back to [`ZainoDB::delete_block`]
-    /// using an [`IndexedBlock`] fetched from the validator/source to ensure a complete wipe.
-    pub(crate) async fn delete_block_at_height(
-        &self,
-        h: Height,
-    ) -> Result<(), FinalisedStateError> {
-        self.db.delete_block_at_height(h).await
-    }
-
-    /// Deletes the provided block from the database.
-    ///
-    /// This **must** be the current database tip. The provided [`IndexedBlock`] is used to ensure
-    /// all derived indices created by that block can be removed deterministically.
-    ///
-    /// Prefer [`ZainoDB::delete_block_at_height`] when possible; use this method when the backend
-    /// requires full block contents to correctly reverse all indices.
-    pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), FinalisedStateError> {
-        self.db.delete_block(b).await
-    }
-
-    // ***** DB Core Read *****
-
-    /// Returns the highest block height stored in the finalised database.
-    ///
-    /// Returns:
-    /// - `Ok(Some(height))` if at least one block is present,
-    /// - `Ok(None)` if the database is empty.
-    pub(crate) async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
-        self.db.db_height().await
-    }
-
-    /// Returns the main-chain height for `hash` if the block is present in the finalised database.
-    ///
-    /// Returns:
-    /// - `Ok(Some(height))` if the hash is indexed,
-    /// - `Ok(None)` if the hash is not present (not an error).
-    pub(crate) async fn get_block_height(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
-        self.db.get_block_height(hash).await
-    }
-
-    /// Returns the main-chain block hash for `height` if the block is present in the finalised database.
-    ///
-    /// Returns:
-    /// - `Ok(Some(hash))` if the height is indexed,
-    /// - `Ok(None)` if the height is not present (not an error).
-    pub(crate) async fn get_block_hash(
-        &self,
-        height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError> {
-        self.db.get_block_hash(height).await
-    }
-
-    /// Returns the persisted database metadata.
-    ///
-    /// See `capability::DbMetadata` for the precise fields and on-disk encoding.
-    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
-        self.db.get_metadata().await
     }
 }
 
