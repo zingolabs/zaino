@@ -36,6 +36,8 @@ used_bytes() { du -sB1 "$1/data.mdb" | cut -f1; }
 cmd_snapshot() {
     local live="$1" cache="$2"
     [ -f "$live/data.mdb" ] || { echo "no data.mdb in '$live'" >&2; exit 1; }
+    local keep="${SNAP_KEEP:-2}"
+    [[ "$keep" =~ ^[1-9][0-9]*$ ]] || { echo "SNAP_KEEP must be a positive integer (got '$keep')" >&2; exit 2; }
     mkdir -p "$cache"
     local bytes ts dest tmp
     bytes=$(used_bytes "$live")
@@ -60,8 +62,7 @@ cmd_snapshot() {
     # more. A crash between publish and prune leaves a harmless extra (>=2) that
     # the next snapshot prunes. Bounds disk to ~2 DBs even though the real DB
     # size is unknown. (snap_<ts>_* names sort chronologically, oldest first.)
-    local keep="${SNAP_KEEP:-2}" i
-    [[ "$keep" =~ ^[1-9][0-9]*$ ]] || { echo "SNAP_KEEP must be a positive integer (got '$keep')" >&2; exit 2; }
+    local i
     shopt -s nullglob
     local -a snaps=("$cache"/snap_*)
     shopt -u nullglob
