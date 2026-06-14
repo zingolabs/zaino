@@ -14,7 +14,7 @@
 #
 #   zaino-snapshot watch <live_env> <cache_dir> --size-step <GB> [--poll <secs>]
 #       Snapshot whenever data.mdb's on-disk size grows past the next <GB> step.
-#       --size-step is required (no default); 8 is a reasonable start (~8 GB,
+#       --size-step is required (no default); 6 is a reasonable start (~6 GB,
 #       from early experimentation).
 #
 #   zaino-snapshot restore <cache_dir> <dest_env>
@@ -45,6 +45,24 @@ cmd_snapshot() {
     ln -sfn "$(basename "$dest")" "$cache/latest"
     printf '%s\t%s\t%s\n' "$ts" "$bytes" "$dest" >> "$cache/manifest.tsv"
     echo "snapshot: $dest (${bytes} bytes)"
+
+    # Retention: keep only the 2 newest snapshots. Pruning runs AFTER the new one
+    # above is safely published (set -e aborts earlier on a failed write), so a
+    # failed write never drops below the existing 2 — there are always 2, never
+    # more. A crash between publish and prune leaves a harmless extra (>=2) that
+    # the next snapshot prunes. Bounds disk to ~2 DBs even though the real DB
+    # size is unknown. (snap_<ts>_* names sort chronologically, oldest first.)
+    local keep=2 i
+    shopt -s nullglob
+    local -a snaps=("$cache"/snap_*)
+    shopt -u nullglob
+    for (( i = 0; i < ${#snaps[@]} - keep; i++ )); do
+        if rm -rf "${snaps[i]}"; then
+            echo "pruned old snapshot: ${snaps[i]}"
+        else
+            echo "warning: could not prune ${snaps[i]}" >&2
+        fi
+    done
 }
 
 cmd_watch() {
@@ -59,7 +77,7 @@ cmd_watch() {
     done
     if [ -z "$step_gb" ]; then
         echo "watch requires --size-step <GB>; there is no default." >&2
-        echo "Suggested starting point: --size-step 8  (~8 GB, from early experimentation)." >&2
+        echo "Suggested starting point: --size-step 6  (~6 GB, from early experimentation)." >&2
         exit 2
     fi
     local step=$(( step_gb * 1024 * 1024 * 1024 ))
