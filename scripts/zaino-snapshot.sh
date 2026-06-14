@@ -39,10 +39,15 @@ cmd_snapshot() {
     local keep="${SNAP_KEEP:-2}"
     [[ "$keep" =~ ^[1-9][0-9]*$ ]] || { echo "SNAP_KEEP must be a positive integer (got '$keep')" >&2; exit 2; }
     mkdir -p "$cache"
-    local bytes ts dest tmp
+    local bytes ts gib gb dest tmp
     bytes=$(used_bytes "$live")
     ts=$(date +%Y%m%dT%H%M%S)
-    dest="$cache/snap_${ts}_${bytes}"
+    # data.mdb size rounded to the nearest GiB, for a readable dir name. The
+    # timestamp stays first so the snap_* names still sort chronologically
+    # (== size order) for the keep-newest prune; exact bytes go in the manifest.
+    gib=$(( 1024 * 1024 * 1024 ))
+    gb=$(( (bytes + gib / 2) / gib ))
+    dest="$cache/snap_${ts}_${gb}GB"
     tmp="$cache/.tmp_${ts}_$$"
     mkdir -p "$tmp"
     # LMDB consistent hot copy of the live env. On failure, remove the partial
