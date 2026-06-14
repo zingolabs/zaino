@@ -29,6 +29,24 @@
 # NOTE: write-amplification figures are storage-class specific. If tekau's disk
 #       (HDD/SSD/NVMe) differs from the operator's, the absolute numbers won't
 #       transfer — compare trends, or match the operator's storage class.
+#
+# Snapshot sizing for a ~48 GB full DB. Each retained snapshot is a full copy of
+# the DB at the height it was taken, so the "pile" (disk to keep ALL of them)
+# grows fast as the step shrinks — pick SIZE_STEP_GB against your disk budget:
+#
+#   SIZE_STEP_GB   # snapshots   pile (GB)   pile+DB (GB)
+#   ------------   -----------   ---------   ------------
+#        4             12           312          360
+#        6              8           216          264
+#        8              6           168          216
+#       12              4           120          168
+#       16              3            96          144
+#       24              2            72          120
+#       48              1            48           96
+#
+#   #snapshots = floor(48/step); pile = step * N*(N+1)/2 (the sum of the DB size
+#   at each step); pile+DB adds the ~48 GB live DB you snapshot from. Keeping
+#   only `latest` instead of the whole pile costs ~1 DB.
 
 set -euo pipefail
 

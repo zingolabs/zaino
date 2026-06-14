@@ -14,6 +14,8 @@
 #
 #   zaino-snapshot watch <live_env> <cache_dir> --size-step <GB> [--poll <secs>]
 #       Snapshot whenever data.mdb's on-disk size grows past the next <GB> step.
+#       --size-step is required (no default); 8 is a reasonable start (~8 GB,
+#       from early experimentation).
 #
 #   zaino-snapshot restore <cache_dir> <dest_env>
 #       Copy the latest cached snapshot into <dest_env> (refuses to overwrite).
@@ -55,7 +57,11 @@ cmd_watch() {
             *) echo "unknown arg '$1'" >&2; exit 2;;
         esac
     done
-    [ -n "$step_gb" ] || { echo "watch needs --size-step <GB>" >&2; exit 2; }
+    if [ -z "$step_gb" ]; then
+        echo "watch requires --size-step <GB>; there is no default." >&2
+        echo "Suggested starting point: --size-step 8  (~8 GB, from early experimentation)." >&2
+        exit 2
+    fi
     local step=$(( step_gb * 1024 * 1024 * 1024 ))
     local cur next
     cur=$(used_bytes "$live")
