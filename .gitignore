@@ -12,3 +12,6 @@
 .local/
 .failed-tests
 **/proptest-regressions/**
+# Generated, machine-specific zainod config (TOML can't expand $USER, so the
+# runtime path is rewritten by the snapshot scripts on every run).
+/zainod.toml
