@@ -20,6 +20,9 @@
 #   zaino-snapshot restore <cache_dir> <dest_env>
 #       Copy the latest cached snapshot into <dest_env> (refuses to overwrite).
 #
+# Env:
+#   SNAP_KEEP=2   retain only the N newest snapshots (rotation; must be >= 1).
+#
 # mdb_copy is a full, consistent copy of only the used pages — non-compact, so
 # the live free-page/B-tree structure is preserved (faithful for write-cost
 # benchmarking). Add -c below if you want a smaller, defragmented image instead.
@@ -40,8 +43,13 @@ cmd_snapshot() {
     dest="$cache/snap_${ts}_${bytes}"
     tmp="$cache/.tmp_${ts}_$$"
     mkdir -p "$tmp"
-    mdb_copy "$live" "$tmp"          # LMDB consistent hot copy of the live env
-    mv "$tmp" "$dest"               # atomic publish (same filesystem)
+    # LMDB consistent hot copy of the live env. On failure, remove the partial
+    # copy so a failed write doesn't leave a disk-eating temp behind (set -e
+    # would otherwise abort with it in place).
+    if ! mdb_copy "$live" "$tmp"; then
+        rm -rf "$tmp"; echo "mdb_copy failed for '$live'" >&2; exit 1
+    fi
+    mv "$tmp" "$dest" || { rm -rf "$tmp"; echo "snapshot publish failed" >&2; exit 1; }
     ln -sfn "$(basename "$dest")" "$cache/latest"
     printf '%s\t%s\t%s\n' "$ts" "$bytes" "$dest" >> "$cache/manifest.tsv"
     echo "snapshot: $dest (${bytes} bytes)"
@@ -52,7 +60,8 @@ cmd_snapshot() {
     # more. A crash between publish and prune leaves a harmless extra (>=2) that
     # the next snapshot prunes. Bounds disk to ~2 DBs even though the real DB
     # size is unknown. (snap_<ts>_* names sort chronologically, oldest first.)
-    local keep=2 i
+    local keep="${SNAP_KEEP:-2}" i
+    [[ "$keep" =~ ^[1-9][0-9]*$ ]] || { echo "SNAP_KEEP must be a positive integer (got '$keep')" >&2; exit 2; }
     shopt -s nullglob
     local -a snaps=("$cache"/snap_*)
     shopt -u nullglob

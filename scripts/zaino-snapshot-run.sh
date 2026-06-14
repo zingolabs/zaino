@@ -23,8 +23,9 @@
 #   STORAGE=/home/$USER/.local/share/zaino  Zaino storage root, persistent (data.mdb under here)
 #   CONFIG=./zainod.toml     config file to generate/use
 #   CACHE=/home/$USER/.cache/zaino-snap-cache  snapshot cache dir, disposable
-#   SIZE_STEP_GB=1           snapshot whenever data.mdb grows past this many GB
+#   SIZE_STEP_GB=6           snapshot whenever data.mdb grows past this many GB
 #   POLL=30                  watcher poll interval (seconds)
+#   SNAP_KEEP=2              retain only the N newest snapshots (rotation; >= 1)
 #
 # NOTE: write-amplification figures are storage-class specific. If tekau's disk
 #       (HDD/SSD/NVMe) differs from the operator's, the absolute numbers won't
@@ -70,7 +71,7 @@ ZEBRAD_RPC="${ZEBRAD_RPC:-127.0.0.1:8232}"
 STORAGE="${STORAGE:-/home/${USER:-$(id -un)}/.local/share/zaino}"
 CONFIG="${CONFIG:-./zainod.toml}"
 CACHE="${CACHE:-/home/${USER:-$(id -un)}/.cache/zaino-snap-cache}"
-SIZE_STEP_GB="${SIZE_STEP_GB:-1}"
+SIZE_STEP_GB="${SIZE_STEP_GB:-6}"
 POLL="${POLL:-30}"
 
 # Map the configured network to its on-disk v1 directory name.
