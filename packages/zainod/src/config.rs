@@ -47,6 +47,16 @@ pub fn generate_default_config() -> Result<String, IndexerError> {
     let toml_content = toml::to_string_pretty(&config)
         .map_err(|e| IndexerError::ConfigError(format!("Failed to serialize config: {}", e)))?;
 
+    // A commented hint for the metrics endpoint is emitted ahead of the
+    // serialized body (a root-scope key, so it must precede any `[table]`)
+    // when the prometheus feature is built in.
+    #[cfg(feature = "prometheus")]
+    let toml_content = format!(
+        "# Prometheus metrics scrape endpoint (uncomment to enable):\n\
+         # metrics_endpoint = \"0.0.0.0:{DEFAULT_METRICS_PORT}\"\n\n\
+         {toml_content}"
+    );
+
     Ok(format!("{}{}", GENERATED_CONFIG_HEADER, toml_content))
 }
 
@@ -63,6 +73,10 @@ fn is_sensitive_leaf_key(leaf_key: &str) -> bool {
 
 /// Zaino daemon configuration.
 ///
+/// Default port for the Prometheus metrics endpoint.
+#[cfg(feature = "prometheus")]
+pub const DEFAULT_METRICS_PORT: u16 = 9998;
+
 /// Field order matters for TOML serialization: simple values must come before tables.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -76,6 +90,11 @@ pub struct ZainodConfig {
     pub zebra_db_path: PathBuf,
     /// Network to connect to (Mainnet, Testnet, or Regtest).
     pub network: Network,
+    /// Prometheus metrics endpoint listen address.
+    ///
+    /// Set to enable the `/metrics` scrape endpoint. Disabled when `None`.
+    /// Requires the `prometheus` feature; ignored without it.
+    pub metrics_endpoint: Option<SocketAddr>,
 
     // Table sections
     /// JSON-RPC server settings. Set to enable Zaino's JSON-RPC interface.
@@ -220,6 +239,7 @@ impl Default for ZainodConfig {
     fn default() -> Self {
         Self {
             backend: BackendType::default(),
+            metrics_endpoint: None,
             json_server_settings: None,
             grpc_settings: GrpcServerConfig {
                 listen_address: "127.0.0.1:8137".parse().unwrap(),

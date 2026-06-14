@@ -637,13 +637,17 @@ impl ZainoDB {
                 // Update the shared progress value as soon as we start processing this height.
                 reported_height.store(current_height, Ordering::Relaxed);
 
+                let fetch_start = std::time::Instant::now();
                 let block = fetch_block_at(source, current_height).await?;
+                record_phase_seconds("zaino.sync.block_fetch_seconds", fetch_start);
 
                 let block_hash = BlockHash::from(block.hash().0);
 
                 // Fetch sapling / orchard commitment tree data if above relevant network upgrade.
+                let treestate_start = std::time::Instant::now();
                 let (sapling_opt, orchard_opt) =
                     source.get_commitment_tree_roots(block_hash).await?;
+                record_phase_seconds("zaino.sync.treestate_fetch_seconds", treestate_start);
                 let is_sapling_active = current_height >= sapling_activation_height.0;
                 let is_orchard_active = nu5_activation_height
                     .is_some_and(|nu5_activation_height| current_height >= nu5_activation_height.0);
@@ -681,6 +685,7 @@ impl ZainoDB {
                 );
 
                 let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
+                let build_start = std::time::Instant::now();
                 let chain_block = match IndexedBlock::try_from(block_with_metadata) {
                     Ok(block) => block,
                     Err(_) => {
@@ -691,15 +696,20 @@ impl ZainoDB {
                         ));
                     }
                 };
+                record_phase_seconds("zaino.sync.block_build_seconds", build_start);
                 parent_chainwork = chain_block.context.chainwork;
 
                 if let Some(batch) = batcher.push(chain_block) {
+                    let write_start = std::time::Instant::now();
                     self.write_blocks_with_fallback(&batch).await?;
+                    record_phase_seconds("zaino.sync.block_write_seconds", write_start);
                 }
             }
 
             if let Some(batch) = batcher.flush() {
+                let write_start = std::time::Instant::now();
                 self.write_blocks_with_fallback(&batch).await?;
+                record_phase_seconds("zaino.sync.block_write_seconds", write_start);
             }
 
             Ok(())
@@ -782,6 +792,13 @@ impl ZainoDB {
                 tokio::select! {
                     _ = interval.tick() => {
                         let current_syncing_height = current_height.load(Ordering::Relaxed);
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::gauge!("zaino.sync.finalized_height")
+                                .set(current_syncing_height as f64);
+                            metrics::gauge!("zaino.sync.target_height")
+                                .set(sync_upper_bound as f64);
+                        }
                         tracing::info!(
                             "sync_to_height: current_syncing_height \
                             {current_syncing_height} /  {sync_upper_bound} \
@@ -1005,6 +1022,16 @@ impl ZainoDB {
 
         Self::spawn_with_target_version(cfg, source, target_version).await
     }
+}
+
+/// Records a sync-phase duration (in seconds) as a Prometheus histogram when
+/// the `prometheus` feature is enabled; a no-op otherwise, so the per-block
+/// call sites stay free of `#[cfg]`. The tiny `Instant` reads remain in the
+/// default build but are dwarfed by the per-block work they bracket.
+#[inline]
+fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
+    #[cfg(feature = "prometheus")]
+    metrics::histogram!(_name).record(_start.elapsed().as_secs_f64());
 }
 
 /// Fetches the best-chain block at `height` from `source`, mapping a missing

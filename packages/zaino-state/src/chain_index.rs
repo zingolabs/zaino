@@ -872,6 +872,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
+                    #[cfg(feature = "prometheus")]
+                    metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
 
                     fs.sync_to_height(finalised_height, &source)

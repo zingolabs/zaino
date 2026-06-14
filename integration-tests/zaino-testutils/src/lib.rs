@@ -522,6 +522,7 @@ where
                 },
                 zebra_db_path,
                 network: zaino_network_kind,
+                metrics_endpoint: None,
                 donation_address: None,
             };
 
