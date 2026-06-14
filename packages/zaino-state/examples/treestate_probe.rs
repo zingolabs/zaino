@@ -1,12 +1,18 @@
-//! Probe: time `z_gettreestate` (sync RPC #2) across a range of heights.
+//! Probe: time the sync's per-block validator RPCs across a range of heights.
 //!
-//! This mimics the per-block commitment-tree fetch in
-//! [`ZainoDB::sync_to_height`] — the exact
-//! `JsonRpSeeConnector::get_treestate` + `read_commitment_tree` path the
-//! fetch backend runs — *without* performing a full sync. It exists to
-//! measure the validator-side cost of serving the Sapling/Orchard treestate
-//! across the Orchard (NU5) activation boundary in minutes, instead of waiting
-//! out a multi-day genesis-to-NU5 sync.
+//! For each height this issues, in the form `ZainoDB::sync_to_height` and its
+//! driver use them:
+//!   - `getblockcount` — the driver's tip-discovery call. Height-independent,
+//!     so it is a flat baseline/control.
+//!   - `getblock` raw (verbosity 0) — RPC #1, the per-block block fetch.
+//!   - `z_gettreestate` + `read_commitment_tree` — RPC #2, the commitment-tree
+//!     fetch and parse.
+//!
+//! It reuses the exact `JsonRpSeeConnector` path the fetch backend runs,
+//! *without* performing a full sync, to measure the validator-side cost of each
+//! call across the Orchard (NU5) activation boundary in minutes instead of
+//! waiting out a multi-day genesis-to-NU5 sync. Comparing the RPC #1 and RPC #2
+//! curves isolates whether block fetch or treestate fetch is what slows.
 //!
 //! `z_gettreestate` is independent per height (each call asks the validator for
 //! the treestate as of that block), so a serial, increasing-height loop against
@@ -33,16 +39,18 @@
 //!   127.0.0.1:8232 1000000 1500000 1687104 1700000 1720000 1725000 > sweep.csv
 //! ```
 //!
-//! Output (stdout, CSV): `height,rpc_seconds,parse_seconds,sapling_size,orchard_size`.
-//! A blank `parse_seconds`/sizes row means the RPC errored (e.g. exceeded the
-//! 5s timeout); the reason is logged to stderr.
+//! Output (stdout, CSV):
+//! `height,blockcount_seconds,blockfetch_seconds,treestate_seconds,parse_seconds,block_bytes,sapling_size,orchard_size`.
+//! A blank `parse_seconds`/sizes cell means `z_gettreestate` errored (e.g.
+//! exceeded the connector's 5s timeout); a blank `block_bytes` means `getblock`
+//! errored. Failures are logged to stderr.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use incrementalmerkletree::frontier::CommitmentTree;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-use zaino_fetch::jsonrpsee::response::GetTreestateResponse;
+use zaino_fetch::jsonrpsee::response::{GetBlockResponse, GetTreestateResponse};
 use zcash_primitives::merkle_tree::read_commitment_tree;
 
 type ProbeError = Box<dyn std::error::Error>;
@@ -99,20 +107,53 @@ async fn main() -> Result<(), ProbeError> {
         .await
         .map_err(|e| format!("failed to build connector: {e}"))?;
 
-    println!("height,rpc_seconds,parse_seconds,sapling_size,orchard_size");
+    println!(
+        "height,blockcount_seconds,blockfetch_seconds,treestate_seconds,\
+         parse_seconds,block_bytes,sapling_size,orchard_size"
+    );
     for height in heights {
+        // getblockcount: the driver's tip-discovery call. Height-independent,
+        // so it is a flat baseline/control — if it drifts upward with height,
+        // the validator's whole RPC surface is slowing, not just treestate.
+        let blockcount_start = Instant::now();
+        if let Err(e) = connector.get_block_count().await {
+            eprintln!("height {height}: getblockcount failed: {e}");
+        }
+        let blockcount_secs = blockcount_start.elapsed().as_secs_f64();
+
+        // RPC #1: the per-block getblock the sync issues — raw (verbosity 0),
+        // matching `ZainoDB::sync_to_height`. `block_bytes` is the raw block
+        // size, the variable the sandblast (block-bloat) hypothesis turns on.
+        let blockfetch_start = Instant::now();
+        let block_bytes = match connector.get_block(height.to_string(), Some(0)).await {
+            Ok(GetBlockResponse::Raw(raw)) => Some(raw.as_ref().len()),
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!(
+                    "height {height}: getblock failed after {:.3}s: {e}",
+                    blockfetch_start.elapsed().as_secs_f64()
+                );
+                None
+            }
+        };
+        let blockfetch_secs = blockfetch_start.elapsed().as_secs_f64();
+        let block_bytes_str = block_bytes.map_or(String::new(), |b| b.to_string());
+
         // RPC #2: the validator-side cost we are isolating.
-        let rpc_start = Instant::now();
+        let treestate_start = Instant::now();
         let response = match connector.get_treestate(height.to_string()).await {
             Ok(response) => response,
             Err(e) => {
-                let rpc_secs = rpc_start.elapsed().as_secs_f64();
-                println!("{height},{rpc_secs:.6},,,");
-                eprintln!("height {height}: get_treestate failed after {rpc_secs:.3}s: {e}");
+                let treestate_secs = treestate_start.elapsed().as_secs_f64();
+                println!(
+                    "{height},{blockcount_secs:.6},{blockfetch_secs:.6},\
+                     {treestate_secs:.6},,{block_bytes_str},,"
+                );
+                eprintln!("height {height}: get_treestate failed after {treestate_secs:.3}s: {e}");
                 continue;
             }
         };
-        let rpc_secs = rpc_start.elapsed().as_secs_f64();
+        let treestate_secs = treestate_start.elapsed().as_secs_f64();
 
         // The exact parse the sync performs: deserialize each pool's frontier
         // and compute its root. Timed separately to confirm it is negligible
@@ -159,7 +200,10 @@ async fn main() -> Result<(), ProbeError> {
         });
         let parse_secs = parse_start.elapsed().as_secs_f64();
 
-        println!("{height},{rpc_secs:.6},{parse_secs:.6},{sapling_size},{orchard_size}");
+        println!(
+            "{height},{blockcount_secs:.6},{blockfetch_secs:.6},{treestate_secs:.6},\
+             {parse_secs:.6},{block_bytes_str},{sapling_size},{orchard_size}"
+        );
     }
     Ok(())
 }

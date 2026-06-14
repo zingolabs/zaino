@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """Summarize treestate_probe CSV output so the per-height cost knee is obvious.
 
-Reads the CSV emitted by the `treestate_probe` example
-(`height,rpc_seconds,parse_seconds,sapling_size,orchard_size`) and prints, per
-row, an ASCII bar scaled to the slowest `rpc_seconds`, plus split statistics
-above/below Orchard (NU5) activation. The shape of the bars shows whether — and
-where — `z_gettreestate` latency climbs.
+Reads the CSV emitted by the `treestate_probe` example and prints a per-row
+table of the per-RPC timings, then a comparison of each RPC's median latency
+below vs. at/above Orchard (NU5) activation, then an ASCII bar chart of
+`treestate_seconds` by height.
+
+The point of interest: does `treestate_seconds` climb after NU5 while
+`blockcount_seconds` (a height-independent baseline) and `blockfetch_seconds`
+stay flat? That isolates RPC #2 (commitment-tree fetch) from RPC #1 (block
+fetch) and from general validator/RPC slowdown.
+
+Column lookup is by header name, so it tolerates added/reordered columns.
 
 Usage:
-    treestate_probe ... > sweep.csv
-    ./treestate_probe_summary.py sweep.csv
+    treestate_probe ... > probe.csv
+    ./treestate_probe_summary.py probe.csv
     # or pipe:
     treestate_probe ... | ./treestate_probe_summary.py
 """
@@ -17,8 +23,7 @@ Usage:
 import sys
 
 NU5_HEIGHT = 1_687_104  # mainnet Orchard activation
-BAR_WIDTH = 48
-EIGHTHS = " ▏▎▍▌▋▊▉█"
+BAR_WIDTH = 36
 
 
 def median(values):
@@ -32,68 +37,104 @@ def median(values):
 
 
 def bar(value, scale):
-    """Unicode block bar for `value` against full-scale `scale`."""
-    if scale <= 0:
+    if scale <= 0 or value is None:
         return ""
     eighths = round((value / scale) * BAR_WIDTH * 8)
     full, rem = divmod(eighths, 8)
-    return ("█" * full) + (EIGHTHS[rem] if rem else "")
+    return ("█" * full) + (" ▏▎▍▌▋▊▉"[rem] if rem else "")
+
+
+def ms(value):
+    return f"{value * 1000:.2f}" if value is not None else "—"
 
 
 def main():
     source = open(sys.argv[1]) if len(sys.argv) > 1 else sys.stdin
+    col = {}
     rows = []
-    errors = 0
     with source:
         for line in source:
             line = line.strip()
-            if not line or line.startswith("height,"):
+            if not line:
                 continue
             parts = line.split(",")
-            try:
-                height = int(parts[0])
-                rpc = float(parts[1]) if parts[1] else None
-            except (ValueError, IndexError):
+            if line.startswith("height,"):
+                col = {name: i for i, name in enumerate(parts)}
                 continue
-            parse = float(parts[2]) if len(parts) > 2 and parts[2] else None
-            orchard = int(parts[4]) if len(parts) > 4 and parts[4] else None
-            if parse is None:  # blank parse column == RPC errored/timed out
-                errors += 1
-            rows.append((height, rpc, parse, orchard))
+            if col:
+                rows.append(parts)
 
     if not rows:
         print("no data rows found", file=sys.stderr)
         return 1
 
-    rpc_values = [r[1] for r in rows if r[1] is not None]
-    scale = max(rpc_values) if rpc_values else 0.0
+    def get(row, name):
+        """Float value of named column, or None if absent/blank/unparsable."""
+        idx = col.get(name)
+        if idx is None or idx >= len(row) or row[idx] == "":
+            return None
+        try:
+            return float(row[idx])
+        except ValueError:
+            return None
 
-    print(f"{'height':>10} {'rpc_s':>9} {'parse_s':>9} {'orchard':>11}  rpc_seconds")
-    print("-" * 78)
-    for height, rpc, parse, orchard in rows:
-        marker = "  <- NU5" if height == NU5_HEIGHT else ""
-        rpc_str = f"{rpc:9.4f}" if rpc is not None else f"{'—':>9}"
-        parse_str = f"{parse:9.4f}" if parse is not None else f"{'ERR':>9}"
-        orc_str = f"{orchard:11d}" if orchard is not None else f"{'—':>11}"
-        bar_str = bar(rpc, scale) if rpc is not None else ""
-        print(f"{height:10d} {rpc_str} {parse_str} {orc_str}  {bar_str}{marker}")
+    def height_of(row):
+        return int(row[col["height"]])
 
-    below = [r[1] for r in rows if r[0] < NU5_HEIGHT and r[1] is not None]
-    above = [r[1] for r in rows if r[0] >= NU5_HEIGHT and r[1] is not None]
-    parse_all = [r[2] for r in rows if r[2] is not None]
+    def split(name):
+        below = [get(r, name) for r in rows if height_of(r) < NU5_HEIGHT and get(r, name) is not None]
+        above = [get(r, name) for r in rows if height_of(r) >= NU5_HEIGHT and get(r, name) is not None]
+        return below, above
 
-    print("-" * 78)
-    print(f"rows: {len(rows)}   errors/timeouts: {errors}")
-    bmed, amed = median(below), median(above)
-    if below:
-        print(f"below NU5  (n={len(below):>3}): rpc median {bmed:.4f}s  max {max(below):.4f}s")
-    if above:
-        print(f"at/above   (n={len(above):>3}): rpc median {amed:.4f}s  max {max(above):.4f}s")
-    if bmed and amed and bmed > 0:
-        print(f"  -> median rpc_seconds {amed / bmed:.1f}x higher after Orchard activation")
-    if parse_all:
-        print(f"parse_seconds: median {median(parse_all):.6f}s  max {max(parse_all):.6f}s"
-              f"  ({'negligible vs RPC' if scale and median(parse_all) < scale / 20 else 'NOT negligible'})")
+    errors = sum(1 for r in rows if get(r, "parse_seconds") is None)
+
+    # --- per-row table ---
+    hdr = (f"{'height':>9} {'bcount_ms':>9} {'block_ms':>9} {'tree_ms':>9} "
+           f"{'parse_ms':>9} {'block_kb':>8} {'orchard':>11}")
+    print(hdr)
+    print("-" * len(hdr))
+    for r in rows:
+        bb = get(r, "block_bytes")
+        orc = get(r, "orchard_size")
+        block_kb = f"{bb / 1024:8.1f}" if bb is not None else f"{'—':>8}"
+        orchard = f"{int(orc):11d}" if orc is not None else f"{'—':>11}"
+        marker = "  <- NU5" if height_of(r) == NU5_HEIGHT else ""
+        print(
+            f"{height_of(r):9d} "
+            f"{ms(get(r, 'blockcount_seconds')):>9} "
+            f"{ms(get(r, 'blockfetch_seconds')):>9} "
+            f"{ms(get(r, 'treestate_seconds')):>9} "
+            f"{ms(get(r, 'parse_seconds')):>9} "
+            f"{block_kb} {orchard}{marker}"
+        )
+    print("-" * len(hdr))
+    print(f"rows: {len(rows)}   treestate errors/timeouts: {errors}")
+
+    # --- below vs at/above NU5 comparison ---
+    print("\nmedian latency below vs at/above NU5:")
+    print(f"  {'rpc':<20} {'below':>10} {'at/above':>10} {'ratio':>8}")
+    for name in ("blockcount_seconds", "blockfetch_seconds", "treestate_seconds", "parse_seconds"):
+        below, above = split(name)
+        bmed, amed = median(below), median(above)
+        ratio = f"{amed / bmed:.1f}x" if (bmed and amed and bmed > 0) else "—"
+        b = f"{bmed * 1000:.2f}ms" if bmed is not None else "—"
+        a = f"{amed * 1000:.2f}ms" if amed is not None else "—"
+        print(f"  {name:<20} {b:>10} {a:>10} {ratio:>8}")
+
+    bb_below, bb_above = split("block_bytes")
+    if bb_below or bb_above:
+        mb, ma = median(bb_below) or 0, median(bb_above) or 0
+        print(f"  {'block_bytes (KB)':<20} {mb / 1024:>9.1f} {ma / 1024:>9.1f}"
+              f"   (sandblast bloat shows here if in range)")
+
+    # --- treestate bar chart ---
+    tree_present = [get(r, "treestate_seconds") for r in rows if get(r, "treestate_seconds") is not None]
+    scale = max(tree_present) if tree_present else 0.0
+    print("\ntreestate_seconds by height:")
+    for r in rows:
+        v = get(r, "treestate_seconds")
+        marker = "  <- NU5" if height_of(r) == NU5_HEIGHT else ""
+        print(f"  {height_of(r):9d} {ms(v):>9}ms  {bar(v, scale)}{marker}")
     return 0
 
 
