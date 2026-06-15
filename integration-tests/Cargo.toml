@@ -45,7 +45,7 @@ tokio = { version = "1.38", features = ["full"] }
 # Network
 http = "1.1"
 tonic = "0.14"
-tower = { version = "0.4", features = ["buffer", "util"] }
+tower = { version = "0.5", features = ["buffer", "util"] }
 
 # Misc
 anyhow = "1.0"
