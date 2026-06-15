@@ -92,6 +92,10 @@ pub(crate) mod indexed_block;
 
 pub(crate) mod transparent_address_history;
 
+/// In-memory transparent UTXO cache that will feed the txout-set accumulator in
+/// place of per-block DB reads. Skeleton; not yet wired in.
+mod utxo_cache;
+
 // ───────────────────────── Schema v1 constants ─────────────────────────
 
 /// Full V1 schema text file.
