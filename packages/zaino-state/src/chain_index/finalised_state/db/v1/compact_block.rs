@@ -49,9 +49,10 @@ impl DbV1 {
             let raw = match txn.get(self.headers, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: validated_height.0,
+                        missing: "header",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -63,9 +64,10 @@ impl DbV1 {
             let raw = match txn.get(self.txids, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: validated_height.0,
+                        missing: "txids",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -78,9 +80,10 @@ impl DbV1 {
                 let raw = match txn.get(self.transparent, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
-                        return Err(FinalisedStateError::DataUnavailable(
-                            "block data missing from db".into(),
-                        ));
+                        return Err(FinalisedStateError::IncompleteBlock {
+                            height: validated_height.0,
+                            missing: "transparent",
+                        });
                     }
                     Err(e) => return Err(FinalisedStateError::LmdbError(e)),
                 };
@@ -103,9 +106,10 @@ impl DbV1 {
                 let raw = match txn.get(self.sapling, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
-                        return Err(FinalisedStateError::DataUnavailable(
-                            "block data missing from db".into(),
-                        ));
+                        return Err(FinalisedStateError::IncompleteBlock {
+                            height: validated_height.0,
+                            missing: "sapling",
+                        });
                     }
                     Err(e) => return Err(FinalisedStateError::LmdbError(e)),
                 };
@@ -128,9 +132,10 @@ impl DbV1 {
                 let raw = match txn.get(self.orchard, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
-                        return Err(FinalisedStateError::DataUnavailable(
-                            "block data missing from db".into(),
-                        ));
+                        return Err(FinalisedStateError::IncompleteBlock {
+                            height: validated_height.0,
+                            missing: "orchard",
+                        });
                     }
                     Err(e) => return Err(FinalisedStateError::LmdbError(e)),
                 };

@@ -174,9 +174,10 @@ impl DbV1 {
             let raw = match txn.get(self.sapling, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "sapling data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: validated_height.0,
+                        missing: "sapling",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -342,9 +343,10 @@ impl DbV1 {
             let raw = match txn.get(self.orchard, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "orchard data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: validated_height.0,
+                        missing: "orchard",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -422,9 +424,10 @@ impl DbV1 {
             let raw = match txn.get(self.commitment_tree_data, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "commitment tree data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: validated_height.0,
+                        missing: "commitment tree",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };

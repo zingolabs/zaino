@@ -216,9 +216,10 @@ impl DbV1 {
             let raw = match txn.get(self.txids, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "txid data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: validated_height.0,
+                        missing: "txids",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };

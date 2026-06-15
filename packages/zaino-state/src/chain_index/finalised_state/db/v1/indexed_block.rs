@@ -39,13 +39,18 @@ impl DbV1 {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
 
-            // Fetch header data
+            // The resolver already confirmed this height is in the chain (its header is
+            // stored), so an absent height was handled upstream as `DataUnavailable` and
+            // mapped to `Ok(None)`. A miss on any table here therefore means a
+            // present-but-incomplete block — a distinct error that must never be
+            // collapsed into "not found".
             let raw = match txn.get(self.headers, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: height.0,
+                        missing: "header",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -57,9 +62,10 @@ impl DbV1 {
             let raw = match txn.get(self.txids, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: height.0,
+                        missing: "txids",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -72,9 +78,10 @@ impl DbV1 {
             let raw = match txn.get(self.transparent, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: height.0,
+                        missing: "transparent",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -87,9 +94,10 @@ impl DbV1 {
             let raw = match txn.get(self.sapling, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: height.0,
+                        missing: "sapling",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -102,9 +110,10 @@ impl DbV1 {
             let raw = match txn.get(self.orchard, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: height.0,
+                        missing: "orchard",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
@@ -143,9 +152,10 @@ impl DbV1 {
             let raw = match txn.get(self.commitment_tree_data, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: height.0,
+                        missing: "commitment tree",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };

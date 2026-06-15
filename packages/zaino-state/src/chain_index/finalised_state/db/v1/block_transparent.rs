@@ -156,9 +156,10 @@ impl DbV1 {
             let raw = match txn.get(self.transparent, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "transparent data missing from db".into(),
-                    ));
+                    return Err(FinalisedStateError::IncompleteBlock {
+                        height: validated_height.0,
+                        missing: "transparent",
+                    });
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };

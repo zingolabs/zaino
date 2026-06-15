@@ -539,9 +539,33 @@ impl DbV1 {
         hash_or_height: HashOrHeight,
     ) -> Result<Height, FinalisedStateError> {
         match hash_or_height {
-            // Fast path: we already have the height.
-            HashOrHeight::Height(z_height) => Ok(Height::try_from(z_height.0)
-                .map_err(|_| FinalisedStateError::DataUnavailable("height out of range".into()))?),
+            // Height path: confirm the height is in the stored best chain.
+            //
+            // A height "exists" iff its header is stored. The previous validating
+            // resolver did this header read implicitly; the pure resolver must keep it
+            // so an absent height (DataUnavailable here) stays distinguishable from a
+            // block that exists but is internally incomplete (IncompleteBlock, raised by
+            // the dependent-table reads downstream). This is one hot-edge header read,
+            // not the per-input faulting reads the background validator used to perform.
+            HashOrHeight::Height(z_height) => {
+                let height = Height::try_from(z_height.0).map_err(|_| {
+                    FinalisedStateError::DataUnavailable("height out of range".into())
+                })?;
+                let hkey = height.to_bytes()?;
+
+                tokio::task::block_in_place(|| {
+                    let ro = self.env.begin_ro_txn()?;
+                    match ro.get(self.headers, &hkey) {
+                        Ok(_) => Ok::<(), FinalisedStateError>(()),
+                        Err(lmdb::Error::NotFound) => Err(FinalisedStateError::DataUnavailable(
+                            "height not found in best chain".into(),
+                        )),
+                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                    }
+                })?;
+
+                Ok(height)
+            }
 
             // Hash lookup path.
             HashOrHeight::Hash(z_hash) => {

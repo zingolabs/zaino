@@ -474,13 +474,29 @@ pub enum FinalisedStateError {
     #[error("Custom error: {0}")]
     Custom(String),
 
-    /// Requested data is missing from the finalised state.
+    /// Requested data is *absent* from the finalised state: the height is not in
+    /// the stored best chain (e.g. beyond the synced tip), or a hash is unknown.
     ///
-    /// This could be due to the databae not yet being synced or due to a bad request input.
-    ///
-    /// We could split this into 2 distinct types if needed.
+    /// This is the legitimate not-found case — distinct from
+    /// [`Self::IncompleteBlock`], which signals a block that exists but is
+    /// internally incomplete. Option-returning reads may map this to `None`.
     #[error("Missing data: {0}")]
     DataUnavailable(String),
+
+    /// A block's header exists at this height but a dependent table entry
+    /// (txids, transparent, a shielded pool, or the commitment tree) is missing
+    /// — a partial-write / inconsistent block, not an absent height.
+    ///
+    /// With the background validator removed, a read tripping over this is the
+    /// remaining signal of such an inconsistency, so it must stay an error and
+    /// never be collapsed into "not found".
+    #[error("incomplete block @ height {height}: missing {missing}")]
+    IncompleteBlock {
+        /// Height of the block whose stored data is incomplete.
+        height: u32,
+        /// The dependent table whose entry was missing.
+        missing: &'static str,
+    },
 
     /// A block is present on disk but failed internal validation.
     ///
@@ -690,6 +706,9 @@ impl From<FinalisedStateError> for ChainIndexError {
                 hash: _,
                 reason,
             } => format!("invalid block at height {height}: {reason}"),
+            FinalisedStateError::IncompleteBlock { height, missing } => {
+                format!("incomplete block at height {height}: missing {missing}")
+            }
             FinalisedStateError::Custom(err) | FinalisedStateError::Critical(err) => err.clone(),
             FinalisedStateError::LmdbError(error) => error.to_string(),
             FinalisedStateError::SerdeJsonError(error) => error.to_string(),
