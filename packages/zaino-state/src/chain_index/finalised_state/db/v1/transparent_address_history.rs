@@ -10,18 +10,6 @@ use crate::chain_index::types::Height;
 
 use super::*;
 
-/// Direction of an accumulator update.
-///
-/// Forward (`Apply`) and reverse (`Reverse`) traverse the same shared helpers; the only
-/// difference is the sign of every delta.
-#[derive(Clone, Copy)]
-enum AccumulatorDirection {
-    /// Applying a block forward (write path / migration backfill).
-    Apply,
-    /// Reversing a block (delete path).
-    Reverse,
-}
-
 /// Applies a list of UTXO entries to the multiset commitment fields of the accumulator.
 ///
 /// For each entry the digest is XORed into `hash_serialized` (XOR is self-inverse, so the same
@@ -80,7 +68,7 @@ fn apply_tx_out_set_entries_delta(
 /// Applies the in-block portion of the accumulator update.
 ///
 /// Handles both the bulk `transaction_outputs` delta and the per-tx 0↔>0 transition that
-/// counts a same-block transaction as entering (apply) or leaving (reverse) the UTXO set.
+/// counts a same-block transaction as entering the UTXO set.
 /// The positional bound check (`spent_index >= created_count`) uses the *full* output
 /// count via `spent_indices_by_tx`; the UTXO-set membership transition uses
 /// `spendable_spent_count_by_tx` which excludes unspendable outputs.
@@ -91,7 +79,6 @@ fn apply_in_block_transitions(
     spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
     spendable_spent_count_by_tx: &HashMap<TransactionHash, u32>,
     spent_total_outputs: u64,
-    direction: AccumulatorDirection,
 ) -> Result<(), FinalisedStateError> {
     let created_total = spendable_counts
         .values()
@@ -103,21 +90,15 @@ fn apply_in_block_transitions(
             })
         })?;
 
-    accumulator.transaction_outputs = match direction {
-        AccumulatorDirection::Apply => accumulator
-            .transaction_outputs
-            .checked_add(created_total)
-            .and_then(|v| v.checked_sub(spent_total_outputs)),
-        AccumulatorDirection::Reverse => accumulator
-            .transaction_outputs
-            .checked_sub(created_total)
-            .and_then(|v| v.checked_add(spent_total_outputs)),
-    }
-    .ok_or_else(|| {
-        FinalisedStateError::Custom(
-            "txout-set accumulator transaction output count underflow or overflow".to_string(),
-        )
-    })?;
+    accumulator.transaction_outputs = accumulator
+        .transaction_outputs
+        .checked_add(created_total)
+        .and_then(|v| v.checked_sub(spent_total_outputs))
+        .ok_or_else(|| {
+            FinalisedStateError::Custom(
+                "txout-set accumulator transaction output count underflow or overflow".to_string(),
+            )
+        })?;
 
     for (transaction_hash, created_count) in created_counts {
         let spent_indices = spent_indices_by_tx.get(transaction_hash);
@@ -140,15 +121,12 @@ fn apply_in_block_transitions(
         let spendable_count = spendable_counts.get(transaction_hash).copied().unwrap_or(0);
 
         if spendable_count > spent_count {
-            accumulator.transactions = match direction {
-                AccumulatorDirection::Apply => accumulator.transactions.checked_add(1),
-                AccumulatorDirection::Reverse => accumulator.transactions.checked_sub(1),
-            }
-            .ok_or_else(|| {
-                FinalisedStateError::Custom(
-                    "txout-set accumulator transaction count underflow or overflow".to_string(),
-                )
-            })?;
+            accumulator.transactions =
+                accumulator.transactions.checked_add(1).ok_or_else(|| {
+                    FinalisedStateError::Custom(
+                        "txout-set accumulator transaction count underflow or overflow".to_string(),
+                    )
+                })?;
         }
     }
 
@@ -164,15 +142,9 @@ fn apply_entry_deltas(
     accumulator: &mut FinalisedTxOutSetInfoAccumulator,
     created_entries: &[(Outpoint, TxOutCompact)],
     spent_entries: &[(Outpoint, TxOutCompact)],
-    direction: AccumulatorDirection,
 ) -> Result<(), FinalisedStateError> {
-    let (created_adding, spent_adding) = match direction {
-        AccumulatorDirection::Apply => (true, false),
-        AccumulatorDirection::Reverse => (false, true),
-    };
-
-    apply_tx_out_set_entries_delta(accumulator, created_entries, created_adding)?;
-    apply_tx_out_set_entries_delta(accumulator, spent_entries, spent_adding)?;
+    apply_tx_out_set_entries_delta(accumulator, created_entries, true)?;
+    apply_tx_out_set_entries_delta(accumulator, spent_entries, false)?;
 
     Ok(())
 }
@@ -1319,55 +1291,6 @@ impl DbV1 {
         None
     }
 
-    /// Loads each distinct prior transaction this block spends from exactly once.
-    /// Same-block references are skipped (resolved from the block itself),
-    /// batch-pending references resolve from the overlay, and everything else
-    /// costs one `txid_location` point read plus one lazy extraction from the
-    /// stored transparent list ([`DbV1::get_transparent_blocking`]) — raw reads
-    /// with no validation trigger.
-    ///
-    /// The returned memo is the single source for the accumulator's spent-output
-    /// resolution and prior-transaction transitions, replacing their former
-    /// per-input, mutually duplicated table lookups.
-    fn load_prior_transactions(
-        &self,
-        spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
-        in_block_transactions: &HashMap<TransactionHash, usize>,
-        pending: Option<&PendingBatchState>,
-    ) -> Result<HashMap<TransactionHash, TransparentCompactTx>, FinalisedStateError> {
-        tokio::task::block_in_place(|| {
-            let mut prior_transactions = HashMap::new();
-            for transaction_hash in spent_indices_by_tx.keys() {
-                if in_block_transactions.contains_key(transaction_hash) {
-                    continue;
-                }
-                if let Some((_, transparent)) =
-                    pending.and_then(|batch| batch.transactions.get(transaction_hash))
-                {
-                    let transparent = transparent.clone().ok_or_else(|| {
-                        FinalisedStateError::Custom(format!(
-                            "txout-set accumulator cannot be calculated: spent batch-pending transaction {transaction_hash:?} has no transparent transaction data"
-                        ))
-                    })?;
-                    prior_transactions.insert(*transaction_hash, transparent);
-                    continue;
-                }
-                let Some(location) = self.find_txid_index_blocking(transaction_hash)? else {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} is missing from the txid index"
-                    )));
-                };
-                let Some(transparent) = self.get_transparent_blocking(location)? else {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} has no transparent transaction data"
-                    )));
-                };
-                prior_transactions.insert(*transaction_hash, transparent);
-            }
-            Ok(prior_transactions)
-        })
-    }
-
     /// Resolves each spent outpoint to its previous [`TxOutCompact`].
     ///
     /// Same-block spends are resolved from the in-block `transactions` slice via the
@@ -1413,87 +1336,24 @@ impl DbV1 {
         Ok(resolved)
     }
 
-    /// Answers "does this operation transition the prior transaction's UTXO-set
-    /// membership?" from the in-memory unspent-output count alone, updating the
-    /// count in the same step. Returns `None` on a cache miss — including a stale
-    /// entry detected by underflow, which is dropped — in which case the caller
-    /// probes the committed spent index and repopulates the cache.
+    /// Applies the prior-block portion of the accumulator update for the block being
+    /// written.
     ///
-    /// Entries are removed at zero, so for `Reverse` (block deletion) presence
-    /// means the transaction still had unspent outputs and cannot re-enter the
-    /// set; absence is ambiguous (unknown vs fully spent) and must be probed.
-    fn cached_unspent_transition(
-        &self,
-        transaction_hash: &TransactionHash,
-        spendable_spends: u32,
-        direction: AccumulatorDirection,
-    ) -> Option<bool> {
-        let (_, count) = self.unspent_output_counts.remove(transaction_hash)?;
-        match direction {
-            AccumulatorDirection::Apply => {
-                // A count smaller than this block's spends is stale: leave the
-                // entry dropped and let the probe re-derive it.
-                let remaining = count.checked_sub(spendable_spends)?;
-                if remaining == 0 {
-                    Some(true)
-                } else {
-                    self.unspent_output_counts
-                        .insert(*transaction_hash, remaining);
-                    Some(false)
-                }
-            }
-            AccumulatorDirection::Reverse => {
-                self.unspent_output_counts
-                    .insert(*transaction_hash, count.saturating_add(spendable_spends));
-                Some(false)
-            }
-        }
-    }
-
-    /// Applies the prior-block portion of the accumulator update.
-    ///
-    /// For every transaction spent from by this block that was *not* created in this block,
-    /// reads its transparent data from `prior_transactions` (the per-block memo built by
-    /// [`DbV1::load_prior_transactions`]), checks the positional bound, and decides
-    /// whether the block drains every remaining spendable output of that prior transaction.
-    /// If so, the prior tx leaves (apply) or re-enters (reverse) the UTXO set.
-    async fn apply_prior_block_transitions(
+    /// For every transaction this block spends from that it did not itself create, the
+    /// in-memory UTXO cache holds its still-unspent spendable-output count as of just
+    /// before this block (the block's own `apply_forward` runs after the accumulator).
+    /// When the block's spendable spends drain the last of them, that prior transaction
+    /// leaves the UTXO set.
+    fn apply_prior_block_transitions(
         &self,
         accumulator: &mut FinalisedTxOutSetInfoAccumulator,
         spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
         created_in_block: &HashMap<TransactionHash, u32>,
         spendable_spent_count_by_tx: &HashMap<TransactionHash, u32>,
-        direction: AccumulatorDirection,
-        prior_transactions: &HashMap<TransactionHash, TransparentCompactTx>,
-        // Retained solely for the remaining-outputs spentness overlay below: an
-        // output spent by an uncommitted batch block is spent for this purpose.
-        pending: Option<&PendingBatchState>,
     ) -> Result<(), FinalisedStateError> {
-        for (transaction_hash, spent_indices) in spent_indices_by_tx {
+        for transaction_hash in spent_indices_by_tx.keys() {
             if created_in_block.contains_key(transaction_hash) {
                 continue;
-            }
-
-            let Some(transparent_transaction) = prior_transactions.get(transaction_hash) else {
-                return Err(FinalisedStateError::Custom(format!(
-                    "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} was not loaded into the prior-transaction map"
-                )));
-            };
-
-            let previous_output_count = u32::try_from(transparent_transaction.outputs().len())
-                .map_err(|_| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator previous transparent output count does not fit into u32"
-                            .to_string(),
-                    )
-                })?;
-
-            for spent_index in spent_indices {
-                if *spent_index >= previous_output_count {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: transaction {transaction_hash:?} spends output index {spent_index}, but the previous transaction only has {previous_output_count} transparent outputs"
-                    )));
-                }
             }
 
             let spendable_spends = spendable_spent_count_by_tx
@@ -1501,91 +1361,17 @@ impl DbV1 {
                 .copied()
                 .unwrap_or(0);
 
-            // Cache fast-path: a hit answers the transition and maintains the count
-            // with no reads at all. A miss falls back to one probe of the committed
-            // spent index, then caches the derived post-operation count so later
-            // spends of this transaction are answered from memory.
-            let transitions =
-                match self.cached_unspent_transition(transaction_hash, spendable_spends, direction)
-                {
-                    Some(transitions) => transitions,
-                    None => {
-                        // Spendable outputs of the prior tx that this block did not spend.
-                        let mut remaining_outpoints = Vec::new();
-                        for (output_index, prev_output) in
-                            transparent_transaction.outputs().iter().enumerate()
-                        {
-                            let output_index = output_index as u32;
-                            if is_unspendable_tx_out(prev_output) {
-                                continue;
-                            }
-                            if spent_indices.contains(&output_index) {
-                                continue;
-                            }
-                            remaining_outpoints
-                                .push(Outpoint::new(transaction_hash.0, output_index));
-                        }
+            let unspent_before = self
+                .transparent_utxo_cache
+                .remaining_unspent(transaction_hash);
 
-                        // Count the outputs still unspent before this operation. An output
-                        // counts as spent when either the committed spent index or the open
-                        // batch's uncommitted spends cover it.
-                        let unspent_remaining = if remaining_outpoints.is_empty() {
-                            0u32
-                        } else {
-                            let remaining_spenders =
-                                <Self as TransparentHistExt>::get_outpoint_spenders(
-                                    self,
-                                    remaining_outpoints.clone(),
-                                )
-                                .await?;
-                            u32::try_from(
-                                remaining_outpoints
-                                    .iter()
-                                    .zip(remaining_spenders)
-                                    .filter(|(outpoint, committed_spender)| {
-                                        committed_spender.is_none()
-                                            && !pending.is_some_and(|batch| {
-                                                batch.spent.contains_key(*outpoint)
-                                            })
-                                    })
-                                    .count(),
-                            )
-                            .map_err(|_| {
-                                FinalisedStateError::Custom(
-                                "txout-set accumulator remaining output count does not fit into u32"
-                                    .to_string(),
-                            )
-                            })?
-                        };
-
-                        let count_after = match direction {
-                            AccumulatorDirection::Apply => unspent_remaining,
-                            AccumulatorDirection::Reverse => {
-                                unspent_remaining.saturating_add(spendable_spends)
-                            }
-                        };
-                        if count_after > 0 {
-                            self.unspent_output_counts
-                                .insert(*transaction_hash, count_after);
-                        }
-
-                        // The prior tx leaves the UTXO set (apply) / re-enters it (reverse)
-                        // when this operation accounts for every spendable output that was
-                        // still unspent before it.
-                        unspent_remaining == 0
-                    }
-                };
-
-            if transitions {
-                accumulator.transactions = match direction {
-                    AccumulatorDirection::Apply => accumulator.transactions.checked_sub(1),
-                    AccumulatorDirection::Reverse => accumulator.transactions.checked_add(1),
-                }
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator transaction count underflow or overflow".to_string(),
-                    )
-                })?;
+            if unspent_before.saturating_sub(spendable_spends) == 0 {
+                accumulator.transactions =
+                    accumulator.transactions.checked_sub(1).ok_or_else(|| {
+                        FinalisedStateError::Custom(
+                            "txout-set accumulator transaction count underflow".to_string(),
+                        )
+                    })?;
             }
         }
 
@@ -1711,12 +1497,7 @@ impl DbV1 {
         // random disk lookup to re-establish a result the height-contiguity invariant
         // already guarantees.
 
-        // Load every distinct prior transaction this block spends from exactly once;
-        // the spent-output resolution and the prior-transaction transitions below both
-        // read from this memo instead of performing per-input table lookups.
         let txid_to_block_index = index_transactions_by_txid(transactions);
-        let prior_transactions =
-            self.load_prior_transactions(&spent_indices_by_tx, &txid_to_block_index, pending)?;
 
         let (created_entries, spent_entries, spendable_spent_count_by_tx) =
             self.build_entry_data(transactions, spent_map, &txid_to_block_index)?;
@@ -1727,19 +1508,6 @@ impl DbV1 {
             )
         })?;
 
-        // Newly-created transactions enter the unspent-count cache for free: both
-        // inputs to the net count were already computed above.
-        for (transaction_hash, spendable_created) in &spendable_counts {
-            let spent_same_block = spendable_spent_count_by_tx
-                .get(transaction_hash)
-                .copied()
-                .unwrap_or(0);
-            let net = spendable_created.saturating_sub(spent_same_block);
-            if net > 0 {
-                self.unspent_output_counts.insert(*transaction_hash, net);
-            }
-        }
-
         apply_in_block_transitions(
             &mut accumulator,
             &created_counts,
@@ -1747,119 +1515,14 @@ impl DbV1 {
             &spent_indices_by_tx,
             &spendable_spent_count_by_tx,
             spent_total_outputs,
-            AccumulatorDirection::Apply,
         )?;
         self.apply_prior_block_transitions(
             &mut accumulator,
             &spent_indices_by_tx,
             &created_counts,
             &spendable_spent_count_by_tx,
-            AccumulatorDirection::Apply,
-            &prior_transactions,
-            pending,
-        )
-        .await?;
-        apply_entry_deltas(
-            &mut accumulator,
-            &created_entries,
-            &spent_entries,
-            AccumulatorDirection::Apply,
         )?;
-
-        Ok(accumulator)
-    }
-
-    /// Calculates the finalised txout-set accumulator after deleting the tip block.
-    ///
-    /// This is the exact inverse of `calculate_tx_out_set_info_accumulator_after_block`.
-    ///
-    /// The database must still contain the block being deleted when this method is called.
-    /// The returned accumulator must be written inside the same LMDB transaction that deletes the block.
-    pub(crate) async fn calculate_tx_out_set_info_accumulator_after_delete_block(
-        &self,
-        transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-        spent_map: &HashMap<Outpoint, TxLocation>,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        let mut accumulator =
-            match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await {
-                Ok(accumulator) => accumulator,
-                Err(FinalisedStateError::DataUnavailable(_)) => {
-                    return Err(FinalisedStateError::Custom(
-                        "txout-set accumulator missing while deleting block".to_string(),
-                    ));
-                }
-                Err(error) => return Err(error),
-            };
-
-        let (created_counts, spendable_counts) = index_created_outputs(transactions)?;
-        let (spent_indices_by_tx, spent_outpoints) = index_spent_outpoints(spent_map)?;
-
-        // Reverse-direction validation: every spent outpoint from this block must be in the
-        // finalised spent index and must point to this block's TxLocation.
-        if !spent_outpoints.is_empty() {
-            let outpoints: Vec<Outpoint> = spent_outpoints.iter().map(|(o, _)| *o).collect();
-            let existing_spenders =
-                <Self as TransparentHistExt>::get_outpoint_spenders(self, outpoints).await?;
-            for ((spent_outpoint, expected_tx_location), existing_spender) in
-                spent_outpoints.iter().zip(existing_spenders)
-            {
-                let Some(existing_spender) = existing_spender else {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be reversed: spent index missing outpoint {spent_outpoint:?}"
-                    )));
-                };
-                if existing_spender != *expected_tx_location {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be reversed: outpoint {spent_outpoint:?} is spent by {existing_spender:?}, expected {expected_tx_location:?}"
-                    )));
-                }
-            }
-        }
-
-        // Deletes operate on the committed tip only; no batch overlay exists.
-        let txid_to_block_index = index_transactions_by_txid(transactions);
-        let prior_transactions =
-            self.load_prior_transactions(&spent_indices_by_tx, &txid_to_block_index, None)?;
-
-        let (created_entries, spent_entries, spendable_spent_count_by_tx) =
-            self.build_entry_data(transactions, spent_map, &txid_to_block_index)?;
-
-        let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator spent output count does not fit into u64".to_string(),
-            )
-        })?;
-
-        // The deleted block's own transactions cease to exist; drop their counts.
-        for transaction_hash in created_counts.keys() {
-            self.unspent_output_counts.remove(transaction_hash);
-        }
-
-        apply_in_block_transitions(
-            &mut accumulator,
-            &created_counts,
-            &spendable_counts,
-            &spent_indices_by_tx,
-            &spendable_spent_count_by_tx,
-            spent_total_outputs,
-            AccumulatorDirection::Reverse,
-        )?;
-        self.apply_prior_block_transitions(
-            &mut accumulator,
-            &spent_indices_by_tx,
-            &created_counts,
-            &spendable_spent_count_by_tx,
-            AccumulatorDirection::Reverse,
-            &prior_transactions,
-            None,
-        )
-        .await?;
-        apply_entry_deltas(
-            &mut accumulator,
-            &created_entries,
-            &spent_entries,
-            AccumulatorDirection::Reverse,
-        )?;
+        apply_entry_deltas(&mut accumulator, &created_entries, &spent_entries)?;
 
         Ok(accumulator)
     }
@@ -1953,7 +1616,6 @@ mod tests {
             &spent_indices_by_tx,
             &spendable_spent_count_by_tx,
             1,
-            AccumulatorDirection::Apply,
         )
         .expect("apply should succeed");
 
@@ -1985,7 +1647,6 @@ mod tests {
             &spent_indices_by_tx,
             &spendable_spent_count_by_tx,
             0,
-            AccumulatorDirection::Apply,
         )
         .expect("apply should succeed");
 
@@ -2016,51 +1677,10 @@ mod tests {
             &spent_indices_by_tx,
             &spendable_spent_count_by_tx,
             2,
-            AccumulatorDirection::Apply,
         )
         .expect("apply should succeed");
 
         assert_eq!(acc.transaction_outputs, 0, "2 created - 2 spent = 0");
         assert_eq!(acc.transactions, 0, "tx never enters UTXO set: 2 == 2");
-    }
-
-    #[test]
-    fn in_block_transitions_reverse_direction() {
-        let tx_hash = TransactionHash([0xEE; 32]);
-
-        let created_counts = HashMap::from([(tx_hash, 2)]);
-        let spendable_counts = HashMap::from([(tx_hash, 2)]);
-        let spent_indices_by_tx = HashMap::new();
-        let spendable_spent_count_by_tx = HashMap::new();
-
-        // Simulate state after writing a block that created 2 spendable outputs.
-        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
-        apply_in_block_transitions(
-            &mut acc,
-            &created_counts,
-            &spendable_counts,
-            &spent_indices_by_tx,
-            &spendable_spent_count_by_tx,
-            0,
-            AccumulatorDirection::Apply,
-        )
-        .expect("forward apply should succeed");
-
-        assert_eq!(acc.transaction_outputs, 2);
-        assert_eq!(acc.transactions, 1);
-
-        // Reverse should return to empty.
-        apply_in_block_transitions(
-            &mut acc,
-            &created_counts,
-            &spendable_counts,
-            &spent_indices_by_tx,
-            &spendable_spent_count_by_tx,
-            0,
-            AccumulatorDirection::Reverse,
-        )
-        .expect("reverse should succeed");
-
-        assert_eq!(acc, FinalisedTxOutSetInfoAccumulator::empty());
     }
 }

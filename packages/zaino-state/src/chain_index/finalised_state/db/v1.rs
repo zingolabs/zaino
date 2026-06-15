@@ -56,7 +56,6 @@ use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
 
 use async_trait::async_trait;
 use corez::io::{self, Read};
-use dashmap::DashMap;
 use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags,
 };
@@ -249,18 +248,6 @@ pub(crate) struct DbV1 {
     /// Metadata: singleton entry "metadata" -> `StoredEntryFixed<DbMetadata>`
     metadata: Database,
 
-    /// `txid` → number of currently-unspent spendable transparent outputs.
-    ///
-    /// A lazily-populated, in-memory view derived entirely from stored data:
-    /// transactions written by this process enter at write time for free, and
-    /// older transactions enter the first time one of their outputs is spent
-    /// (one probe of the spent index, after which spends of that transaction
-    /// are answered from memory). Entries are removed when their count reaches
-    /// zero, so absence means "unknown or fully spent" and readers fall back
-    /// to probing. See [`DbV1::invalidate_unspent_output_counts`] for the one
-    /// staleness rule.
-    unspent_output_counts: Arc<DashMap<TransactionHash, u32>>,
-
     /// In-memory live transparent UTXO set, maintained forward as blocks are
     /// ingested so the txout-set accumulator can resolve spent-output values and
     /// per-tx unspent counts without faulting back to the `transparent` /
@@ -391,7 +378,6 @@ impl DbV1 {
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history,
             metadata,
-            unspent_output_counts: Arc::new(DashMap::new()),
             transparent_utxo_cache: utxo_cache::TransparentUtxoCache::new(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),
@@ -926,7 +912,6 @@ impl DbV1 {
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history,
             metadata,
-            unspent_output_counts: Arc::new(DashMap::new()),
             transparent_utxo_cache: utxo_cache::TransparentUtxoCache::new(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),

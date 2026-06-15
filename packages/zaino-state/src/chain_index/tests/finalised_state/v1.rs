@@ -236,26 +236,6 @@ async fn add_blocks_to_db_and_verify() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn delete_blocks_from_db() {
-    init_tracing();
-
-    let (_test_vector_data, _db_dir, zaino_db) =
-        load_vectors_and_spawn_and_sync_v1_zaino_db().await;
-
-    for h in (1..=200).rev() {
-        // dbg!("Deleting block at height {}", h);
-        zaino_db
-            .delete_block_at_height(crate::chain_index::types::Height(h))
-            .await
-            .unwrap();
-    }
-
-    zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status());
-    dbg!(zaino_db.db_height().await.unwrap());
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn save_db_to_file_and_reload() {
     init_tracing();
 
@@ -621,84 +601,6 @@ async fn write_blocks_rejects_malformed_batches() {
     );
 }
 
-/// The unspent-output count cache is an optimization, never a semantic input:
-/// deleting blocks (which reverses cached counts) and re-writing them must
-/// reproduce the exact accumulator.
-#[tokio::test(flavor = "multi_thread")]
-async fn accumulator_roundtrips_through_delete_and_rewrite() {
-    let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
-    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
-    let (_db_dir, backend) = spawn_fresh_v1_backend().await;
-
-    for block in &chain {
-        backend.write_block(block.clone()).await.expect("write");
-    }
-    let full_accumulator = backend
-        .get_tx_out_set_info_accumulator()
-        .await
-        .expect("accumulator after full ingest");
-
-    let tip = chain.len() as u32 - 1;
-    let cut = tip - 50;
-    for height in ((cut + 1)..=tip).rev() {
-        backend
-            .delete_block_at_height(Height(height))
-            .await
-            .expect("delete tip block");
-    }
-    for block in &chain[(cut as usize + 1)..] {
-        backend.write_block(block.clone()).await.expect("re-write");
-    }
-
-    assert_eq!(
-        backend
-            .get_tx_out_set_info_accumulator()
-            .await
-            .expect("accumulator after round-trip"),
-        full_accumulator,
-    );
-}
-
-/// Forces the cold-cache (probe) path mid-ingest and requires the same
-/// accumulator as an uninterrupted warm-cache ingest — the cache must be pure
-/// optimization, with the probe fallback semantically identical.
-#[tokio::test(flavor = "multi_thread")]
-async fn accumulator_is_identical_with_cold_unspent_count_cache() {
-    let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
-    let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
-
-    let (_dir_warm, warm_backend) = spawn_fresh_v1_backend().await;
-    let (_dir_cold, cold_backend) = spawn_fresh_v1_backend().await;
-
-    for (index, block) in chain.iter().enumerate() {
-        warm_backend
-            .write_block(block.clone())
-            .await
-            .expect("warm write");
-        cold_backend
-            .write_block(block.clone())
-            .await
-            .expect("cold write");
-        if index % 32 == 0 {
-            let DbBackend::V1(db) = &cold_backend else {
-                panic!("spawn_fresh_v1_backend returned a non-V1 backend");
-            };
-            db.invalidate_unspent_output_counts();
-        }
-    }
-
-    assert_eq!(
-        warm_backend
-            .get_tx_out_set_info_accumulator()
-            .await
-            .expect("warm accumulator"),
-        cold_backend
-            .get_tx_out_set_info_accumulator()
-            .await
-            .expect("cold accumulator"),
-    );
-}
-
 /// Regression test for the `write_block` indexing loop: a fresh ingest must
 /// leave every transaction resolvable through the `txid_location` reverse
 /// index, with the location matching the transaction's position in the raw
@@ -777,33 +679,6 @@ async fn write_block_rejects_duplicate_txid() {
             .expect("db_height after rejected write"),
         Some(Height(last_vector.height - 1)),
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn try_delete_block_with_invalid_height() {
-    init_tracing();
-
-    let (TestVectorData { blocks, .. }, _db_dir, zaino_db) =
-        load_vectors_and_spawn_and_sync_v1_zaino_db().await;
-
-    zaino_db.wait_until_ready().await;
-    dbg!(zaino_db.status());
-    dbg!(zaino_db.db_height().await.unwrap());
-
-    let height = blocks.last().unwrap().clone().height;
-
-    let delete_height = height - 1;
-
-    let db_err = dbg!(
-        zaino_db
-            .delete_block_at_height(crate::chain_index::types::Height(delete_height))
-            .await
-    );
-
-    // TODO: Update with concrete err type.
-    assert!(db_err.is_err());
-
-    dbg!(zaino_db.db_height().await.unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1532,115 +1407,6 @@ fn accumulator_from_unspent_map(
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn tx_out_set_info_accumulator_updates_on_delete() {
-    init_tracing();
-
-    // Load and write all vector blocks, then delete the current tip block.
-    // The accumulator should end up matching the UTXO set for all blocks except the deleted tip.
-    let (TestVectorData { blocks, .. }, _db_dir, zaino_db) =
-        load_vectors_and_spawn_and_sync_v1_zaino_db().await;
-
-    zaino_db.wait_until_ready().await;
-
-    let deleted_block_height = Height(blocks.last().unwrap().height);
-
-    zaino_db
-        .delete_block_at_height(deleted_block_height)
-        .await
-        .unwrap();
-
-    zaino_db.wait_until_ready().await;
-
-    let db_reader = Arc::new(zaino_db).to_reader();
-
-    // Rebuild the expected UTXO set from the vector chain with the deleted tip excluded.
-    //
-    // This verifies that delete_block reverses every accumulator field:
-    //   transactions, transaction_outputs, bytes_serialized, hash_serialized, total_zatoshis.
-    let mut unspent_output_indices_by_transaction_hash: HashMap<
-        TransactionHash,
-        HashMap<u32, crate::TxOutCompact>,
-    > = HashMap::new();
-
-    for chain_block in indexed_block_chain(&blocks[..blocks.len() - 1]) {
-        for transaction in chain_block.transactions() {
-            // Remove any transparent outputs spent by this transaction.
-            for input in transaction.transparent().inputs() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let previous_transaction_hash = TransactionHash::from(*input.prevout_txid());
-
-                let unspent_output_indices = unspent_output_indices_by_transaction_hash
-                    .get_mut(&previous_transaction_hash)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "test vectors spend unknown transaction {previous_transaction_hash:?}"
-                        )
-                    });
-
-                assert!(
-                    unspent_output_indices
-                        .remove(&input.prevout_index())
-                        .is_some(),
-                    "test vectors spend unknown output: transaction {:?}, output {}",
-                    previous_transaction_hash,
-                    input.prevout_index()
-                );
-
-                if unspent_output_indices.is_empty() {
-                    unspent_output_indices_by_transaction_hash.remove(&previous_transaction_hash);
-                }
-            }
-
-            // Add this transaction's newly-created transparent outputs.
-            if transaction.transparent().outputs().is_empty() {
-                continue;
-            }
-
-            let transaction_hash = *transaction.txid();
-
-            let unspent_output_indices = unspent_output_indices_by_transaction_hash
-                .entry(transaction_hash)
-                .or_default();
-
-            for (output_index, output) in transaction.transparent().outputs().iter().enumerate() {
-                // The accumulator skips NonStandard (unspendable) outputs — see
-                // `is_unspendable_tx_out` in
-                // `chain_index::types::db::metadata`. The oracle must mirror that.
-                if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
-                    continue;
-                }
-
-                let output_index = u32::try_from(output_index).unwrap();
-
-                assert!(
-                    unspent_output_indices
-                        .insert(output_index, *output)
-                        .is_none(),
-                    "test vectors duplicate output index: transaction {transaction_hash:?}, output {output_index}"
-                );
-            }
-
-            // If the transaction had only NonStandard outputs, drop the empty entry so it
-            // doesn't inflate the expected `transactions` count.
-            if unspent_output_indices.is_empty() {
-                unspent_output_indices_by_transaction_hash.remove(&transaction_hash);
-            }
-        }
-    }
-
-    let expected_accumulator =
-        accumulator_from_unspent_map(&unspent_output_indices_by_transaction_hash);
-
-    // Check the accumulator persisted by delete_block_at_height/delete_block.
-    let actual_accumulator = db_reader.get_tx_out_set_info_accumulator().await.unwrap();
-
-    assert_eq!(expected_accumulator, actual_accumulator);
-}
-
 use sha2::{Digest, Sha256};
 
 /// Double-SHA-256 (SHA256d), as used by Bitcoin/Zcash headers and merkle nodes.
@@ -1986,54 +1752,5 @@ async fn maintain_keeps_transparent_utxo_cache_live_during_sync() {
     assert_eq!(
         live, expected,
         "maintained cache must equal the live unspent transparent set during sync"
-    );
-}
-
-/// Deleting the tip reseeds the cache to the post-delete unspent set. delete is the
-/// finalised rollback/correction path (not reorgs — those stay in the NFS); the cache
-/// is reseeded from committed state rather than precisely inverted.
-///
-/// `multi_thread` is required: spawn/write/delete run LMDB access under `block_in_place`.
-#[tokio::test(flavor = "multi_thread")]
-async fn delete_block_reseeds_transparent_utxo_cache() {
-    use crate::chain_index::finalised_state::db::v1::DbV1;
-
-    init_tracing();
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let config = BlockCacheConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: temp_dir.path().to_path_buf(),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
-    };
-
-    let blocks = load_test_vectors().unwrap().blocks;
-    let prefix = 60;
-
-    let db = DbV1::spawn(&config).await.unwrap();
-    for block in indexed_block_chain(&blocks).take(prefix) {
-        db.write_block(block).await.unwrap();
-    }
-
-    // Delete the tip; the cache must reflect the chain without it.
-    db.delete_block_at_height(Height(prefix as u32 - 1))
-        .await
-        .unwrap();
-    let after_delete = db.transparent_utxo_cache_snapshot();
-
-    let expected = expected_unspent_transparent_utxos(&blocks, prefix - 1);
-    assert!(
-        !expected.is_empty(),
-        "vectors must exercise some unspent transparent outputs"
-    );
-    assert_eq!(
-        after_delete, expected,
-        "cache must equal the unspent set after deleting the tip block"
     );
 }
