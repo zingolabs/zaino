@@ -651,6 +651,14 @@ impl DbV1 {
         })
     }
 
+    /// Reconstructs the cache from committed state, discarding any in-memory build-time
+    /// updates a failed or aborted write left behind. The delete path and the
+    /// write-failure paths call this to bring the cache back in line with the durable DB.
+    fn reseed_transparent_utxo_cache(&self) -> Result<(), FinalisedStateError> {
+        self.transparent_utxo_cache.clear();
+        self.seed_transparent_utxo_cache()
+    }
+
     /// Provides access to the finalised txout-set accumulator DB table.
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
         self.tx_out_set_info_accumulator

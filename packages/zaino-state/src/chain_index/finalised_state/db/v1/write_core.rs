@@ -124,7 +124,7 @@ impl DbV1 {
             return Ok(());
         }
 
-        let (data, transparent_delta) = self.build_block_write_data(&block, None).await?;
+        let data = self.build_block_write_data(&block, None).await?;
 
         // if any database writes fail, remove block from database and return err.
         let zaino_db = self.task_clone();
@@ -140,12 +140,6 @@ impl DbV1 {
             // The write path does not validate: the background validator was removed, so
             // committed records are served without a read-back/re-hash pass.
             txn.commit()?;
-
-            // Maintain the in-memory UTXO cache only after the block is durably
-            // committed, so a failed commit never mutates it.
-            zaino_db
-                .transparent_utxo_cache
-                .apply_forward(&transparent_delta);
 
             Ok::<_, FinalisedStateError>(())
         });
@@ -237,7 +231,9 @@ impl DbV1 {
 
                 match verification_result {
                     Ok(_) => {
-                        // Block was already written correctly by another process
+                        // Block already written by another process; our build-time cache
+                        // update may not match the shared DB, so reseed from committed state.
+                        self.reseed_transparent_utxo_cache()?;
                         self.status.store(StatusType::Ready);
                         info!(
                             "Block {} at height {} was already written by another process, skipping.",
@@ -270,9 +266,10 @@ impl DbV1 {
                 self.invalidate_unspent_output_counts();
 
                 if matches!(e, FinalisedStateError::LmdbError(lmdb::Error::MapFull)) {
-                    // The transaction aborted atomically: nothing was committed, the
-                    // database is intact, and there is no block to delete — only the
-                    // configured size cap was reached.
+                    // The transaction aborted atomically: nothing was committed and the
+                    // database is intact (only the size cap was reached), but the build
+                    // phase already applied this block to the cache — reseed.
+                    self.reseed_transparent_utxo_cache()?;
                     self.status.store(StatusType::RecoverableError);
                     return Err(self.map_full_config_error());
                 }
@@ -312,8 +309,7 @@ impl DbV1 {
         &self,
         block: &IndexedBlock,
         pending: Option<&PendingBatchState>,
-    ) -> Result<(BlockWriteData, transparent_delta::TransparentBlockDelta), FinalisedStateError>
-    {
+    ) -> Result<BlockWriteData, FinalisedStateError> {
         let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
         let block_height = block.context.index.height;
@@ -517,6 +513,13 @@ impl DbV1 {
             )
             .await?;
 
+        // Maintain the in-memory UTXO cache at build time, *after* this block's
+        // accumulator has read the pre-block cache, so that within a batch the next
+        // block's accumulator sees this block's transparent state. A failed or aborted
+        // commit reseeds the cache (write_block / write_blocks), so this build-time
+        // update never outlives a write that did not durably land.
+        self.transparent_utxo_cache.apply_forward(&transparent_delta);
+
         // Split the paired vector into the per-table shapes used for storage.
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
@@ -544,31 +547,28 @@ impl DbV1 {
             &tx_out_set_info_accumulator,
         )?;
 
-        Ok((
-            BlockWriteData {
-                block_hash,
-                block_height,
-                block_hash_bytes,
-                block_height_bytes,
-                height_entry_bytes,
-                header_entry_bytes,
-                commitment_tree_entry_bytes,
-                txid_location_entries,
-                txid_entry_bytes,
-                transparent_entry_bytes,
-                sapling_entry_bytes,
-                orchard_entry_bytes,
-                spent_entries,
-                spent_map,
-                tx_out_set_info_accumulator,
-                tx_out_set_info_accumulator_entry_bytes,
-                #[cfg(feature = "transparent_address_history_experimental")]
-                addrhist_inputs_map,
-                #[cfg(feature = "transparent_address_history_experimental")]
-                addrhist_outputs_map,
-            },
-            transparent_delta,
-        ))
+        Ok(BlockWriteData {
+            block_hash,
+            block_height,
+            block_hash_bytes,
+            block_height_bytes,
+            height_entry_bytes,
+            header_entry_bytes,
+            commitment_tree_entry_bytes,
+            txid_location_entries,
+            txid_entry_bytes,
+            transparent_entry_bytes,
+            sapling_entry_bytes,
+            orchard_entry_bytes,
+            spent_entries,
+            spent_map,
+            tx_out_set_info_accumulator,
+            tx_out_set_info_accumulator_entry_bytes,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            addrhist_inputs_map,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            addrhist_outputs_map,
+        })
     }
 
     /// Packs one address-history record and encodes its stored entry under
@@ -856,14 +856,11 @@ impl DbV1 {
         // of earlier batch blocks (accumulator, transactions, spends), so batch blocks
         // may freely spend outputs their batch created.
         let mut batch_data = Vec::with_capacity(blocks.len());
-        let mut batch_deltas = Vec::with_capacity(blocks.len());
         let mut pending = PendingBatchState::new();
         for block in blocks {
-            let (data, transparent_delta) =
-                self.build_block_write_data(block, Some(&pending)).await?;
+            let data = self.build_block_write_data(block, Some(&pending)).await?;
             pending.absorb(block, &data);
             batch_data.push(data);
-            batch_deltas.push(transparent_delta);
         }
 
         let zaino_db = self.task_clone();
@@ -875,12 +872,6 @@ impl DbV1 {
             // One durable commit (data + meta fsync) for the whole batch. The write path does
             // not validate; the background validator was removed.
             txn.commit()?;
-            // Maintain the UTXO cache only after the batch is durably committed.
-            for transparent_delta in &batch_deltas {
-                zaino_db
-                    .transparent_utxo_cache
-                    .apply_forward(transparent_delta);
-            }
             Ok::<_, FinalisedStateError>(())
         });
 
@@ -905,8 +896,9 @@ impl DbV1 {
             Err(e) => {
                 // Every failure here precedes a successful commit, and LMDB commits are
                 // atomic, so nothing was persisted on disk — but the build phase already
-                // applied this batch's unspent-count updates in memory.
+                // applied this batch's unspent-count updates and UTXO cache in memory.
                 self.invalidate_unspent_output_counts();
+                self.reseed_transparent_utxo_cache()?;
 
                 if matches!(e, FinalisedStateError::LmdbError(lmdb::Error::MapFull)) {
                     self.status.store(StatusType::RecoverableError);
@@ -1354,8 +1346,7 @@ impl DbV1 {
         // reseed is cheaper and simpler than threading spent-output values through a
         // precise inverse. (`block_in_place` inside the seed is valid here, in the
         // async context, but would not be inside the blocking delete closure above.)
-        self.transparent_utxo_cache.clear();
-        self.seed_transparent_utxo_cache()?;
+        self.reseed_transparent_utxo_cache()?;
 
         Ok(())
     }
