@@ -1290,8 +1290,14 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
         TransactionHash,
         HashMap<u32, crate::TxOutCompact>,
     > = HashMap::new();
+    // Records the block each transaction's outputs first appear in, so the assertion
+    // below can confirm the vectors exercise a *cross-block* last-output spend: the
+    // tx-count decrement that the cache-only accumulator (apply_prior_block_transitions
+    // via remaining_unspent) now solely relies on.
+    let mut tx_created_at_block: HashMap<TransactionHash, usize> = HashMap::new();
+    let mut cross_block_tx_fully_spent = 0usize;
 
-    for chain_block in indexed_block_chain(&blocks) {
+    for (block_index, chain_block) in indexed_block_chain(&blocks).enumerate() {
         for transaction in chain_block.transactions() {
             // First apply spends, removing spent transparent outputs from the expected UTXO set.
             for input in transaction.transparent().inputs() {
@@ -1319,8 +1325,17 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
                 );
 
                 // If a transaction has no remaining unspent outputs, it should no longer
-                // contribute to the accumulator's `transactions` count.
+                // contribute to the accumulator's `transactions` count. Count the case where
+                // the drained transaction was created in an *earlier* block — the cross-block
+                // decrement apply_prior_block_transitions handles via remaining_unspent (as
+                // opposed to a same-block drain, handled by apply_in_block_transitions).
                 if unspent_output_indices.is_empty() {
+                    if tx_created_at_block
+                        .get(&previous_transaction_hash)
+                        .is_some_and(|&created| created < block_index)
+                    {
+                        cross_block_tx_fully_spent += 1;
+                    }
                     unspent_output_indices_by_transaction_hash.remove(&previous_transaction_hash);
                 }
             }
@@ -1331,6 +1346,9 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
             }
 
             let transaction_hash = *transaction.txid();
+            tx_created_at_block
+                .entry(transaction_hash)
+                .or_insert(block_index);
 
             let unspent_output_indices = unspent_output_indices_by_transaction_hash
                 .entry(transaction_hash)
@@ -1361,6 +1379,13 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
             }
         }
     }
+
+    assert!(
+        cross_block_tx_fully_spent > 0,
+        "regtest vectors must exercise at least one cross-block last-output spend; \
+         otherwise the cache-only accumulator's tx-count decrement \
+         (apply_prior_block_transitions via remaining_unspent) goes unverified"
+    );
 
     let expected_accumulator =
         accumulator_from_unspent_map(&unspent_output_indices_by_transaction_hash);

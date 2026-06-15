@@ -1,25 +1,20 @@
-//! In-memory transparent UTXO cache for the txout-set accumulator.
-//!
-//! **SKELETON** — design under review, not yet wired into the accumulator. Its
-//! items are `#[allow(dead_code)]` until the staged wiring below lands.
+//! In-memory transparent UTXO cache: the txout-set accumulator's source of
+//! spent-output values and per-transaction unspent counts.
 //!
 //! # Why
 //!
-//! `calculate_tx_out_set_info_accumulator_after_block` resolves, per spent
-//! transparent input, three things by reading the database:
+//! `calculate_tx_out_set_info_accumulator_after_block` needs, per spent transparent
+//! input, the spent output's value and its source transaction's remaining-unspent
+//! count. Reading those from disk means, per block, random B+tree page faults on the
+//! `transparent`, `txid_location`, and `spent` tables — and once those indexes exceed
+//! RAM that is the dominant cost of the sync slowdown (see the
+//! `project_sync_write_path_read_audit` memory).
 //!
-//! - the spent output's value     → `transparent` table (a cold historical read)
-//! - the spent output's identity  → `txid_location` table (a random read)
-//! - a prior tx's remaining-unspent count → `spent` table (a random read on
-//!   the `unspent_output_counts` cache miss)
-//!
-//! Once those indexes exceed RAM these become random B+tree page faults on the
-//! write-hot path — the dominant cost of the sync slowdown (see the
-//! `project_sync_write_path_read_audit` memory). But a *forward* sync observes
-//! every transparent output, value included (`TxOutCompact` carries `value`), at
-//! the moment it ingests the creating block. Every output is created before it
-//! is spent, so all three answers can be served from carried-forward memory
-//! instead of faulting back to disk.
+//! A *forward* sync, though, observes every transparent output — value included
+//! (`TxOutCompact` carries `value`) — at the moment it ingests the creating block, and
+//! every output is created before it is spent. So this cache carries that information
+//! forward in memory and serves both answers ([`value_of`], [`remaining_unspent`])
+//! without touching disk.
 //!
 //! # What this holds
 //!
@@ -28,35 +23,26 @@
 //! - `outputs`:        outpoint → its unspent output (the value).  [value resolution]
 //! - `unspent_per_tx`: txid     → count of its still-unspent outputs.  [tx count]
 //!
-//! `unspent_per_tx` **subsumes [`super::DbV1`]'s `unspent_output_counts`**: that
-//! field's role — the per-tx unspent count, today a cache that falls back to a
-//! `spent` read on a miss — moves here and becomes authoritative, leaving one
-//! owning cache instead of two overlapping ones.
+//! # Lifecycle
 //!
-//! # Constraint honored
+//! Purely in-memory *derived* state: no schema change, nothing new persisted, and
+//! reconstructable from the committed `transparent` and `spent` tables at any time.
 //!
-//! No schema change. This is purely in-memory *derived* state, reconstructable
-//! from the committed `transparent` and `spent` tables; nothing new is persisted.
-//!
-//! # Lifecycle (staged wiring — each stage compiles and is independently verifiable)
-//!
-//! 1. **Seed on open.** `DbV1` scans committed `transparent` minus `spent` and
-//!    calls [`TransparentUtxoCache::record_created`] for each unspent output. A
-//!    no-op for a from-genesis sync; a one-time scan on resume, before the first
-//!    new block. (Reconstruct-on-open is what keeps this schema-free.)
-//! 2. **Maintain on commit.** The block-write path calls `record_created` /
-//!    `record_spent` as it commits. Run alongside the existing accumulator and
-//!    assert the served values match before relying on it.
-//! 3. **Flip the reads.** Point the accumulator at [`value_of`] /
-//!    [`remaining_unspent`], then delete `load_prior_transactions`, the
-//!    `get_outpoint_spenders` unspent-count read, and `DbV1::unspent_output_counts`.
-//! 4. **Reorg.** `delete_block` inverts the maintenance: re-insert the block's
-//!    spent outputs, remove the ones it created.
+//! - **Seed on open** (`DbV1::seed_transparent_utxo_cache`): two sequential scans of
+//!   the committed tables rebuild the unspent set — a no-op at genesis, a one-time scan
+//!   on resume before the first new block.
+//! - **Maintain at build time** ([`apply_forward`]): the block-write path records
+//!   created outputs and removes spent ones as it builds each block, so the accumulator
+//!   reads the pre-block state. A write that does not durably land reseeds from committed
+//!   state.
+//! - **Reset is re-derive-forward**: there is no in-place reverse. A rollback (V1 does
+//!   not support tip deletion) reseeds via [`clear`] + seed, matching the append-only
+//!   design (`docs/decision_records/finalised_state/append_only_design.md`).
 //!
 //! [`value_of`]: TransparentUtxoCache::value_of
 //! [`remaining_unspent`]: TransparentUtxoCache::remaining_unspent
-
-#![allow(dead_code)] // skeleton: wired in stages (see module docs)
+//! [`apply_forward`]: TransparentUtxoCache::apply_forward
+//! [`clear`]: TransparentUtxoCache::clear
 
 use std::sync::Arc;
 
@@ -105,10 +91,18 @@ impl TransparentUtxoCache {
         let removed = self.outputs.remove(outpoint).map(|(_, output)| output);
         if removed.is_some() {
             let txid = TransactionHash::from(*outpoint.prev_txid());
-            if let Some(mut count) = self.unspent_per_tx.get_mut(&txid) {
+            // Decrement the source tx's unspent count, dropping the entry at zero so the
+            // map holds only transactions that still have unspent outputs (otherwise it
+            // would grow one stale entry per fully-spent transaction over a long sync).
+            if let dashmap::mapref::entry::Entry::Occupied(mut entry) =
+                self.unspent_per_tx.entry(txid)
+            {
+                let count = entry.get_mut();
                 *count = count.saturating_sub(1);
+                if *count == 0 {
+                    entry.remove();
+                }
             }
-            // count == 0 entries are pruned during stage-3 wiring.
         }
         removed
     }

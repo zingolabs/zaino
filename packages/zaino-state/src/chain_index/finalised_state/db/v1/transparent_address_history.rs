@@ -1464,6 +1464,12 @@ impl DbV1 {
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         // Continue from the open batch's accumulator when one exists; otherwise load the
         // stored value. Only a fresh empty DB writing genesis may start from zero.
+        //
+        // This is the accumulator's only database read: a single-entry, hot, sequential
+        // load of the prior accumulator, taken at most once per batch (the first block).
+        // It is NOT a per-input faulting read — those (the spent-output value and the
+        // prior-tx unspent count) are now served from the in-memory UTXO cache, which is
+        // what removes the random page faults that were the sync cliff.
         let mut accumulator = match pending.and_then(|batch| batch.accumulator) {
             Some(accumulator) => accumulator,
             None => match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await
