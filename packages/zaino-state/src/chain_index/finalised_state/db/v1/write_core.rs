@@ -137,9 +137,8 @@ impl DbV1 {
             // `txn.commit()` is durable: the LMDB env is opened without NO_SYNC, so commit
             // fsyncs the data and meta pages — atomicity and durability come from LMDB.
             //
-            // No inline validation: the background validator task verifies committed
-            // heights concurrently, and reads above `validated_tip` validate on demand,
-            // so the write path never pays the read-back/re-hash pass.
+            // The write path does not validate: the background validator was removed, so
+            // committed records are served without a read-back/re-hash pass.
             txn.commit()?;
 
             Ok::<_, FinalisedStateError>(())
@@ -757,8 +756,8 @@ impl DbV1 {
 
     /// Clone of `self` for a background task (write, validation/scan, or compact-block
     /// streaming): shares the LMDB env, table handles, and shared atomics, but starts
-    /// with an empty `db_handler` slot. `validated_set` is cloned by value (a snapshot),
-    /// matching the long-standing behavior of every task clone.
+    /// with an empty `db_handler` slot, matching the long-standing behavior of every
+    /// task clone.
     pub(super) fn task_clone(&self) -> Self {
         Self {
             env: Arc::clone(&self.env),
@@ -806,9 +805,8 @@ impl DbV1 {
     ///
     /// ## Verification
     ///
-    /// No inline validation: the background validator verifies committed heights
-    /// concurrently, and reads above `validated_tip` validate on demand, keeping the
-    /// read-back/re-hash pass off the writer's critical path.
+    /// The write path does not validate. The background validator was removed; committed
+    /// records are served without a read-back/re-hash pass.
     pub(crate) async fn write_blocks(
         &self,
         blocks: &[IndexedBlock],

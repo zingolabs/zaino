@@ -214,10 +214,10 @@ fn stored_entry_fixed_encode() {
 }
 
 /// Per-entry decode + checksum-verify cost — the read-path twin of
-/// [`stored_entry_fixed_encode`]. This is what every validation read-back
-/// (e.g. `validate_block_blocking` after each commit) pays per entry;
-/// sensitive to `verify` re-serializing the decoded item per candidate
-/// version instead of hashing the stored bytes.
+/// [`stored_entry_fixed_encode`]. This is what a checksum-verifying read-back
+/// (metadata load, migrations) pays per entry; sensitive to `verify`
+/// re-serializing the decoded item per candidate version instead of hashing
+/// the stored bytes.
 #[test]
 #[ignore = "benchmark: run with `cargo nextest run -p zaino-state --run-ignored ignored-only --no-capture benchmarks`"]
 fn stored_entry_fixed_decode_verify() {

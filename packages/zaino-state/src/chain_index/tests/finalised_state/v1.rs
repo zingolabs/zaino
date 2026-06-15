@@ -1640,3 +1640,126 @@ async fn tx_out_set_info_accumulator_updates_on_delete() {
 
     assert_eq!(expected_accumulator, actual_accumulator);
 }
+
+use sha2::{Digest, Sha256};
+
+/// Double-SHA-256 (SHA256d), as used by Bitcoin/Zcash headers and merkle nodes.
+/// Input and output are raw bytes; no endianness conversion is performed.
+fn sha256d(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    Digest::update(&mut hasher, data);
+    let first = hasher.finalize_reset();
+    Digest::update(&mut hasher, first);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
+/// Merkle root of a block's txids, in the internal (little-endian) byte order the
+/// stored header records — no byte-order transform is applied. The final node is
+/// duplicated on odd-width layers, matching the Bitcoin/Zcash merkle rule.
+fn merkle_root_from_txids(txids: &[[u8; 32]]) -> [u8; 32] {
+    assert!(
+        !txids.is_empty(),
+        "block must contain at least the coinbase"
+    );
+    let mut layer: Vec<[u8; 32]> = txids.to_vec();
+    while layer.len() > 1 {
+        layer = layer
+            .chunks(2)
+            .map(|chunk| {
+                let left = &chunk[0];
+                let right = if chunk.len() == 2 {
+                    &chunk[1]
+                } else {
+                    &chunk[0]
+                };
+                let mut buf = [0u8; 64];
+                buf[..32].copy_from_slice(left);
+                buf[32..].copy_from_slice(right);
+                sha256d(&buf)
+            })
+            .collect();
+    }
+    layer[0]
+}
+
+/// Block self-consistency across the finalised state — the checks the removed
+/// background validator performed, now asserted directly over the real regtest
+/// test-vector chain (201 blocks with transparent payments) after it is written
+/// through the public write path and read back through the public reader.
+///
+/// Per block, all four invariants the validator enforced:
+///   1. hash ↔ height agreement, both directions.
+///   2. parent-hash continuity along the stored chain.
+///   3. the header merkle root re-derives from the stored txid list.
+///   4. every non-coinbase transparent input is recorded in the spent index as
+///      spent by exactly its `(height, tx_index)`.
+///
+/// `multi_thread` is required: the reader runs LMDB access under `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn finalised_blocks_are_self_consistent() {
+    init_tracing();
+
+    let (TestVectorData { blocks, .. }, _db_dir, _zaino_db, reader) =
+        load_vectors_v1db_and_reader().await;
+    let (indexed_blocks, _tx_by_index) = index_test_vector_blocks(&blocks);
+
+    let mut prev_hash = None;
+    for chain_block in &indexed_blocks {
+        let height = chain_block.height();
+        let h = height.0;
+
+        // Header is read straight from the stored headers table.
+        let header = reader.get_block_header(height).await.unwrap();
+        let stored_hash = *header.context.hash();
+
+        // (1) hash <-> height agreement, both directions.
+        assert_eq!(
+            reader.get_block_height(stored_hash).await.unwrap(),
+            Some(height),
+            "hash->height disagreement at height {h}",
+        );
+        assert_eq!(
+            reader.get_block_hash(height).await.unwrap(),
+            Some(stored_hash),
+            "height->hash disagreement at height {h}",
+        );
+
+        // (2) parent-hash continuity along the stored chain.
+        if let Some(prev) = prev_hash {
+            assert_eq!(
+                *header.context.parent_hash(),
+                prev,
+                "parent-hash break at height {h}",
+            );
+        }
+        prev_hash = Some(stored_hash);
+
+        // (3) the header merkle root re-derives from the stored txid list.
+        let txid_list = reader.get_block_txids(height).await.unwrap();
+        let txids: Vec<[u8; 32]> = txid_list.txids().iter().map(|txid| txid.0).collect();
+        assert_eq!(
+            merkle_root_from_txids(&txids),
+            *header.data().merkle_root(),
+            "merkle-root mismatch at height {h}",
+        );
+
+        // (4) every non-coinbase transparent input is recorded in the spent index
+        // as spent by exactly this transaction's (height, tx_index).
+        for tx in chain_block.transactions() {
+            let spent_by = TxLocation::new(h, tx.index() as u16);
+            for input in tx.transparent().inputs() {
+                if input.is_null_prevout() {
+                    continue;
+                }
+                let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                assert_eq!(
+                    reader.get_outpoint_spender(outpoint).await.unwrap(),
+                    Some(spent_by),
+                    "spent-index mismatch for {outpoint:?} at height {h}",
+                );
+            }
+        }
+    }
+}
