@@ -1812,3 +1812,52 @@ async fn get_chain_block_beyond_tip_is_none() {
         "a height beyond the tip must read as absent (None), not error",
     );
 }
+
+/// The inverse of [`get_chain_block_beyond_tip_is_none`], and the invariant the
+/// whole discrimination is built around: a height whose header is present but
+/// whose dependent table is gone reads as `Err(IncompleteBlock)`, never `Ok(None)`.
+///
+/// With the background validator removed, a read is the last place such a
+/// partial-write inconsistency surfaces, so collapsing it into "not found" would
+/// silently lose the signal. This guards against a future change that broadens the
+/// None-mapping or maps IncompleteBlock to None "to simplify".
+///
+/// `multi_thread` is required: the reader runs LMDB access under `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn incomplete_block_reads_as_error_not_none() {
+    use crate::ZainoVersionedSerde as _;
+    use lmdb::Transaction as _;
+
+    init_tracing();
+
+    let (_db_dir, backend) = spawn_fresh_v1_backend().await;
+    let TestVectorData { blocks, .. } = load_test_vectors().unwrap();
+    // A short contiguous prefix is enough; the victim is mid-chain, not the tip.
+    for block in indexed_block_chain(&blocks).take(6) {
+        backend.write_block(block).await.unwrap();
+    }
+
+    // Corrupt one height in place: delete its txids entry but leave its header,
+    // producing a header-present-but-incomplete block. The validator is gone, so
+    // there is no background writer and a direct RW txn on the shared env is safe.
+    let victim = Height(3);
+    let victim_key = victim.to_bytes().unwrap();
+    {
+        let env = backend.env();
+        let txids_db = backend.txids_db().unwrap();
+        let mut txn = env.begin_rw_txn().unwrap();
+        txn.del(txids_db, &victim_key, None).unwrap();
+        txn.commit().unwrap();
+    }
+
+    match backend.get_chain_block(victim).await {
+        Err(FinalisedStateError::IncompleteBlock { height, missing }) => {
+            assert_eq!(height, victim.0);
+            assert_eq!(missing, "txids");
+        }
+        other => panic!(
+            "header-present-but-txids-missing must surface as \
+             IncompleteBlock {{ missing: \"txids\" }}, got {other:?}"
+        ),
+    }
+}

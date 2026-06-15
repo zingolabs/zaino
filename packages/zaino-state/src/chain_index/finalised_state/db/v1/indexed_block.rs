@@ -39,19 +39,16 @@ impl DbV1 {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
 
-            // The resolver already confirmed this height is in the chain (its header is
-            // stored), so an absent height was handled upstream as `DataUnavailable` and
-            // mapped to `Ok(None)`. A miss on any table here therefore means a
-            // present-but-incomplete block — a distinct error that must never be
-            // collapsed into "not found".
+            // The header is the block's existence anchor. The resolver confirmed it
+            // moments ago, so a miss here means the block was deleted between the two
+            // read txns — a reorg, and delete_block is atomic, so the whole block is
+            // gone. That is "absent in this snapshot", not corruption: map it to
+            // Ok(None). A miss on a *dependent* table below (header present, that table
+            // gone within the same txn) is a present-but-incomplete block and stays an
+            // error.
             let raw = match txn.get(self.headers, &height_bytes) {
                 Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::IncompleteBlock {
-                        height: height.0,
-                        missing: "header",
-                    });
-                }
+                Err(lmdb::Error::NotFound) => return Ok(None),
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
             let header: BlockHeaderData = *StoredEntryVar::from_bytes(raw)
