@@ -496,21 +496,10 @@ impl DbV1 {
 
         // Derive the block's transparent delta once; the spent index (here), the
         // accumulator, and (in later stages) the UTXO cache all consume it instead of
-        // re-walking the transactions. Building `spent_map` rejects a duplicate
-        // transparent spend within the block.
+        // re-walking the transactions.
         let transparent_delta =
             transparent_delta::block_transparent_delta(block_height, &transactions)?;
-        let mut spent_map: HashMap<Outpoint, TxLocation> =
-            HashMap::with_capacity(transparent_delta.spent.len());
-        for (outpoint, tx_location) in &transparent_delta.spent {
-            if spent_map.insert(*outpoint, *tx_location).is_some() {
-                return Err(FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: format!("duplicate transparent spend for outpoint {outpoint:?}"),
-                });
-            }
-        }
+        let spent_map = transparent_delta::spent_map_from_delta(&transparent_delta);
 
         let tx_out_set_info_accumulator = self
             .calculate_tx_out_set_info_accumulator_after_block(
@@ -1162,17 +1151,7 @@ impl DbV1 {
         // accumulator and the spent-index removal below.
         let transparent_delta =
             transparent_delta::block_transparent_delta(block_height, &transactions)?;
-        let mut spent_map: HashMap<Outpoint, TxLocation> =
-            HashMap::with_capacity(transparent_delta.spent.len());
-        for (outpoint, tx_location) in &transparent_delta.spent {
-            if spent_map.insert(*outpoint, *tx_location).is_some() {
-                return Err(FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: format!("duplicate transparent spend for outpoint {outpoint:?}"),
-                });
-            }
-        }
+        let spent_map = transparent_delta::spent_map_from_delta(&transparent_delta);
 
         let tx_out_set_info_accumulator = self
             .calculate_tx_out_set_info_accumulator_after_delete_block(&transactions, &spent_map)

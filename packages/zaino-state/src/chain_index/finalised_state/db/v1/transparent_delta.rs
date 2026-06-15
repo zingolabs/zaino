@@ -68,3 +68,14 @@ pub(super) fn block_transparent_delta(
 
     Ok(TransparentBlockDelta { created, spent })
 }
+
+/// Builds the `outpoint -> spending-tx location` map the write path stores and the
+/// accumulator consumes, shared by the forward write and the reverse delete.
+///
+/// No within-block duplicate-spend check: a duplicate transparent spend is a
+/// double-spend, which consensus forbids and the source (zebra) already rejected, so
+/// the check could only ever pass. (It was the in-memory sibling of the cross-block
+/// double-spend read already removed from the accumulator path.)
+pub(super) fn spent_map_from_delta(delta: &TransparentBlockDelta) -> HashMap<Outpoint, TxLocation> {
+    delta.spent.iter().copied().collect()
+}

@@ -1861,3 +1861,76 @@ async fn incomplete_block_reads_as_error_not_none() {
         ),
     }
 }
+
+/// Seed-on-open reconstructs the live unspent transparent set: write a contiguous
+/// prefix, drop the database (so nothing maintains the cache), reopen it, and assert
+/// the seeded cache equals the unspent set derived independently from the vectors —
+/// every spendable created output, minus everything spent. Guards the seed's
+/// two-scan reconstruction (and the `transparent`↔`txids` pairing) against drift.
+///
+/// `multi_thread` is required: spawn/write run LMDB access under `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn seed_reconstructs_transparent_utxo_cache_on_open() {
+    use crate::chain_index::finalised_state::db::v1::DbV1;
+    use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
+
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let prefix = 60;
+
+    // Write a contiguous prefix, then drop the db so nothing maintains the cache.
+    {
+        let db = DbV1::spawn(&config).await.unwrap();
+        for block in indexed_block_chain(&blocks).take(prefix) {
+            db.write_block(block).await.unwrap();
+        }
+    }
+
+    // Reopen: the seed reconstructs the cache from committed `transparent` − `spent`.
+    let db = DbV1::spawn(&config).await.unwrap();
+    let seeded = db.transparent_utxo_cache_snapshot();
+
+    // Independent expected unspent set from the same vectors.
+    let mut expected: std::collections::HashMap<Outpoint, crate::TxOutCompact> =
+        std::collections::HashMap::new();
+    for chain_block in indexed_block_chain(&blocks).take(prefix) {
+        for tx in chain_block.transactions() {
+            for input in tx.transparent().inputs() {
+                if input.is_null_prevout() {
+                    continue;
+                }
+                expected.remove(&Outpoint::new(*input.prevout_txid(), input.prevout_index()));
+            }
+            let txid = tx.txid().0;
+            for (vout, output) in tx.transparent().outputs().iter().enumerate() {
+                if is_unspendable_tx_out(output) {
+                    continue;
+                }
+                expected.insert(Outpoint::new(txid, vout as u32), *output);
+            }
+        }
+    }
+
+    assert!(
+        !expected.is_empty(),
+        "vectors must exercise some unspent transparent outputs"
+    );
+    assert_eq!(
+        seeded, expected,
+        "seeded cache must equal the live unspent transparent set"
+    );
+}
