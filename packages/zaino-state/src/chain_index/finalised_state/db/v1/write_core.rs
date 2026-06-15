@@ -144,16 +144,19 @@ impl DbV1 {
             Ok::<_, FinalisedStateError>(())
         });
 
-        // Wait for the join and handle panic / cancellation explicitly so we can
-        // attempt to remove any partially written block.
+        // Wait for the join and handle panic / cancellation explicitly. The write is a
+        // single atomic LMDB commit, so a failed or cancelled task persisted nothing on
+        // disk; recovery is to reset the in-memory derived state to committed (the same
+        // reseed-from-committed primitive a restart runs) and surface the error. The
+        // finalised index is append-only or restored-from-checkpoint, never rolled back
+        // in place (docs/decision_records/finalised_state/append_only_design.md).
         let post_result = match join_handle.await {
             Ok(inner_res) => inner_res,
             Err(join_err) => {
                 warn!("Tokio task error (spawn_blocking join error): {}", join_err);
 
-                // Best-effort delete of partially written block; ignore delete result.
-                let _ = self.delete_block(&block).await;
                 self.invalidate_unspent_output_counts();
+                self.reseed_transparent_utxo_cache()?;
 
                 return Err(FinalisedStateError::Custom(format!(
                     "Tokio task error: {}",
@@ -243,16 +246,12 @@ impl DbV1 {
                     }
                     Err(e) => {
                         warn!("Error writing block to DB: {e}");
-                        warn!(
-                            "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                            block_height.0, block_hash.0
-                        );
 
-                        let _ = self.delete_block(&block).await;
-                        tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
-                            FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
-                        })?;
-                        self.status.store(StatusType::CriticalError);
+                        // Our atomic commit was rejected (a different block occupies this
+                        // height), so nothing of ours reached disk. Reset the in-memory
+                        // derived state to committed and report the error; the committed
+                        // block is never deleted in place.
+                        self.reseed_transparent_utxo_cache()?;
                         self.status.store(StatusType::RecoverableError);
                         Err(FinalisedStateError::InvalidBlock {
                             height: block_height.0,
@@ -275,18 +274,12 @@ impl DbV1 {
                 }
 
                 warn!("Error writing block to DB: {e}");
-                warn!(
-                    "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                    block_height.0, block_hash.0
-                );
 
-                let _ = self.delete_block(&block).await;
-                tokio::task::block_in_place(|| self.env.sync(true))
-                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-
-                // NOTE: this does not need to be critical if we implement self healing,
-                // which we have the tools to do.
-                self.status.store(StatusType::CriticalError);
+                // The commit aborted atomically: nothing was persisted. Reset the in-memory
+                // derived state to committed (the same primitive a restart runs) and report
+                // the error; the append-only index is never rolled back in place.
+                self.reseed_transparent_utxo_cache()?;
+                self.status.store(StatusType::RecoverableError);
 
                 Err(FinalisedStateError::InvalidBlock {
                     height: block_height.0,
