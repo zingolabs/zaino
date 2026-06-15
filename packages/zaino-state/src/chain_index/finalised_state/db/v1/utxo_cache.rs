@@ -128,6 +128,13 @@ impl TransparentUtxoCache {
         }
     }
 
+    /// Empties the cache. Used before a reseed (e.g. after a block delete) so the
+    /// reconstruction starts from a clean slate.
+    pub(super) fn clear(&self) {
+        self.outputs.clear();
+        self.unspent_per_tx.clear();
+    }
+
     /// The unspent output at `outpoint`, if still unspent. Replaces the
     /// `txid_location` + `transparent` reads.
     pub(super) fn value_of(&self, outpoint: &Outpoint) -> Option<TxOutCompact> {

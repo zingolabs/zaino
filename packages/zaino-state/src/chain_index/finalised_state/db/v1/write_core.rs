@@ -1347,6 +1347,16 @@ impl DbV1 {
         })
         .await
         .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))??;
+
+        // The block is gone; reseed the in-memory UTXO cache from the post-delete
+        // committed state. delete is the rare finalised rollback/correction path —
+        // reorgs never enter the finalised state (the NFS owns those) — so a full
+        // reseed is cheaper and simpler than threading spent-output values through a
+        // precise inverse. (`block_in_place` inside the seed is valid here, in the
+        // async context, but would not be inside the blocking delete closure above.)
+        self.transparent_utxo_cache.clear();
+        self.seed_transparent_utxo_cache()?;
+
         Ok(())
     }
 

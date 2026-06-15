@@ -1988,3 +1988,52 @@ async fn maintain_keeps_transparent_utxo_cache_live_during_sync() {
         "maintained cache must equal the live unspent transparent set during sync"
     );
 }
+
+/// Deleting the tip reseeds the cache to the post-delete unspent set. delete is the
+/// finalised rollback/correction path (not reorgs — those stay in the NFS); the cache
+/// is reseeded from committed state rather than precisely inverted.
+///
+/// `multi_thread` is required: spawn/write/delete run LMDB access under `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_block_reseeds_transparent_utxo_cache() {
+    use crate::chain_index::finalised_state::db::v1::DbV1;
+
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let prefix = 60;
+
+    let db = DbV1::spawn(&config).await.unwrap();
+    for block in indexed_block_chain(&blocks).take(prefix) {
+        db.write_block(block).await.unwrap();
+    }
+
+    // Delete the tip; the cache must reflect the chain without it.
+    db.delete_block_at_height(Height(prefix as u32 - 1))
+        .await
+        .unwrap();
+    let after_delete = db.transparent_utxo_cache_snapshot();
+
+    let expected = expected_unspent_transparent_utxos(&blocks, prefix - 1);
+    assert!(
+        !expected.is_empty(),
+        "vectors must exercise some unspent transparent outputs"
+    );
+    assert_eq!(
+        after_delete, expected,
+        "cache must equal the unspent set after deleting the tip block"
+    );
+}
