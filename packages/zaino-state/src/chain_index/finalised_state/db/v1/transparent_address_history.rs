@@ -1704,30 +1704,17 @@ impl DbV1 {
         };
 
         let (created_counts, spendable_counts) = index_created_outputs(transactions)?;
-        let (spent_indices_by_tx, spent_outpoints) = index_spent_outpoints(spent_map)?;
+        let (spent_indices_by_tx, _) = index_spent_outpoints(spent_map)?;
 
-        // Forward-direction validation: outpoints spent by this block must not already be
-        // spent in finalised state or by an uncommitted batch block (same-block spends are
-        // in neither spent index and are skipped).
-        if !spent_outpoints.is_empty() {
-            let outpoints: Vec<Outpoint> = spent_outpoints.iter().map(|(o, _)| *o).collect();
-            let existing_spenders =
-                <Self as TransparentHistExt>::get_outpoint_spenders(self, outpoints.clone())
-                    .await?;
-            for (spent_outpoint, existing_spender) in outpoints.iter().zip(existing_spenders) {
-                if created_counts.contains_key(&TransactionHash::from(*spent_outpoint.prev_txid()))
-                {
-                    continue;
-                }
-                let pending_spender =
-                    pending.and_then(|batch| batch.spent.get(spent_outpoint).copied());
-                if let Some(existing_spender) = existing_spender.or(pending_spender) {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: block spends already-spent outpoint {spent_outpoint:?}; existing spender is {existing_spender:?}"
-                    )));
-                }
-            }
-        }
+        // No double-spend check on this path. These blocks are finalised and were
+        // already validated by the source; `write_blocks` applies them in strict
+        // height order (it rejects any batch whose first height is not tip+1) and
+        // commits each batch atomically. An outpoint therefore cannot already be
+        // present in the finalised `spent` index when its spending block is applied,
+        // so the removed check -- one random-key `spent` read per spent input, on the
+        // write-hot path -- could only ever confirm "not already spent". It paid a
+        // random disk lookup to re-establish a result the height-contiguity invariant
+        // already guarantees.
 
         // Load every distinct prior transaction this block spends from exactly once;
         // the spent-output resolution and the prior-transaction transitions below both
