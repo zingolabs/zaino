@@ -1763,3 +1763,52 @@ async fn finalised_blocks_are_self_consistent() {
         }
     }
 }
+
+/// `merkle_root_from_txids` over a single leaf is that leaf (the layer loop never runs).
+#[test]
+fn merkle_root_single_leaf_is_identity() {
+    let only = [0x11u8; 32];
+    assert_eq!(merkle_root_from_txids(&[only]), only);
+}
+
+/// Odd-width layers duplicate the final node: with three leaves the root is
+/// `H(H(a‖b) ‖ H(c‖c))`. The integration test's payment blocks only exercise the
+/// even (two-leaf) path, so this covers the duplication branch directly.
+#[test]
+fn merkle_root_duplicates_odd_final_node() {
+    let a = [0x11u8; 32];
+    let b = [0x22u8; 32];
+    let c = [0x33u8; 32];
+
+    let pair = |left: &[u8; 32], right: &[u8; 32]| {
+        let mut buf = [0u8; 64];
+        buf[..32].copy_from_slice(left);
+        buf[32..].copy_from_slice(right);
+        sha256d(&buf)
+    };
+    let expected = pair(&pair(&a, &b), &pair(&c, &c));
+
+    assert_eq!(merkle_root_from_txids(&[a, b, c]), expected);
+}
+
+/// A height beyond the synced tip is *absent* — `Ok(None)`, not an error. This is
+/// the regression guard for the validator-removal resolver swap: the pure height
+/// resolver lost its existence check, which made this return `Err` until the check
+/// was restored. (An *incomplete* block — header present, a dependent table gone —
+/// stays `Err(IncompleteBlock)` and is never collapsed to `None`.)
+///
+/// `multi_thread` is required: the reader runs LMDB access under `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_chain_block_beyond_tip_is_none() {
+    init_tracing();
+
+    let (_vectors, _db_dir, _zaino_db, reader) = load_vectors_v1db_and_reader().await;
+    let tip = reader.db_height().await.unwrap().unwrap();
+
+    let beyond_tip = Height(tip.0 + 1);
+    assert_eq!(
+        reader.get_chain_block_by_height(beyond_tip).await.unwrap(),
+        None,
+        "a height beyond the tip must read as absent (None), not error",
+    );
+}

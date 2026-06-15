@@ -9,8 +9,8 @@ use crate::version;
 /// [`DbWrite`] capability implementation for [`DbV1`].
 ///
 /// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
-/// performed via LMDB write transactions; verification of committed data is owned by the
-/// background validator task and on-demand read checks, not the write path.
+/// performed via LMDB write transactions. The write path does not validate committed data; the
+/// background validator was removed.
 #[async_trait]
 impl DbWrite for DbV1 {
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
@@ -165,8 +165,8 @@ impl DbV1 {
         match post_result {
             Ok(_) => {
                 // The block (and its `txid_location` entries) were durably committed inside the
-                // blocking task above; verification happens off the write path (background
-                // validator / on-demand read checks).
+                // blocking task above. The write path does not validate; the background validator
+                // was removed.
                 self.status.store(StatusType::Ready);
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
@@ -872,9 +872,8 @@ impl DbV1 {
             for data in batch_data {
                 zaino_db.put_block_write_data_in_txn(&mut txn, data)?;
             }
-            // One durable commit (data + meta fsync) for the whole batch. No inline
-            // validation: the background validator and on-demand read checks own
-            // verification, off the writer's critical path.
+            // One durable commit (data + meta fsync) for the whole batch. The write path does
+            // not validate; the background validator was removed.
             txn.commit()?;
             Ok::<_, FinalisedStateError>(())
         });
