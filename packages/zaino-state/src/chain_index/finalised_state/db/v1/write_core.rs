@@ -511,7 +511,8 @@ impl DbV1 {
         // block's accumulator sees this block's transparent state. A failed or aborted
         // commit reseeds the cache (write_block / write_blocks), so this build-time
         // update never outlives a write that did not durably land.
-        self.transparent_utxo_cache.apply_forward(&transparent_delta);
+        self.transparent_utxo_cache
+            .apply_forward(&transparent_delta);
 
         // Split the paired vector into the per-table shapes used for storage.
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =

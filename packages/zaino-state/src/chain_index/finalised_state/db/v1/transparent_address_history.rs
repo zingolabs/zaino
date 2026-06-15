@@ -1371,15 +1371,16 @@ impl DbV1 {
     /// Resolves each spent outpoint to its previous [`TxOutCompact`].
     ///
     /// Same-block spends are resolved from the in-block `transactions` slice via the
-    /// `txid_to_block_index` map; everything else from `prior_transactions`, the
-    /// per-block memo built by [`DbV1::load_prior_transactions`] — no table reads
+    /// `txid_to_block_index` map — the current block's own outputs are not in the cache
+    /// until its build-time `apply_forward`. Every *prior* spend — committed or created
+    /// by an earlier block of the same batch — is resolved from the in-memory UTXO
+    /// cache, where the output sits unspent until this block spends it. No table reads
     /// happen here.
     fn resolve_spent_outpoints_for_set_info(
         &self,
         spent_map: &HashMap<Outpoint, TxLocation>,
         txid_to_block_index: &HashMap<TransactionHash, usize>,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-        prior_transactions: &HashMap<TransactionHash, TransparentCompactTx>,
     ) -> Result<Vec<(Outpoint, TxOutCompact)>, FinalisedStateError> {
         let mut resolved = Vec::with_capacity(spent_map.len());
 
@@ -1398,16 +1399,12 @@ impl DbV1 {
                         "txout-set accumulator cannot be calculated: same-block spend of {prev_txid:?} index {prev_index} out of range"
                     ))
                 })?
-            } else if let Some(prior_tx) = prior_transactions.get(&prev_txid) {
-                *prior_tx.outputs().get(prev_index).ok_or_else(|| {
+            } else {
+                self.transparent_utxo_cache.value_of(&outpoint).ok_or_else(|| {
                     FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: spend of {prev_txid:?} index {prev_index} out of range"
+                        "txout-set accumulator cannot be calculated: spent output {outpoint:?} is not in the UTXO cache"
                     ))
                 })?
-            } else {
-                return Err(FinalisedStateError::Custom(format!(
-                    "txout-set accumulator cannot be calculated: spent transaction {prev_txid:?} was not loaded into the prior-transaction map"
-                )));
             };
 
             resolved.push((outpoint, prev_out));
@@ -1609,7 +1606,6 @@ impl DbV1 {
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
         txid_to_block_index: &HashMap<TransactionHash, usize>,
-        prior_transactions: &HashMap<TransactionHash, TransparentCompactTx>,
     ) -> Result<
         (
             Vec<(Outpoint, TxOutCompact)>,
@@ -1638,7 +1634,6 @@ impl DbV1 {
             spent_map,
             txid_to_block_index,
             transactions,
-            prior_transactions,
         )?;
 
         let mut spent_entries = Vec::with_capacity(resolved.len());
@@ -1723,12 +1718,8 @@ impl DbV1 {
         let prior_transactions =
             self.load_prior_transactions(&spent_indices_by_tx, &txid_to_block_index, pending)?;
 
-        let (created_entries, spent_entries, spendable_spent_count_by_tx) = self.build_entry_data(
-            transactions,
-            spent_map,
-            &txid_to_block_index,
-            &prior_transactions,
-        )?;
+        let (created_entries, spent_entries, spendable_spent_count_by_tx) =
+            self.build_entry_data(transactions, spent_map, &txid_to_block_index)?;
 
         let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
             FinalisedStateError::Custom(
@@ -1830,12 +1821,8 @@ impl DbV1 {
         let prior_transactions =
             self.load_prior_transactions(&spent_indices_by_tx, &txid_to_block_index, None)?;
 
-        let (created_entries, spent_entries, spendable_spent_count_by_tx) = self.build_entry_data(
-            transactions,
-            spent_map,
-            &txid_to_block_index,
-            &prior_transactions,
-        )?;
+        let (created_entries, spent_entries, spendable_spent_count_by_tx) =
+            self.build_entry_data(transactions, spent_map, &txid_to_block_index)?;
 
         let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
             FinalisedStateError::Custom(
