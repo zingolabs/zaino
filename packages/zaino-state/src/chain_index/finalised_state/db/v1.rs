@@ -9,15 +9,11 @@
 //! compile time (`db_schema_v1_0.txt`). A fixed 32-byte BLAKE2b checksum of that schema description
 //! is stored in / compared against the database metadata to detect accidental schema drift.
 //!
-//! ## Validation model
-//! The database maintains a monotonically increasing **validated tip** (`validated_tip`) and a set
-//! of validated heights above that tip (`validated_set`) to support out-of-order validation. Reads
-//! that require correctness use `resolve_validated_hash_or_height()` to ensure the requested height
-//! is validated (performing on-demand validation if required).
-//!
-//! A background task performs:
-//! - an initial full scan of the stored data for checksum / structural correctness, then
-//! - steady-state incremental validation of newly appended blocks.
+//! ## Integrity model
+//! Each stored record carries a keyed BLAKE2b checksum. Writes embed it, and callers that need to
+//! detect on-disk corruption (metadata load and migrations) verify it explicitly. Serving-path
+//! reads decode without re-verifying; detecting at-rest corruption below this layer is delegated to
+//! the storage layer. Hash-keyed lookups resolve to a height via `resolve_hash_or_height`.
 //!
 //! ## Concurrency model
 //! LMDB supports many concurrent readers and a single writer per environment. This implementation
@@ -59,26 +55,14 @@ use super::LmdbLifecycle;
 
 use async_trait::async_trait;
 use corez::io::{self, Read};
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags,
 };
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::{
-    collections::HashSet,
-    fs,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
-use tokio::time::interval;
+use std::{collections::HashSet, fs, sync::Arc};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
-
-pub(crate) mod validation;
+use tracing::{info, warn};
 
 pub(crate) mod read_core;
 pub(crate) mod write_core;
@@ -187,8 +171,8 @@ impl LmdbLifecycle for DbV1 {
 /// This type owns an LMDB [`Environment`] and a fixed set of named databases representing the V1
 /// schema. It implements the capability traits used by the rest of the chain indexer.
 ///
-/// Data is stored per-height in “best chain” order and is validated (checksums and continuity)
-/// before being treated as reliable for downstream reads.
+/// Data is stored per-height in “best chain” order; the write path appends only height-contiguous
+/// blocks, and each record carries a keyed checksum for on-demand integrity verification.
 #[derive(Debug)]
 pub(crate) struct DbV1 {
     /// Shared LMDB environment.
@@ -259,19 +243,6 @@ pub(crate) struct DbV1 {
 
     /// Metadata: singleton entry "metadata" -> `StoredEntryFixed<DbMetadata>`
     metadata: Database,
-
-    /// Contiguous **water-mark**: every height ≤ `validated_tip` is known-good.
-    ///
-    /// Wrapped in an `Arc` so the background validator and any foreground tasks
-    /// all see (and update) the **same** atomic.
-    validated_tip: Arc<AtomicU32>,
-
-    /// Heights **above** the tip that have also been validated.
-    ///
-    /// Whenever the next consecutive height is inserted we pop it
-    /// out of this set and bump `validated_tip`, so the map never
-    /// grows beyond the number of “holes” in the sequence.
-    validated_set: DashSet<u32>,
 
     /// `txid` → number of currently-unspent spendable transparent outputs.
     ///
@@ -393,7 +364,7 @@ impl DbV1 {
         )
         .await?;
 
-        let mut zaino_db = Self {
+        let zaino_db = Self {
             env: Arc::new(env),
             headers,
             txids,
@@ -408,8 +379,6 @@ impl DbV1 {
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history,
             metadata,
-            validated_tip: Arc::new(AtomicU32::new(0)),
-            validated_set: DashSet::new(),
             unspent_output_counts: Arc::new(DashMap::new()),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),
@@ -425,208 +394,13 @@ impl DbV1 {
         // on a quiescent database.
         zaino_db.reconcile_alpha_txid_location_index().await?;
 
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        zaino_db.spawn_handler().await?;
+        // Background validation has been removed; mark the database ready to serve.
+        zaino_db.status.store(StatusType::Ready);
 
         Ok(zaino_db)
     }
 
     // *** Internal Control Methods ***
-
-    /// Spawns the background validator / maintenance task.
-    ///
-    /// The task runs:
-    /// - **Startup:** full validation passes (`initial_spent_scan`, `initial_address_history_scan`,
-    ///   `initial_block_scan`).
-    /// - **Steady state:** periodically attempts to validate the next height after `validated_tip`.
-    ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
-    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
-        // Clone everything the task needs so we can move it into the async block.
-        let zaino_db = self.task_clone();
-
-        let handle = tokio::spawn({
-            let zaino_db = zaino_db;
-            async move {
-                // *** initial validation (opt-in) ***
-                //
-                // The full-database sweeps re-verify every block and index entry by
-                // checksum — O(database) work at every boot. Verification of stored
-                // data is owned by the background validator (steady-state loop below)
-                // and by on-demand read checks above `validated_tip`, so the sweeps
-                // default off and exist for suspected-corruption recovery.
-                zaino_db.status.store(StatusType::Syncing);
-
-                if zaino_db.config.storage.database.validate_on_start {
-                    #[cfg(feature = "transparent_address_history_experimental")]
-                    {
-                        let (r1, r2, r3) = tokio::join!(
-                            zaino_db.initial_spent_scan(),
-                            zaino_db.initial_address_history_scan(),
-                            zaino_db.initial_block_scan(),
-                        );
-
-                        for (desc, result) in [
-                            ("spent scan", r1),
-                            ("addrhist scan", r2),
-                            ("block scan", r3),
-                        ] {
-                            if let Err(e) = result {
-                                error!("initial {desc} failed: {e}");
-                                zaino_db.status.store(StatusType::CriticalError);
-                                // TODO: Handle error better? - Return invalid block error from validate?
-                                return;
-                            }
-                        }
-                    }
-                    #[cfg(not(feature = "transparent_address_history_experimental"))]
-                    {
-                        let (r1, r2) = tokio::join!(
-                            zaino_db.initial_spent_scan(),
-                            zaino_db.initial_block_scan(),
-                        );
-
-                        for (desc, result) in [("spent scan", r1), ("block scan", r2)] {
-                            if let Err(e) = result {
-                                error!("initial {desc} failed: {e}");
-                                zaino_db.status.store(StatusType::CriticalError);
-                                // TODO: Handle error better? - Return invalid block error from validate?
-                                return;
-                            }
-                        }
-                    }
-
-                    info!(
-                        "initial validation complete – tip={}",
-                        zaino_db.validated_tip.load(Ordering::Relaxed)
-                    );
-                } else {
-                    info!(
-                        "startup validation sweeps disabled \
-                         (storage.database.validate_on_start = false)"
-                    );
-                }
-                zaino_db.status.store(StatusType::Ready);
-
-                // *** steady-state loop ***
-                let mut maintenance = interval(Duration::from_secs(60));
-
-                loop {
-                    // Check for closing status.
-                    if zaino_db.status.load() == StatusType::Closing {
-                        break;
-                    }
-                    // try to validate the next consecutive block.
-                    let next_h = zaino_db.validated_tip.load(Ordering::Acquire) + 1;
-                    let next_height = match Height::try_from(next_h) {
-                        Ok(h) => h,
-                        Err(_) => {
-                            warn!("height overflow – validated_tip too large");
-                            zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
-                            continue;
-                        }
-                    };
-
-                    // Fetch hash of `next_h` from Heights.
-                    let hkey = match next_height.to_bytes() {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            warn!("Failed to serialize height {}: {}", next_height, e);
-                            zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
-                            continue;
-                        }
-                    };
-
-                    let hash_opt = (|| -> Option<BlockHash> {
-                        let ro = zaino_db.env.begin_ro_txn().ok()?;
-                        let bytes = ro.get(zaino_db.headers, &hkey).ok()?;
-                        let entry = StoredEntryVar::<BlockHeaderData>::deserialize(bytes).ok()?;
-                        Some(entry.inner().context.index.hash)
-                    })();
-
-                    if let Some(hash) = hash_opt {
-                        if let Err(e) = zaino_db.validate_block_blocking(next_height, hash) {
-                            warn!("{e}");
-                        }
-                        // Immediately loop – maybe the chain has more blocks ready.
-                        continue;
-                    }
-
-                    zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
-                }
-            }
-        });
-
-        *self.db_handler.lock().expect("db_handler mutex poisoned") = Some(handle);
-        Ok(())
-    }
-
-    /// Sweeps every entry of `table`, verifying each stored checksum against its key.
-    ///
-    /// `label` names the table in the mismatch error. Shared body of the opt-in
-    /// startup scans; runs on a blocking task because it cursors the whole table.
-    async fn scan_table_checksums<T>(
-        &self,
-        table: Database,
-        label: &'static str,
-    ) -> Result<(), FinalisedStateError>
-    where
-        T: crate::ZainoVersionedSerde + crate::FixedEncodedLen + Send + 'static,
-    {
-        let env = self.env.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let ro = env.begin_ro_txn()?;
-            let mut cursor = ro.open_ro_cursor(table)?;
-
-            for (key_bytes, val_bytes) in cursor.iter() {
-                if !StoredEntryFixed::<T>::verify_stored(key_bytes, val_bytes) {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "{label} record checksum mismatch"
-                    )));
-                }
-            }
-
-            Ok(())
-        })
-        .await
-        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))?
-    }
-
-    /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
-    async fn initial_spent_scan(&self) -> Result<(), FinalisedStateError> {
-        self.scan_table_checksums::<TxLocation>(self.spent, "spent")
-            .await
-    }
-
-    /// Validates every stored address-history record (`AddrScript` duplicates of `AddrEventBytes`) by checksum.
-    #[cfg(feature = "transparent_address_history_experimental")]
-    async fn initial_address_history_scan(&self) -> Result<(), FinalisedStateError> {
-        self.scan_table_checksums::<AddrEventBytes>(self.address_history, "addrhist")
-            .await
-    }
-
-    /// Scans the whole finalised chain once at start-up and validates every block by checksum and continuity.
-    async fn initial_block_scan(&self) -> Result<(), FinalisedStateError> {
-        let zaino_db = self.task_clone();
-
-        tokio::task::spawn_blocking(move || {
-            let ro = zaino_db.env.begin_ro_txn()?;
-            let mut cursor = ro.open_ro_cursor(zaino_db.heights)?;
-
-            for (hash_bytes, height_entry_bytes) in cursor.iter() {
-                let hash = BlockHash::from_bytes(hash_bytes)?;
-                let height = *StoredEntryFixed::<Height>::from_bytes(height_entry_bytes)
-                    .map_err(|e| FinalisedStateError::Custom(format!("corrupt height entry: {e}")))?
-                    .inner();
-
-                zaino_db.validate_block_blocking(height, hash)?
-            }
-
-            Ok(())
-        })
-        .await
-        .map_err(|e| FinalisedStateError::Custom(format!("spawn_blocking failed: {e}")))?
-    }
 
     /// Provides access to the metadata DB table, enabling the migration manager
     /// to use this DB table to store temporary migration metadata.
@@ -755,6 +529,117 @@ impl DbV1 {
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
         self.tx_out_set_info_accumulator
     }
+
+    /// Resolve a `HashOrHeight` to the block height stored on disk.
+    ///
+    /// * Height -> returned unchanged (zero cost).
+    /// * Hash   -> lookup in the `heights` db.
+    pub(super) async fn resolve_hash_or_height(
+        &self,
+        hash_or_height: HashOrHeight,
+    ) -> Result<Height, FinalisedStateError> {
+        match hash_or_height {
+            // Fast path: we already have the height.
+            HashOrHeight::Height(z_height) => Ok(Height::try_from(z_height.0)
+                .map_err(|_| FinalisedStateError::DataUnavailable("height out of range".into()))?),
+
+            // Hash lookup path.
+            HashOrHeight::Hash(z_hash) => {
+                let hash = BlockHash::from(z_hash.0);
+                let hkey = hash.to_bytes()?;
+
+                let height: Height = tokio::task::block_in_place(|| {
+                    let ro = self.env.begin_ro_txn()?;
+                    let bytes = ro.get(self.heights, &hkey).map_err(|e| {
+                        if e == lmdb::Error::NotFound {
+                            FinalisedStateError::DataUnavailable(
+                                "height not found in best chain".into(),
+                            )
+                        } else {
+                            FinalisedStateError::LmdbError(e)
+                        }
+                    })?;
+
+                    let entry = *StoredEntryFixed::<Height>::deserialize(bytes)?.inner();
+                    Ok::<Height, FinalisedStateError>(entry)
+                })?;
+
+                Ok(height)
+            }
+        }
+    }
+
+    /// Ensure the `metadata` table contains **exactly** our `DB_SCHEMA_V1`.
+    ///
+    /// * Brand-new DB → insert the entry.
+    /// * Existing DB  → verify checksum, version, and schema hash.
+    async fn check_schema_version(&self) -> Result<(), FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let mut txn = self.env.begin_rw_txn()?;
+
+            match txn.get(self.metadata, b"metadata") {
+                // ***** Existing DB *****
+                Ok(raw_bytes) => {
+                    let stored: StoredEntryFixed<DbMetadata> =
+                        StoredEntryFixed::from_bytes(raw_bytes).map_err(|e| {
+                            FinalisedStateError::Custom(format!("corrupt metadata CBOR: {e}"))
+                        })?;
+                    if !stored.verify(b"metadata") {
+                        return Err(FinalisedStateError::Custom(
+                            "metadata checksum mismatch – DB corruption suspected".into(),
+                        ));
+                    }
+
+                    let meta = stored.item;
+
+                    // Error if major version differs
+                    if meta.version.major != DB_VERSION_V1.major {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "unsupported schema major version {} (expected {})",
+                            meta.version.major, DB_VERSION_V1.major
+                        )));
+                    }
+
+                    // Warn if schema hash mismatches
+                    // NOTE: There could be a schema mismatch at launch during minor migrations,
+                    //       so we do not return an error here. Maybe we can improve this?
+                    if meta.schema_hash != DB_SCHEMA_V1_HASH {
+                        warn!(
+                            "schema hash mismatch: db_schema_v1.txt has likely changed \
+                         without bumping version; expected 0x{:02x?}, found 0x{:02x?}",
+                            &DB_SCHEMA_V1_HASH[..4],
+                            &meta.schema_hash[..4],
+                        );
+                    }
+                }
+
+                // ***** Fresh DB (key not found) *****
+                Err(lmdb::Error::NotFound) => {
+                    let entry = StoredEntryFixed::new(
+                        b"metadata",
+                        DbMetadata {
+                            version: DB_VERSION_V1,
+                            schema_hash: DB_SCHEMA_V1_HASH,
+                            // Fresh database, no migration required.
+                            migration_status: MigrationStatus::Empty,
+                        },
+                    );
+                    txn.put(
+                        self.metadata,
+                        b"metadata",
+                        &entry.to_bytes()?,
+                        WriteFlags::NO_OVERWRITE,
+                    )?;
+                }
+
+                // ***** Any other LMDB error *****
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            }
+
+            txn.commit()?;
+            Ok(())
+        })
+    }
 }
 
 impl Drop for DbV1 {
@@ -860,7 +745,7 @@ impl DbV1 {
         )
         .await?;
 
-        let mut zaino_db = Self {
+        let zaino_db = Self {
             env: Arc::new(env),
             headers,
             txids,
@@ -875,8 +760,6 @@ impl DbV1 {
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history,
             metadata,
-            validated_tip: Arc::new(AtomicU32::new(0)),
-            validated_set: DashSet::new(),
             unspent_output_counts: Arc::new(DashMap::new()),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),
@@ -912,8 +795,8 @@ impl DbV1 {
             Ok::<(), FinalisedStateError>(())
         })?;
 
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        zaino_db.spawn_handler().await?;
+        // Background validation has been removed; mark the database ready to serve.
+        zaino_db.status.store(StatusType::Ready);
 
         Ok(zaino_db)
     }

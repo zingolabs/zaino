@@ -77,7 +77,7 @@ impl DbV1 {
         hash: BlockHash,
     ) -> Result<Height, FinalisedStateError> {
         let height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Hash(hash.into()))
+            .resolve_hash_or_height(HashOrHeight::Hash(hash.into()))
             .await?;
         Ok(height)
     }
@@ -89,16 +89,13 @@ impl DbV1 {
         end_hash: BlockHash,
     ) -> Result<(Height, Height), FinalisedStateError> {
         let start_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Hash(start_hash.into()))
+            .resolve_hash_or_height(HashOrHeight::Hash(start_hash.into()))
             .await?;
         let end_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Hash(end_hash.into()))
+            .resolve_hash_or_height(HashOrHeight::Hash(end_hash.into()))
             .await?;
 
-        let (validated_start, validated_end) =
-            self.validate_block_range(start_height, end_height).await?;
-
-        Ok((validated_start, validated_end))
+        Ok((start_height, end_height))
     }
 
     /// Fetch database metadata.

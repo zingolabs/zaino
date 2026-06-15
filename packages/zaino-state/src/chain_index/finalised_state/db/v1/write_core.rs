@@ -211,16 +211,9 @@ impl DbV1 {
                                     })?;
                             let stored_header = stored_entry.inner();
                             if stored_header.context.index.hash == block_hash {
-                                // Block hash exists, verify block was fully written.
-                                self.validate_block_blocking(block_height, block_hash)
-                                    .map(|()| true)
-                                    .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
-                                            "Block write fail at height {}, with hash {:?}, \
-                                            validation error: {}",
-                                            block_height.0, block_hash, e
-                                        ))
-                                    })
+                                // Block already present with the expected hash: the prior
+                                // write committed it. Treat as an idempotent success.
+                                Ok(true)
                             } else {
                                 Err(FinalisedStateError::Custom(format!(
                                     "KeyExist race: different block at height {} \
@@ -782,8 +775,6 @@ impl DbV1 {
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
             metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
             unspent_output_counts: Arc::clone(&self.unspent_output_counts),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
@@ -982,15 +973,6 @@ impl DbV1 {
             )));
         };
         self.delete_block(&chain_block).await?;
-
-        // update validated_tip / validated_set
-        let validated_tip = self.validated_tip.load(Ordering::Acquire);
-        if height.0 > validated_tip {
-            self.validated_set.remove(&height.0);
-        } else if height.0 == validated_tip {
-            self.validated_tip
-                .store(validated_tip.saturating_sub(1), Ordering::Release);
-        }
 
         tokio::task::block_in_place(|| {
             self.env

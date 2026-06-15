@@ -27,7 +27,7 @@ impl DbV1 {
         height: Height,
     ) -> Result<Option<IndexedBlock>, FinalisedStateError> {
         let validated_height = match self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+            .resolve_hash_or_height(HashOrHeight::Height(height.into()))
             .await
         {
             Ok(height) => height,

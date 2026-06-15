@@ -38,7 +38,7 @@ impl DbV1 {
         pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
         let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+            .resolve_hash_or_height(HashOrHeight::Height(height.into()))
             .await?;
         let height_bytes = validated_height.to_bytes()?;
 
@@ -310,8 +310,8 @@ impl DbV1 {
 
         let start_key_bytes = validated_start_height.to_bytes()?;
 
-        // Direction is derived from the validated heights. This relies on `validate_block_range`
-        // preserving input ordering (i.e. not normalising to (min, max)).
+        // Direction is derived from the caller-supplied heights; input ordering is preserved
+        // (the range is not normalised to (min, max)).
         let is_ascending = validated_start_height <= validated_end_height;
 
         // Bounded channel provides backpressure so the blocking task cannot run unbounded ahead of
@@ -841,40 +841,6 @@ impl DbV1 {
                             )),
                         );
                         return;
-                    }
-
-                    // ----- Ensure the block is validated (on-demand) -----
-                    // We are in a blocking task; call validate_block_blocking directly but only when needed.
-                    if !zaino_db.is_validated(current_height.into()) {
-                        // header.context.hash() is the block hash we just read from DB; call validator.
-                        let block_hash = *header.context.hash();
-
-                        match zaino_db.validate_block_blocking(current_height, block_hash) {
-                            Ok(()) => {
-                                // validation succeeded and mark_validated has been called inside the validator.
-                            }
-                            Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
-                                // missing data that was expected: emit DataUnavailable -> translate to not_found
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "block data unavailable during validation at height {}",
-                                        current_height.0
-                                    )),
-                                );
-                                return;
-                            }
-                            Err(e) => {
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "validation failed for height {}: {e:?}",
-                                        current_height.0
-                                    )),
-                                );
-                                return;
-                            }
-                        }
                     }
 
                     // ----- Decode txids and optional pool data -----

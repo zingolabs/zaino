@@ -59,7 +59,7 @@ impl DbV1 {
         height: Height,
     ) -> Result<BlockHeaderData, FinalisedStateError> {
         let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+            .resolve_hash_or_height(HashOrHeight::Height(height.into()))
             .await?;
         let height_bytes = validated_height.to_bytes()?;
 
@@ -98,8 +98,6 @@ impl DbV1 {
                 "invalid block range: end < start".to_string(),
             ));
         }
-
-        self.validate_block_range(start, end).await?;
         let start_bytes = start.to_bytes()?;
         let end_bytes = end.to_bytes()?;
 
@@ -209,7 +207,7 @@ impl DbV1 {
     /// Fetch block txids by height.
     async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
         let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+            .resolve_hash_or_height(HashOrHeight::Height(height.into()))
             .await?;
         let height_bytes = validated_height.to_bytes()?;
 
@@ -249,8 +247,6 @@ impl DbV1 {
                 "invalid block range: end < start".to_string(),
             ));
         }
-
-        self.validate_block_range(start, end).await?;
         let start_bytes = start.to_bytes()?;
         let end_bytes = end.to_bytes()?;
 
