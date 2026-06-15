@@ -124,7 +124,7 @@ impl DbV1 {
             return Ok(());
         }
 
-        let data = self.build_block_write_data(&block, None).await?;
+        let (data, transparent_delta) = self.build_block_write_data(&block, None).await?;
 
         // if any database writes fail, remove block from database and return err.
         let zaino_db = self.task_clone();
@@ -140,6 +140,12 @@ impl DbV1 {
             // The write path does not validate: the background validator was removed, so
             // committed records are served without a read-back/re-hash pass.
             txn.commit()?;
+
+            // Maintain the in-memory UTXO cache only after the block is durably
+            // committed, so a failed commit never mutates it.
+            zaino_db
+                .transparent_utxo_cache
+                .apply_forward(&transparent_delta);
 
             Ok::<_, FinalisedStateError>(())
         });
@@ -306,7 +312,8 @@ impl DbV1 {
         &self,
         block: &IndexedBlock,
         pending: Option<&PendingBatchState>,
-    ) -> Result<BlockWriteData, FinalisedStateError> {
+    ) -> Result<(BlockWriteData, transparent_delta::TransparentBlockDelta), FinalisedStateError>
+    {
         let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
         let block_height = block.context.index.height;
@@ -537,28 +544,31 @@ impl DbV1 {
             &tx_out_set_info_accumulator,
         )?;
 
-        Ok(BlockWriteData {
-            block_hash,
-            block_height,
-            block_hash_bytes,
-            block_height_bytes,
-            height_entry_bytes,
-            header_entry_bytes,
-            commitment_tree_entry_bytes,
-            txid_location_entries,
-            txid_entry_bytes,
-            transparent_entry_bytes,
-            sapling_entry_bytes,
-            orchard_entry_bytes,
-            spent_entries,
-            spent_map,
-            tx_out_set_info_accumulator,
-            tx_out_set_info_accumulator_entry_bytes,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            addrhist_inputs_map,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            addrhist_outputs_map,
-        })
+        Ok((
+            BlockWriteData {
+                block_hash,
+                block_height,
+                block_hash_bytes,
+                block_height_bytes,
+                height_entry_bytes,
+                header_entry_bytes,
+                commitment_tree_entry_bytes,
+                txid_location_entries,
+                txid_entry_bytes,
+                transparent_entry_bytes,
+                sapling_entry_bytes,
+                orchard_entry_bytes,
+                spent_entries,
+                spent_map,
+                tx_out_set_info_accumulator,
+                tx_out_set_info_accumulator_entry_bytes,
+                #[cfg(feature = "transparent_address_history_experimental")]
+                addrhist_inputs_map,
+                #[cfg(feature = "transparent_address_history_experimental")]
+                addrhist_outputs_map,
+            },
+            transparent_delta,
+        ))
     }
 
     /// Packs one address-history record and encodes its stored entry under
@@ -846,11 +856,14 @@ impl DbV1 {
         // of earlier batch blocks (accumulator, transactions, spends), so batch blocks
         // may freely spend outputs their batch created.
         let mut batch_data = Vec::with_capacity(blocks.len());
+        let mut batch_deltas = Vec::with_capacity(blocks.len());
         let mut pending = PendingBatchState::new();
         for block in blocks {
-            let data = self.build_block_write_data(block, Some(&pending)).await?;
+            let (data, transparent_delta) =
+                self.build_block_write_data(block, Some(&pending)).await?;
             pending.absorb(block, &data);
             batch_data.push(data);
+            batch_deltas.push(transparent_delta);
         }
 
         let zaino_db = self.task_clone();
@@ -862,6 +875,12 @@ impl DbV1 {
             // One durable commit (data + meta fsync) for the whole batch. The write path does
             // not validate; the background validator was removed.
             txn.commit()?;
+            // Maintain the UTXO cache only after the batch is durably committed.
+            for transparent_delta in &batch_deltas {
+                zaino_db
+                    .transparent_utxo_cache
+                    .apply_forward(transparent_delta);
+            }
             Ok::<_, FinalisedStateError>(())
         });
 

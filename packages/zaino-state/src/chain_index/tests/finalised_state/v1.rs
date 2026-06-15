@@ -1872,7 +1872,6 @@ async fn incomplete_block_reads_as_error_not_none() {
 #[tokio::test(flavor = "multi_thread")]
 async fn seed_reconstructs_transparent_utxo_cache_on_open() {
     use crate::chain_index::finalised_state::db::v1::DbV1;
-    use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
 
     init_tracing();
 
@@ -1904,27 +1903,7 @@ async fn seed_reconstructs_transparent_utxo_cache_on_open() {
     let db = DbV1::spawn(&config).await.unwrap();
     let seeded = db.transparent_utxo_cache_snapshot();
 
-    // Independent expected unspent set from the same vectors.
-    let mut expected: std::collections::HashMap<Outpoint, crate::TxOutCompact> =
-        std::collections::HashMap::new();
-    for chain_block in indexed_block_chain(&blocks).take(prefix) {
-        for tx in chain_block.transactions() {
-            for input in tx.transparent().inputs() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-                expected.remove(&Outpoint::new(*input.prevout_txid(), input.prevout_index()));
-            }
-            let txid = tx.txid().0;
-            for (vout, output) in tx.transparent().outputs().iter().enumerate() {
-                if is_unspendable_tx_out(output) {
-                    continue;
-                }
-                expected.insert(Outpoint::new(txid, vout as u32), *output);
-            }
-        }
-    }
-
+    let expected = expected_unspent_transparent_utxos(&blocks, prefix);
     assert!(
         !expected.is_empty(),
         "vectors must exercise some unspent transparent outputs"
@@ -1932,5 +1911,80 @@ async fn seed_reconstructs_transparent_utxo_cache_on_open() {
     assert_eq!(
         seeded, expected,
         "seeded cache must equal the live unspent transparent set"
+    );
+}
+
+/// The live unspent transparent UTXO set over the first `prefix` vector blocks,
+/// derived independently of the cache: every spendable created output, minus
+/// everything spent. The oracle shared by the seed and maintain cache tests.
+fn expected_unspent_transparent_utxos(
+    blocks: &[TestVectorBlockData],
+    prefix: usize,
+) -> std::collections::HashMap<Outpoint, crate::TxOutCompact> {
+    use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
+
+    let mut utxos = std::collections::HashMap::new();
+    for chain_block in indexed_block_chain(blocks).take(prefix) {
+        for tx in chain_block.transactions() {
+            for input in tx.transparent().inputs() {
+                if input.is_null_prevout() {
+                    continue;
+                }
+                utxos.remove(&Outpoint::new(*input.prevout_txid(), input.prevout_index()));
+            }
+            let txid = tx.txid().0;
+            for (vout, output) in tx.transparent().outputs().iter().enumerate() {
+                if is_unspendable_tx_out(output) {
+                    continue;
+                }
+                utxos.insert(Outpoint::new(txid, vout as u32), *output);
+            }
+        }
+    }
+    utxos
+}
+
+/// Maintain-on-commit keeps the cache live during sync without a reopen: write a
+/// contiguous prefix, then assert the maintained cache equals the unspent set. The
+/// maintenance path (record_created / record_spent off each block's delta, applied
+/// after the commit) must agree with the seed's reconstruction and the vectors.
+///
+/// `multi_thread` is required: spawn/write run LMDB access under `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn maintain_keeps_transparent_utxo_cache_live_during_sync() {
+    use crate::chain_index::finalised_state::db::v1::DbV1;
+
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let prefix = 60;
+
+    let db = DbV1::spawn(&config).await.unwrap();
+    for block in indexed_block_chain(&blocks).take(prefix) {
+        db.write_block(block).await.unwrap();
+    }
+    let live = db.transparent_utxo_cache_snapshot();
+
+    let expected = expected_unspent_transparent_utxos(&blocks, prefix);
+    assert!(
+        !expected.is_empty(),
+        "vectors must exercise some unspent transparent outputs"
+    );
+    assert_eq!(
+        live, expected,
+        "maintained cache must equal the live unspent transparent set during sync"
     );
 }

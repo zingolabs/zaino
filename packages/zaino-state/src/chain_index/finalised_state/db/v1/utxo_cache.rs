@@ -62,6 +62,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
+use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
 use crate::chain_index::types::{Outpoint, TransactionHash, TxOutCompact};
 
 /// The live unspent transparent UTXO set, held in memory and maintained forward
@@ -110,6 +111,21 @@ impl TransparentUtxoCache {
             // count == 0 entries are pruned during stage-3 wiring.
         }
         removed
+    }
+
+    /// Applies a block's transparent delta forward, after its writes commit: records
+    /// every spendable created output and removes every spent one. Creations are
+    /// applied before spends so an output created and spent within the same block nets
+    /// out. The single forward maintenance entry point.
+    pub(super) fn apply_forward(&self, delta: &super::transparent_delta::TransparentBlockDelta) {
+        for (outpoint, output, _location) in &delta.created {
+            if !is_unspendable_tx_out(output) {
+                self.record_created(*outpoint, *output);
+            }
+        }
+        for (outpoint, _location) in &delta.spent {
+            self.record_spent(outpoint);
+        }
     }
 
     /// The unspent output at `outpoint`, if still unspent. Replaces the

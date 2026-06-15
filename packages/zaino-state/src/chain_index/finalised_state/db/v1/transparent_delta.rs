@@ -15,8 +15,6 @@ pub(super) struct TransparentBlockDelta {
     /// Created outputs: `(outpoint, output, creating-tx location)`. Includes
     /// unspendable outputs; consumers that track only the UTXO set filter them with
     /// [`is_unspendable_tx_out`].
-    // Consumed by the UTXO-cache wiring (maintain / seed / reorg), landing in stages.
-    #[allow(dead_code)]
     pub(super) created: Vec<(Outpoint, TxOutCompact, TxLocation)>,
     /// Spent outpoints: `(spent outpoint, spending-tx location)`. Coinbase
     /// (null-prevout) inputs are skipped.
