@@ -52,6 +52,7 @@ use zebra_chain::parameters::NetworkKind;
 use zebra_state::HashOrHeight;
 
 use super::LmdbLifecycle;
+use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
 
 use async_trait::async_trait;
 use corez::io::{self, Read};
@@ -75,6 +76,10 @@ pub(crate) mod compact_block;
 pub(crate) mod indexed_block;
 
 pub(crate) mod transparent_address_history;
+
+/// The single transparent created/spent delta of a block, shared by the DB-write
+/// path, the txout-set accumulator, and the in-memory UTXO cache.
+mod transparent_delta;
 
 /// In-memory transparent UTXO cache that will feed the txout-set accumulator in
 /// place of per-block DB reads. Skeleton; not yet wired in.
@@ -256,6 +261,13 @@ pub(crate) struct DbV1 {
     /// staleness rule.
     unspent_output_counts: Arc<DashMap<TransactionHash, u32>>,
 
+    /// In-memory live transparent UTXO set, maintained forward as blocks are
+    /// ingested so the txout-set accumulator can resolve spent-output values and
+    /// per-tx unspent counts without faulting back to the `transparent` /
+    /// `txid_location` / `spent` tables. Reconstructed from committed state on
+    /// open; see [`utxo_cache`].
+    transparent_utxo_cache: utxo_cache::TransparentUtxoCache,
+
     /// Background validator / maintenance task handle.
     ///
     /// Wrapped in a `Mutex` so `shutdown(&self)` can `.take()` the handle on
@@ -380,6 +392,7 @@ impl DbV1 {
             address_history,
             metadata,
             unspent_output_counts: Arc::new(DashMap::new()),
+            transparent_utxo_cache: utxo_cache::TransparentUtxoCache::new(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),
             status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),
@@ -393,6 +406,10 @@ impl DbV1 {
         // `txid_location` index unbuilt. Runs before the background validator starts so it operates
         // on a quiescent database.
         zaino_db.reconcile_alpha_txid_location_index().await?;
+
+        // Reconstruct the in-memory transparent UTXO cache from committed state before
+        // serving. A no-op on a fresh database; a one-time scan on resume.
+        zaino_db.seed_transparent_utxo_cache()?;
 
         // Background validation has been removed; mark the database ready to serve.
         zaino_db.status.store(StatusType::Ready);
@@ -525,9 +542,126 @@ impl DbV1 {
         })
     }
 
+    /// Reconstructs the in-memory transparent UTXO cache from committed state with two
+    /// sequential table scans — never per-output random lookups, which would re-create
+    /// the very read cliff this cache exists to remove:
+    ///
+    /// 1. scan `transparent` (paired with the parallel `txids` scan that supplies each
+    ///    tx's id) and add every *spendable* created output, then
+    /// 2. scan `spent` and remove every output that has since been spent.
+    ///
+    /// The set difference (created − spent) is the live unspent set. A no-op for a
+    /// from-genesis sync (both tables empty); a one-time pair of sequential passes on
+    /// resume, before the first new block. Reconstruct-on-open keeps the cache
+    /// schema-free — nothing extra is persisted (see [`utxo_cache`]).
+    fn seed_transparent_utxo_cache(&self) -> Result<(), FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let ro = self.env.begin_ro_txn()?;
+
+            // Pass 1: add every spendable created output. `transparent` and `txids` are
+            // both keyed by height and written together, so a lockstep cursor walk pairs
+            // each transparent tx with its id without any point lookups.
+            {
+                let mut transparent_cursor = ro.open_ro_cursor(self.transparent)?;
+                let mut txids_cursor = ro.open_ro_cursor(self.txids)?;
+                let mut transparent_iter = transparent_cursor.iter();
+                let mut txids_iter = txids_cursor.iter();
+
+                loop {
+                    match (transparent_iter.next(), txids_iter.next()) {
+                        (
+                            Some((transparent_key, transparent_raw)),
+                            Some((txids_key, txids_raw)),
+                        ) => {
+                            if transparent_key != txids_key {
+                                return Err(FinalisedStateError::Custom(
+                                    "transparent and txids tables diverge while seeding the UTXO \
+                                     cache"
+                                        .into(),
+                                ));
+                            }
+
+                            let transparent_list =
+                                StoredEntryVar::<TransparentTxList>::from_bytes(transparent_raw)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "transparent decode error: {e}"
+                                        ))
+                                    })?
+                                    .inner()
+                                    .clone();
+                            let txid_list = StoredEntryVar::<TxidList>::from_bytes(txids_raw)
+                                .map_err(|e| {
+                                    FinalisedStateError::Custom(format!("txids decode error: {e}"))
+                                })?
+                                .inner()
+                                .clone();
+                            let txids = txid_list.txids();
+
+                            for (tx_index, tx_opt) in transparent_list.tx().iter().enumerate() {
+                                let Some(tx) = tx_opt else { continue };
+                                let Some(txid) = txids.get(tx_index) else {
+                                    return Err(FinalisedStateError::Custom(
+                                        "txids shorter than transparent tx list while seeding the \
+                                         UTXO cache"
+                                            .into(),
+                                    ));
+                                };
+
+                                for (vout, output) in tx.outputs().iter().enumerate() {
+                                    // Unspendable outputs were never in the UTXO set; the
+                                    // accumulator excludes them, so the cache must too.
+                                    if is_unspendable_tx_out(output) {
+                                        continue;
+                                    }
+                                    let vout = u32::try_from(vout).map_err(|_| {
+                                        FinalisedStateError::Custom(
+                                            "output index does not fit u32".into(),
+                                        )
+                                    })?;
+                                    self.transparent_utxo_cache
+                                        .record_created(Outpoint::new(txid.0, vout), *output);
+                                }
+                            }
+                        }
+                        (None, None) => break,
+                        _ => {
+                            return Err(FinalisedStateError::Custom(
+                                "transparent and txids tables have different lengths while seeding \
+                                 the UTXO cache"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Pass 2: remove every spent output, leaving the live unspent set.
+            {
+                let mut spent_cursor = ro.open_ro_cursor(self.spent)?;
+                for (outpoint_key, _spender) in spent_cursor.iter() {
+                    let outpoint = Outpoint::deserialize(outpoint_key).map_err(|e| {
+                        FinalisedStateError::Custom(format!("spent outpoint decode error: {e}"))
+                    })?;
+                    self.transparent_utxo_cache.record_spent(&outpoint);
+                }
+            }
+
+            Ok(())
+        })
+    }
+
     /// Provides access to the finalised txout-set accumulator DB table.
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
         self.tx_out_set_info_accumulator
+    }
+
+    /// Test-only snapshot of the reconstructed transparent UTXO cache.
+    #[cfg(test)]
+    pub(crate) fn transparent_utxo_cache_snapshot(
+        &self,
+    ) -> std::collections::HashMap<Outpoint, TxOutCompact> {
+        self.transparent_utxo_cache.snapshot()
     }
 
     /// Resolve a `HashOrHeight` to the block height stored on disk.
@@ -785,6 +919,7 @@ impl DbV1 {
             address_history,
             metadata,
             unspent_output_counts: Arc::new(DashMap::new()),
+            transparent_utxo_cache: utxo_cache::TransparentUtxoCache::new(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),
             status: NamedAtomicStatus::new("ZainoDB", StatusType::Spawning),

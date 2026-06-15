@@ -345,8 +345,6 @@ impl DbV1 {
         let mut sapling = Vec::with_capacity(tx_len);
         let mut orchard = Vec::with_capacity(tx_len);
 
-        let mut spent_map: HashMap<Outpoint, TxLocation> = HashMap::new();
-
         #[cfg(feature = "transparent_address_history_experimental")]
         #[allow(clippy::type_complexity)]
         let mut addrhist_inputs_map: HashMap<
@@ -395,25 +393,6 @@ impl DbV1 {
             // Orchard transactions
             let orchard_data = stored_orchard_data(tx);
             orchard.push(orchard_data);
-
-            // Transparent Inputs: Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
-                if spent_map.insert(prev_outpoint, tx_location).is_some() {
-                    return Err(FinalisedStateError::InvalidBlock {
-                        height: block_height.0,
-                        hash: block_hash,
-                        reason: format!(
-                            "duplicate transparent spend for outpoint {prev_outpoint:?}"
-                        ),
-                    });
-                }
-            }
 
             #[cfg(feature = "transparent_address_history_experimental")]
             {
@@ -512,6 +491,24 @@ impl DbV1 {
                         });
                     }
                 }
+            }
+        }
+
+        // Derive the block's transparent delta once; the spent index (here), the
+        // accumulator, and (in later stages) the UTXO cache all consume it instead of
+        // re-walking the transactions. Building `spent_map` rejects a duplicate
+        // transparent spend within the block.
+        let transparent_delta =
+            transparent_delta::block_transparent_delta(block_height, &transactions)?;
+        let mut spent_map: HashMap<Outpoint, TxLocation> =
+            HashMap::with_capacity(transparent_delta.spent.len());
+        for (outpoint, tx_location) in &transparent_delta.spent {
+            if spent_map.insert(*outpoint, *tx_location).is_some() {
+                return Err(FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: format!("duplicate transparent spend for outpoint {outpoint:?}"),
+                });
             }
         }
 
@@ -775,6 +772,7 @@ impl DbV1 {
             address_history: self.address_history,
             metadata: self.metadata,
             unspent_output_counts: Arc::clone(&self.unspent_output_counts),
+            transparent_utxo_cache: self.transparent_utxo_cache.clone(),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
@@ -1040,8 +1038,6 @@ impl DbV1 {
         // guard; the index also makes in-block prevout lookups O(1).
         let mut txid_index: HashMap<TransactionHash, u16> = HashMap::with_capacity(tx_len);
 
-        let mut spent_map: HashMap<Outpoint, TxLocation> = HashMap::new();
-
         #[cfg(feature = "transparent_address_history_experimental")]
         #[allow(clippy::type_complexity)]
         let mut addrhist_inputs_map: HashMap<
@@ -1055,15 +1051,14 @@ impl DbV1 {
         for (tx_index, tx) in block.transactions().iter().enumerate() {
             let hash = tx.txid();
 
-            // Bound the index first: the dup map and the spent map both want the
-            // narrow u16 form.
+            // Bound the index to the narrow u16 form the dup map (and, under the
+            // address-history feature, the tx location) require.
             let tx_index =
                 u16::try_from(tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
                     height: block_height.0,
                     hash: block_hash,
                     reason: format!("transaction index {tx_index} does not fit into u16"),
                 })?;
-            let tx_location = TxLocation::new(block_height.into(), tx_index);
 
             if txid_index.insert(*hash, tx_index).is_some() {
                 return Err(FinalisedStateError::InvalidBlock {
@@ -1077,27 +1072,9 @@ impl DbV1 {
             let transparent_data = stored_transparent_data(tx);
             transactions.push((*hash, transparent_data));
 
-            // Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
-                if spent_map.insert(prev_outpoint, tx_location).is_some() {
-                    return Err(FinalisedStateError::InvalidBlock {
-                        height: block_height.0,
-                        hash: block_hash,
-                        reason: format!(
-                            "duplicate transparent spend for outpoint {prev_outpoint:?}"
-                        ),
-                    });
-                }
-            }
-
             #[cfg(feature = "transparent_address_history_experimental")]
             {
+                let tx_location = TxLocation::new(block_height.into(), tx_index);
                 // Transparent Outputs: Build Address History
                 DbV1::build_transaction_output_histories(
                     &mut addrhist_outputs_map,
@@ -1178,6 +1155,22 @@ impl DbV1 {
                         });
                     }
                 }
+            }
+        }
+
+        // Same transparent delta the forward path uses, here driving the reverse
+        // accumulator and the spent-index removal below.
+        let transparent_delta =
+            transparent_delta::block_transparent_delta(block_height, &transactions)?;
+        let mut spent_map: HashMap<Outpoint, TxLocation> =
+            HashMap::with_capacity(transparent_delta.spent.len());
+        for (outpoint, tx_location) in &transparent_delta.spent {
+            if spent_map.insert(*outpoint, *tx_location).is_some() {
+                return Err(FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: format!("duplicate transparent spend for outpoint {outpoint:?}"),
+                });
             }
         }
 

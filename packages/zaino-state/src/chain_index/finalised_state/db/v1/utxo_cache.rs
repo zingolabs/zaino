@@ -67,7 +67,7 @@ use crate::chain_index::types::{Outpoint, TransactionHash, TxOutCompact};
 /// The live unspent transparent UTXO set, held in memory and maintained forward
 /// as blocks are ingested. Cheap to clone (`Arc`-backed, matching the caches it
 /// replaces).
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct TransparentUtxoCache {
     /// Unspent outpoint → its output (carries the value the accumulator needs).
     outputs: Arc<DashMap<Outpoint, TxOutCompact>>,
@@ -125,5 +125,14 @@ impl TransparentUtxoCache {
             .get(txid)
             .map(|count| *count)
             .unwrap_or(0)
+    }
+
+    /// Test-only snapshot of the live unspent set, for asserting reconstruction.
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> std::collections::HashMap<Outpoint, TxOutCompact> {
+        self.outputs
+            .iter()
+            .map(|entry| (*entry.key(), *entry.value()))
+            .collect()
     }
 }
