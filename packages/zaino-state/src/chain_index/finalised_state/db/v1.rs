@@ -323,30 +323,22 @@ impl DbV1 {
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            // WRITE_MAP + NO_META_SYNC — the bulk-sync fast path.
+            // NO_META_SYNC — fsync amortisation, integrity preserved.
             //
-            // WRITE_MAP maps the DB read-write and writes pages straight into the mmap: no
-            // per-page malloc/copy and no dirty-list spill ceiling, so the write txn's dirty
-            // set is elastic, kernel-reclaimable file-backed page cache rather than hard
-            // anonymous heap. The hard, batch-scaling RAM is then just the buffered blocks,
-            // which the WriteBatcher heap budget bounds.
+            // Each commit msyncs the data pages and defers only the meta-page sync, keeping
+            // data-before-meta ordering: a crash stays consistent (loses at most the last
+            // commit, never corrupts). This is the safe, unconditional half of the fast-sync
+            // win, and it self-bounds the dirty write-set per batch.
             //
-            // NO_META_SYNC (not NO_SYNC): each commit msyncs the data pages and defers only
-            // the meta-page sync. That per-commit data sync both keeps data-before-meta
-            // ordering — so a crash stays consistent, never the WRITE_MAP+NO_SYNC corruption
-            // mode — and flushes the dirty mmap pages every batch, so they can't accumulate
-            // between checkpoints toward the vm.dirty_ratio writeback-throttle point. So
-            // integrity is unconditional and the dirty-page write-set is self-bounding per
-            // batch — leaving the heap budget to bound the one hard, unreclaimable component.
-            //
-            // Trade-off: WRITE_MAP makes the on-disk DB a writable mapping, so a stray write
-            // anywhere in the process can corrupt it (the validator that might have caught
-            // that is gone). Accepted on this fast-sync branch; a production build would
-            // confine WRITE_MAP to the bulk phase and reopen without it (durable
-            // copy-on-write) for serving.
+            // WRITE_MAP is deliberately NOT set here. It maps the DB read-write over the full
+            // map_size (384 GB default), so the OS must back that writable mapping and LMDB
+            // extends the data file toward map_size — on a quota'd or small disk a write then
+            // fails with QuotaExceeded or SIGBUSes (every test environment, and any non-bulk
+            // host). WRITE_MAP belongs only in a phased bulk-sync env on a host sized for it,
+            // reopened *without* it (durable copy-on-write) before serving. That phased reopen
+            // is not yet wired, so the always-on env stays copy-on-write.
             .set_flags(
-                EnvironmentFlags::WRITE_MAP
-                    | EnvironmentFlags::NO_TLS
+                EnvironmentFlags::NO_TLS
                     | EnvironmentFlags::NO_READAHEAD
                     | EnvironmentFlags::NO_META_SYNC,
             )
@@ -883,30 +875,22 @@ impl DbV1 {
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            // WRITE_MAP + NO_META_SYNC — the bulk-sync fast path.
+            // NO_META_SYNC — fsync amortisation, integrity preserved.
             //
-            // WRITE_MAP maps the DB read-write and writes pages straight into the mmap: no
-            // per-page malloc/copy and no dirty-list spill ceiling, so the write txn's dirty
-            // set is elastic, kernel-reclaimable file-backed page cache rather than hard
-            // anonymous heap. The hard, batch-scaling RAM is then just the buffered blocks,
-            // which the WriteBatcher heap budget bounds.
+            // Each commit msyncs the data pages and defers only the meta-page sync, keeping
+            // data-before-meta ordering: a crash stays consistent (loses at most the last
+            // commit, never corrupts). This is the safe, unconditional half of the fast-sync
+            // win, and it self-bounds the dirty write-set per batch.
             //
-            // NO_META_SYNC (not NO_SYNC): each commit msyncs the data pages and defers only
-            // the meta-page sync. That per-commit data sync both keeps data-before-meta
-            // ordering — so a crash stays consistent, never the WRITE_MAP+NO_SYNC corruption
-            // mode — and flushes the dirty mmap pages every batch, so they can't accumulate
-            // between checkpoints toward the vm.dirty_ratio writeback-throttle point. So
-            // integrity is unconditional and the dirty-page write-set is self-bounding per
-            // batch — leaving the heap budget to bound the one hard, unreclaimable component.
-            //
-            // Trade-off: WRITE_MAP makes the on-disk DB a writable mapping, so a stray write
-            // anywhere in the process can corrupt it (the validator that might have caught
-            // that is gone). Accepted on this fast-sync branch; a production build would
-            // confine WRITE_MAP to the bulk phase and reopen without it (durable
-            // copy-on-write) for serving.
+            // WRITE_MAP is deliberately NOT set here. It maps the DB read-write over the full
+            // map_size (384 GB default), so the OS must back that writable mapping and LMDB
+            // extends the data file toward map_size — on a quota'd or small disk a write then
+            // fails with QuotaExceeded or SIGBUSes (every test environment, and any non-bulk
+            // host). WRITE_MAP belongs only in a phased bulk-sync env on a host sized for it,
+            // reopened *without* it (durable copy-on-write) before serving. That phased reopen
+            // is not yet wired, so the always-on env stays copy-on-write.
             .set_flags(
-                EnvironmentFlags::WRITE_MAP
-                    | EnvironmentFlags::NO_TLS
+                EnvironmentFlags::NO_TLS
                     | EnvironmentFlags::NO_READAHEAD
                     | EnvironmentFlags::NO_META_SYNC,
             )
