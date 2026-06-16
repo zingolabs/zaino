@@ -2425,6 +2425,20 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .collect();
         heights.sort();
 
+        // Drop the boundary block before walking. The non-finalised cache deliberately
+        // retains the finalised-tip block (NonFinalizedState::remove_finalized_blocks keeps
+        // `height >= finalized_height`, so a fully-reorged non-finalised state never has to
+        // consult the finalised DB), so the snapshot's lowest retained height IS the
+        // finalised tip — the height the accumulator was already built through. Walking it
+        // here would add its transparent outputs a second time. Skipping the lowest height
+        // makes the finalised `[0, boundary]` / non-finalised `(boundary, tip]` split
+        // disjoint and complete, mirroring `get_compact_block_stream`. Anchoring on this
+        // snapshot (rather than a fresh `db_height()` read) keeps the boundary, the
+        // accumulator, and the walk consistent with a single sampled value.
+        if !heights.is_empty() {
+            heights.remove(0);
+        }
+
         for height in heights {
             let Some(block) = non_finalized_snapshot.get_chainblock_by_height(&height) else {
                 return Err(ChainIndexError::internal(format!(
