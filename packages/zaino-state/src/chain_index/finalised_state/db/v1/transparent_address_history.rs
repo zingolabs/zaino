@@ -3,6 +3,7 @@
 use crate::chain_index::finalised_state::db::v1::{
     TX_OUT_SET_INFO_ACCUMULATOR_KEY, TX_OUT_SET_INFO_ACCUMULATOR_WATERMARK_KEY,
 };
+use crate::chain_index::types::db::legacy::GENESIS_HEIGHT;
 use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, FinalisedTxOutSetInfoAccumulator,
 };
@@ -1220,6 +1221,20 @@ impl DbV1 {
                                  txout-set accumulator"
                                     .into(),
                             ));
+                        }
+
+                        // zcashd never adds the genesis coinbase to its coins view — a
+                        // consensus special-case inherited from Bitcoin's genesis block —
+                        // so its `gettxoutsetinfo` excludes it. Skip the genesis block
+                        // (height 0) here so the rebuilt accumulator matches zcashd's
+                        // transparent UTXO set instead of over-counting that one output.
+                        let height = Height::from_bytes(transparent_key).map_err(|e| {
+                            FinalisedStateError::Custom(format!(
+                                "txout-set rebuild: height decode error: {e}"
+                            ))
+                        })?;
+                        if height == GENESIS_HEIGHT {
+                            continue;
                         }
 
                         let transparent_list =

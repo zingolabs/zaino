@@ -766,6 +766,11 @@ async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
         zaino.best_block, zcashd.best_block,
         "`bestblock` differs from zcashd"
     );
+    // At this regtest height both `transactions` and `txouts` are 0: the blocks above
+    // genesis have shielded coinbases (no transparent outputs), and the genesis coinbase
+    // is the chain's only transparent output — which zcashd excludes as consensus-
+    // unspendable and Zaino now excludes too. So the expected match is 0, not a positive
+    // count.
     assert_eq!(
         zaino.transactions, zcashd.transactions,
         "`transactions` count differs from zcashd"
