@@ -323,13 +323,30 @@ impl DbV1 {
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            // NO_META_SYNC: fsync the data pages on each commit but defer the meta-page
-            // fsync, so a commit costs one fsync instead of two. The data fsync still
-            // orders data-before-meta, so a crash stays consistent and loses at most the
-            // last commit — it never corrupts (unlike bare NO_SYNC, which has no such
-            // ordering barrier). With batched commits this is one fsync per batch.
+            // WRITE_MAP + NO_META_SYNC — the bulk-sync fast path.
+            //
+            // WRITE_MAP maps the DB read-write and writes pages straight into the mmap: no
+            // per-page malloc/copy and no dirty-list spill ceiling, so the write txn's dirty
+            // set is elastic, kernel-reclaimable file-backed page cache rather than hard
+            // anonymous heap. The hard, batch-scaling RAM is then just the buffered blocks,
+            // which the WriteBatcher heap budget bounds.
+            //
+            // NO_META_SYNC (not NO_SYNC): each commit msyncs the data pages and defers only
+            // the meta-page sync. That per-commit data sync both keeps data-before-meta
+            // ordering — so a crash stays consistent, never the WRITE_MAP+NO_SYNC corruption
+            // mode — and flushes the dirty mmap pages every batch, so they can't accumulate
+            // between checkpoints toward the vm.dirty_ratio writeback-throttle point. So
+            // integrity is unconditional and the dirty-page write-set is self-bounding per
+            // batch — leaving the heap budget to bound the one hard, unreclaimable component.
+            //
+            // Trade-off: WRITE_MAP makes the on-disk DB a writable mapping, so a stray write
+            // anywhere in the process can corrupt it (the validator that might have caught
+            // that is gone). Accepted on this fast-sync branch; a production build would
+            // confine WRITE_MAP to the bulk phase and reopen without it (durable
+            // copy-on-write) for serving.
             .set_flags(
-                EnvironmentFlags::NO_TLS
+                EnvironmentFlags::WRITE_MAP
+                    | EnvironmentFlags::NO_TLS
                     | EnvironmentFlags::NO_READAHEAD
                     | EnvironmentFlags::NO_META_SYNC,
             )
@@ -866,13 +883,30 @@ impl DbV1 {
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            // NO_META_SYNC: fsync the data pages on each commit but defer the meta-page
-            // fsync, so a commit costs one fsync instead of two. The data fsync still
-            // orders data-before-meta, so a crash stays consistent and loses at most the
-            // last commit — it never corrupts (unlike bare NO_SYNC, which has no such
-            // ordering barrier). With batched commits this is one fsync per batch.
+            // WRITE_MAP + NO_META_SYNC — the bulk-sync fast path.
+            //
+            // WRITE_MAP maps the DB read-write and writes pages straight into the mmap: no
+            // per-page malloc/copy and no dirty-list spill ceiling, so the write txn's dirty
+            // set is elastic, kernel-reclaimable file-backed page cache rather than hard
+            // anonymous heap. The hard, batch-scaling RAM is then just the buffered blocks,
+            // which the WriteBatcher heap budget bounds.
+            //
+            // NO_META_SYNC (not NO_SYNC): each commit msyncs the data pages and defers only
+            // the meta-page sync. That per-commit data sync both keeps data-before-meta
+            // ordering — so a crash stays consistent, never the WRITE_MAP+NO_SYNC corruption
+            // mode — and flushes the dirty mmap pages every batch, so they can't accumulate
+            // between checkpoints toward the vm.dirty_ratio writeback-throttle point. So
+            // integrity is unconditional and the dirty-page write-set is self-bounding per
+            // batch — leaving the heap budget to bound the one hard, unreclaimable component.
+            //
+            // Trade-off: WRITE_MAP makes the on-disk DB a writable mapping, so a stray write
+            // anywhere in the process can corrupt it (the validator that might have caught
+            // that is gone). Accepted on this fast-sync branch; a production build would
+            // confine WRITE_MAP to the bulk phase and reopen without it (durable
+            // copy-on-write) for serving.
             .set_flags(
-                EnvironmentFlags::NO_TLS
+                EnvironmentFlags::WRITE_MAP
+                    | EnvironmentFlags::NO_TLS
                     | EnvironmentFlags::NO_READAHEAD
                     | EnvironmentFlags::NO_META_SYNC,
             )
