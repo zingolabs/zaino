@@ -621,9 +621,12 @@ impl ZainoDB {
         // a chance to shutdown the reporter task regardless of how this block exits.
         let result: Result<(), FinalisedStateError> = (async {
             // Batch writes so many blocks share one durable LMDB commit; the batcher
-            // flushes on its byte budget (see `WriteBatcher`).
-            let mut batcher =
-                write_batch::WriteBatcher::new(write_batch::DEFAULT_WRITE_BATCH_BYTE_BUDGET);
+            // flushes on its byte budget, configurable via
+            // `storage.database.sync_write_batch_bytes` (see `WriteBatcher`).
+            let batch_budget = usize::try_from(self.cfg.storage.database.sync_write_batch_bytes)
+                .unwrap_or(usize::MAX)
+                .max(1);
+            let mut batcher = write_batch::WriteBatcher::new(batch_budget);
 
             let zebra_network = self.cfg.network.to_zebra_network();
             let sapling_activation_height = self

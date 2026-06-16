@@ -68,6 +68,16 @@ pub struct DatabaseConfig {
     /// Database size limit. Defaults to [`DatabaseSize::default`].
     #[serde(default)]
     pub size: DatabaseSize,
+    /// Byte budget for one bulk-sync write batch (one durable LMDB commit). Larger values
+    /// amortise the per-commit fsync over more blocks but raise peak RAM and LMDB dirty
+    /// pages; the sorted-insert write path keeps any spill sequential. Defaults to 128 MiB.
+    #[serde(default = "default_sync_write_batch_bytes")]
+    pub sync_write_batch_bytes: u64,
+}
+
+/// Default [`DatabaseConfig::sync_write_batch_bytes`]: 128 MiB.
+fn default_sync_write_batch_bytes() -> u64 {
+    128 * 1024 * 1024
 }
 
 impl Default for DatabaseConfig {
@@ -75,6 +85,7 @@ impl Default for DatabaseConfig {
         Self {
             path: resolve_path_with_xdg_cache_defaults("zaino"),
             size: DatabaseSize::default(),
+            sync_write_batch_bytes: default_sync_write_batch_bytes(),
         }
     }
 }
