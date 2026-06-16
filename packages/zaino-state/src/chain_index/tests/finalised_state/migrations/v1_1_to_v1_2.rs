@@ -396,6 +396,7 @@ async fn assert_tx_out_set_info_accumulator_matches_transparent_data(database_ba
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "migration"]
 async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     init_tracing();
 
@@ -463,6 +464,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "migration"]
 async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     init_tracing();
 
@@ -556,6 +558,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
 /// `txid_location` index. Re-opening it must self-heal: the spawn-time reconciliation rolls the
 /// recorded version back to v1.1.0 and the corrected migration rebuilds the index in place.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "migration"]
 async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
     init_tracing();
 

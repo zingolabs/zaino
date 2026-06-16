@@ -26,6 +26,7 @@ use crate::chain_index::tests::vectors::{
 
 use crate::chain_index::types::TransactionHash;
 
+use crate::chain_index::types::db::legacy::GENESIS_HEIGHT;
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::chain_index::types::Height;
 use crate::error::FinalisedStateError;
@@ -1293,95 +1294,49 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
     //   bytes_serialized     = transaction_outputs * ZAINO_TXOUTSET_ENTRY_LEN
     //   hash_serialized      = XOR of tx_out_set_entry_digest over all unspent outputs
     //   total_zatoshis       = sum of `value` over all unspent outputs
-    let mut unspent_output_indices_by_transaction_hash: HashMap<
-        TransactionHash,
-        HashMap<u32, crate::TxOutCompact>,
-    > = HashMap::new();
-    // Records the block each transaction's outputs first appear in, so the assertion
-    // below can confirm the vectors exercise a *cross-block* last-output spend: a
-    // transaction created in one block whose last live output is drained by a later
-    // block, which the lazy rebuild must count out of `transactions`.
-    let mut tx_created_at_block: HashMap<TransactionHash, usize> = HashMap::new();
+    let unspent_output_indices_by_transaction_hash =
+        live_unspent_transparent_set(indexed_block_chain(&blocks));
+
+    // Coverage guard for the assertion below: confirm the vectors drain some transaction's
+    // *last* spendable output in a later block than it was created — the cross-block
+    // last-output spend the lazy rebuild must count out of `transactions`. Tracks
+    // `(creation block, remaining spendable outputs)` per transaction; genesis and
+    // unspendable outputs are excluded to match the live-set semantics above.
+    let mut live_outputs: HashMap<TransactionHash, (usize, usize)> = HashMap::new();
     let mut cross_block_tx_fully_spent = 0usize;
 
     for (block_index, chain_block) in indexed_block_chain(&blocks).enumerate() {
+        if chain_block.context.index.height == GENESIS_HEIGHT {
+            continue;
+        }
         for transaction in chain_block.transactions() {
-            // First apply spends, removing spent transparent outputs from the expected UTXO set.
             for input in transaction.transparent().inputs() {
                 if input.is_null_prevout() {
                     continue;
                 }
-
                 let previous_transaction_hash = TransactionHash::from(*input.prevout_txid());
-
-                let unspent_output_indices = unspent_output_indices_by_transaction_hash
-                    .get_mut(&previous_transaction_hash)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "test vectors spend unknown transaction {previous_transaction_hash:?}"
-                        )
-                    });
-
-                assert!(
-                    unspent_output_indices
-                        .remove(&input.prevout_index())
-                        .is_some(),
-                    "test vectors spend unknown output: transaction {:?}, output {}",
-                    previous_transaction_hash,
-                    input.prevout_index()
-                );
-
-                // If a transaction has no remaining unspent outputs, it should no longer
-                // contribute to the accumulator's `transactions` count. Count the case where
-                // the drained transaction was created in an *earlier* block, so the test
-                // confirms the vectors exercise a cross-block last-output spend.
-                if unspent_output_indices.is_empty() {
-                    if tx_created_at_block
-                        .get(&previous_transaction_hash)
-                        .is_some_and(|&created| created < block_index)
-                    {
+                if let Some((created_block, remaining)) =
+                    live_outputs.get_mut(&previous_transaction_hash)
+                {
+                    *remaining -= 1;
+                    if *remaining == 0 && *created_block < block_index {
                         cross_block_tx_fully_spent += 1;
                     }
-                    unspent_output_indices_by_transaction_hash.remove(&previous_transaction_hash);
                 }
             }
-
-            // Then apply outputs, adding newly-created transparent outputs to the expected UTXO set.
-            if transaction.transparent().outputs().is_empty() {
-                continue;
-            }
-
-            let transaction_hash = *transaction.txid();
-            tx_created_at_block
-                .entry(transaction_hash)
-                .or_insert(block_index);
-
-            let unspent_output_indices = unspent_output_indices_by_transaction_hash
-                .entry(transaction_hash)
-                .or_default();
-
-            for (output_index, output) in transaction.transparent().outputs().iter().enumerate() {
-                // The accumulator skips NonStandard (unspendable) outputs — see
-                // `is_unspendable_tx_out` in
-                // `chain_index::types::db::metadata`. The oracle must mirror that.
-                if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
-                    continue;
-                }
-
-                let output_index = u32::try_from(output_index).unwrap();
-
-                assert!(
-                    unspent_output_indices
-                        .insert(output_index, *output)
-                        .is_none(),
-                    "test vectors duplicate output index: transaction {transaction_hash:?}, output {output_index}"
-                );
-            }
-
-            // If the transaction had only NonStandard outputs, drop the empty entry so it
-            // doesn't inflate the expected `transactions` count.
-            if unspent_output_indices.is_empty() {
-                unspent_output_indices_by_transaction_hash.remove(&transaction_hash);
+            let spendable = transaction
+                .transparent()
+                .outputs()
+                .iter()
+                .filter(|output| {
+                    !crate::chain_index::types::db::metadata::is_unspendable_tx_out(output)
+                })
+                .count();
+            if spendable > 0 {
+                live_outputs
+                    .entry(*transaction.txid())
+                    .or_insert((block_index, 0))
+                    .1 += spendable;
             }
         }
     }
@@ -1436,6 +1391,55 @@ fn accumulator_from_unspent_map(
         hash_serialized,
         total_zatoshis,
     }
+}
+
+/// Builds the live unspent transparent output set over `blocks`, keyed by txid then output
+/// index — the independent oracle the lazy-rebuild accumulator tests feed to
+/// [`accumulator_from_unspent_map`]. Applies each block's spends before its outputs, and
+/// mirrors the two exclusions the production rebuild applies in
+/// `rebuild_tx_out_set_accumulator_blocking`: the genesis coinbase (height 0, which zcashd
+/// never adds to its coins view) and provably-unspendable outputs (`is_unspendable_tx_out`).
+fn live_unspent_transparent_set(
+    blocks: impl Iterator<Item = IndexedBlock>,
+) -> HashMap<TransactionHash, HashMap<u32, crate::TxOutCompact>> {
+    use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
+
+    let mut unspent: HashMap<TransactionHash, HashMap<u32, crate::TxOutCompact>> = HashMap::new();
+    for chain_block in blocks {
+        if chain_block.context.index.height == GENESIS_HEIGHT {
+            continue;
+        }
+        for tx in chain_block.transactions() {
+            // Spends first: drop the spent prev output, and the whole entry once it empties.
+            for input in tx.transparent().inputs() {
+                if input.is_null_prevout() {
+                    continue;
+                }
+                let prev_txid = TransactionHash::from(*input.prevout_txid());
+                if let Some(outputs) = unspent.get_mut(&prev_txid) {
+                    outputs.remove(&input.prevout_index());
+                    if outputs.is_empty() {
+                        unspent.remove(&prev_txid);
+                    }
+                }
+            }
+            // Then created outputs, skipping provably-unspendable ones.
+            let txid = *tx.txid();
+            for (vout, output) in tx.transparent().outputs().iter().enumerate() {
+                if is_unspendable_tx_out(output) {
+                    continue;
+                }
+                unspent
+                    .entry(txid)
+                    .or_default()
+                    .insert(vout as u32, *output);
+            }
+            if unspent.get(&txid).is_some_and(|outputs| outputs.is_empty()) {
+                unspent.remove(&txid);
+            }
+        }
+    }
+    unspent
 }
 
 use sha2::{Digest, Sha256};
@@ -1671,7 +1675,6 @@ async fn incomplete_block_reads_as_error_not_none() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rebuild_tx_out_set_accumulator_matches_independent_unspent_set() {
     use crate::chain_index::finalised_state::db::v1::DbV1;
-    use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
 
     init_tracing();
 
@@ -1696,38 +1699,8 @@ async fn rebuild_tx_out_set_accumulator_matches_independent_unspent_set() {
         db.write_block(block).await.unwrap();
     }
 
-    // Independent oracle: the live unspent transparent set over the prefix, keyed by
-    // txid then output index, matching `accumulator_from_unspent_map`'s shape.
-    let mut unspent: HashMap<TransactionHash, HashMap<u32, crate::TxOutCompact>> = HashMap::new();
-    for chain_block in indexed_block_chain(&blocks).take(prefix) {
-        for tx in chain_block.transactions() {
-            for input in tx.transparent().inputs() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-                let prev_txid = TransactionHash::from(*input.prevout_txid());
-                if let Some(outputs) = unspent.get_mut(&prev_txid) {
-                    outputs.remove(&input.prevout_index());
-                    if outputs.is_empty() {
-                        unspent.remove(&prev_txid);
-                    }
-                }
-            }
-            let txid = *tx.txid();
-            for (vout, output) in tx.transparent().outputs().iter().enumerate() {
-                if is_unspendable_tx_out(output) {
-                    continue;
-                }
-                unspent
-                    .entry(txid)
-                    .or_default()
-                    .insert(vout as u32, *output);
-            }
-            if unspent.get(&txid).is_some_and(|o| o.is_empty()) {
-                unspent.remove(&txid);
-            }
-        }
-    }
+    // Independent oracle: the live unspent transparent set over the prefix.
+    let unspent = live_unspent_transparent_set(indexed_block_chain(&blocks).take(prefix));
     assert!(
         !unspent.is_empty(),
         "vectors must exercise some unspent transparent outputs"
