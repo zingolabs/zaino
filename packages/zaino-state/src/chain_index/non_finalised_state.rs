@@ -846,12 +846,15 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         else {
             return Err("tried to reify empty snapshot".to_string());
         };
-        let seam_block = finalized_db
+        let Some(seam_block) = finalized_db
             .backend_for_cap(CapabilityRequest::IndexedBlockExt)
             .map_err(|e| format!("backend can't serve indexed blocks"))?
             .get_chain_block(*seam_height)
             .await
-            .map_err(|e| format!("backend error: {e}"))?;
+            .map_err(|e| format!("backend error: {e}"))?
+        else {
+            return Err("backend missing block below known block".to_string());
+        };
         todo!()
     }
 }
