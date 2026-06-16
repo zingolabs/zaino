@@ -64,6 +64,42 @@ fn is_sensitive_leaf_key(leaf_key: &str) -> bool {
         .any(|suffix| key.ends_with(suffix))
 }
 
+/// HTTP health server configuration.
+///
+/// Mirrors Zebra's `[health]` section so operators configure both daemons the
+/// same way. Disabled (no listener) by default; set `listen_addr` to enable
+/// the `/livez` and `/readyz` endpoints.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HealthConfig {
+    /// Address to bind the health server to.
+    ///
+    /// The server is disabled when this is `None`. The Zebra Book recommends
+    /// `0.0.0.0:8080` for Kubernetes deployments.
+    pub listen_addr: Option<SocketAddr>,
+    /// Maximum estimated blocks behind the network tip for `/readyz` to report
+    /// ready. Tolerating a small gap keeps readiness stable as new blocks
+    /// arrive (the sync loop briefly re-flags `Syncing` each cycle), instead of
+    /// flapping the pod in and out of its Service. Mirrors Zebra's
+    /// `ready_max_blocks_behind` (default 2).
+    pub ready_max_blocks_behind: u64,
+    /// Maximum seconds since the local tip last advanced to the network tip
+    /// before `/readyz` reports not-ready. Catches a silently stalled source
+    /// that block-delta alone can't (the network tip stops advancing too).
+    /// Mirrors Zebra's `ready_max_tip_age` (default 300s = 5 min).
+    pub ready_max_tip_age_secs: u64,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: None,
+            ready_max_blocks_behind: 2,
+            ready_max_tip_age_secs: 5 * 60,
+        }
+    }
+}
+
 /// Zaino daemon configuration.
 ///
 /// Field order matters for TOML serialization: simple values must come before tables.
@@ -86,6 +122,8 @@ pub struct ZainodConfig {
     pub metrics_endpoint: Option<SocketAddr>,
 
     // Table sections
+    /// HTTP health endpoint settings (`/livez`, `/readyz`).
+    pub health: HealthConfig,
     /// JSON-RPC server settings. Set to enable Zaino's JSON-RPC interface.
     pub json_server_settings: Option<JsonRpcServerConfig>,
     /// gRPC server settings (listen address, TLS configuration).
@@ -229,6 +267,7 @@ impl Default for ZainodConfig {
         Self {
             backend: BackendType::default(),
             metrics_endpoint: None,
+            health: HealthConfig::default(),
             json_server_settings: None,
             grpc_settings: GrpcServerConfig {
                 listen_address: "127.0.0.1:8137".parse().unwrap(),

@@ -70,6 +70,11 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time"
 http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
+# HTTP health endpoint (/livez, /readyz)
+hyper = { workspace = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util = { workspace = true }
+
 # Metrics (behind "prometheus" feature)
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }

@@ -10,8 +10,8 @@ use zaino_serve::{
 };
 #[allow(deprecated)]
 use zaino_state::{
-    BackendType, FetchService, FetchServiceConfig, IndexerService, LightWalletService,
-    StateService, StateServiceConfig, StatusType, ZcashIndexer, ZcashService,
+    BackendType, ChainSyncProgress, FetchService, FetchServiceConfig, IndexerService,
+    LightWalletService, StateService, StateServiceConfig, StatusType, ZcashIndexer, ZcashService,
 };
 
 use crate::{config::ZainodConfig, error::IndexerError};
@@ -81,6 +81,7 @@ pub async fn spawn_indexer(
 impl<Service: ZcashService + LightWalletService + Send + Sync + 'static> Indexer<Service>
 where
     IndexerError: From<<Service::Subscriber as ZcashIndexer>::Error>,
+    Service::Subscriber: ChainSyncProgress,
 {
     /// Spawns a new Indexer server.
     // TODO: revise whether returning the subscriber here is the best way to access the service after the indexer is spawned.
@@ -96,6 +97,40 @@ where
     > {
         let service = IndexerService::<Service>::spawn(service_config).await?;
         let service_subscriber = service.inner_ref().get_subscriber();
+
+        // Start the HTTP health server *before* gating on initial sync, so
+        // `/livez` and `/readyz` are probe-able throughout the multi-hour
+        // initial scan. Liveness comes from the subscriber's aggregated status;
+        // readiness adds a tip-proximity gate (via `SyncProgress`) so it stays
+        // stable at the tip instead of flapping with the sync loop's
+        // per-iteration `Syncing` re-flagging.
+        if let Some(health_address) = indexer_config.health.listen_addr {
+            let subscriber = service.inner_ref().get_subscriber().inner();
+            let progress = subscriber.sync_progress();
+            let probe = crate::health::IndexerProbe::new(
+                subscriber,
+                progress,
+                indexer_config.health.ready_max_blocks_behind,
+                std::time::Duration::from_secs(indexer_config.health.ready_max_tip_age_secs),
+            );
+            crate::health::spawn(health_address, probe).await?;
+        }
+
+        // Gate the gRPC / JSON-RPC servers on initial sync completing. Relocated
+        // here from the backend `spawn` (see `FetchService::spawn`) so the
+        // health server above is up while this blocks. A startup `CriticalError`
+        // is fatal, exactly as before the relocation.
+        loop {
+            match service.inner_ref().status() {
+                StatusType::Ready | StatusType::Closing => break,
+                StatusType::CriticalError => {
+                    return Err(IndexerError::MiscIndexerError(
+                        "initial sync failed; check full log for details".to_string(),
+                    ));
+                }
+                _ => tokio::time::sleep(tokio::time::Duration::from_millis(100)).await,
+            }
+        }
 
         let json_server = match indexer_config.json_server_settings {
             Some(json_server_config) => Some(

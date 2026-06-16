@@ -366,6 +366,12 @@ impl Status for StateServiceSubscriber {
     }
 }
 
+impl crate::chain_index::sync_progress::ChainSyncProgress for StateServiceSubscriber {
+    fn sync_progress(&self) -> crate::chain_index::sync_progress::SyncProgress {
+        self.indexer.sync_progress()
+    }
+}
+
 /// A subscriber to any chaintip updates
 #[derive(Clone)]
 pub struct ChainTipSubscriber {
