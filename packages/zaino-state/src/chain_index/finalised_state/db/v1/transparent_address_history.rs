@@ -10,7 +10,6 @@ use crate::chain_index::types::Height;
 
 use super::*;
 
-
 /// [`TransparentHistExt`] capability implementation for [`DbV1`].
 ///
 /// Provides address history queries built over the LMDB `DUP_SORT`/`DUP_FIXED` address-history
@@ -1265,9 +1264,9 @@ impl DbV1 {
                                 if is_unspendable_tx_out(output) {
                                     continue;
                                 }
-                                accumulator.apply_added_output(&outpoint, output).map_err(
-                                    |e| FinalisedStateError::Custom(e.to_string()),
-                                )?;
+                                accumulator
+                                    .apply_added_output(&outpoint, output)
+                                    .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
                                 txs_with_live.insert(*txid);
                             }
                         }
@@ -1337,10 +1336,9 @@ mod rebuild_tx_out_set_accumulator_blocking {
 
         let db = DbV1::spawn(&config).await.expect("spawn empty DbV1");
 
-        let rebuilt = tokio::task::block_in_place(|| {
-            db.rebuild_tx_out_set_accumulator_blocking(Height(0))
-        })
-        .expect("rebuild on empty database");
+        let rebuilt =
+            tokio::task::block_in_place(|| db.rebuild_tx_out_set_accumulator_blocking(Height(0)))
+                .expect("rebuild on empty database");
 
         assert_eq!(
             rebuilt,
@@ -1349,4 +1347,3 @@ mod rebuild_tx_out_set_accumulator_blocking {
         );
     }
 }
-

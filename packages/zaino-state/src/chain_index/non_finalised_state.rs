@@ -830,9 +830,9 @@ mod is_retryable {
         assert!(!deterministic.is_retryable());
 
         // A finalised error wrapping a transient source/IO fault stays retryable.
-        let transient_finalised = SyncError::CannotReadFinalizedState(FinalisedStateError::IoError(
-            std::io::Error::other("flap"),
-        ));
+        let transient_finalised = SyncError::CannotReadFinalizedState(
+            FinalisedStateError::IoError(std::io::Error::other("flap")),
+        );
         assert!(transient_finalised.is_retryable());
 
         // A bare source flap belongs on the backoff ladder.

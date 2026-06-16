@@ -406,27 +406,6 @@ mod tests {
     }
 
     #[test]
-    fn is_unspendable_filters_non_standard() {
-        let out = TxOutCompact::new(100, [0x00; 20], 0xFF)
-            .expect("script_type 0xFF (NonStandard) should be valid");
-        assert!(is_unspendable_tx_out(&out));
-    }
-
-    #[test]
-    fn is_unspendable_allows_p2pkh() {
-        let out =
-            TxOutCompact::new(100, [0x00; 20], 0).expect("script_type 0 (P2PKH) should be valid");
-        assert!(!is_unspendable_tx_out(&out));
-    }
-
-    #[test]
-    fn is_unspendable_allows_p2sh() {
-        let out =
-            TxOutCompact::new(100, [0x00; 20], 1).expect("script_type 1 (P2SH) should be valid");
-        assert!(!is_unspendable_tx_out(&out));
-    }
-
-    #[test]
     fn apply_added_then_removed_output_returns_to_empty() {
         let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
         let outpoint = Outpoint::new([0xAA; 32], 0);

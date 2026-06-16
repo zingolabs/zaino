@@ -1652,7 +1652,6 @@ async fn incomplete_block_reads_as_error_not_none() {
     }
 }
 
-
 /// The lazy rebuild reconstructs the txout-set accumulator from the committed
 /// `transparent` and `spent` tables: write a contiguous prefix of vector blocks (some
 /// of whose transparent outputs are spent by later blocks), rebuild, and assert the
@@ -1728,11 +1727,13 @@ async fn rebuild_tx_out_set_accumulator_matches_independent_unspent_set() {
     );
 
     let expected = accumulator_from_unspent_map(&unspent);
-    let tip = db.tip_height().await.unwrap().expect("non-empty db has a tip");
-    let rebuilt = tokio::task::block_in_place(|| {
-        db.rebuild_tx_out_set_accumulator_for_test(tip)
-    })
-    .unwrap();
+    let tip = db
+        .tip_height()
+        .await
+        .unwrap()
+        .expect("non-empty db has a tip");
+    let rebuilt =
+        tokio::task::block_in_place(|| db.rebuild_tx_out_set_accumulator_for_test(tip)).unwrap();
 
     assert_eq!(
         rebuilt, expected,
