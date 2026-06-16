@@ -191,7 +191,17 @@ impl<'a> BlockWithMetadata<'a> {
                     let mut fallback = [0u8; 20];
                     let usable = script_bytes.len().min(20);
                     fallback[..usable].copy_from_slice(&script_bytes[..usable]);
-                    AddrScript::new(fallback, ScriptType::NonStandard as u8)
+                    // Provably-unspendable scripts (OP_RETURN-prefixed / oversized) are
+                    // excluded from the UTXO set, matching zcashd's IsUnspendable; record
+                    // that here while the full scriptPubKey is available, since TxOutCompact
+                    // collapses it to a type byte. P2PK / bare multisig stay NonStandard and
+                    // remain spendable (counted).
+                    let script_type = if is_unspendable_script(script_bytes) {
+                        ScriptType::Unspendable
+                    } else {
+                        ScriptType::NonStandard
+                    };
+                    AddrScript::new(fallback, script_type as u8)
                 });
 
                 TxOutCompact::new(value, *addr.hash(), addr.script_type())
