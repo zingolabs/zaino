@@ -77,6 +77,17 @@ impl TransparentUtxoCache {
         self.outputs.is_empty()
     }
 
+    /// Rough resident-byte estimate of the cache, for sync-time telemetry that sizes
+    /// the live UTXO set against the write-batch budget. Not exact: each map's entry
+    /// count times its payload (`outputs`: `Outpoint` 36 B + `TxOutCompact` 32 B;
+    /// `unspent_per_tx`: `TransactionHash` 32 B + `u32` 4 B) inflated ~2× for hashbrown
+    /// control bytes, the ≤7/8 load factor, and DashMap's power-of-two shard capacity.
+    pub(super) fn estimated_resident_bytes(&self) -> usize {
+        const OUTPUT_ENTRY_BYTES: usize = 150;
+        const PER_TX_ENTRY_BYTES: usize = 80;
+        self.outputs.len() * OUTPUT_ENTRY_BYTES + self.unspent_per_tx.len() * PER_TX_ENTRY_BYTES
+    }
+
     /// Records an output a block created (insert), keeping the per-tx count.
     pub(super) fn record_created(&self, outpoint: Outpoint, output: TxOutCompact) {
         if self.outputs.insert(outpoint, output).is_none() {
@@ -151,5 +162,36 @@ impl TransparentUtxoCache {
             .iter()
             .map(|entry| (*entry.key(), *entry.value()))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::transparent_delta::TransparentBlockDelta;
+    use super::*;
+    use crate::chain_index::types::db::legacy::{ScriptType, TxLocation};
+
+    /// A non-standard-but-spendable output (P2PK, bare multisig, …) compacts to
+    /// `NonStandard`. zcashd lets it be spent, so `apply_forward` must cache it —
+    /// otherwise `resolve_spent_outpoints_for_set_info` fails with "not in the UTXO
+    /// cache" the first time a later block spends it.
+    #[test]
+    fn apply_forward_caches_nonstandard_spendable_output() {
+        let cache = TransparentUtxoCache::new();
+        let outpoint = Outpoint::new([7u8; 32], 0);
+        let output = TxOutCompact::new(1_000, [9u8; 20], ScriptType::NonStandard as u8)
+            .expect("a valid script-type byte builds a TxOutCompact");
+        let delta = TransparentBlockDelta {
+            created: vec![(outpoint, output, TxLocation::new(0, 0))],
+            spent: vec![],
+        };
+
+        cache.apply_forward(&delta);
+
+        assert_eq!(
+            cache.value_of(&outpoint),
+            Some(output),
+            "a spendable NonStandard output must be resolvable for a later block's spend",
+        );
     }
 }

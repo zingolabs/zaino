@@ -11,21 +11,34 @@ use crate::{
     ZainoVersionedSerde,
 };
 
-use super::legacy::{Outpoint, ScriptType, TxOutCompact};
+use super::legacy::{Outpoint, TxOutCompact};
 
-/// Returns `true` if `out` should be excluded from the transparent UTXO set.
+/// Returns `true` if `out` can never be spent and so must be excluded from the
+/// transparent UTXO set (and from `gettxoutsetinfo`).
 ///
-/// Mirrors zcashd's `IsUnspendable()` for the purposes of `gettxoutsetinfo`:
-/// only outputs whose script parses as P2PKH or P2SH are counted as part of
-/// the UTXO set. Everything else (OP_RETURN coinbase commitments, oversized
-/// or otherwise non-standard scripts) is treated as unspendable and excluded
-/// from `transactions`, `transaction_outputs`, `bytes_serialized`,
-/// `hash_serialized` and `total_zatoshis`.
-pub fn is_unspendable_tx_out(out: &TxOutCompact) -> bool {
-    !matches!(
-        out.script_type_enum(),
-        Some(ScriptType::P2PKH) | Some(ScriptType::P2SH),
-    )
+/// `gettxoutsetinfo` — which `FinalisedTxOutSetInfoAccumulator` mirrors for parity
+/// (see `get_tx_out_set_info`) — counts the *entire spendable* UTXO set: P2PKH,
+/// P2SH, P2PK, bare multisig, and other non-standard-but-spendable scripts all
+/// count. Only provably-unspendable outputs (scripts beginning with `OP_RETURN`)
+/// are excluded, via zcashd's `IsUnspendable()`. So this predicate must track
+/// spendability, not a standard-script allowlist.
+///
+/// It is the single source of truth shared by the UTXO cache, the seed, and the
+/// finalised and non-finalised accumulators, so the set each describes stays
+/// identical. An earlier version returned `true` for everything except P2PKH/P2SH;
+/// that excluded spendable P2PK/multisig outputs, which both undercounted against
+/// zcashd and made spend resolution fail — the spent output was absent from the
+/// UTXO cache (see `resolve_spent_outpoints_for_set_info`).
+///
+/// `TxOutCompact` keeps only `value`, a 20-byte `script_hash`, and a script-type
+/// byte; the full `scriptPubKey` is gone after compaction, so `OP_RETURN` is
+/// indistinguishable from P2PK (both compact to `NonStandard`). Until a dedicated
+/// unspendable script type is recorded at parse time — a schema change — nothing
+/// is treated as unspendable here. The only cost is that `transaction_outputs`
+/// over-counts by the number of *unspent* `OP_RETURN` outputs: negligible on Zcash
+/// and zero-value.
+pub fn is_unspendable_tx_out(_out: &TxOutCompact) -> bool {
+    false
 }
 
 /// Domain separator for the Zaino transparent UTXO set commitment.
@@ -303,6 +316,26 @@ impl FixedEncodedLen for FinalisedTxOutSetInfoAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonstandard_outputs_count_as_spendable() {
+        // gettxoutsetinfo (which the txout-set accumulator mirrors) counts the whole
+        // spendable UTXO set; only OP_RETURN is unspendable. TxOutCompact collapses
+        // every non-P2PKH/P2SH script to NonStandard, so until an OP_RETURN script type
+        // is recorded (a schema change) no compacted output is treated as unspendable.
+        // The NonStandard case is the regression: spending such an output used to fail
+        // with "not in the UTXO cache" because it was excluded from the cache.
+        use super::super::legacy::ScriptType;
+
+        for script_type in [ScriptType::P2PKH, ScriptType::P2SH, ScriptType::NonStandard] {
+            let out = TxOutCompact::new(1, [0u8; 20], script_type as u8)
+                .expect("a valid script-type byte builds a TxOutCompact");
+            assert!(
+                !is_unspendable_tx_out(&out),
+                "{script_type:?} is spendable and must be counted in the UTXO set",
+            );
+        }
+    }
 
     #[test]
     fn finalised_tx_out_set_info_accumulator_roundtrips() {

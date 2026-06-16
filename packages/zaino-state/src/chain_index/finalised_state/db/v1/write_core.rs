@@ -938,10 +938,13 @@ impl DbV1 {
             Ok(()) => {
                 self.status.store(StatusType::Ready);
                 info!(
-                    "Committed batch of {} blocks ({}..={}) to ZainoDB.",
+                    "Committed batch of {} blocks ({}..={}) to ZainoDB. \
+                     live UTXO cache: {} outputs (~{} MiB)",
                     blocks.len(),
                     first_height.0,
                     first_height.0 + blocks.len() as u32 - 1,
+                    self.transparent_utxo_cache.len(),
+                    self.transparent_utxo_cache.estimated_resident_bytes() / (1024 * 1024),
                 );
                 Ok(())
             }
