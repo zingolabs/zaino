@@ -1548,7 +1548,12 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
                     let mut fallback = [0u8; 20];
                     let copy_len = script.len().min(20);
                     fallback[..copy_len].copy_from_slice(&script[..copy_len]);
-                    TxOutCompact::new(value, fallback, ScriptType::NonStandard as u8)
+                    let script_type = if is_unspendable_script(&script) {
+                        ScriptType::Unspendable
+                    } else {
+                        ScriptType::NonStandard
+                    };
+                    TxOutCompact::new(value, fallback, script_type as u8)
                 }
             })
             .collect();
@@ -1828,7 +1833,12 @@ pub enum ScriptType {
     P2PKH = 0x00,
     /// Standard pay-to-script-hash (P2SH) address (`t3...`).
     P2SH = 0x01,
-    /// Non-standard output script (rare).
+    /// Provably unspendable output: the script begins with `OP_RETURN`, or exceeds
+    /// the maximum script size. Excluded from the UTXO set, matching zcashd's
+    /// `IsUnspendable`. Detected at parse time (see [`is_unspendable_script`])
+    /// because the full script is lost after compaction.
+    Unspendable = 0xFE,
+    /// Non-standard but *spendable* output script (P2PK, bare multisig, …).
     NonStandard = 0xFF,
 }
 
@@ -1839,6 +1849,7 @@ impl TryFrom<u8> for ScriptType {
         match value {
             0x00 => Ok(ScriptType::P2PKH),
             0x01 => Ok(ScriptType::P2SH),
+            0xFE => Ok(ScriptType::Unspendable),
             0xFF => Ok(ScriptType::NonStandard),
             _ => Err(()),
         }
@@ -1851,6 +1862,7 @@ impl ScriptType {
         match self {
             ScriptType::P2PKH => "P2PKH",
             ScriptType::P2SH => "P2SH",
+            ScriptType::Unspendable => "Unspendable",
             ScriptType::NonStandard => "NonStandard",
         }
     }
@@ -1883,6 +1895,17 @@ impl ZainoVersionedSerde for ScriptType {
 impl FixedEncodedLen for ScriptType {
     /// 1 byte
     const ENCODED_LEN: usize = 1;
+}
+
+/// Whether `script` is provably unspendable, matching zcashd's `IsUnspendable`:
+/// it begins with `OP_RETURN` (0x6a), or exceeds the maximum script size. Such
+/// outputs never enter the UTXO set, so `gettxoutsetinfo` excludes them. Recorded
+/// at parse time as [`ScriptType::Unspendable`] because compaction discards the
+/// full script.
+pub(crate) fn is_unspendable_script(script: &[u8]) -> bool {
+    const OP_RETURN: u8 = 0x6a;
+    const MAX_SCRIPT_SIZE: usize = 10_000;
+    matches!(script.first(), Some(&OP_RETURN)) || script.len() > MAX_SCRIPT_SIZE
 }
 
 /// Try to recognise a standard P2PKH / P2SH locking script.
@@ -1937,7 +1960,7 @@ pub(crate) fn build_standard_script(hash: [u8; 20], stype: ScriptType) -> Option
             debug_assert!(script.len() == P2SH_LEN);
             Some(script)
         }
-        ScriptType::NonStandard => None,
+        ScriptType::NonStandard | ScriptType::Unspendable => None,
     }
 }
 
@@ -2022,7 +2045,12 @@ impl<T: AsRef<[u8]>> TryFrom<(u64, T)> for TxOutCompact {
             let mut fallback = [0u8; 20];
             let usable_len = script_bytes.len().min(20);
             fallback[..usable_len].copy_from_slice(&script_bytes[..usable_len]);
-            TxOutCompact::new(value, fallback, ScriptType::NonStandard as u8).ok_or(())
+            let script_type = if is_unspendable_script(script_bytes) {
+                ScriptType::Unspendable
+            } else {
+                ScriptType::NonStandard
+            };
+            TxOutCompact::new(value, fallback, script_type as u8).ok_or(())
         }
     }
 }
@@ -3117,5 +3145,33 @@ pub mod serde_arrays {
         let v: &[u8] = Deserialize::deserialize(d)?;
         v.try_into()
             .map_err(|_| serde::de::Error::custom(format!("invalid length for [u8; {N}]")))
+    }
+}
+
+#[cfg(test)]
+mod is_unspendable_script {
+    use super::*;
+
+    #[test]
+    fn flags_op_return_and_oversized_only() {
+        // OP_RETURN-prefixed (0x6a) → unspendable, matching zcashd's IsUnspendable.
+        assert!(super::is_unspendable_script(&[0x6a]));
+        assert!(super::is_unspendable_script(&[0x6a, 0x01, 0x02, 0x03]));
+        // Over the max script size → unspendable.
+        assert!(super::is_unspendable_script(&vec![0u8; 10_001]));
+        // Spendable / at-limit scripts → not unspendable.
+        assert!(!super::is_unspendable_script(&[])); // empty: size()==0 guard, like zcashd
+        assert!(!super::is_unspendable_script(&[0x76, 0xa9, 0x14])); // P2PKH prefix
+        assert!(!super::is_unspendable_script(&vec![0u8; 10_000])); // exactly the limit
+    }
+
+    #[test]
+    fn op_return_output_compacts_to_unspendable() {
+        // A real OP_RETURN scriptPubKey converts to ScriptType::Unspendable, so the
+        // UTXO-set rebuild excludes it (matching zcashd's gettxoutsetinfo).
+        let op_return = [0x6a, 0xde, 0xad, 0xbe, 0xef];
+        let out = TxOutCompact::try_from((0u64, op_return.as_slice()))
+            .expect("an OP_RETURN output builds a TxOutCompact");
+        assert_eq!(out.script_type_enum(), Some(ScriptType::Unspendable));
     }
 }
