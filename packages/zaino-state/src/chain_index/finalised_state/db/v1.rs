@@ -323,7 +323,16 @@ impl DbV1 {
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
+            // NO_META_SYNC: fsync the data pages on each commit but defer the meta-page
+            // fsync, so a commit costs one fsync instead of two. The data fsync still
+            // orders data-before-meta, so a crash stays consistent and loses at most the
+            // last commit — it never corrupts (unlike bare NO_SYNC, which has no such
+            // ordering barrier). With batched commits this is one fsync per batch.
+            .set_flags(
+                EnvironmentFlags::NO_TLS
+                    | EnvironmentFlags::NO_READAHEAD
+                    | EnvironmentFlags::NO_META_SYNC,
+            )
             .open(&db_path)?;
 
         // Open individual LMDB DBs.
@@ -857,7 +866,16 @@ impl DbV1 {
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
+            // NO_META_SYNC: fsync the data pages on each commit but defer the meta-page
+            // fsync, so a commit costs one fsync instead of two. The data fsync still
+            // orders data-before-meta, so a crash stays consistent and loses at most the
+            // last commit — it never corrupts (unlike bare NO_SYNC, which has no such
+            // ordering barrier). With batched commits this is one fsync per batch.
+            .set_flags(
+                EnvironmentFlags::NO_TLS
+                    | EnvironmentFlags::NO_READAHEAD
+                    | EnvironmentFlags::NO_META_SYNC,
+            )
             .open(&db_path)?;
 
         // Open individual LMDB DBs.
