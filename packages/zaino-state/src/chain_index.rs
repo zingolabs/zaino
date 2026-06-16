@@ -876,9 +876,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
 
-                    fs.sync_to_height(finalised_height, &source)
-                        .await
-                        .map_err(source_error)?;
+                    // Finalised-state errors are typed (CannotReadFinalizedState),
+                    // not boxed as transient source errors: the write path can fail
+                    // deterministically (a bad block, an accumulator that cannot be
+                    // computed) and those must fail fast rather than ride the retry
+                    // ladder. `SyncError::is_retryable` re-derives transient-vs-
+                    // deterministic from the inner error, so a source flap here still
+                    // retries.
+                    fs.sync_to_height(finalised_height, &source).await?;
 
                     let intermediate_nfs_for_scoping = nfs.load();
                     let non_finalized_state = match *intermediate_nfs_for_scoping {
@@ -936,6 +941,18 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         }
                     }
                     Err(e) => {
+                        // Deterministic data/logic errors (a bad block, an accumulator
+                        // that cannot be computed, corruption) recur identically on
+                        // retry, so fail fast instead of burning the whole backoff
+                        // ladder re-running the same work for zero progress. Only
+                        // transient faults ride the ladder.
+                        if !e.is_retryable() {
+                            tracing::error!(
+                                "Sync loop hit a non-retryable error, failing fast: {e:?}"
+                            );
+                            status.store(StatusType::CriticalError);
+                            return Err(e);
+                        }
                         consecutive_failures += 1;
                         if consecutive_failures >= timings.max_consecutive_failures {
                             tracing::error!(

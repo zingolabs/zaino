@@ -547,6 +547,21 @@ pub enum FinalisedStateError {
     IoError(#[from] std::io::Error),
 }
 
+impl FinalisedStateError {
+    /// Whether this is a transient fault a later attempt might clear (a source,
+    /// transport, or IO hiccup) rather than a deterministic data/logic failure
+    /// that would recur identically on retry. The sync loop uses this to decide
+    /// whether an error belongs on the retry ladder or should fail fast.
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            FinalisedStateError::BlockchainSourceError(_)
+                | FinalisedStateError::JsonRpcConnectorError(_)
+                | FinalisedStateError::IoError(_)
+        )
+    }
+}
+
 /// These aren't the best conversions, but the FinalizedStateError should go away
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {

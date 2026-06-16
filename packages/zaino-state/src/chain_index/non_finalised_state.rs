@@ -144,6 +144,28 @@ pub enum SyncError {
     CannotReadFinalizedState(#[from] FinalisedStateError),
 }
 
+impl SyncError {
+    /// Whether the sync loop should retry after this error, or fail fast.
+    ///
+    /// Transient faults — a source flap, a validator-connection blip, or a
+    /// finalised error wrapping a transient source/IO fault — can succeed on a
+    /// later attempt and belong on the backoff ladder. Deterministic failures —
+    /// a reorg that cannot resolve, a competing writer, a closed staging channel,
+    /// or a finalised data/logic error (a bad block, an accumulator that cannot
+    /// be computed) — recur identically on retry, so the loop gives up at once
+    /// rather than re-running the same work through the whole ladder. The match
+    /// is exhaustive so a new variant must be classified deliberately.
+    pub(super) fn is_retryable(&self) -> bool {
+        match self {
+            SyncError::ErrorFromSource(_) | SyncError::ValidatorConnectionError(_) => true,
+            SyncError::CannotReadFinalizedState(error) => error.is_transient(),
+            SyncError::ReorgFailure(_)
+            | SyncError::CompetingSyncProcess
+            | SyncError::StagingChannelClosed => false,
+        }
+    }
+}
+
 impl From<UpdateError> for SyncError {
     fn from(value: UpdateError) -> Self {
         match value {
@@ -792,5 +814,32 @@ impl Block for zebra_chain::block::Block {
         nfs: &NonFinalizedState<Source>,
     ) -> Result<IndexedBlock, SyncError> {
         nfs.block_to_chainblock(prev_block, self).await
+    }
+}
+
+#[cfg(test)]
+mod is_retryable {
+    use super::*;
+
+    #[test]
+    fn splits_transient_from_deterministic() {
+        // The accumulator failure is a deterministic finalised Custom error:
+        // retrying re-runs identical work to the identical failure, so fail fast.
+        let deterministic =
+            SyncError::CannotReadFinalizedState(FinalisedStateError::Custom("boom".into()));
+        assert!(!deterministic.is_retryable());
+
+        // A finalised error wrapping a transient source/IO fault stays retryable.
+        let transient_finalised = SyncError::CannotReadFinalizedState(FinalisedStateError::IoError(
+            std::io::Error::other("flap"),
+        ));
+        assert!(transient_finalised.is_retryable());
+
+        // A bare source flap belongs on the backoff ladder.
+        let source = SyncError::ErrorFromSource(Box::new(std::io::Error::other("flap")));
+        assert!(source.is_retryable());
+
+        // A competing writer never resolves by retrying.
+        assert!(!SyncError::CompetingSyncProcess.is_retryable());
     }
 }
