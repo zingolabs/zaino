@@ -131,8 +131,9 @@ impl DbV1 {
 
             zaino_db.put_block_write_data_in_txn(&mut txn, data)?;
 
-            // `txn.commit()` is durable: the LMDB env is opened without NO_SYNC, so commit
-            // fsyncs the data and meta pages — atomicity and durability come from LMDB.
+            // `txn.commit()` fsyncs the data pages; the meta-page fsync is deferred under
+            // NO_META_SYNC (one fsync per commit, not two). The data fsync still orders
+            // data-before-meta, so a crash stays consistent and loses at most the last commit.
             //
             // The write path does not validate: the background validator was removed, so
             // committed records are served without a read-back/re-hash pass.
@@ -588,10 +589,13 @@ impl DbV1 {
     /// pre-encoded, so no serialization happens inside the single-writer window.
     /// Committing is the caller's responsibility, so several blocks can share one
     /// durable commit.
-    fn put_block_write_data_in_txn(
+    /// Writes the six height-keyed tables (headers/txids/transparent/sapling/orchard/
+    /// commitment tree) plus the hash→height reverse entry for one block. These keys are
+    /// height-sequential, so their insertion order is already optimal.
+    fn put_block_height_keyed_in_txn(
         &self,
         txn: &mut lmdb::RwTransaction<'_>,
-        data: BlockWriteData,
+        data: &BlockWriteData,
     ) -> Result<(), FinalisedStateError> {
         // Per-height entries: six tables share the height key and NO_OVERWRITE;
         // only the table and the pre-encoded entry differ.
@@ -617,6 +621,75 @@ impl DbV1 {
             &data.height_entry_bytes,
             WriteFlags::NO_OVERWRITE,
         )?;
+        Ok(())
+    }
+
+    /// Writes a whole batch of blocks in one transaction with the random-keyed `spent` and
+    /// `txid_location` entries inserted in **sorted key order across the entire batch**.
+    ///
+    /// Those two indexes otherwise fault a scattered B-tree leaf per insert once the DB
+    /// exceeds RAM; collecting every batch entry, sorting by key, and inserting in order
+    /// turns that into a sequential B-tree sweep. Height-keyed tables are written per block
+    /// (already sequential); the txout-set accumulator is written once — the last block's
+    /// value is the post-batch accumulator. Address-history is not batchable (its
+    /// prev-output resolution depends on earlier-in-batch writes), so the experimental
+    /// feature keeps the per-block path in `write_blocks`.
+    #[cfg(not(feature = "transparent_address_history_experimental"))]
+    fn put_block_batch_in_txn(
+        &self,
+        txn: &mut lmdb::RwTransaction<'_>,
+        batch: Vec<BlockWriteData>,
+    ) -> Result<(), FinalisedStateError> {
+        let mut txid_location: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        let mut spent: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut last_accumulator_bytes: Option<Vec<u8>> = None;
+
+        for mut data in batch {
+            self.put_block_height_keyed_in_txn(txn, &data)?;
+            txid_location.append(&mut data.txid_location_entries);
+            spent.append(&mut data.spent_entries);
+            last_accumulator_bytes = Some(data.tx_out_set_info_accumulator_entry_bytes);
+        }
+
+        // Sorted sweep over each random-keyed B-tree. LMDB's default comparator is bytewise,
+        // so byte-ascending key order is the B-tree's physical order.
+        txid_location.sort_by(|a, b| a.0.cmp(&b.0));
+        for (txid_bytes, entry_bytes) in &txid_location {
+            txn.put(
+                self.txid_location,
+                txid_bytes,
+                entry_bytes,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+        }
+        spent.sort_by(|a, b| a.0.cmp(&b.0));
+        for (outpoint_bytes, entry_bytes) in &spent {
+            txn.put(
+                self.spent,
+                outpoint_bytes,
+                entry_bytes,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+        }
+
+        if let Some(accumulator_bytes) = last_accumulator_bytes {
+            txn.put(
+                self.tx_out_set_info_accumulator,
+                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                &accumulator_bytes,
+                WriteFlags::empty(),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn put_block_write_data_in_txn(
+        &self,
+        txn: &mut lmdb::RwTransaction<'_>,
+        data: BlockWriteData,
+    ) -> Result<(), FinalisedStateError> {
+        self.put_block_height_keyed_in_txn(txn, &data)?;
 
         // Reverse txid index: `txid -> TxLocation`.
         for (txid_bytes, entry_bytes) in &data.txid_location_entries {
@@ -839,11 +912,17 @@ impl DbV1 {
         let zaino_db = self.task_clone();
         let join_handle = tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
+            // Batch-wide sorted inserts for the random-keyed indexes (sequential B-tree
+            // sweep). The address-history feature can't be batched, so it stays per block.
+            #[cfg(not(feature = "transparent_address_history_experimental"))]
+            zaino_db.put_block_batch_in_txn(&mut txn, batch_data)?;
+            #[cfg(feature = "transparent_address_history_experimental")]
             for data in batch_data {
                 zaino_db.put_block_write_data_in_txn(&mut txn, data)?;
             }
-            // One durable commit (data + meta fsync) for the whole batch. The write path does
-            // not validate; the background validator was removed.
+            // One durable commit for the whole batch (data fsync; the meta-page fsync is
+            // deferred under NO_META_SYNC). The write path does not validate; the
+            // background validator was removed.
             txn.commit()?;
             Ok::<_, FinalisedStateError>(())
         });
