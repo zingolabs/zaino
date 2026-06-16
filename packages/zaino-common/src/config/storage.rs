@@ -85,6 +85,17 @@ pub struct DatabaseConfig {
     /// measurement confirms the ~3× peak multiplier. (Estimate-based.)
     #[serde(default = "default_sync_write_batch_bytes")]
     pub sync_write_batch_bytes: u64,
+    /// Open the finalised database with `WRITE_MAP` for a fast, operator-initiated bulk
+    /// catch-up. Default `false`: serving and tests open durable copy-on-write.
+    ///
+    /// `WRITE_MAP` maps the DB read-write so bulk writes skip the per-page copy and the
+    /// dirty-set spill ceiling, but the on-disk DB becomes a writable mapping (a stray
+    /// process write can corrupt it) and LMDB extends the file toward the full `size`
+    /// (384 GB default), which SIGBUSes or exceeds quota on a small or quota'd disk.
+    /// Enable it only for a deliberate catch-up run on a host sized for it, then restart
+    /// with it off to serve durably.
+    #[serde(default)]
+    pub bulk_sync: bool,
 }
 
 /// Default [`DatabaseConfig::sync_write_batch_bytes`]: 6 GiB (marginally safe on a ~64 GiB host).
@@ -98,6 +109,7 @@ impl Default for DatabaseConfig {
             path: resolve_path_with_xdg_cache_defaults("zaino"),
             size: DatabaseSize::default(),
             sync_write_batch_bytes: default_sync_write_batch_bytes(),
+            bulk_sync: false,
         }
     }
 }

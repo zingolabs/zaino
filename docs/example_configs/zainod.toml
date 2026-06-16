@@ -41,6 +41,13 @@ size = 384
 # leaves ~16 GiB for the OS and the sorted-insert sweep's page cache. Lower it on
 # smaller-RAM hosts; raise it (and measure RSS) on larger ones for fewer commits.
 sync_write_batch_bytes = 6442450944
+# Open the finalised database with WRITE_MAP for a fast, operator-initiated bulk
+# catch-up. Default false: serving opens durable copy-on-write. WRITE_MAP maps the
+# DB read-write (faster bulk ingest), but the on-disk file becomes a writable mapping
+# (a stray process write can corrupt it) and LMDB extends it toward `size` (384 GB),
+# which SIGBUSes or exceeds quota on a small or quota'd disk. Enable only for a
+# deliberate catch-up run on a host sized for it, then restart with it off to serve.
+bulk_sync = false
 # Run the full database verification sweeps (every block and index entry, by
 # checksum) at startup. Off by default: the background validator and on-demand
 # read checks verify stored data continuously; enable after suspected

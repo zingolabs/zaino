@@ -131,6 +131,38 @@ pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
     patch: 0,
 };
 
+/// How the finalised LMDB environment is opened.
+///
+/// `Durable` is the default everywhere — serving and every test — and maps the DB
+/// copy-on-write, growing the file incrementally as the DB grows.
+///
+/// `BulkSync` additionally sets `WRITE_MAP` for a deliberate, operator-initiated
+/// catch-up (`storage.database.bulk_sync`). The DB is then mapped read-write so
+/// writes skip the per-page copy and the dirty-set spill ceiling — faster bulk
+/// ingest. The cost confines it to that one phase: the on-disk DB becomes a
+/// writable mapping (a stray process write can corrupt it), and LMDB extends the
+/// file toward the full `map_size` (384 GB default), which `SIGBUS`es or exceeds
+/// quota on a small or quota'd disk. So it is opt-in and never the default; after a
+/// bulk run the operator restarts *without* the flag to serve durably.
+#[derive(Clone, Copy)]
+enum WriteMode {
+    BulkSync,
+    Durable,
+}
+
+/// LMDB env flags for `mode`. `NO_META_SYNC` is unconditional: each commit fsyncs
+/// the data pages and defers only the meta-page sync, preserving data-before-meta
+/// ordering — crash-consistent, never corrupting — the safe half of the fast-sync
+/// win. `BulkSync` adds `WRITE_MAP` on top (see [`WriteMode`]).
+fn lmdb_env_flags(mode: WriteMode) -> EnvironmentFlags {
+    let base =
+        EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD | EnvironmentFlags::NO_META_SYNC;
+    match mode {
+        WriteMode::BulkSync => base | EnvironmentFlags::WRITE_MAP,
+        WriteMode::Durable => base,
+    }
+}
+
 /// LMDB table name for the finalised txout-set accumulator.
 pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME: &str =
     "tx_out_set_info_accumulator_1_2_0";
@@ -318,30 +350,19 @@ impl DbV1 {
         let max_readers = u32::try_from((cpu_cnt * 32).clamp(512, 4096))
             .expect("max_readers was clamped to fit in u32");
 
-        // Open LMDB environment and set environmental details.
+        // Open LMDB environment and set environmental details. WRITE_MAP is opt-in
+        // for an operator-initiated bulk catch-up only (see `WriteMode`); serving and
+        // tests open durable copy-on-write (the default `bulk_sync = false`).
+        let write_mode = if config.storage.database.bulk_sync {
+            WriteMode::BulkSync
+        } else {
+            WriteMode::Durable
+        };
         let env = Environment::new()
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            // NO_META_SYNC — fsync amortisation, integrity preserved.
-            //
-            // Each commit msyncs the data pages and defers only the meta-page sync, keeping
-            // data-before-meta ordering: a crash stays consistent (loses at most the last
-            // commit, never corrupts). This is the safe, unconditional half of the fast-sync
-            // win, and it self-bounds the dirty write-set per batch.
-            //
-            // WRITE_MAP is deliberately NOT set here. It maps the DB read-write over the full
-            // map_size (384 GB default), so the OS must back that writable mapping and LMDB
-            // extends the data file toward map_size — on a quota'd or small disk a write then
-            // fails with QuotaExceeded or SIGBUSes (every test environment, and any non-bulk
-            // host). WRITE_MAP belongs only in a phased bulk-sync env on a host sized for it,
-            // reopened *without* it (durable copy-on-write) before serving. That phased reopen
-            // is not yet wired, so the always-on env stays copy-on-write.
-            .set_flags(
-                EnvironmentFlags::NO_TLS
-                    | EnvironmentFlags::NO_READAHEAD
-                    | EnvironmentFlags::NO_META_SYNC,
-            )
+            .set_flags(lmdb_env_flags(write_mode))
             .open(&db_path)?;
 
         // Open individual LMDB DBs.
@@ -870,30 +891,19 @@ impl DbV1 {
         let max_readers = u32::try_from((cpu_cnt * 32).clamp(512, 4096))
             .expect("max_readers was clamped to fit in u32");
 
-        // Open LMDB environment and set environmental details.
+        // Open LMDB environment and set environmental details. WRITE_MAP is opt-in
+        // for an operator-initiated bulk catch-up only (see `WriteMode`); serving and
+        // tests open durable copy-on-write (the default `bulk_sync = false`).
+        let write_mode = if config.storage.database.bulk_sync {
+            WriteMode::BulkSync
+        } else {
+            WriteMode::Durable
+        };
         let env = Environment::new()
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            // NO_META_SYNC — fsync amortisation, integrity preserved.
-            //
-            // Each commit msyncs the data pages and defers only the meta-page sync, keeping
-            // data-before-meta ordering: a crash stays consistent (loses at most the last
-            // commit, never corrupts). This is the safe, unconditional half of the fast-sync
-            // win, and it self-bounds the dirty write-set per batch.
-            //
-            // WRITE_MAP is deliberately NOT set here. It maps the DB read-write over the full
-            // map_size (384 GB default), so the OS must back that writable mapping and LMDB
-            // extends the data file toward map_size — on a quota'd or small disk a write then
-            // fails with QuotaExceeded or SIGBUSes (every test environment, and any non-bulk
-            // host). WRITE_MAP belongs only in a phased bulk-sync env on a host sized for it,
-            // reopened *without* it (durable copy-on-write) before serving. That phased reopen
-            // is not yet wired, so the always-on env stays copy-on-write.
-            .set_flags(
-                EnvironmentFlags::NO_TLS
-                    | EnvironmentFlags::NO_READAHEAD
-                    | EnvironmentFlags::NO_META_SYNC,
-            )
+            .set_flags(lmdb_env_flags(write_mode))
             .open(&db_path)?;
 
         // Open individual LMDB DBs.
