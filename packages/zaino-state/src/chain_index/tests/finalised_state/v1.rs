@@ -442,7 +442,10 @@ async fn write_blocks_batched_ingest_matches_per_block() {
     let (_dir_batched, batched_backend) = spawn_fresh_v1_backend().await;
     // A small budget forces many batches (and dependency splits where the
     // vector chain spends recently created outputs) instead of one big batch.
-    let mut batcher = WriteBatcher::new(64 * 1024);
+    // Inject a `None` RssAnon source so batching is driven by the estimate
+    // backstop deterministically (real RssAnon would dwarf this tiny budget and
+    // flush after one block).
+    let mut batcher = WriteBatcher::with_rss_source(64 * 1024, Box::new(|| None));
     let mut batch_count = 0;
     for block in chain.iter().cloned() {
         if let Some(batch) = batcher.push(block) {
@@ -521,7 +524,9 @@ fn write_batcher_partitions_chain_on_byte_budget() {
     let TestVectorData { blocks, .. } = load_test_vectors().expect("test vectors load");
     let chain: Vec<IndexedBlock> = indexed_block_chain(&blocks).collect();
 
-    let mut batcher = WriteBatcher::new(16 * 1024);
+    // Inject a `None` RssAnon source so the partition is driven by the estimate
+    // backstop alone (deterministic; independent of the process's real RssAnon).
+    let mut batcher = WriteBatcher::with_rss_source(16 * 1024, Box::new(|| None));
     let mut chunks: Vec<Vec<IndexedBlock>> = Vec::new();
     for block in chain.iter().cloned() {
         if let Some(batch) = batcher.push(block) {
@@ -548,7 +553,9 @@ fn write_batcher_partitions_chain_on_byte_budget() {
     assert!(chunks.len() > 1, "tiny budget must produce multiple chunks");
 
     // A budget far above the whole chain's write volume yields a single batch.
-    let mut unbounded = WriteBatcher::new(usize::MAX);
+    // The `None` RssAnon source keeps the estimate backstop the sole bound, so
+    // `usize::MAX` never flushes mid-chain regardless of real process RssAnon.
+    let mut unbounded = WriteBatcher::with_rss_source(usize::MAX, Box::new(|| None));
     for block in chain.iter().cloned() {
         assert!(
             unbounded.push(block).is_none(),

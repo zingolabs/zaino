@@ -68,21 +68,20 @@ pub struct DatabaseConfig {
     /// Database size limit. Defaults to [`DatabaseSize::default`].
     #[serde(default)]
     pub size: DatabaseSize,
-    /// Heap budget for one bulk-sync write batch (one durable LMDB commit): a bound on the
-    /// buffered `Vec<IndexedBlock>`. Peak resident RAM per batch is **~2–3× this**, because
-    /// the buffer, its encoded `BlockWriteData`, and the pending overlay are all live at
-    /// flush. Larger values amortise the per-commit fsync over more blocks and sort more keys
-    /// per batch, at the cost of that peak RAM; under WRITE_MAP the dirty write-set is
-    /// reclaimable file cache (NOMETASYNC-flushed per batch), so the buffer is the binding
-    /// hard-RAM constraint.
+    /// Measured **resident anonymous memory (RssAnon) ceiling** for accumulating one
+    /// bulk-sync write batch (one durable LMDB commit). The batcher polls the process's
+    /// real RssAnon (from `/proc/self/status`) while a batch fills and flushes when it
+    /// reaches this value — a measurement, not an estimate. Default 6 GiB.
     ///
-    /// Default 6 GiB is the marginally-safe budget for a ~64 GiB host: with the ~20 GiB
-    /// transparent UTXO cache and ~2 GiB process baseline fixed, a 6 GiB budget peaks at
-    /// ~18 GiB hard (~40 GiB hard total) plus a transient ~8 GiB reclaimable dirty set —
-    /// ~48 GiB peak resident, leaving ~16 GiB for OS, the sorted sweep's page-cache window,
-    /// and the multiplier estimate's error (write volume ~8.5 GiB stays under the
-    /// vm.dirty_ratio throttle). Lower it on smaller-RAM hosts; raise toward ~8 GiB only once
-    /// measurement confirms the ~3× peak multiplier. (Estimate-based.)
+    /// This bounds the *accumulation* phase, not the peak. During the subsequent flush the
+    /// encoded write-data and the in-memory pending overlay coexist with the buffer, so the
+    /// real peak runs moderately above this value (visible in the per-batch
+    /// "Committed batch … RssAnon now … MiB" log). Size the budget to leave page-cache
+    /// headroom: a batch large enough to consume RAM starves the DB working-set cache, which
+    /// usually *hurts* throughput — so bigger is not better. On a large-RAM host raise it
+    /// cautiously while watching the logged RssAnon and `free -g` buff/cache; lower it on
+    /// smaller-RAM hosts. On non-Linux hosts or when `/proc` is unreadable, the batcher falls
+    /// back to an (undercounting) size estimate.
     #[serde(default = "default_sync_write_batch_bytes")]
     pub sync_write_batch_bytes: u64,
     /// Open the finalised database with `WRITE_MAP` for a fast, operator-initiated bulk
@@ -98,7 +97,9 @@ pub struct DatabaseConfig {
     pub bulk_sync: bool,
 }
 
-/// Default [`DatabaseConfig::sync_write_batch_bytes`]: 6 GiB (marginally safe on a ~64 GiB host).
+/// Default [`DatabaseConfig::sync_write_batch_bytes`]: 6 GiB of measured RssAnon during
+/// batch accumulation. The real flush peak runs moderately above this; size the budget to
+/// leave page-cache headroom (see the field doc).
 fn default_sync_write_batch_bytes() -> u64 {
     6 * 1024 * 1024 * 1024
 }

@@ -139,7 +139,10 @@ async fn write_block_chain_ingest_batched() {
             let chain = chain.clone();
 
             let started = Instant::now();
-            let mut batcher = WriteBatcher::new(budget);
+            // Inject a `None` RssAnon source so the benchmark batches on the size
+            // estimate deterministically (the old behaviour), independent of the
+            // process's real RssAnon.
+            let mut batcher = WriteBatcher::with_rss_source(budget, Box::new(|| None));
             let mut batches = 0;
             for block in chain {
                 if let Some(batch) = batcher.push(block) {

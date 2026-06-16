@@ -891,10 +891,13 @@ impl DbV1 {
             Ok(()) => {
                 self.status.store(StatusType::Ready);
                 info!(
-                    "Committed batch of {} blocks ({}..={}) to ZainoDB.",
+                    "Committed batch of {} blocks ({}..={}) to ZainoDB. RssAnon now {} MiB",
                     blocks.len(),
                     first_height.0,
                     first_height.0 + blocks.len() as u32 - 1,
+                    crate::chain_index::finalised_state::write_batch::current_rss_anon_bytes()
+                        .map(|b| b / (1024 * 1024))
+                        .unwrap_or(0),
                 );
                 Ok(())
             }

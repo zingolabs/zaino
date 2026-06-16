@@ -33,13 +33,16 @@ shard_power = 4
 [storage.database]
 path = '/home/cupress/.cache/zaino'
 size = 384
-# Heap budget (bytes) for one bulk-sync write batch — one durable LMDB commit.
-# It bounds the buffered blocks; peak resident RAM per batch is ~2-3x this (the
-# buffer plus its encoded write data and the pending overlay are live at once).
-# The default 6442450944 (6 GiB) is marginally safe on a ~64 GiB host: with the
-# ~20 GiB transparent UTXO cache resident, a 6 GiB budget peaks at ~48 GiB and
-# leaves ~16 GiB for the OS and the sorted-insert sweep's page cache. Lower it on
-# smaller-RAM hosts; raise it (and measure RSS) on larger ones for fewer commits.
+# Measured resident anonymous memory (RssAnon) ceiling, in bytes, for accumulating one
+# bulk-sync write batch (one durable LMDB commit). The batcher polls the process's real
+# RssAnon (from /proc/self/status) while a batch fills and flushes when it reaches this
+# value — a measurement, not an estimate. Default 6442450944 (6 GiB).
+# This bounds the accumulation phase, not the peak: during the flush the encoded write
+# data and the pending overlay coexist with the buffer, so the real peak runs moderately
+# above this value (watch the per-batch "Committed batch … RssAnon now … MiB" log). Size
+# it to leave page-cache headroom — a batch large enough to consume RAM starves the DB
+# working-set cache and usually hurts throughput, so bigger is not better. Raise it
+# cautiously on a large-RAM host while watching the RssAnon log and `free -g` buff/cache.
 sync_write_batch_bytes = 6442450944
 # Open the finalised database with WRITE_MAP for a fast, operator-initiated bulk
 # catch-up. Default false: serving opens durable copy-on-write. WRITE_MAP maps the
