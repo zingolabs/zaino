@@ -1,19 +1,22 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
-use crate::chain_index::{
-    finalised_state::capability::{CapabilityRequest, IndexedBlockExt},
-    finalization_ceiling,
-    types::db::{
-        legacy::{compact_block_from_parts, BlockData, CompactTxData},
-        CommitmentTreeData,
-    },
-    NonFinalizedSnapshot,
-};
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
     },
     error::FinalisedStateError,
     ChainWork,
+};
+use crate::{
+    chain_index::{
+        finalised_state::capability::{CapabilityRequest, IndexedBlockExt},
+        finalization_ceiling,
+        types::db::{
+            legacy::{compact_block_from_parts, BlockData, CompactTxData},
+            CommitmentTreeData,
+        },
+        NonFinalizedSnapshot,
+    },
+    IndexedBlock,
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
@@ -838,11 +841,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
         finalized_db: &ZainoDB,
     ) -> Result<(), String> {
-        let mut reified_blocks = HashSet::new();
+        let mut reified_blocks: HashSet<BlockHash> = HashSet::new();
         let Some((seam_height, seam_hash)) = new_snapshot
             .heights_to_hashes
             .iter()
-            .min_by_key(|(height, _hash)| height)
+            .min_by_key(|(height, _hash)| **height)
         else {
             return Err("tried to reify empty snapshot".to_string());
         };
@@ -855,6 +858,14 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         else {
             return Err("backend missing block below known block".to_string());
         };
+
+        let mut reify_children_of = HashSet::new();
+        *new_snapshot.blocks.get_mut(seam_hash).expect("todo") =
+            seam_block.to_provisional_block(&self).await.expect("todo");
+        reify_children_of.insert(seam_block.hash());
+
+        while reified_blocks.len() != new_snapshot.blocks.len() {}
+
         todo!()
     }
 }
@@ -990,6 +1001,34 @@ impl Block for ProvisionalBlock {
         Ok(self.clone())
     }
 }
+
+impl Block for IndexedBlock {
+    fn hash_bytes_serialized_order(&self) -> [u8; 32] {
+        self.hash().0
+    }
+
+    fn prev_hash_bytes_serialized_order(&self) -> [u8; 32] {
+        self.context.parent_hash().0
+    }
+
+    async fn to_provisional_block<Source: BlockchainSource>(
+        &self,
+        _nfs: &NonFinalizedState<Source>,
+    ) -> Result<ProvisionalBlock, SyncError> {
+        Ok(ProvisionalBlock {
+            index: BlockIndex {
+                height: self.height(),
+                hash: *self.hash(),
+            },
+            parent_hash: self.context.parent_hash,
+            chainwork: *self.chainwork(),
+            data: self.data,
+            transactions: self.transactions.clone(),
+            commitment_tree_data: self.commitment_tree_data,
+        })
+    }
+}
+
 impl Block for zebra_chain::block::Block {
     fn hash_bytes_serialized_order(&self) -> [u8; 32] {
         self.hash().bytes_in_serialized_order()
