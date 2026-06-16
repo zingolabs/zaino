@@ -239,7 +239,9 @@ mod rss_anon_bound {
         const RSS_STEP: usize = 256 * 1024;
         let mut batcher = WriteBatcher::with_rss_source(
             budget,
-            Box::new(move || Some(counter_for_source.fetch_add(RSS_STEP, Ordering::SeqCst) + RSS_STEP)),
+            Box::new(move || {
+                Some(counter_for_source.fetch_add(RSS_STEP, Ordering::SeqCst) + RSS_STEP)
+            }),
         );
 
         let step = poll_interval(budget); // clears the poll gate on every advance
