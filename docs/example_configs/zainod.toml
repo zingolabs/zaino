@@ -33,6 +33,14 @@ shard_power = 4
 [storage.database]
 path = '/home/cupress/.cache/zaino'
 size = 384
+# Heap budget (bytes) for one bulk-sync write batch — one durable LMDB commit.
+# It bounds the buffered blocks; peak resident RAM per batch is ~2-3x this (the
+# buffer plus its encoded write data and the pending overlay are live at once).
+# The default 6442450944 (6 GiB) is marginally safe on a ~64 GiB host: with the
+# ~20 GiB transparent UTXO cache resident, a 6 GiB budget peaks at ~48 GiB and
+# leaves ~16 GiB for the OS and the sorted-insert sweep's page cache. Lower it on
+# smaller-RAM hosts; raise it (and measure RSS) on larger ones for fewer commits.
+sync_write_batch_bytes = 6442450944
 # Run the full database verification sweeps (every block and index entry, by
 # checksum) at startup. Off by default: the background validator and on-demand
 # read checks verify stored data continuously; enable after suspected
