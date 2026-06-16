@@ -1,244 +1,15 @@
 //! ZainoDB::V1 transparent address history indexing functionality.
 
-use crate::chain_index::finalised_state::db::v1::write_core::PendingBatchState;
-use crate::chain_index::finalised_state::db::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
+use crate::chain_index::finalised_state::db::v1::{
+    TX_OUT_SET_INFO_ACCUMULATOR_KEY, TX_OUT_SET_INFO_ACCUMULATOR_WATERMARK_KEY,
+};
 use crate::chain_index::types::db::metadata::{
-    is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
-    ZAINO_TXOUTSET_ENTRY_LEN,
+    is_unspendable_tx_out, FinalisedTxOutSetInfoAccumulator,
 };
 use crate::chain_index::types::Height;
 
 use super::*;
 
-/// Applies a list of UTXO entries to the multiset commitment fields of the accumulator.
-///
-/// For each entry the digest is XORed into `hash_serialized` (XOR is self-inverse, so the same
-/// call site works for both add and remove). The integer fields `total_zatoshis` and
-/// `bytes_serialized` move in the direction selected by `adding`.
-fn apply_tx_out_set_entries_delta(
-    accumulator: &mut FinalisedTxOutSetInfoAccumulator,
-    entries: &[(Outpoint, TxOutCompact)],
-    adding: bool,
-) -> Result<(), FinalisedStateError> {
-    for (outpoint, out) in entries {
-        let digest = tx_out_set_entry_digest(outpoint, out);
-        for (dst, src) in accumulator.hash_serialized.iter_mut().zip(digest.iter()) {
-            *dst ^= *src;
-        }
-
-        if adding {
-            accumulator.total_zatoshis = accumulator
-                .total_zatoshis
-                .checked_add(out.value())
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator total_zatoshis overflow".to_string(),
-                    )
-                })?;
-            accumulator.bytes_serialized = accumulator
-                .bytes_serialized
-                .checked_add(ZAINO_TXOUTSET_ENTRY_LEN)
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator bytes_serialized overflow".to_string(),
-                    )
-                })?;
-        } else {
-            accumulator.total_zatoshis = accumulator
-                .total_zatoshis
-                .checked_sub(out.value())
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator total_zatoshis underflow".to_string(),
-                    )
-                })?;
-            accumulator.bytes_serialized = accumulator
-                .bytes_serialized
-                .checked_sub(ZAINO_TXOUTSET_ENTRY_LEN)
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator bytes_serialized underflow".to_string(),
-                    )
-                })?;
-        }
-    }
-    Ok(())
-}
-
-/// Applies the in-block portion of the accumulator update.
-///
-/// Handles both the bulk `transaction_outputs` delta and the per-tx 0↔>0 transition that
-/// counts a same-block transaction as entering the UTXO set.
-/// The positional bound check (`spent_index >= created_count`) uses the *full* output
-/// count via `spent_indices_by_tx`; the UTXO-set membership transition uses
-/// `spendable_spent_count_by_tx` which excludes unspendable outputs.
-fn apply_in_block_transitions(
-    accumulator: &mut FinalisedTxOutSetInfoAccumulator,
-    created_counts: &HashMap<TransactionHash, u32>,
-    spendable_counts: &HashMap<TransactionHash, u32>,
-    spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
-    spendable_spent_count_by_tx: &HashMap<TransactionHash, u32>,
-    spent_total_outputs: u64,
-) -> Result<(), FinalisedStateError> {
-    let created_total = spendable_counts
-        .values()
-        .try_fold(0u64, |total, output_count| {
-            total.checked_add(u64::from(*output_count)).ok_or_else(|| {
-                FinalisedStateError::Custom(
-                    "txout-set accumulator created output count overflow".to_string(),
-                )
-            })
-        })?;
-
-    accumulator.transaction_outputs = accumulator
-        .transaction_outputs
-        .checked_add(created_total)
-        .and_then(|v| v.checked_sub(spent_total_outputs))
-        .ok_or_else(|| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator transaction output count underflow or overflow".to_string(),
-            )
-        })?;
-
-    for (transaction_hash, created_count) in created_counts {
-        let spent_indices = spent_indices_by_tx.get(transaction_hash);
-
-        if let Some(spent_indices) = spent_indices {
-            for spent_index in spent_indices {
-                if spent_index >= created_count {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: transaction {transaction_hash:?} spends same-block output index {spent_index}, but the transaction only has {created_count} transparent outputs"
-                    )));
-                }
-            }
-        }
-
-        let spent_count = spendable_spent_count_by_tx
-            .get(transaction_hash)
-            .copied()
-            .unwrap_or(0);
-
-        let spendable_count = spendable_counts.get(transaction_hash).copied().unwrap_or(0);
-
-        if spendable_count > spent_count {
-            accumulator.transactions =
-                accumulator.transactions.checked_add(1).ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator transaction count underflow or overflow".to_string(),
-                    )
-                })?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Applies the per-entry deltas to `hash_serialized`, `bytes_serialized` and
-/// `total_zatoshis`.
-///
-/// Both `created_entries` and `spent_entries` must already be filtered to exclude
-/// unspendable outputs — they were never in the UTXO set.
-fn apply_entry_deltas(
-    accumulator: &mut FinalisedTxOutSetInfoAccumulator,
-    created_entries: &[(Outpoint, TxOutCompact)],
-    spent_entries: &[(Outpoint, TxOutCompact)],
-) -> Result<(), FinalisedStateError> {
-    apply_tx_out_set_entries_delta(accumulator, created_entries, true)?;
-    apply_tx_out_set_entries_delta(accumulator, spent_entries, false)?;
-
-    Ok(())
-}
-
-/// Builds the per-transaction output count maps used by the accumulator helpers.
-///
-/// Returns `(total_count_by_tx, spendable_count_by_tx)`:
-/// - `total_count_by_tx` counts every transparent output and is used for positional
-///   consensus bound checks.
-/// - `spendable_count_by_tx` excludes provably-unspendable outputs (see
-///   [`is_unspendable_tx_out`]) and is what drives UTXO-set deltas.
-#[allow(clippy::type_complexity)]
-fn index_created_outputs(
-    transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-) -> Result<(HashMap<TransactionHash, u32>, HashMap<TransactionHash, u32>), FinalisedStateError> {
-    let mut total_by_tx: HashMap<TransactionHash, u32> = HashMap::with_capacity(transactions.len());
-    let mut spendable_by_tx: HashMap<TransactionHash, u32> =
-        HashMap::with_capacity(transactions.len());
-
-    for (transaction_hash, transparent_transaction) in transactions {
-        let (total, spendable) = transparent_transaction
-            .as_ref()
-            .map(|tx| {
-                let total = tx.outputs().len();
-                let spendable = tx
-                    .outputs()
-                    .iter()
-                    .filter(|o| !is_unspendable_tx_out(o))
-                    .count();
-                (total, spendable)
-            })
-            .unwrap_or((0, 0));
-
-        let total = u32::try_from(total).map_err(|_| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator cannot be calculated: transparent output count does not fit into u32"
-                    .to_string(),
-            )
-        })?;
-        let spendable = u32::try_from(spendable).map_err(|_| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator cannot be calculated: spendable output count does not fit into u32"
-                    .to_string(),
-            )
-        })?;
-
-        if total_by_tx.insert(*transaction_hash, total).is_some() {
-            return Err(FinalisedStateError::Custom(format!(
-                "txout-set accumulator cannot be calculated: duplicate transaction hash in block: {transaction_hash:?}"
-            )));
-        }
-        spendable_by_tx.insert(*transaction_hash, spendable);
-    }
-
-    Ok((total_by_tx, spendable_by_tx))
-}
-
-/// Groups a block's spent outpoints by the transaction they spend from.
-///
-/// Returns `(spent_indices_by_tx, spent_outpoints_with_locations)`. The forward path
-/// projects out just the outpoints; the reverse path needs the locations to verify the
-/// spent index points to this block.
-#[allow(clippy::type_complexity)]
-fn index_spent_outpoints(
-    spent_map: &HashMap<Outpoint, TxLocation>,
-) -> Result<
-    (
-        HashMap<TransactionHash, HashSet<u32>>,
-        Vec<(Outpoint, TxLocation)>,
-    ),
-    FinalisedStateError,
-> {
-    let mut by_tx: HashMap<TransactionHash, HashSet<u32>> = HashMap::new();
-    let mut outpoints = Vec::with_capacity(spent_map.len());
-
-    for (outpoint, tx_location) in spent_map.iter() {
-        let previous_transaction_hash = TransactionHash::from(*outpoint.prev_txid());
-
-        let inserted = by_tx
-            .entry(previous_transaction_hash)
-            .or_default()
-            .insert(outpoint.prev_index());
-
-        if !inserted {
-            return Err(FinalisedStateError::Custom(format!(
-                "txout-set accumulator cannot be calculated: duplicate transparent spend for outpoint {outpoint:?}"
-            )));
-        }
-
-        outpoints.push((*outpoint, *tx_location));
-    }
-
-    Ok((by_tx, outpoints))
-}
 
 /// [`TransparentHistExt`] capability implementation for [`DbV1`].
 ///
@@ -707,50 +478,151 @@ impl DbV1 {
         })
     }
 
-    /// Returns the finalised-state txout-set accumulator.
+    /// Returns the finalised-state txout-set accumulator, rebuilding it lazily when stale.
     ///
-    /// This reads the singleton accumulator entry. It does not compute or repair the accumulator;
-    /// accumulator creation, backfill, and updates are handled by migrations and write paths.
+    /// The accumulator is not maintained during sync. It is stored alongside a watermark
+    /// recording the finalised tip height it is valid for. On a query:
+    ///
+    /// - an empty database returns [`FinalisedTxOutSetInfoAccumulator::empty`];
+    /// - if the stored accumulator and watermark are present and the watermark equals the
+    ///   current tip, the stored value is returned directly;
+    /// - otherwise the accumulator is rebuilt from the committed `transparent` and `spent`
+    ///   tables, stored with the new watermark, and returned.
+    ///
+    /// The tip is sampled before the rebuild. If the tip advances during the rebuild the
+    /// watermark may lag by a few blocks, harmlessly triggering one more rebuild on the
+    /// next query; the returned value is always correct for the tip it was sampled at.
     async fn get_tx_out_set_info_accumulator(
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        tokio::task::block_in_place(|| {
-            let transaction = self.env.begin_ro_txn()?;
+        let Some(tip) = self.tip_height().await? else {
+            // Empty database: the accumulator is empty by definition.
+            return Ok(FinalisedTxOutSetInfoAccumulator::empty());
+        };
 
-            let raw_accumulator = match transaction.get(
-                self.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            ) {
-                Ok(value) => value,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "finalised txout-set accumulator missing from database".to_string(),
-                    ));
-                }
-                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
-            };
+        // Fast path: a stored accumulator whose watermark matches the tip is current.
+        if let Some(accumulator) =
+            tokio::task::block_in_place(|| self.read_stored_accumulator_if_current(tip))?
+        {
+            return Ok(accumulator);
+        }
 
-            if !StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::verify_stored(
-                TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                raw_accumulator,
-            ) {
-                return Err(FinalisedStateError::Custom(
-                    "txout-set accumulator checksum mismatch".to_string(),
-                ));
-            }
-            let accumulator_entry =
-                StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw_accumulator)
-                    .map_err(|error| {
-                    FinalisedStateError::Custom(format!(
-                        "txout-set accumulator decode error: {error}"
-                    ))
-                })?;
+        // Slow path: rebuild under the guard so concurrent stale queries do it once.
+        let _guard = self.accumulator_rebuild_lock.lock().await;
 
-            Ok(accumulator_entry.item)
-        })
+        // Double-check: another task may have rebuilt while we waited for the guard.
+        if let Some(accumulator) =
+            tokio::task::block_in_place(|| self.read_stored_accumulator_if_current(tip))?
+        {
+            return Ok(accumulator);
+        }
+
+        let accumulator =
+            tokio::task::block_in_place(|| self.rebuild_tx_out_set_accumulator_blocking(tip))?;
+
+        tokio::task::block_in_place(|| self.store_accumulator_with_watermark(tip, &accumulator))?;
+
+        Ok(accumulator)
     }
 
     // *** Internal DB methods ***
+
+    /// Reads the stored accumulator and watermark, returning the accumulator only when
+    /// both are present and the watermark equals `tip`. A missing entry (never rebuilt,
+    /// or stale) returns `None` so the caller rebuilds.
+    ///
+    /// WARNING: This is a blocking function and MUST be called within a blocking thread / task.
+    fn read_stored_accumulator_if_current(
+        &self,
+        tip: Height,
+    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, FinalisedStateError> {
+        let ro = self.env.begin_ro_txn()?;
+
+        let raw_watermark = match ro.get(
+            self.tx_out_set_info_accumulator,
+            &TX_OUT_SET_INFO_ACCUMULATOR_WATERMARK_KEY,
+        ) {
+            Ok(value) => value,
+            Err(lmdb::Error::NotFound) => return Ok(None),
+            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+        };
+        if !StoredEntryFixed::<Height>::verify_stored(
+            TX_OUT_SET_INFO_ACCUMULATOR_WATERMARK_KEY,
+            raw_watermark,
+        ) {
+            return Err(FinalisedStateError::Custom(
+                "txout-set accumulator watermark checksum mismatch".to_string(),
+            ));
+        }
+        let watermark = *StoredEntryFixed::<Height>::from_bytes(raw_watermark)
+            .map_err(|error| {
+                FinalisedStateError::Custom(format!(
+                    "txout-set accumulator watermark decode error: {error}"
+                ))
+            })?
+            .inner();
+        if watermark.0 != tip.0 {
+            return Ok(None);
+        }
+
+        let raw_accumulator = match ro.get(
+            self.tx_out_set_info_accumulator,
+            &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+        ) {
+            Ok(value) => value,
+            Err(lmdb::Error::NotFound) => return Ok(None),
+            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+        };
+        if !StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::verify_stored(
+            TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+            raw_accumulator,
+        ) {
+            return Err(FinalisedStateError::Custom(
+                "txout-set accumulator checksum mismatch".to_string(),
+            ));
+        }
+        let accumulator =
+            StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw_accumulator)
+                .map_err(|error| {
+                    FinalisedStateError::Custom(format!(
+                        "txout-set accumulator decode error: {error}"
+                    ))
+                })?
+                .item;
+
+        Ok(Some(accumulator))
+    }
+
+    /// Writes the rebuilt accumulator and its watermark in one transaction, so a query
+    /// never observes one without the other.
+    ///
+    /// WARNING: This is a blocking function and MUST be called within a blocking thread / task.
+    fn store_accumulator_with_watermark(
+        &self,
+        tip: Height,
+        accumulator: &FinalisedTxOutSetInfoAccumulator,
+    ) -> Result<(), FinalisedStateError> {
+        let accumulator_bytes =
+            StoredEntryFixed::encode(TX_OUT_SET_INFO_ACCUMULATOR_KEY, accumulator)?;
+        let watermark_bytes =
+            StoredEntryFixed::encode(TX_OUT_SET_INFO_ACCUMULATOR_WATERMARK_KEY, &tip)?;
+
+        let mut txn = self.env.begin_rw_txn()?;
+        txn.put(
+            self.tx_out_set_info_accumulator,
+            &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+            &accumulator_bytes,
+            WriteFlags::empty(),
+        )?;
+        txn.put(
+            self.tx_out_set_info_accumulator,
+            &TX_OUT_SET_INFO_ACCUMULATOR_WATERMARK_KEY,
+            &watermark_bytes,
+            WriteFlags::empty(),
+        )?;
+        txn.commit()?;
+        Ok(())
+    }
 
     /// Returns all raw AddrHist records for a given AddrScript and TxLocation.
     ///
@@ -1291,402 +1163,190 @@ impl DbV1 {
         None
     }
 
-    /// Resolves each spent outpoint to its previous [`TxOutCompact`].
+    /// Rebuilds the finalised txout-set accumulator from the committed `transparent` and
+    /// `spent` tables. The accumulator is not maintained during sync; this is the lazy
+    /// reconstruction the read path runs the first time it is queried while the stored
+    /// watermark lags the finalised tip.
     ///
-    /// Same-block spends are resolved from the in-block `transactions` slice via the
-    /// `txid_to_block_index` map — the current block's own outputs are not in the cache
-    /// until its build-time `apply_forward`. Every *prior* spend — committed or created
-    /// by an earlier block of the same batch — is resolved from the in-memory UTXO
-    /// cache, where the output sits unspent until this block spends it. No table reads
-    /// happen here.
-    fn resolve_spent_outpoints_for_set_info(
+    /// The walk mirrors the set-difference the write path used to maintain incrementally:
+    /// the live unspent set is every spendable created output minus everything the `spent`
+    /// table records as spent. Two sequential cursor scans, never per-output random
+    /// lookups:
+    ///
+    /// 1. walk `spent` and collect every spent outpoint into a set;
+    /// 2. lockstep-walk `transparent` (paired with `txids`) and, for each spendable output
+    ///    not in the spent set, fold it into the accumulator's per-output fields.
+    ///
+    /// `transactions` is set to the number of distinct transactions with at least one live
+    /// output, matching the rule the incremental path enforced (`apply_added_output` does
+    /// not touch `transactions`).
+    ///
+    /// WARNING: This is a blocking function and MUST be called within a blocking thread / task.
+    fn rebuild_tx_out_set_accumulator_blocking(
         &self,
-        spent_map: &HashMap<Outpoint, TxLocation>,
-        txid_to_block_index: &HashMap<TransactionHash, usize>,
-        transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-    ) -> Result<Vec<(Outpoint, TxOutCompact)>, FinalisedStateError> {
-        let mut resolved = Vec::with_capacity(spent_map.len());
-
-        for outpoint in spent_map.keys().copied() {
-            let prev_txid = TransactionHash::from(*outpoint.prev_txid());
-            let prev_index = outpoint.prev_index() as usize;
-
-            let prev_out = if let Some(block_tx_index) = txid_to_block_index.get(&prev_txid) {
-                let tx = transactions[*block_tx_index].1.as_ref().ok_or_else(|| {
-                    FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: same-block spend of {prev_txid:?} has no transparent transaction data"
-                    ))
-                })?;
-                *tx.outputs().get(prev_index).ok_or_else(|| {
-                    FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: same-block spend of {prev_txid:?} index {prev_index} out of range"
-                    ))
-                })?
-            } else {
-                self.transparent_utxo_cache.value_of(&outpoint).ok_or_else(|| {
-                    FinalisedStateError::Custom(format!(
-                        "txout-set accumulator cannot be calculated: spent output {outpoint:?} is not in the UTXO cache"
-                    ))
-                })?
-            };
-
-            resolved.push((outpoint, prev_out));
-        }
-
-        Ok(resolved)
-    }
-
-    /// Applies the prior-block portion of the accumulator update for the block being
-    /// written.
-    ///
-    /// For every transaction this block spends from that it did not itself create, the
-    /// in-memory UTXO cache holds its still-unspent spendable-output count as of just
-    /// before this block (the block's own `apply_forward` runs after the accumulator).
-    /// When the block's spendable spends drain the last of them, that prior transaction
-    /// leaves the UTXO set.
-    fn apply_prior_block_transitions(
-        &self,
-        accumulator: &mut FinalisedTxOutSetInfoAccumulator,
-        spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
-        created_in_block: &HashMap<TransactionHash, u32>,
-        spendable_spent_count_by_tx: &HashMap<TransactionHash, u32>,
-    ) -> Result<(), FinalisedStateError> {
-        for transaction_hash in spent_indices_by_tx.keys() {
-            if created_in_block.contains_key(transaction_hash) {
-                continue;
-            }
-
-            let spendable_spends = spendable_spent_count_by_tx
-                .get(transaction_hash)
-                .copied()
-                .unwrap_or(0);
-
-            let unspent_before = self
-                .transparent_utxo_cache
-                .remaining_unspent(transaction_hash);
-
-            if unspent_before.saturating_sub(spendable_spends) == 0 {
-                accumulator.transactions =
-                    accumulator.transactions.checked_sub(1).ok_or_else(|| {
-                        FinalisedStateError::Custom(
-                            "txout-set accumulator transaction count underflow".to_string(),
-                        )
-                    })?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Resolves and filters the created and spent entry lists for accumulator updates.
-    ///
-    /// Created entries are collected from the block's transactions, excluding unspendable
-    /// outputs. Spent entries are resolved (same-block from `transactions`, prior-block from
-    /// the database) and likewise filtered to exclude unspendable outputs.
-    ///
-    /// Returns `(created_entries, spent_entries, spendable_spent_count_by_tx)`.
-    /// `spendable_spent_count_by_tx` counts only spendable same-block spends per source tx.
-    #[allow(clippy::type_complexity)]
-    fn build_entry_data(
-        &self,
-        transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-        spent_map: &HashMap<Outpoint, TxLocation>,
-        txid_to_block_index: &HashMap<TransactionHash, usize>,
-    ) -> Result<
-        (
-            Vec<(Outpoint, TxOutCompact)>,
-            Vec<(Outpoint, TxOutCompact)>,
-            HashMap<TransactionHash, u32>,
-        ),
-        FinalisedStateError,
-    > {
-        let mut created_entries: Vec<(Outpoint, TxOutCompact)> = Vec::new();
-
-        for (transaction_hash, transparent_transaction) in transactions {
-            let Some(transparent_transaction) = transparent_transaction.as_ref() else {
-                continue;
-            };
-
-            for (output_index, output) in transparent_transaction.outputs().iter().enumerate() {
-                if is_unspendable_tx_out(output) {
-                    continue;
-                }
-                let outpoint = Outpoint::new(transaction_hash.0, output_index as u32);
-                created_entries.push((outpoint, *output));
-            }
-        }
-
-        let resolved = self.resolve_spent_outpoints_for_set_info(
-            spent_map,
-            txid_to_block_index,
-            transactions,
-        )?;
-
-        let mut spent_entries = Vec::with_capacity(resolved.len());
-        let mut spendable_spent_count_by_tx: HashMap<TransactionHash, u32> = HashMap::new();
-
-        for (outpoint, out) in resolved {
-            if is_unspendable_tx_out(&out) {
-                continue;
-            }
-            let prev_txid = TransactionHash::from(*outpoint.prev_txid());
-            *spendable_spent_count_by_tx.entry(prev_txid).or_default() += 1;
-            spent_entries.push((outpoint, out));
-        }
-
-        Ok((created_entries, spent_entries, spendable_spent_count_by_tx))
-    }
-
-    /// Calculates the finalised txout-set accumulator after applying the block currently being written.
-    ///
-    /// This method uses the data already built by `write_block`:
-    /// - `transactions`: block-local `(transaction_hash, transparent_transaction)` pairs.
-    ///   Pairing is established at construction in `write_block` (both halves come from the
-    ///   same `tx`), so the accumulator never has to trust index alignment between two
-    ///   parallel slices.
-    /// - `spent_map`: distinct transparent outpoints spent by this block.
-    ///
-    /// Missing accumulator data is only valid for a completely empty database before writing genesis.
-    /// In every other case, a missing accumulator is treated as database corruption / failed migration.
-    ///
-    /// `pending` is the in-memory overlay of an open write batch: the accumulator after the
-    /// latest pending block plus that batch's uncommitted transactions and spends. The stored
-    /// tables only reflect committed state, so every read here consults the overlay first.
-    /// Pass `None` on the single-block write path (no uncommitted state exists).
-    ///
-    /// The returned accumulator must be written inside the same LMDB write transaction as the block.
-    pub(crate) async fn calculate_tx_out_set_info_accumulator_after_block(
-        &self,
-        block_height: Height,
-        transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-        spent_map: &HashMap<Outpoint, TxLocation>,
-        pending: Option<&PendingBatchState>,
+        // The tip the caller sampled before the rebuild. It bounds nothing here — the
+        // table walk folds in whatever is committed — but the caller records it as the
+        // watermark for the rebuilt value, so it stays in the signature.
+        _tip: Height,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        // Continue from the open batch's accumulator when one exists; otherwise load the
-        // stored value. Only a fresh empty DB writing genesis may start from zero.
-        //
-        // This is the accumulator's only database read: a single-entry, hot, sequential
-        // load of the prior accumulator, taken at most once per batch (the first block).
-        // It is NOT a per-input faulting read — those (the spent-output value and the
-        // prior-tx unspent count) are now served from the in-memory UTXO cache, which is
-        // what removes the random page faults that were the sync cliff.
-        let mut accumulator = match pending.and_then(|batch| batch.accumulator) {
-            Some(accumulator) => accumulator,
-            None => match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await
-            {
-                Ok(accumulator) => accumulator,
-                Err(FinalisedStateError::DataUnavailable(_)) => {
-                    let current_tip = self.tip_height().await?;
+        let ro = self.env.begin_ro_txn()?;
 
-                    if current_tip.is_none() && block_height == GENESIS_HEIGHT {
-                        FinalisedTxOutSetInfoAccumulator::empty()
-                    } else {
+        // Pass 1: collect every spent outpoint.
+        let mut spent: HashSet<Outpoint> = HashSet::new();
+        {
+            let mut spent_cursor = ro.open_ro_cursor(self.spent)?;
+            for (outpoint_key, _spender) in spent_cursor.iter() {
+                let outpoint = Outpoint::deserialize(outpoint_key).map_err(|e| {
+                    FinalisedStateError::Custom(format!("spent outpoint decode error: {e}"))
+                })?;
+                spent.insert(outpoint);
+            }
+        }
+
+        // Pass 2: fold every spendable, still-unspent created output into the accumulator.
+        let mut accumulator = FinalisedTxOutSetInfoAccumulator::empty();
+        let mut txs_with_live: HashSet<TransactionHash> = HashSet::new();
+        {
+            let mut transparent_cursor = ro.open_ro_cursor(self.transparent)?;
+            let mut txids_cursor = ro.open_ro_cursor(self.txids)?;
+            let mut transparent_iter = transparent_cursor.iter();
+            let mut txids_iter = txids_cursor.iter();
+
+            loop {
+                match (transparent_iter.next(), txids_iter.next()) {
+                    (Some((transparent_key, transparent_raw)), Some((txids_key, txids_raw))) => {
+                        if transparent_key != txids_key {
+                            return Err(FinalisedStateError::Custom(
+                                "transparent and txids tables diverge while rebuilding the \
+                                 txout-set accumulator"
+                                    .into(),
+                            ));
+                        }
+
+                        let transparent_list =
+                            StoredEntryVar::<TransparentTxList>::from_bytes(transparent_raw)
+                                .map_err(|e| {
+                                    FinalisedStateError::Custom(format!(
+                                        "transparent decode error: {e}"
+                                    ))
+                                })?
+                                .inner()
+                                .clone();
+                        let txid_list = StoredEntryVar::<TxidList>::from_bytes(txids_raw)
+                            .map_err(|e| {
+                                FinalisedStateError::Custom(format!("txids decode error: {e}"))
+                            })?
+                            .inner()
+                            .clone();
+                        let txids = txid_list.txids();
+
+                        for (tx_index, tx_opt) in transparent_list.tx().iter().enumerate() {
+                            let Some(tx) = tx_opt else { continue };
+                            let Some(txid) = txids.get(tx_index) else {
+                                return Err(FinalisedStateError::Custom(
+                                    "txids shorter than transparent tx list while rebuilding the \
+                                     txout-set accumulator"
+                                        .into(),
+                                ));
+                            };
+
+                            for (vout, output) in tx.outputs().iter().enumerate() {
+                                let vout = u32::try_from(vout).map_err(|_| {
+                                    FinalisedStateError::Custom(
+                                        "output index does not fit u32".into(),
+                                    )
+                                })?;
+                                let outpoint = Outpoint::new(txid.0, vout);
+                                // Skip outputs already spent and outputs that were never in
+                                // the UTXO set, matching the incremental path's filters.
+                                if spent.contains(&outpoint) {
+                                    continue;
+                                }
+                                if is_unspendable_tx_out(output) {
+                                    continue;
+                                }
+                                accumulator.apply_added_output(&outpoint, output).map_err(
+                                    |e| FinalisedStateError::Custom(e.to_string()),
+                                )?;
+                                txs_with_live.insert(*txid);
+                            }
+                        }
+                    }
+                    (None, None) => break,
+                    _ => {
                         return Err(FinalisedStateError::Custom(
-                            "txout-set accumulator missing from non-empty database".to_string(),
+                            "transparent and txids tables have different lengths while rebuilding \
+                             the txout-set accumulator"
+                                .into(),
                         ));
                     }
                 }
-                Err(error) => return Err(error),
-            },
-        };
+            }
+        }
 
-        let (created_counts, spendable_counts) = index_created_outputs(transactions)?;
-        let (spent_indices_by_tx, _) = index_spent_outpoints(spent_map)?;
-
-        // No double-spend check on this path. These blocks are finalised and were
-        // already validated by the source; `write_blocks` applies them in strict
-        // height order (it rejects any batch whose first height is not tip+1) and
-        // commits each batch atomically. An outpoint therefore cannot already be
-        // present in the finalised `spent` index when its spending block is applied,
-        // so the removed check -- one random-key `spent` read per spent input, on the
-        // write-hot path -- could only ever confirm "not already spent". It paid a
-        // random disk lookup to re-establish a result the height-contiguity invariant
-        // already guarantees.
-
-        let txid_to_block_index = index_transactions_by_txid(transactions);
-
-        let (created_entries, spent_entries, spendable_spent_count_by_tx) =
-            self.build_entry_data(transactions, spent_map, &txid_to_block_index)?;
-
-        let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
-            FinalisedStateError::Custom(
-                "txout-set accumulator spent output count does not fit into u64".to_string(),
-            )
-        })?;
-
-        apply_in_block_transitions(
-            &mut accumulator,
-            &created_counts,
-            &spendable_counts,
-            &spent_indices_by_tx,
-            &spendable_spent_count_by_tx,
-            spent_total_outputs,
-        )?;
-        self.apply_prior_block_transitions(
-            &mut accumulator,
-            &spent_indices_by_tx,
-            &created_counts,
-            &spendable_spent_count_by_tx,
-        )?;
-        apply_entry_deltas(&mut accumulator, &created_entries, &spent_entries)?;
+        // `apply_added_output` maintains every per-output field but not `transactions`;
+        // that is the count of distinct transactions with at least one live output.
+        accumulator.transactions = txs_with_live.len() as u64;
 
         Ok(accumulator)
     }
 }
 
-/// Indexes `transactions` by txid to their in-block position.
-fn index_transactions_by_txid(
-    transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-) -> HashMap<TransactionHash, usize> {
-    transactions
-        .iter()
-        .enumerate()
-        .map(|(transaction_index, (transaction_hash, _))| (*transaction_hash, transaction_index))
-        .collect()
+#[cfg(test)]
+impl DbV1 {
+    /// Test accessor for the blocking accumulator rebuild, so integration tests that
+    /// build real block fixtures can exercise it directly.
+    pub(crate) fn rebuild_tx_out_set_accumulator_for_test(
+        &self,
+        tip: Height,
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+        self.rebuild_tx_out_set_accumulator_blocking(tip)
+    }
 }
 
 #[cfg(test)]
-mod tests {
+mod rebuild_tx_out_set_accumulator_blocking {
     use super::*;
-    use crate::chain_index::types::db::metadata::{
-        FinalisedTxOutSetInfoAccumulator, ZAINO_TXOUTSET_ENTRY_LEN,
-    };
+    use zaino_common::network::ActivationHeights;
+    use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
-    fn p2pkh_out(value: u64) -> TxOutCompact {
-        TxOutCompact::new(value, [0x11; 20], 0).expect("P2PKH script_type should be valid")
+    use crate::chain_index::finalised_state::db::v1::DbV1;
+    use crate::BlockCacheConfig;
+
+    fn empty_db_config(path: std::path::PathBuf) -> BlockCacheConfig {
+        BlockCacheConfig {
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            db_version: 1,
+            network: Network::Regtest(ActivationHeights::default()),
+        }
     }
 
-    fn outpoint(txid_byte: u8, index: u32) -> Outpoint {
-        Outpoint::new([txid_byte; 32], index)
-    }
+    /// An empty database has no transparent outputs, so the rebuilt accumulator is the
+    /// empty accumulator. `multi_thread` is required: spawn runs LMDB access under
+    /// `block_in_place`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_database_rebuilds_to_empty_accumulator() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = empty_db_config(temp_dir.path().to_path_buf());
 
-    #[test]
-    fn entries_delta_add_then_remove_roundtrips() {
-        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
-        let entries = vec![
-            (outpoint(0x01, 0), p2pkh_out(100)),
-            (outpoint(0x02, 1), p2pkh_out(200)),
-        ];
+        let db = DbV1::spawn(&config).await.expect("spawn empty DbV1");
 
-        apply_tx_out_set_entries_delta(&mut acc, &entries, true).expect("add should succeed");
-
-        assert_eq!(acc.total_zatoshis, 300);
-        assert_eq!(acc.bytes_serialized, 2 * ZAINO_TXOUTSET_ENTRY_LEN);
-
-        apply_tx_out_set_entries_delta(&mut acc, &entries, false).expect("remove should succeed");
-
-        assert_eq!(acc, FinalisedTxOutSetInfoAccumulator::empty());
-    }
-
-    #[test]
-    fn entries_delta_remove_on_empty_returns_underflow_error() {
-        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
-        let entries = vec![(outpoint(0xAA, 0), p2pkh_out(500))];
-
-        let err = apply_tx_out_set_entries_delta(&mut acc, &entries, false);
-
-        assert!(err.is_err());
-        let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("underflow"), "expected underflow, got: {msg}");
-    }
-
-    #[test]
-    fn entries_delta_ignores_empty_slice() {
-        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
-        acc.total_zatoshis = 999;
-        acc.bytes_serialized = 65;
-        acc.transaction_outputs = 1;
-
-        let snapshot = acc;
-        apply_tx_out_set_entries_delta(&mut acc, &[], true).expect("empty add should succeed");
-        assert_eq!(acc, snapshot);
-
-        apply_tx_out_set_entries_delta(&mut acc, &[], false).expect("empty remove should succeed");
-        assert_eq!(acc, snapshot);
-    }
-
-    #[test]
-    fn in_block_transitions_spendable_only() {
-        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
-        let tx_hash = TransactionHash([0xAB; 32]);
-
-        let created_counts = HashMap::from([(tx_hash, 3)]);
-        let spendable_counts = HashMap::from([(tx_hash, 2)]);
-        let spent_indices_by_tx = HashMap::from([(tx_hash, HashSet::from([0]))]);
-        let spendable_spent_count_by_tx = HashMap::from([(tx_hash, 1)]);
-
-        apply_in_block_transitions(
-            &mut acc,
-            &created_counts,
-            &spendable_counts,
-            &spent_indices_by_tx,
-            &spendable_spent_count_by_tx,
-            1,
-        )
-        .expect("apply should succeed");
-
-        assert_eq!(acc.transaction_outputs, 1, "2 created - 1 spent = 1");
-        assert_eq!(
-            acc.transactions, 1,
-            "tx enters UTXO set: 2 spendable > 1 spent"
-        );
-    }
-
-    #[test]
-    fn in_block_transitions_unspendable_spend_does_not_inflate_count() {
-        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
-        let tx_hash = TransactionHash([0xCC; 32]);
-
-        // Tx has 2 total outputs, 1 spendable (P2PKH at idx 0) + 1 unspendable (NonStandard at idx 1).
-        // The unspendable output is spent in the same block, but after filtering it's excluded.
-        let created_counts = HashMap::from([(tx_hash, 2)]);
-        let spendable_counts = HashMap::from([(tx_hash, 1)]);
-        // Full indices include the unspendable spend for positional check.
-        let spent_indices_by_tx = HashMap::from([(tx_hash, HashSet::from([1]))]);
-        // After filtering: no spendable outputs were spent.
-        let spendable_spent_count_by_tx = HashMap::new();
-
-        apply_in_block_transitions(
-            &mut acc,
-            &created_counts,
-            &spendable_counts,
-            &spent_indices_by_tx,
-            &spendable_spent_count_by_tx,
-            0,
-        )
-        .expect("apply should succeed");
+        let rebuilt = tokio::task::block_in_place(|| {
+            db.rebuild_tx_out_set_accumulator_blocking(Height(0))
+        })
+        .expect("rebuild on empty database");
 
         assert_eq!(
-            acc.transaction_outputs, 1,
-            "1 spendable created - 0 spendable spent"
+            rebuilt,
+            FinalisedTxOutSetInfoAccumulator::empty(),
+            "an empty database must rebuild to the empty accumulator",
         );
-        assert_eq!(
-            acc.transactions, 1,
-            "tx enters UTXO set: 1 spendable > 0 spent"
-        );
-    }
-
-    #[test]
-    fn in_block_transitions_all_spendable_spent_same_block() {
-        let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
-        let tx_hash = TransactionHash([0xDD; 32]);
-
-        let created_counts = HashMap::from([(tx_hash, 2)]);
-        let spendable_counts = HashMap::from([(tx_hash, 2)]);
-        let spent_indices_by_tx = HashMap::from([(tx_hash, HashSet::from([0, 1]))]);
-        let spendable_spent_count_by_tx = HashMap::from([(tx_hash, 2)]);
-
-        apply_in_block_transitions(
-            &mut acc,
-            &created_counts,
-            &spendable_counts,
-            &spent_indices_by_tx,
-            &spendable_spent_count_by_tx,
-            2,
-        )
-        .expect("apply should succeed");
-
-        assert_eq!(acc.transaction_outputs, 0, "2 created - 2 spent = 0");
-        assert_eq!(acc.transactions, 0, "tx never enters UTXO set: 2 == 2");
     }
 }
+

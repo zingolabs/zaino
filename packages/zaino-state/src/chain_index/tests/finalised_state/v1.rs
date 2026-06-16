@@ -1291,9 +1291,9 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
         HashMap<u32, crate::TxOutCompact>,
     > = HashMap::new();
     // Records the block each transaction's outputs first appear in, so the assertion
-    // below can confirm the vectors exercise a *cross-block* last-output spend: the
-    // tx-count decrement that the cache-only accumulator (apply_prior_block_transitions
-    // via remaining_unspent) now solely relies on.
+    // below can confirm the vectors exercise a *cross-block* last-output spend: a
+    // transaction created in one block whose last live output is drained by a later
+    // block, which the lazy rebuild must count out of `transactions`.
     let mut tx_created_at_block: HashMap<TransactionHash, usize> = HashMap::new();
     let mut cross_block_tx_fully_spent = 0usize;
 
@@ -1326,9 +1326,8 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
 
                 // If a transaction has no remaining unspent outputs, it should no longer
                 // contribute to the accumulator's `transactions` count. Count the case where
-                // the drained transaction was created in an *earlier* block — the cross-block
-                // decrement apply_prior_block_transitions handles via remaining_unspent (as
-                // opposed to a same-block drain, handled by apply_in_block_transitions).
+                // the drained transaction was created in an *earlier* block, so the test
+                // confirms the vectors exercise a cross-block last-output spend.
                 if unspent_output_indices.is_empty() {
                     if tx_created_at_block
                         .get(&previous_transaction_hash)
@@ -1383,8 +1382,8 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
     assert!(
         cross_block_tx_fully_spent > 0,
         "regtest vectors must exercise at least one cross-block last-output spend; \
-         otherwise the cache-only accumulator's tx-count decrement \
-         (apply_prior_block_transitions via remaining_unspent) goes unverified"
+         otherwise the lazy rebuild's tx-count rule (a prior-block transaction leaving \
+         the UTXO set) goes unverified"
     );
 
     let expected_accumulator =
@@ -1653,97 +1652,20 @@ async fn incomplete_block_reads_as_error_not_none() {
     }
 }
 
-/// Seed-on-open reconstructs the live unspent transparent set: write a contiguous
-/// prefix, drop the database (so nothing maintains the cache), reopen it, and assert
-/// the seeded cache equals the unspent set derived independently from the vectors —
-/// every spendable created output, minus everything spent. Guards the seed's
-/// two-scan reconstruction (and the `transparent`↔`txids` pairing) against drift.
+
+/// The lazy rebuild reconstructs the txout-set accumulator from the committed
+/// `transparent` and `spent` tables: write a contiguous prefix of vector blocks (some
+/// of whose transparent outputs are spent by later blocks), rebuild, and assert the
+/// resulting accumulator matches the one computed independently from the live unspent
+/// set. Guards the rebuild's two-scan reconstruction (and its spent-filter / per-tx
+/// counting rules) against drift now that the incremental write-path accumulator is
+/// gone.
 ///
 /// `multi_thread` is required: spawn/write run LMDB access under `block_in_place`.
 #[tokio::test(flavor = "multi_thread")]
-async fn seed_reconstructs_transparent_utxo_cache_on_open() {
+async fn rebuild_tx_out_set_accumulator_matches_independent_unspent_set() {
     use crate::chain_index::finalised_state::db::v1::DbV1;
-
-    init_tracing();
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let config = BlockCacheConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: temp_dir.path().to_path_buf(),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
-    };
-
-    let blocks = load_test_vectors().unwrap().blocks;
-    let prefix = 60;
-
-    // Write a contiguous prefix, then drop the db so nothing maintains the cache.
-    {
-        let db = DbV1::spawn(&config).await.unwrap();
-        for block in indexed_block_chain(&blocks).take(prefix) {
-            db.write_block(block).await.unwrap();
-        }
-    }
-
-    // Reopen: the seed reconstructs the cache from committed `transparent` − `spent`.
-    let db = DbV1::spawn(&config).await.unwrap();
-    let seeded = db.transparent_utxo_cache_snapshot();
-
-    let expected = expected_unspent_transparent_utxos(&blocks, prefix);
-    assert!(
-        !expected.is_empty(),
-        "vectors must exercise some unspent transparent outputs"
-    );
-    assert_eq!(
-        seeded, expected,
-        "seeded cache must equal the live unspent transparent set"
-    );
-}
-
-/// The live unspent transparent UTXO set over the first `prefix` vector blocks,
-/// derived independently of the cache: every spendable created output, minus
-/// everything spent. The oracle shared by the seed and maintain cache tests.
-fn expected_unspent_transparent_utxos(
-    blocks: &[TestVectorBlockData],
-    prefix: usize,
-) -> std::collections::HashMap<Outpoint, crate::TxOutCompact> {
     use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
-
-    let mut utxos = std::collections::HashMap::new();
-    for chain_block in indexed_block_chain(blocks).take(prefix) {
-        for tx in chain_block.transactions() {
-            for input in tx.transparent().inputs() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-                utxos.remove(&Outpoint::new(*input.prevout_txid(), input.prevout_index()));
-            }
-            let txid = tx.txid().0;
-            for (vout, output) in tx.transparent().outputs().iter().enumerate() {
-                if is_unspendable_tx_out(output) {
-                    continue;
-                }
-                utxos.insert(Outpoint::new(txid, vout as u32), *output);
-            }
-        }
-    }
-    utxos
-}
-
-/// Maintain-on-commit keeps the cache live during sync without a reopen: write a
-/// contiguous prefix, then assert the maintained cache equals the unspent set. The
-/// maintenance path (record_created / record_spent off each block's delta, applied
-/// after the commit) must agree with the seed's reconstruction and the vectors.
-///
-/// `multi_thread` is required: spawn/write run LMDB access under `block_in_place`.
-#[tokio::test(flavor = "multi_thread")]
-async fn maintain_keeps_transparent_utxo_cache_live_during_sync() {
-    use crate::chain_index::finalised_state::db::v1::DbV1;
 
     init_tracing();
 
@@ -1767,15 +1689,53 @@ async fn maintain_keeps_transparent_utxo_cache_live_during_sync() {
     for block in indexed_block_chain(&blocks).take(prefix) {
         db.write_block(block).await.unwrap();
     }
-    let live = db.transparent_utxo_cache_snapshot();
 
-    let expected = expected_unspent_transparent_utxos(&blocks, prefix);
+    // Independent oracle: the live unspent transparent set over the prefix, keyed by
+    // txid then output index, matching `accumulator_from_unspent_map`'s shape.
+    let mut unspent: HashMap<TransactionHash, HashMap<u32, crate::TxOutCompact>> = HashMap::new();
+    for chain_block in indexed_block_chain(&blocks).take(prefix) {
+        for tx in chain_block.transactions() {
+            for input in tx.transparent().inputs() {
+                if input.is_null_prevout() {
+                    continue;
+                }
+                let prev_txid = TransactionHash::from(*input.prevout_txid());
+                if let Some(outputs) = unspent.get_mut(&prev_txid) {
+                    outputs.remove(&input.prevout_index());
+                    if outputs.is_empty() {
+                        unspent.remove(&prev_txid);
+                    }
+                }
+            }
+            let txid = *tx.txid();
+            for (vout, output) in tx.transparent().outputs().iter().enumerate() {
+                if is_unspendable_tx_out(output) {
+                    continue;
+                }
+                unspent
+                    .entry(txid)
+                    .or_default()
+                    .insert(vout as u32, *output);
+            }
+            if unspent.get(&txid).is_some_and(|o| o.is_empty()) {
+                unspent.remove(&txid);
+            }
+        }
+    }
     assert!(
-        !expected.is_empty(),
+        !unspent.is_empty(),
         "vectors must exercise some unspent transparent outputs"
     );
+
+    let expected = accumulator_from_unspent_map(&unspent);
+    let tip = db.tip_height().await.unwrap().expect("non-empty db has a tip");
+    let rebuilt = tokio::task::block_in_place(|| {
+        db.rebuild_tx_out_set_accumulator_for_test(tip)
+    })
+    .unwrap();
+
     assert_eq!(
-        live, expected,
-        "maintained cache must equal the live unspent transparent set during sync"
+        rebuilt, expected,
+        "rebuilt accumulator must equal the independently computed live unspent set"
     );
 }

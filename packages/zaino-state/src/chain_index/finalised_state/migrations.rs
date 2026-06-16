@@ -188,16 +188,16 @@ use crate::{
     chain_index::{
         finalised_state::{
             capability::{BlockTransparentExt as _, CapabilityRequest, DbMetadata},
-            db::v1::{DB_VERSION_V1, TX_OUT_SET_INFO_ACCUMULATOR_KEY},
+            db::v1::DB_VERSION_V1,
             entry::{StoredEntryFixed, StoredEntryVar},
         },
         source::BlockchainSource,
-        types::{db::metadata::FinalisedTxOutSetInfoAccumulator, GENESIS_HEIGHT},
+        types::GENESIS_HEIGHT,
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
-    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, IndexedBlock, Outpoint,
-    TransactionHash, TransparentCompactTx, TxLocation, TxidList, ZainoVersionedSerde as _,
+    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, IndexedBlock, Outpoint, TxLocation,
+    TxidList, ZainoVersionedSerde as _,
 };
 
 use lmdb::{Transaction, WriteFlags};
@@ -688,7 +688,6 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
         let txids_db = backend.txids_db()?;
         let spent_db = backend.spent_db()?;
         let txid_location_db = backend.txid_location_db()?;
-        let tx_out_set_info_accumulator_db = backend.tx_out_set_info_accumulator_db()?;
 
         // Record that a migration is in progress (observability only; the migration resumes from
         // the per-stage progress keys below, not from `migration_status`).
@@ -852,11 +851,13 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                 "v1.2.0 migration Stage A complete"
             );
 
-            // ===== Stage B: backfill `spent` + txout-set accumulator. =====
+            // ===== Stage B: backfill the `spent` index. =====
             //
             // Resumes from its own progress key, preserving partial work from an interrupted alpha
             // migration. If the key is absent (fresh, or a completed alpha cache rolled back to
-            // v1.1.0) it starts at genesis with an empty accumulator.
+            // v1.1.0) it starts at genesis. The txout-set accumulator is no longer backfilled
+            // here; it is rebuilt lazily from the completed `transparent` and `spent` tables the
+            // first time `gettxoutsetinfo` is served.
             let mut next_height_to_migrate = match read_progress(MIGRATION_SPENT_PROGRESS_KEY)? {
                 Some(height) => height,
                 None => {
@@ -868,17 +869,6 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                         metadata_db,
                         &MIGRATION_SPENT_PROGRESS_KEY,
                         &progress.to_bytes()?,
-                        WriteFlags::empty(),
-                    )?;
-
-                    let accumulator = StoredEntryFixed::new(
-                        TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                        FinalisedTxOutSetInfoAccumulator::empty(),
-                    );
-                    txn.put(
-                        tx_out_set_info_accumulator_db,
-                        &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                        &accumulator.to_bytes()?,
                         WriteFlags::empty(),
                     )?;
 
@@ -908,30 +898,6 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                     .backend(CapabilityRequest::BlockTransparentExt)?
                     .get_block_transparent(height)
                     .await?;
-
-                let txids = {
-                    let mut txids = Vec::with_capacity(transparent_tx_list.tx().len());
-
-                    for tx_index in 0..transparent_tx_list.tx().len() {
-                        let tx_index = u16::try_from(tx_index).map_err(|_| {
-                            FinalisedStateError::Custom(format!(
-                                "transaction index out of range at height {}",
-                                height.0
-                            ))
-                        })?;
-
-                        let tx_location = TxLocation::new(height.0, tx_index);
-
-                        let txid = router
-                            .backend(CapabilityRequest::BlockCoreExt)?
-                            .get_txid(tx_location)
-                            .await?;
-
-                        txids.push(txid);
-                    }
-
-                    txids
-                };
 
                 let transparent = transparent_tx_list.tx().to_vec();
 
@@ -967,34 +933,8 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                     }
                 }
 
-                let tx_out_set_info_accumulator = match backend.as_ref() {
-                    DbBackend::V1(database) => {
-                        // Pair `txids` and `transparent` for the accumulator API.
-                        let transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
-                            txids
-                                .iter()
-                                .copied()
-                                .zip(transparent.iter().cloned())
-                                .collect();
-
-                        database
-                            .calculate_tx_out_set_info_accumulator_after_block(
-                                height,
-                                &transactions,
-                                &spent_map,
-                                None,
-                            )
-                            .await?
-                    }
-                    DbBackend::V0(_) => {
-                        return Err(FinalisedStateError::FeatureUnavailable(
-                            "v1 txout-set accumulator migration",
-                        ));
-                    }
-                };
-
-                // Write spent data, txout-set accumulator, and Stage B progress in the same LMDB
-                // transaction, ensuring they never drift if migration is stopped by a system crash.
+                // Write the spent data and Stage B progress in the same LMDB transaction,
+                // ensuring they never drift if migration is stopped by a system crash.
                 {
                     let mut txn = env.begin_rw_txn()?;
 
@@ -1043,18 +983,6 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                             Err(error) => return Err(FinalisedStateError::LmdbError(error)),
                         }
                     }
-
-                    let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-                        TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                        tx_out_set_info_accumulator,
-                    );
-
-                    txn.put(
-                        tx_out_set_info_accumulator_db,
-                        &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                        &tx_out_set_info_accumulator_entry.to_bytes()?,
-                        WriteFlags::empty(),
-                    )?;
 
                     let progress = StoredEntryFixed::new(MIGRATION_SPENT_PROGRESS_KEY, height + 1);
                     txn.put(

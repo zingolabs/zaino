@@ -1,7 +1,6 @@
 //! ZainoDB::V1 core write functionality.
 
 use super::*;
-use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::chain_index::types::Height;
 #[cfg(test)]
 use crate::version;
@@ -153,8 +152,6 @@ impl DbV1 {
             Err(join_err) => {
                 warn!("Tokio task error (spawn_blocking join error): {}", join_err);
 
-                self.reseed_transparent_utxo_cache()?;
-
                 return Err(FinalisedStateError::Custom(format!(
                     "Tokio task error: {}",
                     join_err
@@ -229,9 +226,6 @@ impl DbV1 {
 
                 match verification_result {
                     Ok(_) => {
-                        // Block already written by another process; our build-time cache
-                        // update may not match the shared DB, so reseed from committed state.
-                        self.reseed_transparent_utxo_cache()?;
                         self.status.store(StatusType::Ready);
                         info!(
                             "Block {} at height {} was already written by another process, skipping.",
@@ -243,10 +237,8 @@ impl DbV1 {
                         warn!("Error writing block to DB: {e}");
 
                         // Our atomic commit was rejected (a different block occupies this
-                        // height), so nothing of ours reached disk. Reset the in-memory
-                        // derived state to committed and report the error; the committed
-                        // block is never deleted in place.
-                        self.reseed_transparent_utxo_cache()?;
+                        // height), so nothing of ours reached disk; the committed block is
+                        // never deleted in place.
                         self.status.store(StatusType::RecoverableError);
                         Err(FinalisedStateError::InvalidBlock {
                             height: block_height.0,
@@ -259,19 +251,15 @@ impl DbV1 {
             Err(e) => {
                 if matches!(e, FinalisedStateError::LmdbError(lmdb::Error::MapFull)) {
                     // The transaction aborted atomically: nothing was committed and the
-                    // database is intact (only the size cap was reached), but the build
-                    // phase already applied this block to the cache — reseed.
-                    self.reseed_transparent_utxo_cache()?;
+                    // database is intact (only the size cap was reached).
                     self.status.store(StatusType::RecoverableError);
                     return Err(self.map_full_config_error());
                 }
 
                 warn!("Error writing block to DB: {e}");
 
-                // The commit aborted atomically: nothing was persisted. Reset the in-memory
-                // derived state to committed (the same primitive a restart runs) and report
-                // the error; the append-only index is never rolled back in place.
-                self.reseed_transparent_utxo_cache()?;
+                // The commit aborted atomically: nothing was persisted. The append-only
+                // index is never rolled back in place.
                 self.status.store(StatusType::RecoverableError);
 
                 Err(FinalisedStateError::InvalidBlock {
@@ -287,10 +275,15 @@ impl DbV1 {
     /// entries, per-block index maps, and the post-block txout-set accumulator.
     ///
     /// `pending` is the in-memory overlay of an open write batch ([`PendingBatchState`]):
-    /// every read that may touch state written by an earlier, uncommitted batch block —
-    /// transparent prevout resolution, spent-output checks, and the accumulator itself —
-    /// consults the overlay before the committed tables. Pass `None` on the single-block
-    /// write path, where all prior state is committed.
+    /// the experimental address-history path's prevout resolution consults it before the
+    /// committed tables, so a batch block may reference outputs an earlier, uncommitted
+    /// batch block created. Pass `None` on the single-block write path, where all prior
+    /// state is committed. The non-experimental build resolves nothing from the overlay
+    /// (the spent index needs no prevout data), so `pending` is unused there.
+    #[cfg_attr(
+        not(feature = "transparent_address_history_experimental"),
+        allow(unused_variables)
+    )]
     async fn build_block_write_data(
         &self,
         block: &IndexedBlock,
@@ -483,29 +476,13 @@ impl DbV1 {
             }
         }
 
-        // Derive the block's transparent delta once; the spent index (here), the
-        // accumulator, and (in later stages) the UTXO cache all consume it instead of
-        // re-walking the transactions.
+        // Derive the block's transparent delta once; the spent index consumes it
+        // instead of re-walking the transactions. The txout-set accumulator is no
+        // longer maintained here — it is rebuilt lazily from the committed tables on
+        // first query (see `get_tx_out_set_info_accumulator`).
         let transparent_delta =
             transparent_delta::block_transparent_delta(block_height, &transactions)?;
         let spent_map = transparent_delta::spent_map_from_delta(&transparent_delta);
-
-        let tx_out_set_info_accumulator = self
-            .calculate_tx_out_set_info_accumulator_after_block(
-                block_height,
-                &transactions,
-                &spent_map,
-                pending,
-            )
-            .await?;
-
-        // Maintain the in-memory UTXO cache at build time, *after* this block's
-        // accumulator has read the pre-block cache, so that within a batch the next
-        // block's accumulator sees this block's transparent state. A failed or aborted
-        // commit reseeds the cache (write_block / write_blocks), so this build-time
-        // update never outlives a write that did not durably land.
-        self.transparent_utxo_cache
-            .apply_forward(&transparent_delta);
 
         // Split the paired vector into the per-table shapes used for storage.
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
@@ -521,18 +498,14 @@ impl DbV1 {
         let orchard_entry_bytes =
             StoredEntryVar::encode(&block_height_bytes, &OrchardTxList::new(orchard))?;
 
-        // Pre-encode the spent-index and accumulator entries too, so the write
-        // transaction performs no serialization at all.
+        // Pre-encode the spent-index entries too, so the write transaction performs
+        // no serialization at all.
         let mut spent_entries = Vec::with_capacity(spent_map.len());
         for (outpoint, tx_location) in &spent_map {
             let outpoint_bytes = outpoint.to_bytes()?;
             let entry_bytes = StoredEntryFixed::encode(&outpoint_bytes, tx_location)?;
             spent_entries.push((outpoint_bytes, entry_bytes));
         }
-        let tx_out_set_info_accumulator_entry_bytes = StoredEntryFixed::encode(
-            TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            &tx_out_set_info_accumulator,
-        )?;
 
         Ok(BlockWriteData {
             block_hash,
@@ -549,8 +522,6 @@ impl DbV1 {
             orchard_entry_bytes,
             spent_entries,
             spent_map,
-            tx_out_set_info_accumulator,
-            tx_out_set_info_accumulator_entry_bytes,
             #[cfg(feature = "transparent_address_history_experimental")]
             addrhist_inputs_map,
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -630,8 +601,8 @@ impl DbV1 {
     /// Those two indexes otherwise fault a scattered B-tree leaf per insert once the DB
     /// exceeds RAM; collecting every batch entry, sorting by key, and inserting in order
     /// turns that into a sequential B-tree sweep. Height-keyed tables are written per block
-    /// (already sequential); the txout-set accumulator is written once — the last block's
-    /// value is the post-batch accumulator. Address-history is not batchable (its
+    /// (already sequential). The txout-set accumulator is not written here — it is rebuilt
+    /// lazily from the committed tables on first query. Address-history is not batchable (its
     /// prev-output resolution depends on earlier-in-batch writes), so the experimental
     /// feature keeps the per-block path in `write_blocks`.
     #[cfg(not(feature = "transparent_address_history_experimental"))]
@@ -642,13 +613,11 @@ impl DbV1 {
     ) -> Result<(), FinalisedStateError> {
         let mut txid_location: Vec<([u8; 32], Vec<u8>)> = Vec::new();
         let mut spent: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut last_accumulator_bytes: Option<Vec<u8>> = None;
 
         for mut data in batch {
             self.put_block_height_keyed_in_txn(txn, &data)?;
             txid_location.append(&mut data.txid_location_entries);
             spent.append(&mut data.spent_entries);
-            last_accumulator_bytes = Some(data.tx_out_set_info_accumulator_entry_bytes);
         }
 
         // Sorted sweep over each random-keyed B-tree. LMDB's default comparator is bytewise,
@@ -669,15 +638,6 @@ impl DbV1 {
                 outpoint_bytes,
                 entry_bytes,
                 WriteFlags::NO_OVERWRITE,
-            )?;
-        }
-
-        if let Some(accumulator_bytes) = last_accumulator_bytes {
-            txn.put(
-                self.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &accumulator_bytes,
-                WriteFlags::empty(),
             )?;
         }
 
@@ -710,13 +670,6 @@ impl DbV1 {
                 WriteFlags::NO_OVERWRITE,
             )?;
         }
-
-        txn.put(
-            self.tx_out_set_info_accumulator,
-            &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            &data.tx_out_set_info_accumulator_entry_bytes,
-            WriteFlags::empty(),
-        )?;
 
         #[cfg(feature = "transparent_address_history_experimental")]
         {
@@ -817,7 +770,7 @@ impl DbV1 {
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
             metadata: self.metadata,
-            transparent_utxo_cache: self.transparent_utxo_cache.clone(),
+            accumulator_rebuild_lock: Arc::clone(&self.accumulator_rebuild_lock),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
@@ -938,22 +891,16 @@ impl DbV1 {
             Ok(()) => {
                 self.status.store(StatusType::Ready);
                 info!(
-                    "Committed batch of {} blocks ({}..={}) to ZainoDB. \
-                     live UTXO cache: {} outputs (~{} MiB)",
+                    "Committed batch of {} blocks ({}..={}) to ZainoDB.",
                     blocks.len(),
                     first_height.0,
                     first_height.0 + blocks.len() as u32 - 1,
-                    self.transparent_utxo_cache.len(),
-                    self.transparent_utxo_cache.estimated_resident_bytes() / (1024 * 1024),
                 );
                 Ok(())
             }
             Err(e) => {
                 // Every failure here precedes a successful commit, and LMDB commits are
-                // atomic, so nothing was persisted on disk — but the build phase already
-                // applied this batch's unspent-count updates and UTXO cache in memory.
-                self.reseed_transparent_utxo_cache()?;
-
+                // atomic, so nothing was persisted on disk.
                 if matches!(e, FinalisedStateError::LmdbError(lmdb::Error::MapFull)) {
                     self.status.store(StatusType::RecoverableError);
                     return Err(self.map_full_config_error());
@@ -1178,11 +1125,9 @@ struct BlockWriteData {
     orchard_entry_bytes: Vec<u8>,
     /// `(encoded outpoint key, encoded entry)` for the `spent` table.
     spent_entries: Vec<(Vec<u8>, Vec<u8>)>,
-    /// Kept alongside `spent_entries`: `PendingBatchState::absorb` and the
-    /// accumulator calculation consume the typed map.
+    /// Kept alongside `spent_entries`: `PendingBatchState::absorb` consumes the
+    /// typed map.
     spent_map: HashMap<Outpoint, TxLocation>,
-    tx_out_set_info_accumulator: FinalisedTxOutSetInfoAccumulator,
-    tx_out_set_info_accumulator_entry_bytes: Vec<u8>,
     #[cfg(feature = "transparent_address_history_experimental")]
     addrhist_inputs_map: HashMap<AddrScript, Vec<(AddrHistRecord, (AddrScript, AddrHistRecord))>>,
     #[cfg(feature = "transparent_address_history_experimental")]
@@ -1190,17 +1135,11 @@ struct BlockWriteData {
 }
 
 /// In-memory overlay of everything an open write batch has produced but not yet
-/// committed: the txout-set accumulator after the latest pending block, every
-/// pending transaction (with its location and transparent data), and every
-/// outpoint the batch spends. Build-phase reads consult this before the
+/// committed: every pending transaction (with its location and transparent data),
+/// and every outpoint the batch spends. Build-phase reads consult this before the
 /// committed tables, so a batch block may spend outputs created — or sibling
 /// outputs of transactions spent from — earlier in the same batch.
-// pub(crate) (not pub(super)) because it appears in the signature of the
-// pub(crate) accumulator calculation that migrations.rs also calls.
 pub(crate) struct PendingBatchState {
-    /// Txout-set accumulator after the latest pending block; `None` until the
-    /// first block of the batch is built.
-    pub(super) accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
     /// txid -> (location, transparent data) for every pending transaction.
     pub(super) transactions: HashMap<TransactionHash, (TxLocation, Option<TransparentCompactTx>)>,
     /// Outpoints spent by pending blocks, keyed to their spender's location.
@@ -1210,7 +1149,6 @@ pub(crate) struct PendingBatchState {
 impl PendingBatchState {
     fn new() -> Self {
         Self {
-            accumulator: None,
             transactions: HashMap::new(),
             spent: HashMap::new(),
         }
@@ -1219,7 +1157,6 @@ impl PendingBatchState {
     /// Absorbs a just-built block's contributions so later batch blocks can
     /// read them.
     fn absorb(&mut self, block: &IndexedBlock, data: &BlockWriteData) {
-        self.accumulator = Some(data.tx_out_set_info_accumulator);
         for (tx_index, tx) in block.transactions().iter().enumerate() {
             let tx_index = u16::try_from(tx_index)
                 .expect("transaction index bounded by build_block_write_data");

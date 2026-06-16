@@ -23,12 +23,12 @@ use super::legacy::{Outpoint, TxOutCompact};
 /// are excluded, via zcashd's `IsUnspendable()`. So this predicate must track
 /// spendability, not a standard-script allowlist.
 ///
-/// It is the single source of truth shared by the UTXO cache, the seed, and the
-/// finalised and non-finalised accumulators, so the set each describes stays
+/// It is the single source of truth shared by the finalised txout-set accumulator
+/// rebuild and the non-finalised accumulator, so the set each describes stays
 /// identical. An earlier version returned `true` for everything except P2PKH/P2SH;
 /// that excluded spendable P2PK/multisig outputs, which both undercounted against
-/// zcashd and made spend resolution fail — the spent output was absent from the
-/// UTXO cache (see `resolve_spent_outpoints_for_set_info`).
+/// zcashd and made the live unspent set wrong — a spent output's prior creation was
+/// dropped from the set it was meant to leave.
 ///
 /// `TxOutCompact` keeps only `value`, a 20-byte `script_hash`, and a script-type
 /// byte; the full `scriptPubKey` is gone after compaction, so `OP_RETURN` is
@@ -323,8 +323,8 @@ mod tests {
         // spendable UTXO set; only OP_RETURN is unspendable. TxOutCompact collapses
         // every non-P2PKH/P2SH script to NonStandard, so until an OP_RETURN script type
         // is recorded (a schema change) no compacted output is treated as unspendable.
-        // The NonStandard case is the regression: spending such an output used to fail
-        // with "not in the UTXO cache" because it was excluded from the cache.
+        // The NonStandard case is the regression: excluding such a spendable output
+        // dropped it from the live unspent set the rebuild reconstructs.
         use super::super::legacy::ScriptType;
 
         for script_type in [ScriptType::P2PKH, ScriptType::P2SH, ScriptType::NonStandard] {
