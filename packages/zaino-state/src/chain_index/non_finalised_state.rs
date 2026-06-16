@@ -705,7 +705,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .heights_to_hashes
             .contains_key(&finalized_height)
         {
-            self.reify(&mut new_snapshot, finalized_db.as_ref());
+            self.reify(&mut new_snapshot, finalized_db.as_ref())
+                .await
+                .map_err(|e| todo!(""))?;
         }
 
         let seam = match new_snapshot.availability {
@@ -841,7 +843,6 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
 
         finalized_db: &ZainoDB,
     ) -> Result<(), String> {
-        let mut reified_blocks: HashSet<BlockHash> = HashSet::new();
         let Some((seam_height, seam_hash)) = new_snapshot
             .heights_to_hashes
             .iter()
@@ -851,7 +852,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         };
         let Some(seam_block) = finalized_db
             .backend_for_cap(CapabilityRequest::IndexedBlockExt)
-            .map_err(|e| format!("backend can't serve indexed blocks"))?
+            .map_err(|e| format!("backend can't serve indexed blocks: {e}"))?
             .get_chain_block(*seam_height)
             .await
             .map_err(|e| format!("backend error: {e}"))?
@@ -862,11 +863,31 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let mut reify_children_of = HashSet::new();
         *new_snapshot.blocks.get_mut(seam_hash).expect("todo") =
             seam_block.to_provisional_block(&self).await.expect("todo");
-        reify_children_of.insert(seam_block.hash());
+        reify_children_of.insert(*seam_block.hash());
 
-        while reified_blocks.len() != new_snapshot.blocks.len() {}
+        while !reify_children_of.is_empty() {
+            let to_reify: HashMap<BlockHash, ProvisionalBlock> = new_snapshot
+                .blocks
+                .iter()
+                .filter(|(_hash, block)| reify_children_of.contains(block.parent_hash()))
+                .map(|(hash, block)| (*hash, block.clone()))
+                .collect();
+            for (hash, block) in to_reify.iter() {
+                let mut block = block.clone();
+                block.chainwork = block.chainwork.add(
+                    &new_snapshot
+                        .blocks
+                        .get(block.parent_hash())
+                        .expect("todo")
+                        .chainwork,
+                );
+                new_snapshot.blocks.insert(*hash, block);
+            }
+            reify_children_of = to_reify.into_keys().collect();
+        }
 
-        todo!()
+        new_snapshot.availability = SnapshotAvailability::Reified;
+        Ok(())
     }
 }
 
