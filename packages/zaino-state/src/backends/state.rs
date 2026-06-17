@@ -220,7 +220,19 @@ impl ZcashService for StateService {
 
         info!("Chain syncer launched");
 
-        // Wait for ReadStateService to catch up to primary database:
+        // Wait for ReadStateService to catch up to the validator tip. A healthy syncer drives the
+        // gap to ~0; the known TrustedChainSync non-finalized reconnect storm pins it ~reorg-limit
+        // below tip (see state-backend-trustedchainsync-bug.md). Track gap *convergence* — so a
+        // legitimately-slow cold catch-up isn't flagged — and escalate a non-converging gap to a
+        // typed error rather than blocking spawn forever with no diagnosis.
+        const CATCHUP_STALL_WARN: std::time::Duration = std::time::Duration::from_secs(60);
+        const CATCHUP_STALL_FATAL: std::time::Duration = std::time::Duration::from_secs(300);
+        // Minimum gap reduction that counts as progress, filtering the ±1-2 block finalization
+        // jitter of a pinned syncer so it can't keep resetting the stall timer.
+        const CATCHUP_PROGRESS_MARGIN: u32 = 8;
+        let mut best_gap = u32::MAX;
+        let mut last_progress = std::time::Instant::now();
+        let mut stall_warned = false;
         loop {
             let server_height = rpc_client.get_blockchain_info().await?.blocks;
 
@@ -238,15 +250,47 @@ impl ZcashService for StateService {
                     "ReadStateService synced with Zebra"
                 );
                 break;
+            }
+
+            let gap = server_height.0.saturating_sub(syncer_height.0);
+            if gap + CATCHUP_PROGRESS_MARGIN <= best_gap {
+                best_gap = gap;
+                last_progress = std::time::Instant::now();
+                stall_warned = false;
+            }
+            let stalled_for = last_progress.elapsed();
+
+            if stalled_for >= CATCHUP_STALL_FATAL {
+                return Err(StateServiceError::Critical(format!(
+                    "ReadStateService catch-up stalled: gap to the validator tip stuck at {gap} \
+                     (syncer_height {}, validator_height {}) for {}s with no convergence. The \
+                     TrustedChainSync non-finalized stream is likely not delivering blocks — check \
+                     the host zebrad indexer log for 'slow consumer' / 'client disconnected' on \
+                     non_finalized_state_change.",
+                    syncer_height.0,
+                    server_height.0,
+                    stalled_for.as_secs(),
+                )));
+            }
+            if stalled_for >= CATCHUP_STALL_WARN && !stall_warned {
+                stall_warned = true;
+                tracing::warn!(
+                    syncer_height = syncer_height.0,
+                    validator_height = server_height.0,
+                    gap,
+                    stalled_secs = stalled_for.as_secs(),
+                    "ReadStateService catch-up is not converging on the tip; non-finalized blocks \
+                     may not be arriving via TrustedChainSync (see the host zebrad indexer 'slow \
+                     consumer' logs). Startup will fail if the gap stays stuck."
+                );
             } else {
                 info!(
                     syncer_height = syncer_height.0,
                     validator_height = server_height.0,
                     "ReadStateService syncing with Zebra"
                 );
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                continue;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
 
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
