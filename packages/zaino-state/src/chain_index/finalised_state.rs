@@ -199,7 +199,7 @@ use crate::{
 
 use std::{
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -611,12 +611,19 @@ impl ZainoDB {
     {
         use futures::StreamExt as _;
         let (sync_initial_start_height, mut parent_chainwork) = self.resolve_sync_start().await?;
+        let fetch_lookahead = self.cfg.storage.database.effective_sync_fetch_lookahead();
         // Track last time we emitted an info log so we only print every 10s.
         let reported_height = Arc::new(AtomicU32::new(sync_initial_start_height));
+        // Per-phase timing shared with the reporter so it can log where the sync wall is.
+        let phase_meter = Arc::new(SyncPhaseMeter::default());
         // Spawn the reporter task that logs progress every 10 seconds, even while a
         // write is running.
-        let (shutdown_tx, reporter_handle) =
-            self.spawn_sync_progress_reporter(Arc::clone(&reported_height), sync_upper_bound.0);
+        let (shutdown_tx, reporter_handle) = self.spawn_sync_progress_reporter(
+            Arc::clone(&reported_height),
+            Arc::clone(&phase_meter),
+            fetch_lookahead,
+            sync_upper_bound.0,
+        );
 
         // Run the main sync logic inside an inner async block so we always get
         // a chance to shutdown the reporter task regardless of how this block exits.
@@ -643,7 +650,6 @@ impl ZainoDB {
             // overlaps fetch of later blocks with build+write of earlier ones and keeps the
             // validator saturated; `buffered` preserves submission order. Depth is configurable
             // via `storage.database.sync_fetch_lookahead` (see its field doc).
-            let fetch_lookahead = self.cfg.storage.database.effective_sync_fetch_lookahead();
             let mut fetched_blocks =
                 futures::stream::iter(sync_initial_start_height..=sync_upper_bound.0)
                     .map(|current_height| {
@@ -656,7 +662,17 @@ impl ZainoDB {
                     })
                     .buffered(fetch_lookahead);
 
-            while let Some(fetched_block) = fetched_blocks.next().await {
+            loop {
+                // Time spent blocked here = the consumer starved waiting for a fetched block,
+                // i.e. fetch can't keep up at the current lookahead (the fetch-bound signal).
+                let wait_start = std::time::Instant::now();
+                let fetched_block = fetched_blocks.next().await;
+                phase_meter
+                    .fetch_wait_nanos
+                    .fetch_add(wait_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                let Some(fetched_block) = fetched_block else {
+                    break;
+                };
                 let (current_height, (block, sapling_opt, orchard_opt)) = fetched_block?;
                 // Update the shared progress value as we begin building this height.
                 reported_height.store(current_height, Ordering::Relaxed);
@@ -701,12 +717,19 @@ impl ZainoDB {
                     current_height,
                 )?;
                 record_phase_seconds("zaino.sync.block_build_seconds", build_start);
+                phase_meter
+                    .build_nanos
+                    .fetch_add(build_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                phase_meter.blocks.fetch_add(1, Ordering::Relaxed);
                 parent_chainwork = chain_block.context.chainwork;
 
                 if let Some(batch) = batcher.push(chain_block) {
                     let write_start = std::time::Instant::now();
                     self.write_blocks_with_fallback(&batch).await?;
                     record_phase_seconds("zaino.sync.block_write_seconds", write_start);
+                    phase_meter
+                        .write_nanos
+                        .fetch_add(write_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 }
             }
 
@@ -714,6 +737,9 @@ impl ZainoDB {
                 let write_start = std::time::Instant::now();
                 self.write_blocks_with_fallback(&batch).await?;
                 record_phase_seconds("zaino.sync.block_write_seconds", write_start);
+                phase_meter
+                    .write_nanos
+                    .fetch_add(write_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
 
             Ok(())
@@ -786,12 +812,17 @@ impl ZainoDB {
     fn spawn_sync_progress_reporter(
         &self,
         current_height: Arc<AtomicU32>,
+        phase_meter: Arc<SyncPhaseMeter>,
+        fetch_lookahead: usize,
         sync_upper_bound: u32,
     ) -> (watch::Sender<()>, tokio::task::JoinHandle<()>) {
         let network = self.cfg.network.to_zebra_network();
         let (shutdown_tx, mut shutdown_rx) = watch::channel(());
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
+            // Previous-tick snapshot so each log reports the rate + phase split over the last
+            // window (the bottleneck shifts along the chain, e.g. at the sandblast onset).
+            let mut prev = PhaseSnapshot::capture(&phase_meter);
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -803,11 +834,33 @@ impl ZainoDB {
                             metrics::gauge!("zaino.sync.target_height")
                                 .set(sync_upper_bound as f64);
                         }
+
+                        let now = PhaseSnapshot::capture(&phase_meter);
+                        let window_secs = now
+                            .captured_at
+                            .saturating_duration_since(prev.captured_at)
+                            .as_secs_f64()
+                            .max(f64::EPSILON);
+                        let rate = now.blocks.saturating_sub(prev.blocks) as f64 / window_secs;
+                        // Attribute the serial consumer's window time across its three phases.
+                        let fetch_wait = now.fetch_wait_nanos.saturating_sub(prev.fetch_wait_nanos);
+                        let build = now.build_nanos.saturating_sub(prev.build_nanos);
+                        let write = now.write_nanos.saturating_sub(prev.write_nanos);
+                        let accounted = (fetch_wait + build + write).max(1);
+                        let pct = |part: u64| 100.0 * part as f64 / accounted as f64;
+
                         tracing::info!(
-                            "sync_to_height: current_syncing_height \
-                            {current_syncing_height} /  {sync_upper_bound} \
-                            on network = {network:?}",
+                            "sync_to_height: height {current_syncing_height}/{sync_upper_bound} \
+                             — {rate:.1} blk/s, K={fetch_lookahead} | consumer phase split (last \
+                             {window_secs:.0}s): fetch-wait {:.0}%, build {:.0}%, write {:.0}% \
+                             [high fetch-wait → raise K; high build & low fetch-wait → build-bound; \
+                             high write → commit-bound] on network = {network:?}",
+                            pct(fetch_wait),
+                            pct(build),
+                            pct(write),
                         );
+
+                        prev = now;
                     }
                     _ = shutdown_rx.changed() => break,
                 }
@@ -1032,6 +1085,45 @@ impl ZainoDB {
 fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
     #[cfg(feature = "prometheus")]
     metrics::histogram!(_name).record(_start.elapsed().as_secs_f64());
+}
+
+/// Per-phase wall-time accumulators for the ordered sync consumer, shared with the progress
+/// reporter so it can log which stage dominates each window — the signal for where the sync
+/// wall is: high fetch-wait → fetch-bound (raise `sync_fetch_lookahead`); high build with low
+/// fetch-wait → build-bound (parallel build would pay); high write → commit-bound. Always on:
+/// a few relaxed atomics per block, negligible against the per-block work.
+#[derive(Default)]
+struct SyncPhaseMeter {
+    /// Nanoseconds the consumer spent blocked waiting for the next fetched block.
+    fetch_wait_nanos: AtomicU64,
+    /// Nanoseconds spent in the serial build (`build_indexed_block`).
+    build_nanos: AtomicU64,
+    /// Nanoseconds spent in batched writes/commits.
+    write_nanos: AtomicU64,
+    /// Blocks consumed.
+    blocks: AtomicU64,
+}
+
+/// A point-in-time read of [`SyncPhaseMeter`] plus when it was taken, so the reporter can log
+/// the rate and phase split over each window rather than cumulatively.
+struct PhaseSnapshot {
+    captured_at: std::time::Instant,
+    blocks: u64,
+    fetch_wait_nanos: u64,
+    build_nanos: u64,
+    write_nanos: u64,
+}
+
+impl PhaseSnapshot {
+    fn capture(meter: &SyncPhaseMeter) -> Self {
+        Self {
+            captured_at: std::time::Instant::now(),
+            blocks: meter.blocks.load(Ordering::Relaxed),
+            fetch_wait_nanos: meter.fetch_wait_nanos.load(Ordering::Relaxed),
+            build_nanos: meter.build_nanos.load(Ordering::Relaxed),
+            write_nanos: meter.write_nanos.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Fetches a block together with its Sapling/Orchard commitment-tree roots — one sync "fetch
