@@ -342,6 +342,30 @@ async fn spawn_finalised_db<S: BlockchainSource>(source: S) -> (TempDir, ZainoDB
     spawn_finalised_db_with_lookahead(source, DatabaseConfig::default().sync_fetch_lookahead).await
 }
 
+/// Spawns a fresh v1 finalised DB with explicit fetch and build pipeline widths.
+async fn spawn_finalised_db_with_widths<S: BlockchainSource>(
+    source: S,
+    sync_fetch_lookahead: usize,
+    sync_build_concurrency: usize,
+) -> (TempDir, ZainoDB) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = BlockCacheConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                sync_fetch_lookahead,
+                sync_build_concurrency,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+    let db = ZainoDB::spawn(config, source).await.unwrap();
+    (temp_dir, db)
+}
+
 /// Asserts two finalised DBs are equivalent across the load-bearing invariants: tip height,
 /// the txout-set accumulator (txout-set correctness), and — per height — the stored block
 /// hash (ordering / pairing / off-by-one) and cumulative chainwork (sequential threading).
@@ -565,4 +589,106 @@ async fn lookahead_of_one_is_serial_and_correct() {
     let reference_reader = std::sync::Arc::new(reference_db).to_reader();
     let serial_reader = std::sync::Arc::new(serial_db).to_reader();
     assert_finalised_dbs_equivalent(&reference_reader, &serial_reader, TIP).await;
+}
+
+// ***** Parallel build: correctness + throughput *****
+
+/// Parallel build must reproduce the serial chainwork prefix sum exactly. Build the same chain at
+/// `sync_build_concurrency = 1` and at a wide concurrency *with reverse fetch latency* (so builds
+/// also complete out of order), and assert the DBs are equivalent per height — proving the
+/// ZERO-parent build plus the consumer's prefix-sum fixup reconstruct sequential chainwork
+/// regardless of build-completion order.
+///
+/// `multi_thread` required: concurrent build tasks on the blocking pool must make real progress
+/// alongside the consumer.
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_build_reproduces_serial_chainwork() {
+    let blocks = load_test_vectors().unwrap().blocks;
+    assert!(
+        blocks.len() as u32 > TIP,
+        "need more than {TIP} vector blocks for this test"
+    );
+
+    // Serial build (width 1), in order.
+    let serial_source = FaultInjectingSource::no_faults(build_mockchain_source(blocks.clone()));
+    let (_serial_dir, serial_db) =
+        spawn_finalised_db_with_widths(serial_source.clone(), 8, 1).await;
+    serial_db
+        .sync_to_height(Height(TIP), &serial_source)
+        .await
+        .unwrap();
+    serial_db.wait_until_ready().await;
+
+    // Wide parallel build, with reverse fetch latency so builds finish out of order.
+    let parallel_source = FaultInjectingSource::with_reverse_delay(
+        build_mockchain_source(blocks.clone()),
+        TIP,
+        Duration::from_millis(2),
+    );
+    let (_parallel_dir, parallel_db) =
+        spawn_finalised_db_with_widths(parallel_source.clone(), 8, 8).await;
+    parallel_db
+        .sync_to_height(Height(TIP), &parallel_source)
+        .await
+        .unwrap();
+    parallel_db.wait_until_ready().await;
+
+    let serial_reader = std::sync::Arc::new(serial_db).to_reader();
+    let parallel_reader = std::sync::Arc::new(parallel_db).to_reader();
+    assert_finalised_dbs_equivalent(&serial_reader, &parallel_reader, TIP).await;
+}
+
+/// With an injected per-block build cost making the pipeline deterministically build-bound,
+/// raising `sync_build_concurrency` must cut wall-clock: builds run as busy-spins on the blocking
+/// pool, so N concurrent builds finish faster (up to core count). This is the throughput proof —
+/// that parallel build *increases* throughput, not merely runs correctly.
+///
+/// Skipped on a single core (nothing to parallelize). `multi_thread` required so the blocking
+/// pool's spins run on separate OS threads concurrently.
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_build_increases_throughput() {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    if cores < 2 {
+        eprintln!("skipping parallel_build_increases_throughput: needs >= 2 cores, have {cores}");
+        return;
+    }
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    assert!(
+        blocks.len() as u32 > TIP,
+        "need more than {TIP} vector blocks for this test"
+    );
+
+    // Make each build ~2 ms of busy-spin CPU so build dominates the trivial mock fetch/write.
+    crate::chain_index::finalised_state::set_test_build_cost_nanos(2_000_000);
+
+    let serial_time = {
+        let source = FaultInjectingSource::no_faults(build_mockchain_source(blocks.clone()));
+        let (_dir, db) = spawn_finalised_db_with_widths(source.clone(), 8, 1).await;
+        let start = std::time::Instant::now();
+        db.sync_to_height(Height(TIP), &source).await.unwrap();
+        db.wait_until_ready().await;
+        start.elapsed()
+    };
+    let parallel_time = {
+        let source = FaultInjectingSource::no_faults(build_mockchain_source(blocks.clone()));
+        let (_dir, db) = spawn_finalised_db_with_widths(source.clone(), 8, 4).await;
+        let start = std::time::Instant::now();
+        db.sync_to_height(Height(TIP), &source).await.unwrap();
+        db.wait_until_ready().await;
+        start.elapsed()
+    };
+
+    // Reset so other tests sharing the process (cargo test) see no injected cost.
+    crate::chain_index::finalised_state::set_test_build_cost_nanos(0);
+
+    // Conservative: 4-way build on >= 2 cores should beat serial by a clear margin even with
+    // dispatch overhead and CI noise (ideal is ~min(4, cores)x).
+    assert!(
+        parallel_time < serial_time.mul_f64(0.75),
+        "parallel build (width 4: {parallel_time:?}) not meaningfully faster than serial \
+         (width 1: {serial_time:?}); expected a build-bound speedup from sync_build_concurrency"
+    );
 }

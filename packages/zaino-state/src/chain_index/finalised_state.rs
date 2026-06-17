@@ -612,6 +612,7 @@ impl ZainoDB {
         use futures::StreamExt as _;
         let (sync_initial_start_height, mut parent_chainwork) = self.resolve_sync_start().await?;
         let fetch_lookahead = self.cfg.storage.database.effective_sync_fetch_lookahead();
+        let build_concurrency = self.cfg.storage.database.effective_sync_build_concurrency();
         maybe_recommend_state_backend(source, sync_initial_start_height, sync_upper_bound.0);
         // Track last time we emitted an info log so we only print every 10s.
         let reported_height = Arc::new(AtomicU32::new(sync_initial_start_height));
@@ -645,13 +646,14 @@ impl ZainoDB {
                 .expect("Sapling activation height must be set");
             let nu5_activation_height = self.cfg.network.nu5_activation_height();
 
-            // Fetch is the sync bottleneck (getblock + a per-block treestate, both large for
-            // fat blocks); build threads `parent_chainwork` and so must stay ordered. Running
-            // `fetch_lookahead` fetch units concurrently and consuming them in height order
-            // overlaps fetch of later blocks with build+write of earlier ones and keeps the
-            // validator saturated; `buffered` preserves submission order. Depth is configurable
-            // via `storage.database.sync_fetch_lookahead` (see its field doc).
-            let mut fetched_blocks =
+            // Two-stage ordered pipeline. Stage 1 (fetch): `fetch_lookahead` getblock+treestate
+            // units run concurrently. Stage 2 (build): `build_concurrency` `IndexedBlock`
+            // constructions run on the blocking pool — build is CPU-bound and, once fetch is
+            // cheap, the wall. Each build uses a ZERO parent chainwork so it is independent; the
+            // serial consumer replays the true chainwork as a prefix sum. Both stages preserve
+            // submission order via `buffered`, so the writer still receives contiguous heights.
+            // Widths are configured by `sync_fetch_lookahead` / `sync_build_concurrency`.
+            let mut built_blocks =
                 futures::stream::iter(sync_initial_start_height..=sync_upper_bound.0)
                     .map(|current_height| {
                         let source = (*source).clone();
@@ -662,66 +664,101 @@ impl ZainoDB {
                                 .map(|fetched| (current_height, fetched))
                         }
                     })
-                    .buffered(fetch_lookahead);
+                    .buffered(fetch_lookahead)
+                    .map(|fetched| {
+                        let phase_meter = Arc::clone(&phase_meter);
+                        let zebra_network = zebra_network.clone();
+                        // Copy the activation heights into per-future owned locals so the
+                        // `async move` captures values, not borrows of the outer scope.
+                        let sapling_activation_height = sapling_activation_height;
+                        let nu5_activation_height = nu5_activation_height;
+                        async move {
+                            let (current_height, (block, sapling_opt, orchard_opt)) = fetched?;
+                            let block_hash = BlockHash::from(block.hash().0);
+                            // Pre-activation blocks carry no Sapling/Orchard tree; gate on the
+                            // upgrade height and default otherwise.
+                            let is_sapling_active = current_height >= sapling_activation_height.0;
+                            let is_orchard_active =
+                                nu5_activation_height.is_some_and(|nu5_activation_height| {
+                                    current_height >= nu5_activation_height.0
+                                });
+                            let sapling = if is_sapling_active {
+                                sapling_opt.ok_or_else(|| {
+                                    FinalisedStateError::BlockchainSourceError(
+                                        BlockchainSourceError::Unrecoverable(format!(
+                                            "missing Sapling commitment tree root for block \
+                                             {block_hash}"
+                                        )),
+                                    )
+                                })?
+                            } else {
+                                (zebra_chain::sapling::tree::Root::default(), 0)
+                            };
+                            let orchard = if is_orchard_active {
+                                orchard_opt.ok_or_else(|| {
+                                    FinalisedStateError::BlockchainSourceError(
+                                        BlockchainSourceError::Unrecoverable(format!(
+                                            "missing Orchard commitment tree root for block \
+                                             {block_hash}"
+                                        )),
+                                    )
+                                })?
+                            } else {
+                                (zebra_chain::orchard::tree::Root::default(), 0)
+                            };
+                            // Build off the async reactor (CPU-bound) with a ZERO parent so it
+                            // carries this block's own work; the consumer fixes up the prefix sum.
+                            let build_start = std::time::Instant::now();
+                            let chain_block = tokio::task::spawn_blocking(move || {
+                                #[cfg(test)]
+                                inject_test_build_cost();
+                                build_indexed_block(
+                                    block.as_ref(),
+                                    sapling,
+                                    orchard,
+                                    ChainWork::from_u256(0.into()),
+                                    zebra_network,
+                                    current_height,
+                                )
+                            })
+                            .await
+                            .map_err(|e| {
+                                FinalisedStateError::Custom(format!("build task panicked: {e}"))
+                            })??;
+                            record_phase_seconds("zaino.sync.block_build_seconds", build_start);
+                            phase_meter.build_latency_nanos.fetch_add(
+                                build_start.elapsed().as_nanos() as u64,
+                                Ordering::Relaxed,
+                            );
+                            Ok::<(u32, IndexedBlock), FinalisedStateError>((
+                                current_height,
+                                chain_block,
+                            ))
+                        }
+                    })
+                    .buffered(build_concurrency);
 
             // The consumer is always in exactly one phase; `enter` banks the phase just ending
             // and stamps the next, so the reporter credits a long in-flight phase (e.g. a
             // multi-window commit) live rather than only on completion.
             phase_meter.begin();
             loop {
-                // Time blocked on `next()` is fetch-wait: the consumer starved for a fetched
-                // block, i.e. fetch can't keep up at the lookahead (the fetch-bound signal).
-                let fetched_block = fetched_blocks.next().await;
+                // Time blocked on `next()` is pipeline-wait: the consumer starved for the next
+                // built block (fetch + build can't keep up at the configured widths).
+                let built_block = built_blocks.next().await;
                 phase_meter.enter(SyncPhase::Build);
-                let Some(fetched_block) = fetched_block else {
+                let Some(built_block) = built_block else {
                     break;
                 };
-                let (current_height, (block, sapling_opt, orchard_opt)) = fetched_block?;
-                // Update the shared progress value as we begin building this height.
+                let (current_height, mut chain_block) = built_block?;
+                // Update the shared progress value as we begin handling this height.
                 reported_height.store(current_height, Ordering::Relaxed);
-
-                let block_hash = BlockHash::from(block.hash().0);
-
-                // Pre-activation blocks carry no Sapling/Orchard tree; gate on the upgrade
-                // height and default otherwise (the production sync spans those early blocks).
-                let is_sapling_active = current_height >= sapling_activation_height.0;
-                let is_orchard_active = nu5_activation_height
-                    .is_some_and(|nu5_activation_height| current_height >= nu5_activation_height.0);
-                let sapling = if is_sapling_active {
-                    sapling_opt.ok_or_else(|| {
-                        FinalisedStateError::BlockchainSourceError(
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "missing Sapling commitment tree root for block {block_hash}"
-                            )),
-                        )
-                    })?
-                } else {
-                    (zebra_chain::sapling::tree::Root::default(), 0)
-                };
-                let orchard = if is_orchard_active {
-                    orchard_opt.ok_or_else(|| {
-                        FinalisedStateError::BlockchainSourceError(
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "missing Orchard commitment tree root for block {block_hash}"
-                            )),
-                        )
-                    })?
-                } else {
-                    (zebra_chain::orchard::tree::Root::default(), 0)
-                };
-
-                let build_start = std::time::Instant::now();
-                let chain_block = build_indexed_block(
-                    block.as_ref(),
-                    sapling,
-                    orchard,
-                    parent_chainwork,
-                    zebra_network.clone(),
-                    current_height,
-                )?;
-                record_phase_seconds("zaino.sync.block_build_seconds", build_start);
+                // Each block was built with a ZERO parent chainwork, so its `context.chainwork`
+                // holds this block's own work. Replay the serial prefix sum here, in height order,
+                // to reproduce the sequential chainwork exactly.
+                parent_chainwork = parent_chainwork.add(&chain_block.context.chainwork);
+                chain_block.context.chainwork = parent_chainwork;
                 phase_meter.blocks.fetch_add(1, Ordering::Relaxed);
-                parent_chainwork = chain_block.context.chainwork;
 
                 if let Some(batch) = batcher.push(chain_block) {
                     phase_meter.enter(SyncPhase::Write);
@@ -729,8 +766,7 @@ impl ZainoDB {
                     self.write_blocks_with_fallback(&batch).await?;
                     record_phase_seconds("zaino.sync.block_write_seconds", write_start);
                 }
-                // Bank the phase just ending (write, or build when no commit fired) and re-enter
-                // fetch-wait for the next `next()`.
+                // Bank the phase just ending and re-enter fetch-wait for the next `next()`.
                 phase_meter.enter(SyncPhase::FetchWait);
             }
 
@@ -861,6 +897,11 @@ impl ZainoDB {
                             per_block_ms(now.getblock_nanos.saturating_sub(prev.getblock_nanos));
                         let treestate_ms =
                             per_block_ms(now.treestate_nanos.saturating_sub(prev.treestate_nanos));
+                        // Real per-block build latency from the concurrent build stage (summed
+                        // across `sync_build_concurrency` builds ÷ blocks), independent of width.
+                        let build_ms = per_block_ms(
+                            now.build_latency_nanos.saturating_sub(prev.build_latency_nanos),
+                        );
                         // Live commit indicator: the consumer is in the write phase iff a commit
                         // is in flight. The phase split already credits this in-flight time (via
                         // `effective_phase_nanos`); this line just names it.
@@ -878,10 +919,11 @@ impl ZainoDB {
                             "sync_to_height: height {current_syncing_height}/{sync_upper_bound} \
                              — {rate:.1} blk/s, K={fetch_lookahead} | consumer phase split (last \
                              {window_secs:.0}s): fetch-wait {:.0}%, build {:.0}%, write {:.0}% \
-                             | {commit_state} | fetch RPC/block: getblock {getblock_ms:.0}ms, \
-                             treestate {treestate_ms:.0}ms [high fetch-wait → raise K; \
-                             treestate-dominated → kill it via local frontier; high build & low \
-                             fetch-wait → build-bound; high write → commit-bound] on network = \
+                             | {commit_state} | per-block: getblock {getblock_ms:.0}ms, treestate \
+                             {treestate_ms:.0}ms, build {build_ms:.0}ms [consumer build% ≈0 means \
+                             build is parallelized; high fetch-wait + low build → raise \
+                             sync_fetch_lookahead; high fetch-wait + high build → raise \
+                             sync_build_concurrency; high write → commit-bound] on network = \
                              {network:?}",
                             pct(fetch_wait),
                             pct(build),
@@ -1259,8 +1301,13 @@ struct SyncPhaseMeter {
     /// Nanoseconds in the per-block `z_gettreestate` RPC, summed across concurrent fetches —
     /// the suspected fetch chokepoint post-NU5.
     treestate_nanos: AtomicU64,
-    /// Nanoseconds spent in the serial build (`build_indexed_block`).
+    /// Nanoseconds banked to the consumer's `Build` phase — now just the chainwork prefix-sum
+    /// fixup, since `build_indexed_block` runs in the concurrent build stage (see
+    /// `build_latency_nanos`). Near zero, so a low consumer `build %` signals build is parallelized.
     build_nanos: AtomicU64,
+    /// Nanoseconds in `build_indexed_block`, summed across concurrent builds (so per-block
+    /// average = this / blocks is the real build latency regardless of build concurrency).
+    build_latency_nanos: AtomicU64,
     /// Nanoseconds banked to completed write/commit phases. The currently-running phase's
     /// in-flight slice is added by the reporter via [`SyncPhaseMeter::effective_phase_nanos`].
     write_nanos: AtomicU64,
@@ -1281,6 +1328,7 @@ struct PhaseSnapshot {
     getblock_nanos: u64,
     treestate_nanos: u64,
     build_nanos: u64,
+    build_latency_nanos: u64,
     write_nanos: u64,
 }
 
@@ -1296,6 +1344,7 @@ impl PhaseSnapshot {
             getblock_nanos: meter.getblock_nanos.load(Ordering::Relaxed),
             treestate_nanos: meter.treestate_nanos.load(Ordering::Relaxed),
             build_nanos,
+            build_latency_nanos: meter.build_latency_nanos.load(Ordering::Relaxed),
             write_nanos,
         }
     }
@@ -1340,6 +1389,33 @@ async fn fetch_block_and_roots<T: BlockchainSource>(
     }
 
     Ok((block, sapling_opt, orchard_opt))
+}
+
+/// Test-only artificial per-block build cost (nanoseconds), set by
+/// [`set_test_build_cost_nanos`]. Lets throughput tests make the build stage deterministically
+/// CPU-bound so they can prove `sync_build_concurrency` raises throughput.
+#[cfg(test)]
+static TEST_BUILD_COST_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Sets the per-block artificial build cost used by [`inject_test_build_cost`] (test-only).
+#[cfg(test)]
+pub(crate) fn set_test_build_cost_nanos(nanos: u64) {
+    TEST_BUILD_COST_NANOS.store(nanos, Ordering::Relaxed);
+}
+
+/// Burns the configured artificial build cost as a **busy-spin** (not a sleep) so it occupies a
+/// blocking-pool thread the way real build CPU does — sleeping would yield and hide whether
+/// `sync_build_concurrency` actually parallelizes the work. No-op when the cost is 0.
+#[cfg(test)]
+fn inject_test_build_cost() {
+    let nanos = TEST_BUILD_COST_NANOS.load(Ordering::Relaxed);
+    if nanos == 0 {
+        return;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_nanos(nanos);
+    while std::time::Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
 }
 
 /// Builds an [`IndexedBlock`] from a fetched block and its resolved commitment-tree roots,

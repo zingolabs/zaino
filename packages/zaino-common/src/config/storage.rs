@@ -106,6 +106,17 @@ pub struct DatabaseConfig {
     /// it at 1. Default 8.
     #[serde(default = "default_sync_fetch_lookahead")]
     pub sync_fetch_lookahead: usize,
+    /// Sync build-pipeline width: how many blocks to build (`IndexedBlock` construction)
+    /// concurrently. Build is CPU-bound and, once fetch is cheap (e.g. the in-process State
+    /// backend), the serial bottleneck; running this many builds on the blocking pool ahead of
+    /// the strictly-ordered write lifts throughput toward the write-bound ceiling. Each build is
+    /// independent — chainwork is replayed as a serial prefix sum in the writer — so this is
+    /// decoupled from [`sync_fetch_lookahead`](Self::sync_fetch_lookahead). Size it ≈ CPU cores;
+    /// oversubscribing steals cores from the commit path and can go net-negative when
+    /// write-bound. Read through
+    /// [`effective_sync_build_concurrency`](Self::effective_sync_build_concurrency), floored at 1.
+    #[serde(default = "default_sync_build_concurrency")]
+    pub sync_build_concurrency: usize,
 }
 
 /// Default [`DatabaseConfig::sync_write_batch_bytes`]: 6 GiB of measured RssAnon during
@@ -121,6 +132,14 @@ fn default_sync_fetch_lookahead() -> usize {
     8
 }
 
+/// Default [`DatabaseConfig::sync_build_concurrency`]: the host's available parallelism (CPU
+/// cores), since build is CPU-bound; falls back to 4 if the count cannot be determined.
+fn default_sync_build_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
 impl DatabaseConfig {
     /// The fetch-pipeline depth the sync loop actually uses: the configured
     /// [`sync_fetch_lookahead`](Self::sync_fetch_lookahead) floored at 1, so it is always a
@@ -129,6 +148,13 @@ impl DatabaseConfig {
     /// re-applying `.max(1)`.
     pub fn effective_sync_fetch_lookahead(&self) -> usize {
         self.sync_fetch_lookahead.max(1)
+    }
+
+    /// The build-pipeline width the sync loop actually uses: the configured
+    /// [`sync_build_concurrency`](Self::sync_build_concurrency) floored at 1, so it is always a
+    /// valid (non-zero) concurrent-stream width. The single home for that floor.
+    pub fn effective_sync_build_concurrency(&self) -> usize {
+        self.sync_build_concurrency.max(1)
     }
 }
 
@@ -140,6 +166,7 @@ impl Default for DatabaseConfig {
             sync_write_batch_bytes: default_sync_write_batch_bytes(),
             bulk_sync: false,
             sync_fetch_lookahead: default_sync_fetch_lookahead(),
+            sync_build_concurrency: default_sync_build_concurrency(),
         }
     }
 }
